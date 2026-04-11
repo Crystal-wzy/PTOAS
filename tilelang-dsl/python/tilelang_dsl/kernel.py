@@ -679,7 +679,12 @@ class _ConstraintParamView:
 
     @property
     def rank(self) -> _ConstraintValue:
-        return _ConstraintValue(self._attrs.get("rank"))
+        rank = self._attrs.get("rank")
+        if rank is None:
+            shape = self._attrs.get("shape")
+            if shape is not None:
+                rank = len(shape)
+        return _ConstraintValue(rank)
 
     @property
     def dtype(self) -> Any:
@@ -687,11 +692,27 @@ class _ConstraintParamView:
 
     @property
     def memory_space(self) -> Any:
-        return self._attrs.get("memory_space")
+        memory_space = self._attrs.get("memory_space")
+        if memory_space is None and self._attrs.get("kind") == "tile":
+            return MemorySpace.UB
+        if memory_space is None:
+            return None
+        if isinstance(memory_space, MemorySpace):
+            return memory_space
+        return MemorySpace(memory_space)
 
     @property
-    def config(self) -> Any:
-        return self._attrs.get("config")
+    def config(self) -> TileConfig | None:
+        config = self._attrs.get("config")
+        if config is None:
+            if self._attrs.get("kind") == "tile":
+                return TileConfig()
+            return None
+        if isinstance(config, TileConfig):
+            return config
+        if isinstance(config, Mapping):
+            return TileConfig.from_mapping(config)
+        raise TypeError(f"unsupported Tile config payload {config!r} in constraint view")
 
     def __repr__(self) -> str:
         return f"{self._name}<{self._attrs!r}>"
@@ -999,14 +1020,13 @@ class VKernelDescriptor:
             param_attrs = attrs.get(name)
             if not isinstance(param_attrs, dict):
                 param_attrs = {"kind": "tile"}
-            config_mapping = None if spec.config is None else dict(spec.config.fields)
             param_attrs.update(
                 {
                     "shape": spec.shape,
                     "rank": len(spec.shape),
                     "memory_space": spec.memory_space.value,
                     "valid_shape": effective_valid_shape,
-                    "config": config_mapping,
+                    "config": spec.config,
                 }
             )
             attrs[name] = param_attrs

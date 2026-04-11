@@ -31,7 +31,6 @@ The guide documents a richer type-construction surface that is not exported by
 the current package:
 
 - `pto.tile(...)`
-- `BLayout`, `SLayout`, `PadValue`
 - `SyncOpType`
 
 Today, the public package exports annotation markers (`TensorView`, `Tile`),
@@ -141,23 +140,20 @@ full guide:
 
 ### Tile Attribute Model
 
-`Tile` currently supports only a narrow attribute subset in semantic analysis:
+`Tile` currently exposes the documented metadata/query surface used by the user guide:
 
 - `shape`
 - `element_type`
-- `valid_shape`
-
-The guide documents additional properties that are not currently supported:
-
 - `memory_space`
+- `valid_shape`
 - `config`
 - `rank`
-- `num_elements`
-- `valid_elements`
-- `layout_descriptor`
-- `strides`
-- `byte_strides`
-- `offset`
+
+Current constraints still apply:
+
+- only statically specialized rank-1/rank-2 UB tiles are supported
+- `TileConfig` is queryable metadata, but lowering still renders the fixed baseline
+  layout contract unless later backend work teaches richer layout semantics
 
 ### Tile Config Semantics
 

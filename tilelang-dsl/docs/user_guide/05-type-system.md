@@ -280,24 +280,6 @@ pad = config.pad_value                # pto.PadValue.ZERO
 
 # Dynamic properties
 rank = tile.rank                      # 2
-num_elements = tile.num_elements      # 32768 (256 * 128)
-valid_elements = tile.valid_elements  # 28800 (240 * 120)
-```
-
-#### Layout and Stride Queries
-
-```python
-# Get layout descriptors
-layout_desc = tile.layout_descriptor  # Returns layout description object
-
-# Get strides (in elements)
-strides = tile.strides                # (128, 1) for row-major 256x128
-
-# Get byte strides
-byte_strides = tile.byte_strides      # (512, 4) for f32 row-major
-
-# Get base offset (in bytes)
-offset = tile.offset                  # pto.i64(0) or specified offset
 ```
 
 #### Conversion Operations

@@ -72,6 +72,9 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "mask_b8"))
         self.assertTrue(hasattr(pto, "mask_b16"))
         self.assertTrue(hasattr(pto, "mask_b32"))
+        self.assertTrue(hasattr(pto, "BLayout"))
+        self.assertTrue(hasattr(pto, "SLayout"))
+        self.assertTrue(hasattr(pto, "PadValue"))
         self.assertTrue(hasattr(pto, "constexpr"))
         self.assertTrue(hasattr(pto, "bytewidth"))
         self.assertTrue(hasattr(pto, "get_lanes"))
@@ -85,6 +88,9 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.PadMode.PadNull.value, "PadNull")
         self.assertEqual(pto.PadMode.PadFirstElem.value, "PadFirstElem")
         self.assertEqual(pto.PadMode.PadValue.value, "PadValue")
+        self.assertEqual(pto.BLayout.ROW_MAJOR.value, "row_major")
+        self.assertEqual(pto.SLayout.NONE_BOX.value, "none_box")
+        self.assertEqual(pto.PadValue.ZERO.value, "zero")
         self.assertEqual(pto.PositionMode.LOWEST.value, "POS_LOWEST")
         self.assertEqual(pto.OrderMode.ASC.value, "ORDER_ASC")
 
@@ -133,6 +139,9 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.elements_per_vreg"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.constexpr"), BASIC_TIER)
         self.assertEqual(get_feature_tier("constexpr"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("BLayout"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("SLayout"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("PadValue"), BASIC_TIER)
         self.assertEqual(get_feature_tier("tile[start:]"), BASIC_TIER)
         self.assertEqual(get_feature_tier("tile[row, col:]"), BASIC_TIER)
 
@@ -3720,6 +3729,19 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
 
         self.assertIn("unsupported op surface `pto.not_a_real_surface`", str(ctx.exception))
         self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_removed_tile_derived_query_surface_is_rejected(self) -> None:
+        @pto.vkernel(op="removed_tile_query_surface_unique", dtypes=[(pto.f32,)], advanced=True)
+        def kernel(dst: pto.Tile):
+            layout = dst.layout_descriptor
+            return None
+
+        with self.assertRaises(TypeError) as ctx:
+            kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            ).mlir_text()
+
+        self.assertIn("unsupported attribute access 'layout_descriptor'", str(ctx.exception))
 
     def test_strict_vecscope_requires_advanced_mode(self) -> None:
         with self.assertRaises(pto.TileLangFrontendError) as ctx:

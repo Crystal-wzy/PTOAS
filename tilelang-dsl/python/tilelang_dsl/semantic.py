@@ -47,16 +47,20 @@ from .support_matrix import (
     unsupported_feature_message,
 )
 from .types import (
+    BLayout,
     Event,
     MaskType,
     MaskPattern,
     MemorySpace,
     OrderMode,
+    PadValue,
     PadMode,
     Pipe,
     PositionMode,
     PointerType,
     ScalarType,
+    SLayout,
+    TileConfig,
     VRegType,
     bf16,
     bytewidth,
@@ -89,6 +93,9 @@ _PATTERN_SYMBOLS = {pattern.name: pattern for pattern in MaskPattern}
 _PIPE_SYMBOLS = {pipe.name: pipe for pipe in Pipe}
 _EVENT_SYMBOLS = {event.name: event for event in Event}
 _MEMORY_SPACE_SYMBOLS = {memory_space.name: memory_space for memory_space in MemorySpace}
+_B_LAYOUT_SYMBOLS = {layout.name: layout for layout in BLayout}
+_S_LAYOUT_SYMBOLS = {layout.name: layout for layout in SLayout}
+_PAD_VALUE_SYMBOLS = {pad_value.name: pad_value for pad_value in PadValue}
 _PAD_MODE_SYMBOLS = {pad_mode.name: pad_mode for pad_mode in PadMode}
 _POSITION_MODE_SYMBOLS = {position_mode.name: position_mode for position_mode in PositionMode}
 _ORDER_MODE_SYMBOLS = {order_mode.name: order_mode for order_mode in OrderMode}
@@ -218,6 +225,7 @@ class SemanticTileType(SemanticType):
     shape: tuple[int, ...] | None
     valid_shape: tuple[int | None, ...] | None
     memory_space: str | None
+    config: TileConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -618,6 +626,7 @@ class _SemanticAnalyzer:
                 shape=shape,
                 valid_shape=valid_shape,
                 memory_space=memory_space,
+                config=None if spec is None else spec.config,
             )
         if param.kind == "ptr":
             memory_space = param.annotation.memory_space.value
@@ -2254,6 +2263,8 @@ class _SemanticAnalyzer:
                 return self._valid_shape_expr(base)
             if expr.attr == "strides":
                 return self._strides_expr(base)
+            if expr.attr == "rank":
+                return self._rank_expr(base)
             attr_type = self._attribute_type(base, expr.attr)
             return SemanticAttributeAccess(base=base, attr=expr.attr, type=attr_type)
         if isinstance(expr, FrontendSubscriptExpr):
@@ -2370,6 +2381,33 @@ class _SemanticAnalyzer:
                     value=memory_space,
                     type=SemanticMetaType(kind="memory_space"),
                 )
+        if expr.namespace in {"pto.BLayout"}:
+            b_layout = _B_LAYOUT_SYMBOLS.get(expr.name)
+            if b_layout is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=b_layout,
+                    type=SemanticMetaType(kind="b_layout"),
+                )
+        if expr.namespace in {"pto.SLayout"}:
+            s_layout = _S_LAYOUT_SYMBOLS.get(expr.name)
+            if s_layout is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=s_layout,
+                    type=SemanticMetaType(kind="s_layout"),
+                )
+        if expr.namespace in {"pto.PadValue"}:
+            pad_value = _PAD_VALUE_SYMBOLS.get(expr.name)
+            if pad_value is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=pad_value,
+                    type=SemanticMetaType(kind="pad_value"),
+                )
         if expr.namespace in {"pto.PadMode"}:
             pad_mode = _PAD_MODE_SYMBOLS.get(expr.name)
             if pad_mode is not None:
@@ -2411,7 +2449,28 @@ class _SemanticAnalyzer:
             return SemanticShapeType(rank=base_type.rank)
         if isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType, SemanticTileType)) and attr == "valid_shape":
             return SemanticShapeType(rank=base_type.rank)
+        if isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType, SemanticTileType)) and attr == "rank":
+            return SemanticIndexType()
+        if isinstance(base_type, SemanticTileType) and attr == "memory_space":
+            return SemanticMetaType(kind="memory_space")
+        if isinstance(base_type, SemanticTileType) and attr == "config":
+            return SemanticMetaType(kind="tile_config")
+        if isinstance(base_type, SemanticMetaType) and base_type.kind == "tile_config":
+            if attr == "b_layout":
+                return SemanticMetaType(kind="b_layout")
+            if attr == "s_layout":
+                return SemanticMetaType(kind="s_layout")
+            if attr == "s_fractal_size":
+                return SemanticScalarType(dtype=i32)
+            if attr == "pad_value":
+                return SemanticMetaType(kind="pad_value")
         raise TypeError(f"unsupported attribute access '{attr}' in TileLang DSL v1")
+
+    def _rank_expr(self, base: SemanticExpr) -> SemanticExpr:
+        base_type = base.type
+        if isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType, SemanticTileType)):
+            return SemanticLiteralExpr(value=base_type.rank, type=SemanticIndexType())
+        raise TypeError("unsupported attribute access 'rank' in TileLang DSL v1")
 
     def _element_type_expr(self, base: SemanticExpr) -> SemanticExpr:
         base_type = base.type
@@ -2501,6 +2560,15 @@ class _SemanticAnalyzer:
             type=SemanticTupleType(elements=tuple(SemanticIndexType() for _ in elements)),
         )
 
+    def _static_shape_tuple_expr(self, values: tuple[int, ...]) -> SemanticTupleExpr:
+        return SemanticTupleExpr(
+            elements=tuple(
+                SemanticLiteralExpr(value=value, type=SemanticIndexType())
+                for value in values
+            ),
+            type=SemanticTupleType(elements=tuple(SemanticIndexType() for _ in values)),
+        )
+
     def _subscript_type(self, base: SemanticExpr, index: SemanticExpr) -> SemanticType:
         if isinstance(base.type, SemanticShapeType):
             if not isinstance(index.type, SemanticIndexType):
@@ -2516,6 +2584,16 @@ class _SemanticAnalyzer:
                         f"shape subscript index {index.value} is out of bounds for rank {base.type.rank}"
                     )
             return SemanticIndexType()
+        if isinstance(base.type, SemanticTupleType):
+            if not isinstance(index.type, SemanticIndexType):
+                raise TypeError("tuple subscript index must be an index value in TileLang DSL v1")
+            if isinstance(index, SemanticLiteralExpr) and isinstance(index.value, int):
+                if index.value < 0 or index.value >= len(base.type.elements):
+                    raise TypeError(
+                        f"tuple subscript index {index.value} is out of bounds for arity {len(base.type.elements)}"
+                    )
+                return base.type.elements[index.value]
+            raise TypeError("tuple subscript index must be a compile-time integer literal in TileLang DSL v1")
         if isinstance(base.type, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
             if not isinstance(index, SemanticTupleExpr):
                 raise TypeError("TensorView slicing expects a tuple of slices in TileLang DSL v1")
@@ -3775,6 +3853,36 @@ class _SemanticAnalyzer:
             return expr.value
         if isinstance(expr, SemanticBindingRef):
             return expr.binding.value
+        if isinstance(expr, SemanticAttributeAccess):
+            base_value = self._try_static_value(expr.base)
+            if isinstance(base_value, TileConfig):
+                if expr.attr == "b_layout":
+                    return base_value.b_layout
+                if expr.attr == "s_layout":
+                    return base_value.s_layout
+                if expr.attr == "s_fractal_size":
+                    return base_value.s_fractal_size
+                if expr.attr == "pad_value":
+                    return base_value.pad_value
+            if base_value is not None and hasattr(base_value, expr.attr):
+                return getattr(base_value, expr.attr)
+            if isinstance(expr.base.type, SemanticTileType):
+                tile_type = expr.base.type
+                config = TileConfig() if tile_type.config is None else tile_type.config
+                if expr.attr == "shape":
+                    return tile_type.shape
+                if expr.attr == "valid_shape":
+                    return self._resolved_tile_valid_shape(tile_type)
+                if expr.attr == "rank":
+                    return tile_type.rank
+                if expr.attr == "memory_space":
+                    return None if tile_type.memory_space is None else MemorySpace(tile_type.memory_space)
+                if expr.attr == "config":
+                    return config
+            if isinstance(expr.base.type, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
+                if expr.attr == "rank":
+                    return expr.base.type.rank
+            return None
         if isinstance(expr, SemanticTupleExpr):
             elements = []
             for element in expr.elements:

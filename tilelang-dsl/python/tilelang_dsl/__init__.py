@@ -24,6 +24,7 @@ from .types import (
     AnyInt,
     AnyMask,
     AnyType,
+    BLayout,
     EVENT,
     PIPE,
     Event,
@@ -31,6 +32,7 @@ from .types import (
     MemorySpace,
     MaskPattern,
     PAT,
+    PadValue,
     PadMode,
     PositionMode,
     OrderMode,
@@ -62,6 +64,7 @@ from .types import (
     mask_b16,
     mask_b32,
     ptr,
+    SLayout,
     vreg,
 )
 
@@ -88,6 +91,9 @@ __all__ = [
     "ptr",
     "vreg",
     "MemorySpace",
+    "BLayout",
+    "SLayout",
+    "PadValue",
     "Pipe",
     "Event",
     "PIPE",

@@ -82,6 +82,19 @@ class MemorySpace(str, Enum):
     UB = "ub"
 
 
+class BLayout(str, Enum):
+    ROW_MAJOR = "row_major"
+    COL_MAJOR = "col_major"
+
+
+class SLayout(str, Enum):
+    NONE_BOX = "none_box"
+
+
+class PadValue(str, Enum):
+    ZERO = "zero"
+
+
 class Pipe(str, Enum):
     MTE1 = "PIPE_MTE1"
     MTE2 = "PIPE_MTE2"
@@ -124,6 +137,29 @@ class OrderMode(str, Enum):
     ASC = "ORDER_ASC"
 
 
+def _coerce_int_config_value(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"TileConfig field '{field_name}' must be an integer")
+    return value
+
+
+def _coerce_enum_config_value(
+    value: Any,
+    enum_type: type[Enum],
+    field_name: str,
+    default: Enum,
+) -> Enum:
+    if value is None:
+        return default
+    if isinstance(value, enum_type):
+        return value
+    if isinstance(value, str):
+        for candidate in enum_type:
+            if value in {candidate.name, candidate.value}:
+                return candidate
+    raise TypeError(f"TileConfig field '{field_name}' must be a {enum_type.__name__} or matching string")
+
+
 @dataclass(frozen=True)
 class TileConfig:
     fields: tuple[tuple[str, Any], ...] = ()
@@ -131,6 +167,55 @@ class TileConfig:
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "TileConfig":
         return cls(tuple(sorted(mapping.items())))
+
+    def _field(self, *names: str) -> Any | None:
+        values = dict(self.fields)
+        for name in names:
+            if name in values:
+                return values[name]
+        return None
+
+    @property
+    def b_layout(self) -> BLayout:
+        return _coerce_enum_config_value(
+            self._field("b_layout", "layout"),
+            BLayout,
+            "b_layout",
+            BLayout.ROW_MAJOR,
+        )
+
+    @property
+    def s_layout(self) -> SLayout:
+        return _coerce_enum_config_value(
+            self._field("s_layout", "slayout"),
+            SLayout,
+            "s_layout",
+            SLayout.NONE_BOX,
+        )
+
+    @property
+    def s_fractal_size(self) -> int:
+        value = self._field("s_fractal_size", "fractal")
+        if value is None:
+            return 512
+        return _coerce_int_config_value(value, "s_fractal_size")
+
+    @property
+    def pad_value(self) -> PadValue:
+        return _coerce_enum_config_value(
+            self._field("pad_value", "pad"),
+            PadValue,
+            "pad_value",
+            PadValue.ZERO,
+        )
+
+
+@dataclass(frozen=True)
+class TileLayoutDescriptor:
+    shape: tuple[int, ...]
+    strides: tuple[int, ...]
+    byte_strides: tuple[int, ...]
+    offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -210,6 +295,45 @@ def constexpr(value: bool) -> bool:
     return value
 
 
+def tile_strides(
+    shape: tuple[int, ...],
+    config: TileConfig | None = None,
+) -> tuple[int, ...]:
+    if not shape:
+        return ()
+    normalized = TileConfig() if config is None else config
+    if normalized.b_layout == BLayout.COL_MAJOR and len(shape) == 2:
+        return (1, shape[0])
+    strides = [1]
+    for dim in reversed(shape[1:]):
+        strides.insert(0, strides[0] * dim)
+    return tuple(strides)
+
+
+def tile_byte_strides(
+    shape: tuple[int, ...],
+    dtype: ScalarType,
+    config: TileConfig | None = None,
+) -> tuple[int, ...]:
+    element_bytes = bytewidth(dtype)
+    return tuple(stride * element_bytes for stride in tile_strides(shape, config))
+
+
+def tile_layout_descriptor(
+    shape: tuple[int, ...],
+    dtype: ScalarType,
+    config: TileConfig | None = None,
+    *,
+    offset: int = 0,
+) -> TileLayoutDescriptor:
+    return TileLayoutDescriptor(
+        shape=shape,
+        strides=tile_strides(shape, config),
+        byte_strides=tile_byte_strides(shape, dtype, config),
+        offset=offset,
+    )
+
+
 __all__ = [
     "ScalarType",
     "WildcardType",
@@ -224,6 +348,9 @@ __all__ = [
     "ptr",
     "vreg",
     "MemorySpace",
+    "BLayout",
+    "SLayout",
+    "PadValue",
     "Pipe",
     "Event",
     "PIPE",

@@ -55,7 +55,7 @@ from .semantic import (
     SemanticVectorStoreStmt,
     SemanticWaitFlagStmt,
 )
-from .types import MaskPattern, ScalarType, get_lanes
+from .types import MaskPattern, MemorySpace, ScalarType, TileConfig, get_lanes
 
 
 _I1_TYPE = SemanticScalarType(dtype=ScalarType("i1"))
@@ -328,7 +328,15 @@ class _AuthoringRenderer:
                     self._collect_used_tile_buffers_from_expr(slice_expr.step, used)
             return
         if isinstance(expr, SemanticAttributeAccess):
-            if expr.attr not in {"shape", "valid_shape", "strides", "element_type"}:
+            if expr.attr not in {
+                "shape",
+                "valid_shape",
+                "strides",
+                "element_type",
+                "rank",
+                "memory_space",
+                "config",
+            }:
                 self._collect_used_tile_buffers_from_expr(expr.base, used)
             return
         if isinstance(expr, SemanticSubscriptAccess):
@@ -919,6 +927,79 @@ class _AuthoringRenderer:
             return expr.value
         if isinstance(expr, SemanticBindingRef):
             return expr.binding.value
+        if isinstance(expr, SemanticAttributeAccess):
+            base_value = self._static_expr_value(expr.base)
+            if isinstance(base_value, TileConfig):
+                if expr.attr == "b_layout":
+                    return base_value.b_layout
+                if expr.attr == "s_layout":
+                    return base_value.s_layout
+                if expr.attr == "s_fractal_size":
+                    return base_value.s_fractal_size
+                if expr.attr == "pad_value":
+                    return base_value.pad_value
+            if base_value is not None and hasattr(base_value, expr.attr):
+                return getattr(base_value, expr.attr)
+            if isinstance(expr.base.type, SemanticTileType):
+                tile_type = expr.base.type
+                if expr.attr == "shape":
+                    return tile_type.shape
+                if expr.attr == "valid_shape":
+                    return None
+                if expr.attr == "rank":
+                    return tile_type.rank
+                if expr.attr == "memory_space":
+                    return None if tile_type.memory_space is None else MemorySpace(tile_type.memory_space)
+                if expr.attr == "config":
+                    return TileConfig() if tile_type.config is None else tile_type.config
+            if isinstance(expr.base.type, (SemanticTensorViewType, SemanticPartitionTensorViewType)) and expr.attr == "rank":
+                return expr.base.type.rank
+            return None
+        if isinstance(expr, SemanticTupleExpr):
+            values = []
+            for element in expr.elements:
+                value = self._static_expr_value(element)
+                if value is None:
+                    return None
+                values.append(value)
+            return tuple(values)
+        if isinstance(expr, SemanticSubscriptAccess):
+            base_value = self._static_expr_value(expr.base)
+            index_value = self._static_expr_value(expr.index)
+            if isinstance(base_value, (tuple, list)) and isinstance(index_value, int):
+                if 0 <= index_value < len(base_value):
+                    return base_value[index_value]
+            return None
+        if isinstance(expr, SemanticBinaryExpr):
+            lhs = self._static_expr_value(expr.lhs)
+            rhs = self._static_expr_value(expr.rhs)
+            if lhs is None or rhs is None:
+                return None
+            if expr.op == "add" and isinstance(lhs, int) and isinstance(rhs, int):
+                return lhs + rhs
+            if expr.op == "sub" and isinstance(lhs, int) and isinstance(rhs, int):
+                return lhs - rhs
+            if expr.op == "mul" and isinstance(lhs, int) and isinstance(rhs, int):
+                return lhs * rhs
+            if expr.op == "floordiv" and isinstance(lhs, int) and isinstance(rhs, int) and rhs != 0:
+                return lhs // rhs
+            if expr.op == "eq":
+                return lhs == rhs
+            if expr.op == "ne":
+                return lhs != rhs
+            if expr.op == "gt":
+                return lhs > rhs
+            if expr.op == "lt":
+                return lhs < rhs
+            if expr.op == "ge":
+                return lhs >= rhs
+            if expr.op == "le":
+                return lhs <= rhs
+            if expr.op == "and":
+                return bool(lhs) and bool(rhs)
+            if expr.op == "or":
+                return bool(lhs) or bool(rhs)
+            return None
         return None
 
     def _infer_dma_load_transfer(
@@ -1971,6 +2052,19 @@ class _AuthoringRenderer:
                 name=self._materialize_constant(expr.value, expr.type),
                 type=expr.type,
             )
+        static_value = self._static_expr_value(expr)
+        if static_value is not None and isinstance(expr.type, (SemanticIndexType, SemanticScalarType)):
+            if desired_name is not None and into is not None:
+                into.append(
+                    self._indent(indent)
+                    + f"{desired_name} = arith.constant {self._format_constant(static_value, expr.type)} : "
+                    f"{self._render_type(expr.type)}"
+                )
+                return _RenderedValue(name=desired_name, type=expr.type)
+            return _RenderedValue(
+                name=self._materialize_constant(static_value, expr.type),
+                type=expr.type,
+            )
         if isinstance(expr, SemanticSubscriptAccess):
             return self._lower_subscript_access(
                 expr,
@@ -2834,6 +2928,10 @@ class _AuthoringRenderer:
         expr: SemanticSubscriptAccess,
         env: dict[str, _RenderedValue],
     ) -> int | _RenderedValue:
+        base_static = self._static_expr_value(expr.base)
+        index_static = self._static_expr_value(expr.index)
+        if isinstance(base_static, (tuple, list)) and isinstance(index_static, int):
+            return base_static[index_static]
         if not isinstance(expr.base, SemanticAttributeAccess):
             raise NotImplementedError("only shape/stride indexing is supported in TileLang DSL v1 lowering")
         if expr.base.attr not in {"shape", "valid_shape", "strides"}:
