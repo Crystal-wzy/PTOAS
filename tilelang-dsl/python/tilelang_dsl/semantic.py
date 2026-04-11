@@ -2699,10 +2699,10 @@ class _SemanticAnalyzer:
                 )
                 return self._analyze_predicate_memory_expr_op("plds", (base, *indices, *extra_args))
             if expr.keywords:
-                raise TypeError(
-                    f"call surface `{expr.namespace + '.' if expr.namespace else ''}{expr.name}` "
-                    "carries keyword arguments, but semantic keyword handling is not implemented "
-                    "in TileLang DSL v1 yet"
+                return self._analyze_keyword_call_expr(
+                    expr,
+                    env,
+                    allow_outer_lookup=allow_outer_lookup,
                 )
             args = tuple(
                 self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
@@ -3371,6 +3371,33 @@ class _SemanticAnalyzer:
             return self._analyze_ternary_vector_op(name, args)
         raise TypeError(f"call surface `pto.{name}` is not supported in TileLang DSL v1 yet")
 
+    def _analyze_keyword_call_expr(
+        self,
+        expr: FrontendCallExpr,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> SemanticExpr:
+        args = tuple(
+            self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+            for arg in expr.args
+        )
+        analyzed_keywords = {
+            name: self._analyze_expr(value, env, allow_outer_lookup=allow_outer_lookup)
+            for name, value in expr.keywords
+        }
+
+        if expr.namespace == "pto" and expr.name == "vdup":
+            return self._analyze_vdup_keyword_call(args, analyzed_keywords)
+        if expr.namespace == "pto" and expr.name == "vci":
+            return self._analyze_vci_keyword_call(args, analyzed_keywords)
+
+        raise TypeError(
+            f"call surface `{expr.namespace + '.' if expr.namespace else ''}{expr.name}` "
+            "carries keyword arguments, but semantic keyword handling is not implemented "
+            "in TileLang DSL v1 yet"
+        )
+
     def _analyze_make_mask(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
         if len(args) != 2:
             raise TypeError("pto.make_mask expects exactly 2 positional arguments in TileLang DSL v1")
@@ -3938,6 +3965,61 @@ class _SemanticAnalyzer:
             )
 
         raise TypeError(f"call surface `pto.{name}` is not supported in TileLang DSL v1 yet")
+
+    def _analyze_vdup_keyword_call(
+        self,
+        args: tuple[SemanticExpr, ...],
+        keywords: dict[str, SemanticExpr],
+    ) -> SemanticExpr:
+        if not args:
+            raise TypeError("pto.vdup expects at least 1 positional argument in TileLang DSL v1")
+        if len(args) > 2:
+            raise TypeError("pto.vdup expects 1 or 2 operands in TileLang DSL v1")
+        if len(args) == 2 and "position" in keywords:
+            raise TypeError("pto.vdup got multiple values for argument `position` in TileLang DSL v1")
+
+        value = args[0]
+        if isinstance(value.type, SemanticVRegType):
+            vec_type = value.type
+        else:
+            vec_type = self._vreg_type_for_scalar_or_index(value, "pto.vdup input")
+        position = self._normalize_position_mode(
+            keywords.get("position", args[1] if len(args) == 2 else None),
+            "pto.vdup position",
+        )
+        return SemanticCallExpr(
+            namespace="pto",
+            name="vdup",
+            args=(value, position),
+            type=vec_type,
+        )
+
+    def _analyze_vci_keyword_call(
+        self,
+        args: tuple[SemanticExpr, ...],
+        keywords: dict[str, SemanticExpr],
+    ) -> SemanticExpr:
+        if not args:
+            raise TypeError("pto.vci expects at least 1 positional argument in TileLang DSL v1")
+        if len(args) > 2:
+            raise TypeError("pto.vci expects 1 or 2 operands in TileLang DSL v1")
+        if len(args) == 2 and "order" in keywords:
+            raise TypeError("pto.vci got multiple values for argument `order` in TileLang DSL v1")
+
+        index = self._require_scalar_or_index_expr(args[0], "pto.vci index")
+        index_dtype = i32 if isinstance(index.type, SemanticIndexType) else index.type.dtype
+        if index_dtype.name not in {"i8", "i16", "i32"}:
+            raise TypeError("pto.vci index only supports i8/i16/i32 in TileLang DSL v1")
+        order = self._normalize_order_mode(
+            keywords.get("order", args[1] if len(args) == 2 else None),
+            "pto.vci order",
+        )
+        return SemanticCallExpr(
+            namespace="pto",
+            name="vci",
+            args=(index, order),
+            type=self._vreg_type_for_dtype(index_dtype),
+        )
 
     def _analyze_unary_vector_op(
         self,

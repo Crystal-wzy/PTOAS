@@ -1385,4 +1385,7 @@ Type conversion and specialized operations.
 ```python
 # Generate ascending indices starting from 0
 indices = pto.vci(pto.i32(0), OrderMode.ASC)
+
+# Keyword form for the optional order argument is also supported
+indices_kw = pto.vci(pto.i32(0), order=OrderMode.ASC)
 ```

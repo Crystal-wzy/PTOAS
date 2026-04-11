@@ -609,6 +609,8 @@ _BOOL_OP_NAMES = {
 }
 
 _DMA_CALL_KEYWORDS: dict[str, frozenset[str]] = {
+    "vdup": frozenset({"position"}),
+    "vci": frozenset({"order"}),
     "set_loop2_stride_outtoub": frozenset({"src_stride", "dst_stride"}),
     "set_loop1_stride_outtoub": frozenset({"src_stride", "dst_stride"}),
     "set_loop_size_outtoub": frozenset({"loop1", "loop2"}),
@@ -728,7 +730,7 @@ def _build_call_keywords(
         raise context.error(
             node,
             f"`{call_name}` does not support keyword arguments in TileLang DSL v1; "
-            "no public call surface currently accepts them",
+            "keyword arguments are only supported on selected public call surfaces",
         )
 
     seen: set[str] = set()

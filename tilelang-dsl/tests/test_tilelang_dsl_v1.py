@@ -1129,7 +1129,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
                 pto.vlds(tile, offset=0)
                 return None
 
-        self.assertIn("no public call surface currently accepts them", str(ctx.exception))
+        self.assertIn("keyword arguments are only supported on selected public call surfaces", str(ctx.exception))
         self.assertIn(f"{__file__}:", str(ctx.exception))
 
     def test_frontend_rewrites_template_slot_to_selected_real_op(self) -> None:
@@ -2395,9 +2395,9 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
             broadcast = pto.vbr(seed)
             dup_from_vec = pto.vdup(vec0)
-            dup_from_scalar = pto.vdup(seed, pto.PositionMode.LOWEST)
+            dup_from_scalar = pto.vdup(seed, position=pto.PositionMode.LOWEST)
             idx0 = pto.vci(seed)
-            idx1 = pto.vci(seed, pto.OrderMode.ASC)
+            idx1 = pto.vci(seed, order=pto.OrderMode.ASC)
 
             out = pto.vadd(broadcast, dup_from_vec, all_mask)
             out = pto.vadd(out, dup_from_scalar, all_mask)

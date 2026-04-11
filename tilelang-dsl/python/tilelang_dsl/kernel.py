@@ -372,7 +372,7 @@ class _KernelBodyValidator(ast.NodeVisitor):
             raise self.source_info.error(
                 node,
                 f"`{call_name}` does not support keyword arguments in TileLang DSL v1; "
-                "no public call surface currently accepts them",
+                "keyword arguments are only supported on selected public call surfaces",
             )
 
         seen: set[str] = set()
