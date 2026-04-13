@@ -2715,9 +2715,17 @@ class _AuthoringRenderer:
             value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
             target_dtype = self._render_dtype_symbol(expr.args[1], context="pto.vcvt to_type")
             mask = self._lower_expr(expr.args[2], env, indent=indent, into=into)
+            attr_parts: list[str] = []
+            if self._has_optional_string_literal(expr.args[3]):
+                attr_parts.append(f"rnd = {self._render_string_literal(expr.args[3])}")
+            if self._has_optional_string_literal(expr.args[4]):
+                attr_parts.append(f"sat = {self._render_string_literal(expr.args[4])}")
+            if self._has_optional_string_literal(expr.args[5]):
+                attr_parts.append(f"part = {self._render_string_literal(expr.args[5])}")
+            attr_suffix = f" {{{', '.join(attr_parts)}}}" if attr_parts else ""
             into.append(
                 self._indent(indent)
-                + f"{result_name} = pto.vcvt {value.name}, {target_dtype}, {mask.name} : "
+                + f"{result_name} = pto.vcvt {value.name}, {target_dtype}, {mask.name}{attr_suffix} : "
                 + f"{self._render_type(value.type)}, {self._render_type(mask.type)} -> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)
@@ -2935,6 +2943,13 @@ class _AuthoringRenderer:
             escaped = expr.binding.value.replace("\\", "\\\\").replace('"', '\\"')
             return f'"{escaped}"'
         raise NotImplementedError("expected a string literal for TileLang DSL advanced-family lowering")
+
+    def _has_optional_string_literal(self, expr: SemanticExpr) -> bool:
+        if isinstance(expr, SemanticLiteralExpr):
+            return isinstance(expr.value, str)
+        if isinstance(expr, SemanticBindingRef):
+            return isinstance(expr.binding.value, str)
+        return False
 
     def _render_dtype_symbol(self, expr: SemanticExpr, *, context: str) -> str:
         if isinstance(expr, SemanticSymbolExpr) and isinstance(expr.value, ScalarType):

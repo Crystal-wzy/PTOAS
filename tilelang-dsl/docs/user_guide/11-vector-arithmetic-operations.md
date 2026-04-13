@@ -1325,21 +1325,73 @@ Type conversion and specialized operations.
 |--------------|------|-------------|
 | `result` | `VRegType` | Truncated vector |
 
-#### `pto.vcvt(vec: VRegType, to_type: Type, mask: MaskType) -> VRegType`
+#### `pto.vcvt(vec: VRegType, to_type: Type, mask: MaskType, rnd: pto.VcvtRoundMode | None = None, sat: pto.VcvtSatMode | None = None, part: pto.VcvtPartMode | None = None) -> VRegType`
 
-**Description**: Type conversion of vector elements.
+**Description**: Convert vector elements between supported float and integer
+families. This is the TileLang DSL surface for the VPTO `pto.vcvt` conversion
+family.
+
+**Attribute Enums**:
+- `pto.VcvtRoundMode`: `R`, `A`, `F`, `C`, `Z`, `O`
+- `pto.VcvtSatMode`: `SAT`, `NOSAT`
+- `pto.VcvtPartMode`: `EVEN`, `ODD`
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Input vector |
-| `to_type` | `Type` | Target element type |
-| `mask` | `MaskType` | Predicate mask |
+| `to_type` | `Type` | Target scalar dtype symbol for the result vector element type |
+| `mask` | `MaskType` | Predicate mask selecting active source lanes. Its granularity must match the source vector family, not the destination family |
+| `rnd` | `pto.VcvtRoundMode` \| `None` | Optional rounding-mode attribute lowered to VPTO `rnd` |
+| `sat` | `pto.VcvtSatMode` \| `None` | Optional saturation attribute lowered to VPTO `sat` |
+| `part` | `pto.VcvtPartMode` \| `None` | Optional even/odd packing selector lowered to VPTO `part` |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `result` | `VRegType` | Converted vector |
+| `result` | `VRegType` | Converted vector with the vreg shape implied by `to_type` |
+
+**Constraints**:
+- Current TileLang DSL v1 accepts exactly three positional arguments:
+  `pto.vcvt(vec, to_type, mask)`. Optional attributes are exposed as keyword
+  arguments: `rnd=...`, `sat=...`, `part=...`.
+- The underlying VPTO op family is the fuller
+  `pto.vcvt %input, %mask {rnd, sat, part}` surface, and the DSL keywords map
+  directly to those VPTO attributes.
+- `mask` always follows the source vector family:
+  `f32`/`i32`/`si32`/`ui32` use `mask_b32`;
+  `f16`/`bf16`/`i16`/`si16`/`ui16` use `mask_b16`;
+  `i8`/`si8`/`ui8` use `mask_b8`.
+- The enum form is preferred. For compatibility, canonical strings such as
+  `"R"`, `"SAT"`, and `"EVEN"` are also accepted.
+- Only backend-supported source/destination type pairs are legal. For the full
+  A5 `vcvt` type matrix, width-changing packing rules, and attribute-sensitive
+  forms, refer to
+  [`../vpto_spec/vpto-spec-current.md`](../vpto_spec/vpto-spec-current.md).
+- VPTO does not define a `mask_b64` form. Conversions that produce `si64`
+  results still use the typed mask granularity of the source vector family.
+- Width-changing conversions continue to follow VPTO packing semantics even on
+  the simplified DSL surface. For example, `f16 -> f32` uses an `f16`-family
+  `mask_b16`, because the mask is attached to the source vector family.
+
+**Example**:
+```python
+mask16 = pto.make_mask(pto.f16, PAT.ALL)
+vec_f16 = pto.vlds(src, 0)
+vec_f32 = pto.vcvt(vec_f16, pto.f32, mask16)
+
+mask32 = pto.make_mask(pto.f32, PAT.ALL)
+vec_i32 = pto.vcvt(vec_f32, pto.si32, mask32)
+
+vec_f16_narrow = pto.vcvt(
+    vec_f32,
+    pto.f16,
+    mask32,
+    rnd=pto.VcvtRoundMode.R,
+    sat=pto.VcvtSatMode.SAT,
+    part=pto.VcvtPartMode.ODD,
+)
+```
 
 #### `pto.vbitsort(vec: VRegType, mask: MaskType) -> VRegType`
 

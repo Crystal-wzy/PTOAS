@@ -63,6 +63,9 @@ from .types import (
     PositionMode,
     PointerType,
     ScalarType,
+    VcvtPartMode,
+    VcvtRoundMode,
+    VcvtSatMode,
     VRegType,
     bf16,
     bytewidth,
@@ -122,6 +125,9 @@ _DEINTERLEAVE_DIST_SYMBOLS = dict(DeinterleaveDist.__members__)
 _INTERLEAVE_DIST_SYMBOLS = dict(InterleaveDist.__members__)
 _POSITION_MODE_SYMBOLS = {position_mode.name: position_mode for position_mode in PositionMode}
 _ORDER_MODE_SYMBOLS = {order_mode.name: order_mode for order_mode in OrderMode}
+_VCVT_ROUND_MODE_SYMBOLS = {mode.name: mode for mode in VcvtRoundMode}
+_VCVT_SAT_MODE_SYMBOLS = {mode.name: mode for mode in VcvtSatMode}
+_VCVT_PART_MODE_SYMBOLS = {mode.name: mode for mode in VcvtPartMode}
 _POST_UPDATE_MODE_SYMBOLS = {mode.name: mode for mode in PostUpdateMode}
 _UNARY_VECTOR_OPS = {
     "vabs",
@@ -2866,6 +2872,12 @@ class _SemanticAnalyzer:
                 )
                 dist = self._analyze_expr(expr.args[1], env, allow_outer_lookup=allow_outer_lookup)
                 return self._analyze_vldsx2((base, *indices, dist))
+            if expr.namespace == "pto" and expr.name == "vcvt":
+                return self._analyze_vcvt_frontend_call(
+                    expr,
+                    env,
+                    allow_outer_lookup=allow_outer_lookup,
+                )
             if expr.keywords:
                 raise TypeError(
                     f"call surface `{expr.namespace + '.' if expr.namespace else ''}{expr.name}` "
@@ -2996,6 +3008,33 @@ class _SemanticAnalyzer:
                     name=expr.name,
                     value=order_mode,
                     type=SemanticMetaType(kind="order_mode"),
+                )
+        if expr.namespace in {"VcvtRoundMode", "pto.VcvtRoundMode"}:
+            round_mode = _VCVT_ROUND_MODE_SYMBOLS.get(expr.name)
+            if round_mode is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=round_mode,
+                    type=SemanticMetaType(kind="vcvt_round_mode"),
+                )
+        if expr.namespace in {"VcvtSatMode", "pto.VcvtSatMode"}:
+            sat_mode = _VCVT_SAT_MODE_SYMBOLS.get(expr.name)
+            if sat_mode is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=sat_mode,
+                    type=SemanticMetaType(kind="vcvt_sat_mode"),
+                )
+        if expr.namespace in {"VcvtPartMode", "pto.VcvtPartMode"}:
+            part_mode = _VCVT_PART_MODE_SYMBOLS.get(expr.name)
+            if part_mode is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=part_mode,
+                    type=SemanticMetaType(kind="vcvt_part_mode"),
                 )
         if expr.namespace in {"PostUpdateMode", "pto.PostUpdateMode"}:
             post_update_mode = _POST_UPDATE_MODE_SYMBOLS.get(expr.name)
@@ -4087,7 +4126,44 @@ class _SemanticAnalyzer:
         self._require_string_expr(args[2], f"pto.{name} part")
         return SemanticCallExpr(namespace="pto", name=name, args=args, type=lhs)
 
-    def _analyze_vcvt(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+    def _missing_optional_meta_expr(self) -> SemanticLiteralExpr:
+        return SemanticLiteralExpr(value=None, type=SemanticMetaType(kind="none"))
+
+    def _analyze_vcvt_frontend_call(
+        self,
+        expr: FrontendCallExpr,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> SemanticExpr:
+        if len(expr.args) != 3:
+            raise TypeError(
+                "pto.vcvt expects exactly 3 positional operands `(vec, to_type, mask)` "
+                "before optional keyword attrs in TileLang DSL v1"
+            )
+        args = tuple(
+            self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+            for arg in expr.args
+        )
+        analyzed_keywords = {
+            name: self._analyze_expr(value, env, allow_outer_lookup=allow_outer_lookup)
+            for name, value in expr.keywords
+        }
+        return self._analyze_vcvt(
+            args,
+            rnd=self._normalize_vcvt_round_mode(analyzed_keywords.get("rnd")),
+            sat=self._normalize_vcvt_sat_mode(analyzed_keywords.get("sat")),
+            part=self._normalize_vcvt_part_mode(analyzed_keywords.get("part")),
+        )
+
+    def _analyze_vcvt(
+        self,
+        args: tuple[SemanticExpr, ...],
+        *,
+        rnd: SemanticExpr | None = None,
+        sat: SemanticExpr | None = None,
+        part: SemanticExpr | None = None,
+    ) -> SemanticExpr:
         if len(args) != 3:
             raise TypeError("pto.vcvt expects exactly 3 positional arguments in TileLang DSL")
         vector = self._require_vreg_expr(args[0], "pto.vcvt vector")
@@ -4096,7 +4172,14 @@ class _SemanticAnalyzer:
         return SemanticCallExpr(
             namespace="pto",
             name="vcvt",
-            args=args,
+            args=(
+                args[0],
+                args[1],
+                args[2],
+                rnd if rnd is not None else self._missing_optional_meta_expr(),
+                sat if sat is not None else self._missing_optional_meta_expr(),
+                part if part is not None else self._missing_optional_meta_expr(),
+            ),
             type=self._vreg_type_for_dtype(target_dtype),
         )
 
@@ -4302,6 +4385,84 @@ class _SemanticAnalyzer:
         if order != OrderMode.ASC.value:
             raise TypeError("pto.vci currently only supports order `OrderMode.ASC` in TileLang DSL v1")
         return SemanticLiteralExpr(value=order, type=SemanticMetaType(kind="string"))
+
+    def _normalize_vcvt_round_mode(self, expr: SemanticExpr | None) -> SemanticExpr | None:
+        if expr is None:
+            return None
+        if (
+            isinstance(expr, SemanticSymbolExpr)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "vcvt_round_mode"
+            and isinstance(expr.value, VcvtRoundMode)
+        ):
+            return SemanticLiteralExpr(value=expr.value.value, type=SemanticMetaType(kind="string"))
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "vcvt_round_mode"
+            and isinstance(expr.binding.value, VcvtRoundMode)
+        ):
+            return SemanticLiteralExpr(value=expr.binding.value.value, type=SemanticMetaType(kind="string"))
+        round_mode = self._require_string_expr(expr, "pto.vcvt rnd")
+        if round_mode not in {mode.value for mode in VcvtRoundMode}:
+            raise TypeError(
+                "pto.vcvt rnd must be a VcvtRoundMode enum such as "
+                "`pto.VcvtRoundMode.R` or one of the canonical strings "
+                '`"R"`, `"A"`, `"F"`, `"C"`, `"Z"`, `"O"` in TileLang DSL v1'
+            )
+        return SemanticLiteralExpr(value=round_mode, type=SemanticMetaType(kind="string"))
+
+    def _normalize_vcvt_sat_mode(self, expr: SemanticExpr | None) -> SemanticExpr | None:
+        if expr is None:
+            return None
+        if (
+            isinstance(expr, SemanticSymbolExpr)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "vcvt_sat_mode"
+            and isinstance(expr.value, VcvtSatMode)
+        ):
+            return SemanticLiteralExpr(value=expr.value.value, type=SemanticMetaType(kind="string"))
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "vcvt_sat_mode"
+            and isinstance(expr.binding.value, VcvtSatMode)
+        ):
+            return SemanticLiteralExpr(value=expr.binding.value.value, type=SemanticMetaType(kind="string"))
+        sat_mode = self._require_string_expr(expr, "pto.vcvt sat")
+        if sat_mode not in {mode.value for mode in VcvtSatMode}:
+            raise TypeError(
+                "pto.vcvt sat must be a VcvtSatMode enum such as "
+                "`pto.VcvtSatMode.SAT` or `pto.VcvtSatMode.NOSAT`, or one of the "
+                'canonical strings `"SAT"` / `"NOSAT"` in TileLang DSL v1'
+            )
+        return SemanticLiteralExpr(value=sat_mode, type=SemanticMetaType(kind="string"))
+
+    def _normalize_vcvt_part_mode(self, expr: SemanticExpr | None) -> SemanticExpr | None:
+        if expr is None:
+            return None
+        if (
+            isinstance(expr, SemanticSymbolExpr)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "vcvt_part_mode"
+            and isinstance(expr.value, VcvtPartMode)
+        ):
+            return SemanticLiteralExpr(value=expr.value.value, type=SemanticMetaType(kind="string"))
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "vcvt_part_mode"
+            and isinstance(expr.binding.value, VcvtPartMode)
+        ):
+            return SemanticLiteralExpr(value=expr.binding.value.value, type=SemanticMetaType(kind="string"))
+        part_mode = self._require_string_expr(expr, "pto.vcvt part")
+        if part_mode not in {mode.value for mode in VcvtPartMode}:
+            raise TypeError(
+                "pto.vcvt part must be a VcvtPartMode enum such as "
+                "`pto.VcvtPartMode.EVEN` or `pto.VcvtPartMode.ODD`, or one of the "
+                'canonical strings `"EVEN"` / `"ODD"` in TileLang DSL v1'
+            )
+        return SemanticLiteralExpr(value=part_mode, type=SemanticMetaType(kind="string"))
 
     def _require_mask_expr(self, expr: SemanticExpr, context: str) -> SemanticMaskType:
         if not isinstance(expr.type, SemanticMaskType):

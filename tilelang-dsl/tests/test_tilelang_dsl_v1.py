@@ -98,6 +98,9 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "InterleaveDist"))
         self.assertTrue(hasattr(pto, "PositionMode"))
         self.assertTrue(hasattr(pto, "OrderMode"))
+        self.assertTrue(hasattr(pto, "VcvtRoundMode"))
+        self.assertTrue(hasattr(pto, "VcvtSatMode"))
+        self.assertTrue(hasattr(pto, "VcvtPartMode"))
         self.assertTrue(hasattr(pto, "PostUpdateMode"))
         self.assertTrue(hasattr(pto, "PIPE"))
         self.assertTrue(hasattr(pto, "EVENT"))
@@ -119,6 +122,9 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.PositionMode.LOWEST.value, "LOWEST")
         self.assertEqual(pto.PositionMode.HIGHEST.value, "HIGHEST")
         self.assertEqual(pto.OrderMode.ASC.value, "ORDER_ASC")
+        self.assertEqual(pto.VcvtRoundMode.R.value, "R")
+        self.assertEqual(pto.VcvtSatMode.SAT.value, "SAT")
+        self.assertEqual(pto.VcvtPartMode.ODD.value, "ODD")
         self.assertEqual(pto.PostUpdateMode.POST_UPDATE.value, "POST_UPDATE")
         self.assertEqual(pto.PostUpdateMode.NO_POST_UPDATE.value, "NO_POST_UPDATE")
         self.assertEqual(pto.Event.ID31.value, "EVENT_ID31")
@@ -2052,6 +2058,69 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("pto.vcvt", text)
         self.assertIn("pto.vmrgsort4", text)
 
+    def test_vcvt_supports_keyword_attrs_with_enums(self) -> None:
+        @pto.vkernel(
+            op="vcvt_keyword_attrs_unique",
+            dtypes=[(pto.f16, pto.f32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            src_mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            dst_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vcvt(
+                vec,
+                pto.f16,
+                src_mask,
+                rnd=pto.VcvtRoundMode.R,
+                sat=pto.VcvtSatMode.SAT,
+                part=pto.VcvtPartMode.ODD,
+            )
+            pto.vsts(out, dst, 0, dst_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn('pto.vcvt', text)
+        self.assertIn('rnd = "R"', text)
+        self.assertIn('sat = "SAT"', text)
+        self.assertIn('part = "ODD"', text)
+
+    def test_vcvt_rejects_legacy_string_spellings(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(
+                op="vcvt_keyword_attrs_legacy_unique",
+                dtypes=[(pto.f16, pto.f32)],
+                advanced=True,
+            )
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                src_mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                dst_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+                vec = pto.vlds(src, 0)
+                out = pto.vcvt(
+                    vec,
+                    pto.f16,
+                    src_mask,
+                    rnd="ROUND_R",
+                    sat="RS_ENABLE",
+                    part="PART_EVEN",
+                )
+                pto.vsts(out, dst, 0, dst_mask)
+                return None
+
+            specialized = kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+                src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            )
+            specialized.mlir_text()
+
+        self.assertIn("pto.vcvt rnd must be a VcvtRoundMode enum", str(ctx.exception))
+
     def test_extended_integer_vector_ops_surface_lowers(self) -> None:
         @pto.vkernel(
             op="extended_integer_vector_ops_unique",
@@ -2774,7 +2843,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
                     acc = pto.vadd(acc, reduced, one_mask)
                 out_mask, _ = pto.make_mask(src_dtype, 1)
                 if pto.constexpr(src_dtype != dst.element_type):
-                    casted = pto.vcvt(acc, out_mask, dst.element_type)
+                    casted = pto.vcvt(acc, dst.element_type, out_mask)
                     pto.vsts(casted, dst[row, 0:], out_mask)
                 else:
                     pto.vsts(acc, dst[row, 0:], out_mask)

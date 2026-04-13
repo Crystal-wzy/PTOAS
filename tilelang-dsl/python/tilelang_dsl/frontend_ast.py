@@ -672,6 +672,7 @@ _DMA_CALL_KEYWORDS: dict[str, frozenset[str]] = {
             "ub_stride",
         }
     ),
+    "vcvt": frozenset({"rnd", "sat", "part"}),
 }
 
 
@@ -830,6 +831,9 @@ def _build_expr(node: ast.AST, context: _FrontendBuildContext) -> FrontendExprNo
             "InterleaveDist",
             "PositionMode",
             "OrderMode",
+            "VcvtRoundMode",
+            "VcvtSatMode",
+            "VcvtPartMode",
             "PostUpdateMode",
         } and len(path) >= 2:
             return _attach_source_location(

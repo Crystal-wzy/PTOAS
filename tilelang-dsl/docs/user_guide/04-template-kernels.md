@@ -307,11 +307,12 @@ else:
 def template_trowsum(dst: pto.Tile, src: pto.Tile, tmp: pto.Tile):
     acc_dtype = tmp.element_type
     dst_dtype = dst.element_type
+    acc_mask_1, _ = pto.make_mask(acc_dtype, 1)
     dst_mask_1, _ = pto.make_mask(dst_dtype, 1)
 
     if pto.constexpr(acc_dtype != dst_dtype):
         # Type conversion required
-        v_acc_casted = pto.vcvt(v_acc, dst_mask_1, dst_dtype)
+        v_acc_casted = pto.vcvt(v_acc, dst_dtype, acc_mask_1)
         pto.vsts(v_acc_casted, dst[row, 0:], dst_mask_1)
     else:
         # No conversion needed

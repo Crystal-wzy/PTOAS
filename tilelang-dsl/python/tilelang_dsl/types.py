@@ -219,6 +219,25 @@ class OrderMode(str, Enum):
     ASC = "ORDER_ASC"
 
 
+class VcvtRoundMode(str, Enum):
+    R = "R"
+    A = "A"
+    F = "F"
+    C = "C"
+    Z = "Z"
+    O = "O"
+
+
+class VcvtSatMode(str, Enum):
+    SAT = "SAT"
+    NOSAT = "NOSAT"
+
+
+class VcvtPartMode(str, Enum):
+    EVEN = "EVEN"
+    ODD = "ODD"
+
+
 class PostUpdateMode(str, Enum):
     POST_UPDATE = "POST_UPDATE"
     NO_POST_UPDATE = "NO_POST_UPDATE"
