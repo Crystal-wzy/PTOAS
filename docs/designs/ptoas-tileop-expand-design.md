@@ -957,23 +957,20 @@ def template_xxx(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
   }
   ```
 - Expand TileOp pass 的端到端测试（`pto.tadd` → Vector IR）
-  使用以下命令同时观察中间 IR 和最终 LLVM IR：
+  使用以下命令生成最终 LLVM IR，并继续交给 Bisheng 做设备侧编译校验：
 
   ```bash
   ./build/tools/ptoas/ptoas test/basic/expand_tile_op_tilelang.pto \
     --pto-arch=a5 \
-    --print-ir-after-all \
     --pto-backend=vpto \
     --enable-tile-op-expand \
     --vpto-emit-hivm-llvm \
     -o - \
-    > add.ll \
-    2> /tmp/expand_tile_op_tilelang.mlir
+    > add.ll
   ```
 
   说明：
-  - `stderr` 中的 `/tmp/expand_tile_op_tilelang.mlir` 保存 `--print-ir-after-all` 打印的各阶段 MLIR/VPTO IR，可用于检查模板是否已经从 `pto.tadd` 展开为向量 IR。
-  - `stdout` 中的最终产物是 textual LLVM IR，因此这里使用 `-o - > add.ll` 显式落盘，而不是依赖 `-o <file>` 与 `--print-ir-after-all` 混用时的输出行为。
+  - `stdout` 中的最终产物是 textual LLVM IR，因此这里使用 `-o - > add.ll` 显式落盘。
 
   随后将生成的 `add.ll` 交给 Bisheng：
 
