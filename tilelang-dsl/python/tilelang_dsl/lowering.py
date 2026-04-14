@@ -37,6 +37,7 @@ from .semantic import (
     SemanticLowLevelCopyStmt,
     SemanticMaskType,
     SemanticMetaType,
+    SemanticPadValueType,
     SemanticPipeBarrierStmt,
     SemanticPredicateStoreStmt,
     SemanticPtrType,
@@ -70,7 +71,9 @@ from .semantic import (
 )
 from .types import (
     MaskPattern,
+    PadValue,
     ScalarType,
+    TileConfig,
     bytewidth,
     get_lanes,
     integer_bitwidth,
@@ -586,7 +589,7 @@ class _AuthoringRenderer:
                 return self._render_tuple_expr_assign(stmt, env, indent=indent)
             return self._render_multi_result_assign(stmt, env, indent=indent)
         target = stmt.targets[0]
-        if isinstance(target.type, SemanticMetaType):
+        if isinstance(target.type, (SemanticMetaType, SemanticPadValueType)):
             env[target.name] = _RenderedValue(name=target.ssa_name, type=target.type)
             return []
         lines: list[str] = []
@@ -3525,11 +3528,13 @@ class _AuthoringRenderer:
         valid_shape = ty.valid_shape or ty.shape
         v_row = valid_shape[0]
         v_col = 1 if ty.rank == 1 else valid_shape[1]
+        config = ty.config or TileConfig()
         return (
             f"!pto.tile_buf<loc={self._render_tile_buf_loc(ty.memory_space or 'ub')}, "
             f"dtype={ty.element_dtype.name}, rows={rows}, cols={cols}, "
             f"v_row={self._render_tile_buf_dim(v_row)}, v_col={self._render_tile_buf_dim(v_col)}, "
-            "blayout=row_major, slayout=none_box, fractal=512, pad=0>"
+            f"blayout={config.b_layout.value}, slayout={config.s_layout.value}, "
+            f"fractal={config.s_fractal_size}, pad={self._render_tile_buf_pad_value(config.pad_value)}>"
         )
 
     def _render_tile_buf_loc(self, memory_space: str) -> str:
@@ -3541,6 +3546,13 @@ class _AuthoringRenderer:
 
     def _render_tile_buf_dim(self, dim: int | None) -> str:
         return "?" if dim is None else str(dim)
+
+    def _render_tile_buf_pad_value(self, pad_value: PadValue) -> str:
+        if pad_value.is_custom:
+            raise NotImplementedError(
+                "custom TileConfig.pad_value MLIR type rendering requires PTO tile_buf parser support for custom pad encodings"
+            )
+        return str(pad_value.encoded)
 
     def _dtype_byte_width(self, dtype: ScalarType) -> int:
         try:

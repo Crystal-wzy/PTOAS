@@ -127,7 +127,10 @@ _MEMORY_SPACE_SYMBOLS = {memory_space.name: memory_space for memory_space in Mem
 _PAD_MODE_SYMBOLS = {pad_mode.name: pad_mode for pad_mode in PadMode}
 _B_LAYOUT_SYMBOLS = {layout.name: layout for layout in BLayout}
 _S_LAYOUT_SYMBOLS = {layout.name: layout for layout in SLayout}
-_PAD_VALUE_SYMBOLS = {pad_value.name: pad_value for pad_value in PadValue}
+_PAD_VALUE_SYMBOLS = {
+    pad_value.name: pad_value
+    for pad_value in (PadValue.NULL, PadValue.ZERO, PadValue.MAX, PadValue.MIN)
+}
 _DEINTERLEAVE_DIST_SYMBOLS = dict(DeinterleaveDist.__members__)
 _INTERLEAVE_DIST_SYMBOLS = dict(InterleaveDist.__members__)
 _POSITION_MODE_SYMBOLS = {position_mode.name: position_mode for position_mode in PositionMode}
@@ -267,7 +270,7 @@ class SemanticTileType(SemanticType):
 
 @dataclass(frozen=True)
 class SemanticTileConfigType(SemanticType):
-    pass
+    element_dtype: ScalarType | None = None
 
 
 @dataclass(frozen=True)
@@ -304,6 +307,11 @@ class SemanticTupleType(SemanticType):
 @dataclass(frozen=True)
 class SemanticMetaType(SemanticType):
     kind: str
+
+
+@dataclass(frozen=True)
+class SemanticPadValueType(SemanticType):
+    element_dtype: ScalarType | None = None
 
 
 @dataclass(frozen=True)
@@ -364,7 +372,7 @@ class SemanticSymbolExpr(SemanticExpr):
     namespace: str
     name: str
     value: Any
-    type: SemanticMetaType
+    type: SemanticType
 
 
 @dataclass(frozen=True)
@@ -2792,6 +2800,10 @@ class _SemanticAnalyzer:
                 return self._attach_expr_source_location(self._rank_expr(base), expr)
             if expr.attr == "memory_space":
                 return self._attach_expr_source_location(self._memory_space_expr(base), expr)
+            if expr.attr == "pad_value" and isinstance(base.type, SemanticTileType):
+                return self._attach_expr_source_location(self._tile_pad_value_expr(base), expr)
+            if expr.attr == "value" and isinstance(base.type, SemanticPadValueType):
+                return self._attach_expr_source_location(self._pad_value_value_expr(base), expr)
             if expr.attr == "config":
                 return self._attach_expr_source_location(self._tile_config_expr(base), expr)
             if expr.attr == "valid_shape":
@@ -3020,7 +3032,7 @@ class _SemanticAnalyzer:
                     namespace=expr.namespace,
                     name=expr.name,
                     value=pad_value,
-                    type=SemanticMetaType(kind="pad_value"),
+                    type=SemanticPadValueType(),
                 )
         if expr.namespace in {"DeinterleaveDist", "pto.DeinterleaveDist"}:
             dist = _DEINTERLEAVE_DIST_SYMBOLS.get(expr.name)
@@ -3151,9 +3163,43 @@ class _SemanticAnalyzer:
         if isinstance(base_type, SemanticTileType):
             return SemanticLiteralExpr(
                 value=base_type.config or TileConfig(),
-                type=SemanticTileConfigType(),
+                type=SemanticTileConfigType(element_dtype=base_type.element_dtype),
             )
         raise TypeError("unsupported attribute access 'config' in TileLang DSL v1")
+
+    def _tile_pad_value_expr(self, base: SemanticExpr) -> SemanticExpr:
+        base_type = base.type
+        if not isinstance(base_type, SemanticTileType):
+            raise TypeError("unsupported attribute access 'pad_value' in TileLang DSL v1")
+        config = base_type.config or TileConfig()
+        return SemanticSymbolExpr(
+            namespace="pto",
+            name=config.pad_value.name,
+            value=config.pad_value,
+            type=SemanticPadValueType(element_dtype=base_type.element_dtype),
+        )
+
+    def _pad_value_value_expr(self, base: SemanticExpr) -> SemanticExpr:
+        if not isinstance(base.type, SemanticPadValueType):
+            raise TypeError("unsupported attribute access 'value' in TileLang DSL v1")
+        if base.type.element_dtype is None:
+            raise TypeError(
+                "PadValue.value requires a Tile-bound or TileConfig-bound pad descriptor with an owning "
+                "Tile element dtype in TileLang DSL v1"
+            )
+        pad_value = self._try_static_value(base)
+        if not isinstance(pad_value, PadValue):
+            raise TypeError("PadValue.value expects a statically known PadValue enum in TileLang DSL v1")
+        pad_scalar = pad_value.materialize_scalar(base.type.element_dtype)
+        if pad_scalar is None:
+            raise TypeError(
+                "PadValue.NULL.value is invalid in TileLang DSL v1; "
+                "guard it with `pto.constexpr(tile.pad_value != pto.PadValue.NULL)` before reading `.value`"
+            )
+        return SemanticLiteralExpr(
+            value=pad_scalar,
+            type=SemanticScalarType(dtype=base.type.element_dtype),
+        )
 
     def _tile_config_attr_expr(self, base: SemanticExpr, attr: str) -> SemanticExpr:
         config = self._try_static_value(base)
@@ -3179,11 +3225,15 @@ class _SemanticAnalyzer:
                 type=SemanticScalarType(dtype=i32),
             )
         if attr == "pad_value":
+            if not isinstance(base.type, SemanticTileConfigType):
+                raise TypeError(
+                    "TileConfig.pad_value expects a TileConfig value in TileLang DSL v1"
+                )
             return SemanticSymbolExpr(
                 namespace="pto",
                 name=config.pad_value.name,
                 value=config.pad_value,
-                type=SemanticMetaType(kind="pad_value"),
+                type=SemanticPadValueType(element_dtype=base.type.element_dtype),
             )
         raise TypeError(f"unsupported TileConfig attribute access '{attr}' in TileLang DSL v1")
 
@@ -3427,6 +3477,8 @@ class _SemanticAnalyzer:
             if isinstance(lhs.type, SemanticIndexType) and isinstance(rhs.type, SemanticIndexType):
                 return SemanticScalarType(dtype=i1)
             if isinstance(lhs.type, SemanticScalarType) and lhs.type == rhs.type:
+                return SemanticScalarType(dtype=i1)
+            if isinstance(lhs.type, SemanticPadValueType) and isinstance(rhs.type, SemanticPadValueType):
                 return SemanticScalarType(dtype=i1)
             if isinstance(lhs.type, SemanticMetaType) and lhs.type == rhs.type:
                 return SemanticScalarType(dtype=i1)
@@ -5242,6 +5294,7 @@ __all__ = [
     "SemanticLiteralExpr",
     "SemanticMemBarStmt",
     "SemanticMaskType",
+    "SemanticPadValueType",
     "SemanticParameter",
     "SemanticPipeBarrierStmt",
     "SemanticPredicateStoreStmt",

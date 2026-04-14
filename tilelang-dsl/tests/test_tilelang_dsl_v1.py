@@ -44,6 +44,7 @@ from tilelang_dsl.semantic import (
     SemanticMemBarStmt,
     SemanticLowLevelCopyStmt,
     SemanticMaskType,
+    SemanticPadValueType,
     SemanticPipeBarrierStmt,
     SemanticPtrType,
     SemanticPredicateStoreStmt,
@@ -123,7 +124,11 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.PadMode.PadValue.value, "PadValue")
         self.assertEqual(pto.BLayout.ROW_MAJOR.value, "row_major")
         self.assertEqual(pto.SLayout.NONE_BOX.value, "none_box")
-        self.assertEqual(pto.PadValue.NULL.value, "null")
+        self.assertEqual(pto.PadValue.NULL.value, 0)
+        self.assertEqual(pto.PadValue.ZERO.value, 1)
+        self.assertEqual(pto.PadValue.MAX.value, 2)
+        self.assertEqual(pto.PadValue.MIN.value, 3)
+        self.assertEqual(pto.PadValue.NULL.text, "null")
         self.assertEqual(pto.DeinterleaveDist.DINTLV.value, "DINTLV")
         self.assertEqual(pto.DeinterleaveDist.BDINTLV.value, "BDINTLV")
         self.assertEqual(pto.InterleaveDist.INTLV.value, "INTLV")
@@ -169,6 +174,19 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(config.s_layout, pto.SLayout.ROW_MAJOR)
         self.assertEqual(config.s_fractal_size, 16)
         self.assertEqual(config.pad_value, pto.PadValue.MAX)
+
+    def test_pad_value_supports_standard_and_custom_payloads(self) -> None:
+        custom = pto.PadValue.custom_f32(-1.0)
+        self.assertTrue(custom.is_custom)
+        self.assertEqual(custom.float32_bits, 0xBF800000)
+        self.assertEqual(custom.value, pto.PadValue.CustomBase | (0xBF800000 << 32))
+        self.assertAlmostEqual(custom.as_float32(), -1.0)
+        self.assertAlmostEqual(custom.materialize_scalar(pto.f32), -1.0)
+        self.assertEqual(pto.PadValue.MAX.materialize_scalar(pto.ui16), 0xFFFF)
+        self.assertEqual(pto.PadValue.MIN.materialize_scalar(pto.ui16), 0)
+        self.assertEqual(pto.PadValue.MAX.materialize_scalar(pto.i16), 0x7FFF)
+        self.assertEqual(pto.PadValue.MIN.materialize_scalar(pto.i16), -0x8000)
+        self.assertIsNone(pto.PadValue.NULL.materialize_scalar(pto.f16))
 
 
 class TileLangDSLSupportMatrixTests(unittest.TestCase):
@@ -990,7 +1008,12 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             tile=pto.TileSpecialization(
                 shape=(16, 32),
                 memory_space=pto.MemorySpace.UB,
-                config=pto.TileConfig.from_mapping({"layout": "row_major"}),
+                config=pto.TileConfig.from_mapping(
+                    {
+                        "layout": "row_major",
+                        "pad_value": pto.PadValue.ZERO,
+                    }
+                ),
             )
         )
 
@@ -1000,7 +1023,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("// tilelang.specialize tile shape=(16, 32) memory_space=ub", text)
         self.assertIn('module attributes {pto.target_arch = "a5"} {', text)
         self.assertIn(
-            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) attributes { pto.tilelang.instance } {",
+            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=1>) attributes { pto.tilelang.instance } {",
             text,
         )
         module = specialized.mlir_module()
@@ -1693,6 +1716,9 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             secondary = config.s_layout
             fractal = config.s_fractal_size
             pad = config.pad_value
+            pad_direct = tile.pad_value
+            pad_scalar = pad.value
+            pad_direct_scalar = pad_direct.value
             rank = tile.rank
             space = tile.memory_space
             return None
@@ -1713,8 +1739,19 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         )
 
         semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
-        config_assign, layout_assign, secondary_assign, fractal_assign, pad_assign, rank_assign, space_assign = (
-            semantic_kernel.body[:7]
+        (
+            config_assign,
+            layout_assign,
+            secondary_assign,
+            fractal_assign,
+            pad_assign,
+            pad_direct_assign,
+            pad_scalar_assign,
+            pad_direct_scalar_assign,
+            rank_assign,
+            space_assign,
+        ) = (
+            semantic_kernel.body[:10]
         )
 
         self.assertIsInstance(config_assign, SemanticAssignStmt)
@@ -1738,7 +1775,23 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         self.assertIsInstance(pad_assign.value, SemanticSymbolExpr)
         self.assertEqual(pad_assign.value.value, pto.PadValue.ZERO)
-        self.assertEqual(pad_assign.value.type.kind, "pad_value")
+        self.assertIsInstance(pad_assign.targets[0].type, SemanticPadValueType)
+        self.assertEqual(pad_assign.targets[0].type.element_dtype, pto.f16)
+
+        self.assertIsInstance(pad_direct_assign.value, SemanticSymbolExpr)
+        self.assertEqual(pad_direct_assign.value.value, pto.PadValue.ZERO)
+        self.assertIsInstance(pad_direct_assign.targets[0].type, SemanticPadValueType)
+        self.assertEqual(pad_direct_assign.targets[0].type.element_dtype, pto.f16)
+
+        self.assertIsInstance(pad_scalar_assign.value, SemanticLiteralExpr)
+        self.assertEqual(pad_scalar_assign.value.value, 0.0)
+        self.assertIsInstance(pad_scalar_assign.targets[0].type, SemanticScalarType)
+        self.assertEqual(pad_scalar_assign.targets[0].type.dtype, pto.f16)
+
+        self.assertIsInstance(pad_direct_scalar_assign.value, SemanticLiteralExpr)
+        self.assertEqual(pad_direct_scalar_assign.value.value, 0.0)
+        self.assertIsInstance(pad_direct_scalar_assign.targets[0].type, SemanticScalarType)
+        self.assertEqual(pad_direct_scalar_assign.targets[0].type.dtype, pto.f16)
 
         self.assertEqual(rank_assign.value.value, 2)
         self.assertIsInstance(rank_assign.targets[0].type, SemanticIndexType)
@@ -1746,6 +1799,24 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIsInstance(space_assign.value, SemanticSymbolExpr)
         self.assertEqual(space_assign.value.value, pto.MemorySpace.UB)
         self.assertEqual(space_assign.value.type.kind, "memory_space")
+
+    def test_pad_value_value_requires_non_null_enum(self) -> None:
+        @pto.vkernel(op="tile_pad_value_null_value", dtypes=[(pto.f16,)])
+        def kernel(tile: pto.Tile):
+            scalar = tile.pad_value.value
+            return None
+
+        specialized = kernel.specialize(
+            tile=pto.TileSpecialization(
+                shape=(8, 16),
+                memory_space=pto.MemorySpace.UB,
+            )
+        )
+
+        with self.assertRaises(TypeError) as ctx:
+            analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+
+        self.assertIn("PadValue.NULL.value is invalid", str(ctx.exception))
 
 
     def test_make_mask_vlds_vsts_and_vector_families_lower_inside_strict_vecscope(self) -> None:

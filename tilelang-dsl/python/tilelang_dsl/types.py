@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import struct
 from typing import Any, Mapping
 
 
@@ -205,11 +206,180 @@ class SLayout(str, Enum):
     COL_MAJOR = "col_major"
 
 
-class PadValue(str, Enum):
-    NULL = "null"
-    ZERO = "zero"
-    MAX = "max"
-    MIN = "min"
+def _float32_from_bits(bits: int) -> float:
+    return struct.unpack(">f", bits.to_bytes(4, byteorder="big", signed=False))[0]
+
+
+_FLOAT_DTYPE_MAX = {
+    "f16": 65504.0,
+    "bf16": _float32_from_bits(0x7F7F0000),
+    "f32": _float32_from_bits(0x7F7FFFFF),
+}
+_FLOAT_DTYPE_MIN = {
+    "f16": -65504.0,
+    "bf16": _float32_from_bits(0xFF7F0000),
+    "f32": _float32_from_bits(0xFF7FFFFF),
+}
+
+
+@dataclass(frozen=True)
+class PadValue:
+    """Tile pad descriptor matching the C++ PadValue design.
+
+    Standard values occupy the low integer range:
+    - NULL = 0
+    - ZERO = 1
+    - MAX = 2
+    - MIN = 3
+
+    Custom values use the C++ `CustomBase` convention and carry an f32 bit
+    pattern authored through `custom_f32(...)`.
+    """
+
+    encoded: int
+    _symbol_name: str | None = None
+    _float32_bits: int | None = None
+
+    CustomBase = 0x100000000
+    _STANDARD_TEXT = {
+        0: "null",
+        1: "zero",
+        2: "max",
+        3: "min",
+    }
+
+    def __post_init__(self) -> None:
+        if isinstance(self.encoded, bool) or not isinstance(self.encoded, int):
+            raise TypeError("PadValue.encoded must be a uint64-compatible integer")
+        if self.encoded < 0 or self.encoded >= (1 << 64):
+            raise ValueError("PadValue.encoded must be in uint64 range")
+        if self._float32_bits is not None and not (0 <= self._float32_bits < (1 << 32)):
+            raise ValueError("PadValue custom float32 payload must be a 32-bit integer")
+
+    @property
+    def name(self) -> str:
+        if self._symbol_name is not None:
+            return self._symbol_name
+        return "CUSTOM"
+
+    @property
+    def value(self) -> int:
+        return self.encoded
+
+    @property
+    def text(self) -> str:
+        standard = self._STANDARD_TEXT.get(self.encoded)
+        if standard is not None:
+            return standard
+        return f"0x{self.encoded:016X}"
+
+    @property
+    def is_custom(self) -> bool:
+        return self._symbol_name is None and self.encoded >= self.CustomBase
+
+    @property
+    def float32_bits(self) -> int:
+        if not self.is_custom:
+            raise ValueError("only custom PadValue instances carry a float32 payload")
+        if self._float32_bits is not None:
+            return self._float32_bits
+        return (self.encoded >> 32) & 0xFFFFFFFF
+
+    def as_float32(self) -> float:
+        return _float32_from_bits(self.float32_bits)
+
+    def materialize_scalar(self, dtype: ScalarType) -> int | float | None:
+        if not isinstance(dtype, ScalarType):
+            raise TypeError("PadValue.materialize_scalar expects a TileLang scalar dtype")
+        if self == PadValue.NULL:
+            return None
+        if self == PadValue.ZERO:
+            return 0.0 if is_float_dtype(dtype) else 0
+        if self == PadValue.MAX:
+            if is_float_dtype(dtype):
+                return _FLOAT_DTYPE_MAX[dtype.name]
+            width = integer_bitwidth(dtype)
+            signedness = integer_signedness(dtype)
+            if width is None or signedness is None:
+                raise TypeError(f"PadValue.MAX does not support dtype `{dtype.name}`")
+            if signedness == "unsigned":
+                return (1 << width) - 1
+            return (1 << (width - 1)) - 1
+        if self == PadValue.MIN:
+            if is_float_dtype(dtype):
+                return _FLOAT_DTYPE_MIN[dtype.name]
+            width = integer_bitwidth(dtype)
+            signedness = integer_signedness(dtype)
+            if width is None or signedness is None:
+                raise TypeError(f"PadValue.MIN does not support dtype `{dtype.name}`")
+            if signedness == "unsigned":
+                return 0
+            return -(1 << (width - 1))
+        if self.is_custom:
+            if not is_float_dtype(dtype):
+                raise TypeError(
+                    "custom Tile pad_value currently only materializes for floating Tile element dtypes"
+                )
+            return self.as_float32()
+        raise TypeError(f"unsupported PadValue payload {self!r}")
+
+    @classmethod
+    def from_uint64(cls, value: int) -> "PadValue":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError("PadValue.from_uint64 expects an integer")
+        if value == 0:
+            return cls.NULL
+        if value == 1:
+            return cls.ZERO
+        if value == 2:
+            return cls.MAX
+        if value == 3:
+            return cls.MIN
+        if value < 0 or value >= (1 << 64):
+            raise ValueError("PadValue.from_uint64 expects a uint64-compatible integer")
+        return cls(value)
+
+    @classmethod
+    def custom_f32(cls, value: float | str | int) -> "PadValue":
+        bits = cls._normalize_custom_f32_bits(value)
+        encoded = cls.CustomBase | (bits << 32)
+        return cls(encoded=encoded, _float32_bits=bits)
+
+    @staticmethod
+    def _normalize_custom_f32_bits(value: float | str | int) -> int:
+        if isinstance(value, bool):
+            raise TypeError("PadValue.custom_f32 does not accept bool")
+        if isinstance(value, int):
+            if value < 0 or value >= (1 << 32):
+                raise ValueError("PadValue.custom_f32 integer payload must fit in 32 bits")
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if text.lower().startswith("0x"):
+                bits = int(text, 16)
+                if bits < 0 or bits >= (1 << 32):
+                    raise ValueError("PadValue.custom_f32 hex payload must fit in 32 bits")
+                return bits
+            value = float(text)
+        packed = struct.pack(">f", float(value))
+        return int.from_bytes(packed, byteorder="big", signed=False)
+
+    def __repr__(self) -> str:
+        if self == PadValue.NULL:
+            return "PadValue.NULL"
+        if self == PadValue.ZERO:
+            return "PadValue.ZERO"
+        if self == PadValue.MAX:
+            return "PadValue.MAX"
+        if self == PadValue.MIN:
+            return "PadValue.MIN"
+        return f"PadValue.custom_f32(0x{self.float32_bits:08X})"
+
+
+PadValue.NULL = PadValue(0, "NULL")
+PadValue.ZERO = PadValue(1, "ZERO")
+PadValue.MAX = PadValue(2, "MAX")
+PadValue.MIN = PadValue(3, "MIN")
 
 
 class DeinterleaveDist(str, Enum):
@@ -338,7 +508,12 @@ class TileConfig:
     def _normalize_pad_value(value: Any) -> PadValue:
         if isinstance(value, PadValue):
             return value
+        if isinstance(value, int) and not isinstance(value, bool):
+            return PadValue.from_uint64(value)
         if isinstance(value, str):
+            text = value.strip()
+            if text.lower().startswith("0x"):
+                return PadValue.from_uint64(int(text, 16))
             normalized = value.strip().upper().replace("-", "_")
             if normalized == "NULL":
                 return PadValue.NULL

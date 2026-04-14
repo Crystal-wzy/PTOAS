@@ -275,6 +275,33 @@ Important notes on shape and valid shape:
 | `valid_shape` | `tuple[int, ...]` | Actual data dimensions within the tile. Must be less than or equal to `shape` in each dimension |
 | `config` | `TileConfig` | Layout and padding configuration |
 
+#### Tile Pad Values
+
+`TileConfig.pad_value` is modeled after the C++ `PadValue : uint64_t` design.
+
+Standard pad values use small integer encodings:
+
+| DSL Value | Encoded Value | Meaning |
+|-----------|---------------|---------|
+| `pto.PadValue.NULL` | `0` | No concrete fill value |
+| `pto.PadValue.ZERO` | `1` | Zero fill |
+| `pto.PadValue.MAX` | `2` | Maximum finite / integer max for the tile element dtype |
+| `pto.PadValue.MIN` | `3` | Minimum finite / integer min for the tile element dtype |
+
+Custom pad values use the `CustomBase = 0x100000000` convention and are authored with `pto.PadValue.custom_f32(...)`:
+
+```python
+pad0 = pto.PadValue.ZERO
+pad1 = pto.PadValue.custom_f32(-1.0)
+pad2 = pto.PadValue.custom_f32("0xBF800000")  # float32 bit pattern for -1.0f
+```
+
+Notes:
+- `PadValue.value` on the host-side descriptor still exposes the encoded integer payload.
+- `PadValue.text` exposes the standard textual spelling for built-ins such as `null` and `zero`.
+- Custom pad values currently model an `f32` payload. In DSL v1, materializing a custom pad into a scalar is only supported for floating tile element dtypes.
+- `PadValue.NULL` does not denote a usable scalar fill constant. Reading `tile.pad_value.value` or `tile.config.pad_value.value` when the enum is `NULL` is a frontend error.
+
 #### Tile Shape Concepts
 
 - `shape` is the static physical allocation size of the tile buffer.
@@ -296,11 +323,45 @@ config = tile.config
 b_layout = config.b_layout            # pto.BLayout.ROW_MAJOR
 s_layout = config.s_layout            # pto.SLayout.NONE_BOX
 s_fractal = config.s_fractal_size     # pto.i32(512)
-pad = config.pad_value                # pto.PadValue.NULL
+pad_desc = tile.config.pad_value      # PadValue enum bound to the tile element dtype
+pad_desc2 = tile.pad_value            # direct sugar for the same PadValue enum
 
 # Dynamic properties
 rank = tile.rank                      # 2
 ```
+
+`tile.config.pad_value` and `tile.pad_value` are enum-typed inside kernel code. Use `.value` to materialize the configured pad descriptor against the tile element dtype:
+
+- `tile.pad_value.value` with `PadValue.ZERO` becomes `0` / `0.0`
+- `tile.pad_value.value` with `PadValue.MAX` becomes dtype-aware max
+- `tile.pad_value.value` with `PadValue.MIN` becomes dtype-aware min
+- `tile.pad_value.value` with `PadValue.custom_f32(...)` becomes the authored floating scalar
+- `tile.pad_value.value` with `PadValue.NULL` raises a frontend error
+
+Example: reading pad value from a `Tile`
+
+```python
+@pto.vkernel(op="fill_pad_demo", dtypes=[(pto.f16,)])
+def kernel(dst: pto.Tile):
+    mask, _ = pto.make_mask(pto.f16, 8)
+
+    # Read the Tile-bound PadValue enum.
+    pad0 = dst.pad_value
+
+    # Equivalent form through TileConfig metadata.
+    pad1 = dst.config.pad_value
+
+    if pto.constexpr(pad0 != pto.PadValue.NULL):
+        scalar0 = pad0.value
+        scalar1 = pad1.value
+        vec0 = pto.vdup(scalar0, mask)
+        vec1 = pto.vdup(scalar1, mask)
+        pto.vsts(vec0, dst[0, 0:], mask)
+        pto.vsts(vec1, dst[1, 0:], mask)
+```
+
+If `dst` is specialized with `config=pto.TileConfig.from_mapping({"pad_value": pto.PadValue.ZERO})`,
+both `pad0` and `pad1` are `PadValue.ZERO`, and `pad0.value` / `pad1.value` materialize to the scalar `0.0` for an `f16` tile.
 
 #### Conversion Operations
 
