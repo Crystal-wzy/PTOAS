@@ -2,45 +2,56 @@
 
 import tilelang_dsl as pto
 
+def _match_store_tile_layout(src, *, row_major: bool, s_layout) -> bool:
+    b_layout_ok = (
+        src.config.b_layout == pto.BLayout.ROW_MAJOR
+        if row_major
+        else src.config.b_layout != pto.BLayout.ROW_MAJOR
+    )
+    return b_layout_ok and src.config.s_layout == s_layout
+
+
+def _check_store_bounds(src, dst, *, logical_rows, logical_cols, stride_axis=None) -> bool:
+    if dst.rank != 5:
+        return False
+    if stride_axis is not None and dst.strides[stride_axis] != 1:
+        return False
+    if src.valid_shape[0] != logical_rows:
+        return False
+    if src.valid_shape[1] != logical_cols:
+        return False
+    if src.valid_shape[0] > src.shape[0]:
+        return False
+    if src.valid_shape[1] > src.shape[1]:
+        return False
+    return True
+
+
 def _tstore_preconditions_nd(src, dst) -> bool:
     logical_rows = dst.shape[0] * dst.shape[1] * dst.shape[2] * dst.shape[3]
     logical_cols = dst.shape[4]
-    return (
-        src.config.b_layout == pto.BLayout.ROW_MAJOR
-        and src.config.s_layout == pto.SLayout.NONE_BOX
-        and src.rank == 5
-        and dst.strides[4] == 1
-        and src.valid_shape[0] == logical_rows
-        and src.valid_shape[1] == logical_cols
-        and src.valid_shape[0] <= src.shape[0]
-        and src.valid_shape[1] <= src.shape[1]
+    return _match_store_tile_layout(
+        src, row_major=True, s_layout=pto.SLayout.NONE_BOX
+    ) and _check_store_bounds(
+        src, dst, logical_rows=logical_rows, logical_cols=logical_cols, stride_axis=4
     )
-
+    
 def _tstore_preconditions_dn(src, dst) -> bool:
     logical_rows = dst.shape[3]
     logical_cols = dst.shape[0] * dst.shape[1] * dst.shape[2] * dst.shape[4]
-    return (
-        src.config.b_layout != pto.BLayout.ROW_MAJOR
-        and src.config.s_layout == pto.SLayout.NONE_BOX
-        and src.rank == 5
-        and dst.strides[3] == 1
-        and src.valid_shape[0] == logical_rows
-        and src.valid_shape[1] == logical_cols
-        and src.valid_shape[0] <= src.shape[0]
-        and src.valid_shape[1] <= src.shape[1]
+    return _match_store_tile_layout(
+        src, row_major=False, s_layout=pto.SLayout.NONE_BOX
+    ) and _check_store_bounds(
+        src, dst, logical_rows=logical_rows, logical_cols=logical_cols, stride_axis=3
     )
 
 def _tstore_preconditions_nz(src, dst) -> bool:
     logical_rows = dst.shape[2] * dst.shape[3]
     logical_cols = dst.shape[0] * dst.shape[1] * dst.shape[4]
-    return (
-        src.config.b_layout != pto.BLayout.ROW_MAJOR
-        and src.config.s_layout == pto.SLayout.ROW_MAJOR
-        and src.rank == 5
-        and src.valid_shape[0] == logical_rows
-        and src.valid_shape[1] == logical_cols
-        and src.valid_shape[0] <= src.shape[0]
-        and src.valid_shape[1] <= src.shape[1]
+    return _match_store_tile_layout(
+        src, row_major=False, s_layout=pto.SLayout.ROW_MAJOR
+    ) and _check_store_bounds(
+        src, dst, logical_rows=logical_rows, logical_cols=logical_cols
     )
 
 @pto.vkernel(
@@ -49,7 +60,7 @@ def _tstore_preconditions_nz(src, dst) -> bool:
     advanced=True,
     constraints=[_tstore_preconditions_nd],
 )
-def template_tstore_nd(src: pto.Tile, dst: pto.TensorView):
+def template_tstore_nd(src: pto.Tile, dst: pto.PartitionTensorView):
     dtype = src.element_type
     elem_bytes = pto.bytewidth(dtype)
 
@@ -112,7 +123,7 @@ def template_tstore_nd(src: pto.Tile, dst: pto.TensorView):
     advanced=True,
     constraints=[_tstore_preconditions_dn],
 )
-def template_tstore_dn(src: pto.Tile, dst: pto.TensorView):
+def template_tstore_dn(src: pto.Tile, dst: pto.PartitionTensorView):
     dtype = src.element_type
     elem_bytes = pto.bytewidth(dtype)
 
@@ -174,7 +185,7 @@ def template_tstore_dn(src: pto.Tile, dst: pto.TensorView):
     advanced=True,
     constraints=[_tstore_preconditions_nz],
 )
-def template_tstore_nz(src: pto.Tile, dst: pto.TensorView):
+def template_tstore_nz(src: pto.Tile, dst: pto.PartitionTensorView):
     dtype = src.element_type
     elem_bytes = pto.bytewidth(dtype)
 

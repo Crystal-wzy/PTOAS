@@ -2,49 +2,57 @@
 
 import tilelang_dsl as pto
 
+def _match_tile_layout(dst, *, row_major: bool, s_layout) -> bool:
+    b_layout_ok = (
+        dst.config.b_layout == pto.BLayout.ROW_MAJOR
+        if row_major
+        else dst.config.b_layout != pto.BLayout.ROW_MAJOR
+    )
+    return b_layout_ok and dst.config.s_layout == s_layout
+
+
+def _check_load_bounds(src, dst, *, logical_rows, logical_cols=None, stride_axis=None) -> bool:
+    if src.rank != 5:
+        return False
+    if stride_axis is not None and src.strides[stride_axis] != 1:
+        return False
+    if dst.valid_shape[0] > logical_rows or logical_rows > dst.shape[0]:
+        return False
+    if dst.valid_shape[0] > dst.shape[0]:
+        return False
+    if logical_cols is not None:
+        if dst.valid_shape[1] > logical_cols or logical_cols > dst.shape[1]:
+            return False
+    if dst.valid_shape[1] > dst.shape[1]:
+        return False
+    return True
+
+
 def _tload_preconditions_nd2nd(src, dst) -> bool:
     logical_rows = src.shape[0] * src.shape[1] * src.shape[2] * src.shape[3]
-    logical_cols = src.shape[4]    
-    return (    
-        dst.config.b_layout == pto.BLayout.ROW_MAJOR
-        and dst.config.s_layout == pto.SLayout.NONE_BOX
-        and src.rank == 5
-        and src.strides[4] == 1
-        and dst.valid_shape[0] <= logical_rows
-        and dst.valid_shape[1] <= logical_cols
-        and logical_rows <= dst.shape[0]
-        and logical_cols <= dst.shape[1]
-        and dst.valid_shape[0] <= dst.shape[0]
-        and dst.valid_shape[1] <= dst.shape[1]
+    logical_cols = src.shape[4]
+    return _match_tile_layout(
+        dst, row_major=True, s_layout=pto.SLayout.NONE_BOX
+    ) and _check_load_bounds(
+        src, dst, logical_rows=logical_rows, logical_cols=logical_cols, stride_axis=4
     )
 
 
 def _tload_preconditions_dn2dn(src, dst) -> bool:
     logical_rows = src.shape[3]
     logical_cols = src.shape[0] * src.shape[1] * src.shape[2] * src.shape[4]
-    return (
-        dst.config.b_layout != pto.BLayout.ROW_MAJOR
-        and dst.config.s_layout == pto.SLayout.NONE_BOX
-        and src.rank == 5
-        and src.strides[3] == 1
-        and dst.valid_shape[0] <= logical_rows
-        and dst.valid_shape[1] <= logical_cols
-        and logical_rows <= dst.shape[0]
-        and logical_cols <= dst.shape[1]
-        and dst.valid_shape[0] <= dst.shape[0]
-        and dst.valid_shape[1] <= dst.shape[1]
+    return _match_tile_layout(
+        dst, row_major=False, s_layout=pto.SLayout.NONE_BOX
+    ) and _check_load_bounds(
+        src, dst, logical_rows=logical_rows, logical_cols=logical_cols, stride_axis=3
     )
 
 def _tload_preconditions_nz2nz(src, dst) -> bool:
     logical_rows = src.shape[2]
-    return (
-        dst.config.b_layout != pto.BLayout.ROW_MAJOR
-        and dst.config.s_layout == pto.SLayout.ROW_MAJOR
-        and src.rank == 5
-        and dst.valid_shape[0] <= logical_rows
-        and logical_rows <= dst.shape[0]
-        and dst.valid_shape[1] <= dst.shape[1]
-        and dst.valid_shape[0] <= dst.shape[0]
+    return _match_tile_layout(
+        dst, row_major=False, s_layout=pto.SLayout.ROW_MAJOR
+    ) and _check_load_bounds(
+        src, dst, logical_rows=logical_rows
     )
 
 
@@ -54,9 +62,8 @@ def _tload_preconditions_nz2nz(src, dst) -> bool:
     advanced=True,
     constraints=[_tload_preconditions_nd2nd],
 )
-def template_tload_nd2nd(src: pto.TensorView, dst: pto.Tile):
+def template_tload_nd2nd(src: pto.PartitionTensorView, dst: pto.Tile):
     dtype = dst.element_type
-    b_layout = dst.config.b_layout
     elem_bytes = pto.bytewidth(dtype)
 
     g0, g1, g2, g3, g4 = src.shape
@@ -119,7 +126,7 @@ def template_tload_nd2nd(src: pto.TensorView, dst: pto.Tile):
     advanced=True,
     constraints=[_tload_preconditions_dn2dn],
 )
-def template_tload_dn2dn(src: pto.TensorView, dst: pto.Tile):
+def template_tload_dn2dn(src: pto.PartitionTensorView, dst: pto.Tile):
     dtype = dst.element_type
     elem_bytes = pto.bytewidth(dtype)
 
@@ -184,9 +191,14 @@ def template_tload_dn2dn(src: pto.TensorView, dst: pto.Tile):
     advanced=True,
     constraints=[_tload_preconditions_nz2nz],
 )
-def template_tload_nz2nz(src: pto.TensorView, dst: pto.Tile):
+def template_tload_nz2nz(src: pto.PartitionTensorView, dst: pto.Tile):
     dtype = dst.element_type
     elem_bytes = pto.bytewidth(dtype)
+
+    # set padding value for ub tile if needed
+    # enable_ub_pad = dst.config.pad_value is not pto.PadValue.NULL
+    # if enable_ub_pad:        
+        # pto.set_mov_pad_val(pad_value=dst.config.pad_value.eval())
 
     # rank-5 partition view 元信息。NZ 静态分块约束（g3/g4 与 dtype 的关系）
     # 由更高层 schema/static-check 保证，这里只保留运行时搬运公式。
