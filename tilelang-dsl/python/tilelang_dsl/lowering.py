@@ -2724,8 +2724,6 @@ class _AuthoringRenderer:
 
         if expr.name == "vcvt":
             value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
-            target_dtype = self._render_dtype_symbol(expr.args[1], context="pto.vcvt to_type")
-            mask = self._lower_expr(expr.args[2], env, indent=indent, into=into)
             attr_parts: list[str] = []
             if self._has_optional_string_literal(expr.args[3]):
                 attr_parts.append(f"rnd = {self._render_string_literal(expr.args[3])}")
@@ -2736,8 +2734,8 @@ class _AuthoringRenderer:
             attr_suffix = f" {{{', '.join(attr_parts)}}}" if attr_parts else ""
             into.append(
                 self._indent(indent)
-                + f"{result_name} = pto.vcvt {value.name}, {target_dtype}, {mask.name}{attr_suffix} : "
-                + f"{self._render_type(value.type)}, {self._render_type(mask.type)} -> {self._render_type(expr.type)}"
+                + f"{result_name} = pto.vcvt {value.name}{attr_suffix} : "
+                + f"{self._render_type(value.type)} -> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
@@ -3139,10 +3137,16 @@ class _AuthoringRenderer:
                 )
                 return _RenderedValue(name=cast_name, type=target_type)
             if target_type.dtype.name in {"f16", "bf16", "f32"}:
+                index_to_int_name = self._new_temp()
+                index_to_int_op = "arith.index_castui"
+                into.append(
+                    self._indent(indent)
+                    + f"{index_to_int_name} = {index_to_int_op} {value.name} : index to i64"
+                )
                 cast_name = self._new_temp()
                 into.append(
                     self._indent(indent)
-                    + f"{cast_name} = arith.uitofp {value.name} : index to {target_type.dtype.name}"
+                    + f"{cast_name} = arith.uitofp {index_to_int_name} : i64 to {target_type.dtype.name}"
                 )
                 return _RenderedValue(name=cast_name, type=target_type)
         if isinstance(value.type, SemanticScalarType) and isinstance(target_type, SemanticScalarType):

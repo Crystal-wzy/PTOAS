@@ -139,6 +139,67 @@ _VCVT_ROUND_MODE_SYMBOLS = {mode.name: mode for mode in VcvtRoundMode}
 _VCVT_SAT_MODE_SYMBOLS = {mode.name: mode for mode in VcvtSatMode}
 _VCVT_PART_MODE_SYMBOLS = {mode.name: mode for mode in VcvtPartMode}
 _POST_UPDATE_MODE_SYMBOLS = {mode.name: mode for mode in PostUpdateMode}
+_VCVT_ATTR_CONTRACTS: dict[tuple[str, str], tuple[bool, bool, bool]] = {
+    # (src_kind, dst_kind): (requires_rnd, requires_sat, requires_part)
+    ("f32", "f16"): (True, True, True),
+    ("f32", "bf16"): (True, True, True),
+    ("f32", "s16"): (True, True, True),
+    ("f32", "s64"): (True, True, True),
+    ("f32", "s32"): (True, True, False),
+    ("f16", "f32"): (False, False, True),
+    ("f16", "s32"): (False, False, True),
+    ("f16", "s16"): (True, True, False),
+    ("f16", "s8"): (True, True, True),
+    ("f16", "u8"): (True, True, True),
+    ("bf16", "f32"): (False, False, True),
+    ("bf16", "s32"): (True, True, True),
+    ("u8", "f16"): (False, False, True),
+    ("u8", "u16"): (False, False, True),
+    ("u8", "u32"): (False, False, True),
+    ("s8", "f16"): (False, False, True),
+    ("s8", "s16"): (False, False, True),
+    ("s8", "s32"): (False, False, True),
+    ("u16", "u8"): (False, True, True),
+    ("u16", "u32"): (False, False, True),
+    ("s16", "f16"): (True, False, False),
+    ("s16", "f32"): (False, False, True),
+    ("s16", "u32"): (False, False, True),
+    ("s16", "s32"): (False, False, True),
+    ("s16", "u8"): (False, True, True),
+    ("u32", "u8"): (False, True, True),
+    ("u32", "u16"): (False, True, True),
+    ("u32", "s16"): (False, True, True),
+    ("s32", "f32"): (True, False, False),
+    ("s32", "u8"): (False, True, True),
+    ("s32", "u16"): (False, True, True),
+    ("s32", "s16"): (False, True, True),
+    ("s32", "s64"): (False, False, True),
+    ("s64", "f32"): (True, False, True),
+    ("s64", "s32"): (False, True, True),
+}
+
+
+def _classify_vcvt_elem_kind(dtype: ScalarType) -> str | None:
+    if dtype == f16:
+        return "f16"
+    if dtype == bf16:
+        return "bf16"
+    if dtype == f32:
+        return "f32"
+    if not is_integer_dtype(dtype):
+        return None
+    width = integer_bitwidth(dtype)
+    sign = integer_signedness(dtype)
+    is_unsigned = sign == "unsigned"
+    if width == 8:
+        return "u8" if is_unsigned else "s8"
+    if width == 16:
+        return "u16" if is_unsigned else "s16"
+    if width == 32:
+        return "u32" if is_unsigned else "s32"
+    if width == 64:
+        return None if is_unsigned else "s64"
+    return None
 _UNARY_VECTOR_OPS = {
     "vabs",
     "vrelu",
@@ -4390,11 +4451,22 @@ class _SemanticAnalyzer:
             name: self._analyze_expr(value, env, allow_outer_lookup=allow_outer_lookup)
             for name, value in expr.keywords
         }
+        allowed_keywords = {"rnd", "sat", "part"}
+        unexpected_keywords = sorted(set(analyzed_keywords) - allowed_keywords)
+        if unexpected_keywords:
+            keyword_text = ", ".join(unexpected_keywords)
+            raise TypeError(
+                "pto.vcvt only accepts keyword attrs `rnd`, `sat`, and `part`; "
+                f"got unsupported keyword(s): {keyword_text}"
+            )
         return self._analyze_vcvt(
             args,
             rnd=self._normalize_vcvt_round_mode(analyzed_keywords.get("rnd")),
             sat=self._normalize_vcvt_sat_mode(analyzed_keywords.get("sat")),
             part=self._normalize_vcvt_part_mode(analyzed_keywords.get("part")),
+            rnd_explicit="rnd" in analyzed_keywords,
+            sat_explicit="sat" in analyzed_keywords,
+            part_explicit="part" in analyzed_keywords,
         )
 
     def _analyze_vcvt(
@@ -4404,12 +4476,27 @@ class _SemanticAnalyzer:
         rnd: SemanticExpr | None = None,
         sat: SemanticExpr | None = None,
         part: SemanticExpr | None = None,
+        rnd_explicit: bool = False,
+        sat_explicit: bool = False,
+        part_explicit: bool = False,
     ) -> SemanticExpr:
         if len(args) != 3:
             raise TypeError("pto.vcvt expects exactly 3 positional arguments in TileLang DSL")
         vector = self._require_vreg_expr(args[0], "pto.vcvt vector")
         target_dtype = self._require_dtype_symbol(args[1], "pto.vcvt to_type")
         self._require_mask_for_vreg(args[2], vector, "pto.vcvt")
+        contract = self._lookup_vcvt_attr_contract(vector.element_dtype, target_dtype)
+        if contract is not None:
+            self._require_explicit_vcvt_attrs(
+                src_dtype=vector.element_dtype,
+                dst_dtype=target_dtype,
+                rnd_required=contract[0],
+                sat_required=contract[1],
+                part_required=contract[2],
+                rnd_explicit=rnd_explicit,
+                sat_explicit=sat_explicit,
+                part_explicit=part_explicit,
+            )
         return SemanticCallExpr(
             namespace="pto",
             name="vcvt",
@@ -4723,6 +4810,43 @@ class _SemanticAnalyzer:
                 'canonical strings `"EVEN"` / `"ODD"` in TileLang DSL v1'
             )
         return SemanticLiteralExpr(value=part_mode, type=SemanticMetaType(kind="string"))
+
+    def _lookup_vcvt_attr_contract(
+        self, src_dtype: ScalarType, dst_dtype: ScalarType
+    ) -> tuple[bool, bool, bool] | None:
+        src_kind = _classify_vcvt_elem_kind(src_dtype)
+        dst_kind = _classify_vcvt_elem_kind(dst_dtype)
+        if src_kind is None or dst_kind is None:
+            return None
+        return _VCVT_ATTR_CONTRACTS.get((src_kind, dst_kind))
+
+    def _require_explicit_vcvt_attrs(
+        self,
+        *,
+        src_dtype: ScalarType,
+        dst_dtype: ScalarType,
+        rnd_required: bool,
+        sat_required: bool,
+        part_required: bool,
+        rnd_explicit: bool,
+        sat_explicit: bool,
+        part_explicit: bool,
+    ) -> None:
+        pair = f"{src_dtype.name}->{dst_dtype.name}"
+
+        def _check(attr_name: str, required: bool, explicit: bool) -> None:
+            if required and not explicit:
+                raise TypeError(
+                    f"pto.vcvt {pair} requires explicit `{attr_name}=` in TileLang DSL v1"
+                )
+            if not required and explicit:
+                raise TypeError(
+                    f"pto.vcvt {pair} does not accept `{attr_name}=` for this type pair in TileLang DSL v1"
+                )
+
+        _check("rnd", rnd_required, rnd_explicit)
+        _check("sat", sat_required, sat_explicit)
+        _check("part", part_required, part_explicit)
 
     def _require_mask_expr(self, expr: SemanticExpr, context: str) -> SemanticMaskType:
         if not isinstance(expr.type, SemanticMaskType):
