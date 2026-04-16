@@ -2556,25 +2556,30 @@ class _AuthoringRenderer:
             source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
             if isinstance(source.type, SemanticTileType):
                 source = self._materialize_tile_memref(source, indent=indent, into=into)
+            index_args = expr.args[1:]
+            dist_suffix = ""
+            if index_args and self._has_optional_string_literal(index_args[-1]):
+                dist_suffix = f" {{dist = {self._render_string_literal(index_args[-1])}}}"
+                index_args = index_args[:-1]
             if (
                 isinstance(expr.args[0].type, SemanticTileType)
                 and expr.args[0].type.rank == 2
-                and len(expr.args[1:]) == 2
+                and len(index_args) == 2
             ):
                 source = self._materialize_rank2_tile_subview(
                     source,
                     expr.args[0].type,
-                    expr.args[1:],
+                    index_args,
                     env,
                     indent=indent,
                     into=into,
                 )
                 rendered_indices = self._materialize_constant(0, SemanticIndexType())
             else:
-                rendered_indices = self._render_index_list(expr.args[1:], env, indent=indent, into=into)
+                rendered_indices = self._render_index_list(index_args, env, indent=indent, into=into)
             into.append(
                 self._indent(indent)
-                + f"{result_name} = pto.vlds {source.name}[{rendered_indices}] : "
+                + f"{result_name} = pto.vlds {source.name}[{rendered_indices}]{dist_suffix} : "
                 + f"{self._render_type(source.type)} -> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)

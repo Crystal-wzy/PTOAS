@@ -19,6 +19,7 @@ using namespace PtoTestCommon;
 void LaunchTCVT_f32_to_i32_rint_16x64(void *src, void *dst, void *stream);
 void LaunchTCVT_f32_to_i32_round_16x64(void *src, void *dst, void *stream);
 void LaunchTCVT_i32_to_f32_rint_16x64(void *src, void *dst, void *stream);
+void LaunchTCVT_f16_to_f32_rint_16x64(void *src, void *dst, void *stream);
 
 using LaunchFn = void (*)(void *, void *, void *);
 
@@ -37,6 +38,7 @@ static const TestCase kCases[] = {
     {"f32_to_i32_rint_16x64", LaunchTCVT_f32_to_i32_rint_16x64, 16, 64, 16, 64, sizeof(float), sizeof(int32_t)},
     {"f32_to_i32_round_16x64", LaunchTCVT_f32_to_i32_round_16x64, 16, 64, 16, 64, sizeof(float), sizeof(int32_t)},
     {"i32_to_f32_rint_16x64", LaunchTCVT_i32_to_f32_rint_16x64, 16, 64, 16, 64, sizeof(int32_t), sizeof(float)},
+    {"f16_to_f32_rint_16x64", LaunchTCVT_f16_to_f32_rint_16x64, 16, 64, 16, 64, sizeof(uint16_t), sizeof(float)},
 };
 static constexpr size_t kNumCases = sizeof(kCases) / sizeof(kCases[0]);
 

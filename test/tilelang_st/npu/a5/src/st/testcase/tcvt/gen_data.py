@@ -90,6 +90,9 @@ def generate_golden(case):
     elif src_dtype is np.int32:
         input_arr = make_i32_input(shape).astype(src_dtype)
         converted = convert_with_default_saturation(input_arr[:vr, :vc], src_dtype, dst_dtype)
+    elif src_dtype is np.float16:
+        input_arr = make_f32_input(shape).astype(src_dtype)
+        converted = convert_with_default_saturation(input_arr[:vr, :vc], src_dtype, dst_dtype)
     else:
         raise TypeError(f"unsupported tcvt ST source dtype: {src_dtype}")
 

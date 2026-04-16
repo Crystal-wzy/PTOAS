@@ -3004,14 +3004,12 @@ class _SemanticAnalyzer:
                     )
                 base = SemanticBindingRef(binding=binding, type=binding.type)
                 return self._analyze_as_ptr_method(base)
-            if expr.namespace == "pto" and expr.name == "vlds" and len(expr.args) == 1:
-                base, indices = self._analyze_tile_vector_access(
-                    expr.args[0],
+            if expr.namespace == "pto" and expr.name == "vlds":
+                return self._analyze_vlds_frontend_call(
+                    expr,
                     env,
                     allow_outer_lookup=allow_outer_lookup,
-                    context="pto.vlds source",
                 )
-                return self._analyze_vlds((base, *indices))
             if (
                 expr.namespace == "pto"
                 and expr.name == "vldas"
@@ -4047,7 +4045,12 @@ class _SemanticAnalyzer:
             raise TypeError("pto.init_align does not accept positional arguments in TileLang DSL v1")
         return SemanticCallExpr(namespace="pto", name="init_align", args=(), type=SemanticAlignType())
 
-    def _analyze_vlds(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+    def _analyze_vlds(
+        self,
+        args: tuple[SemanticExpr, ...],
+        *,
+        dist: SemanticExpr | None = None,
+    ) -> SemanticExpr:
         if len(args) < 2:
             raise TypeError("pto.vlds expects at least 2 positional arguments in TileLang DSL v1")
         source, *indices = args
@@ -4058,12 +4061,51 @@ class _SemanticAnalyzer:
             source = self._require_pointer_expr(source, "pto.vlds source", memory_space="ub")
         for index in indices:
             self._require_index_typed_expr(index)
+        lowered_args: tuple[SemanticExpr, ...]
+        if dist is not None:
+            lowered_args = (source, *indices, dist)
+        else:
+            lowered_args = (source, *indices)
         return SemanticCallExpr(
             namespace="pto",
             name="vlds",
-            args=(source, *indices),
+            args=lowered_args,
             type=self._vreg_type_for_dtype(source.type.element_dtype),
         )
+
+    def _analyze_vlds_frontend_call(
+        self,
+        expr: FrontendCallExpr,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> SemanticExpr:
+        analyzed_keywords = {
+            name: self._analyze_expr(value, env, allow_outer_lookup=allow_outer_lookup)
+            for name, value in expr.keywords
+        }
+        unexpected_keywords = sorted(set(analyzed_keywords) - {"dist"})
+        if unexpected_keywords:
+            keyword_text = ", ".join(unexpected_keywords)
+            raise TypeError(
+                "pto.vlds only accepts keyword attr `dist`; "
+                f"got unsupported keyword(s): {keyword_text}"
+            )
+        dist = self._normalize_vlds_dist(analyzed_keywords.get("dist"), "pto.vlds dist")
+        if len(expr.args) == 1 and isinstance(expr.args[0], FrontendSubscriptExpr):
+            base, indices = self._analyze_tile_vector_access(
+                expr.args[0],
+                env,
+                allow_outer_lookup=allow_outer_lookup,
+                context="pto.vlds source",
+            )
+            return self._analyze_vlds((base, *indices), dist=dist)
+
+        args = tuple(
+            self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+            for arg in expr.args
+        )
+        return self._analyze_vlds(args, dist=dist)
 
     def _analyze_vldas(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
         if len(args) not in {1, 2, 3}:
@@ -5109,6 +5151,48 @@ class _SemanticAnalyzer:
         if dist not in {"NORM", "PK"}:
             raise TypeError("predicate store dist must be \"NORM\" or \"PK\" in TileLang DSL v1")
         return SemanticLiteralExpr(value=dist, type=SemanticMetaType(kind="string"))
+
+    def _normalize_vlds_dist(
+        self,
+        expr: SemanticExpr | None,
+        context: str,
+    ) -> SemanticExpr | None:
+        if expr is None:
+            return None
+        dist = self._require_string_expr(expr, context)
+        legacy_map = {
+            "BRC_B8": "BRC",
+            "BRC_B16": "BRC",
+            "BRC_B32": "BRC",
+            "US_B8": "US",
+            "US_B16": "US",
+            "DS_B8": "DS",
+            "DS_B16": "DS",
+            "UNPK_B8": "UNPK",
+            "UNPK_B16": "UNPK",
+            "UNPK_B32": "UNPK",
+            "E2B_B16": "E2B",
+            "E2B_B32": "E2B",
+        }
+        normalized = legacy_map.get(dist, dist)
+        if normalized not in {
+            "NORM",
+            "BRC",
+            "US",
+            "DS",
+            "UNPK",
+            "BRC_BLK",
+            "E2B",
+            "UNPK4",
+            "SPLT4CHN",
+            "SPLT2CHN",
+        }:
+            raise TypeError(
+                "pto.vlds dist must be one of "
+                "\"NORM\", \"BRC\", \"US\", \"DS\", \"UNPK\", \"BRC_BLK\", "
+                "\"E2B\", \"UNPK4\", \"SPLT4CHN\", or \"SPLT2CHN\" in TileLang DSL v1"
+            )
+        return SemanticLiteralExpr(value=normalized, type=SemanticMetaType(kind="string"))
 
     def _require_i1_expr(self, expr: SemanticExpr, context: str) -> None:
         scalar = self._require_scalar_expr(expr, context)

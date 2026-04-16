@@ -13,6 +13,7 @@
 
 Current TileLib tcvt support covered by this testcase:
   - f32 -> i32
+  - f16 -> f32
   - i32 -> f32
 
 `dtype` is kept for shared validation compatibility.
@@ -46,6 +47,16 @@ CASES = [
         "name": "i32_to_f32_rint_16x64",
         "dtype": np.float32,
         "src_dtype": np.int32,
+        "dst_dtype": np.float32,
+        "shape": (16, 64),
+        "valid_shape": (16, 64),
+        "round_mode": "RINT",
+        "eps": 1e-6,
+    },
+    {
+        "name": "f16_to_f32_rint_16x64",
+        "dtype": np.float32,
+        "src_dtype": np.float16,
         "dst_dtype": np.float32,
         "shape": (16, 64),
         "valid_shape": (16, 64),

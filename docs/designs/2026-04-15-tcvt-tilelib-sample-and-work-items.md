@@ -131,7 +131,7 @@ PTOAS + TileLib 已经全部打通。
 
 | 源类型 | 目标类型 | A5 helper 覆盖 | 备注 | TileLib是否支持 |
 |---|---|---|---|---|
-| `f16` | `f32` | 1D+2D，`vcvt + part` | type expand | |
+| `f16` | `f32` | 1D+2D，`vcvt + part` | type expand | `已支持` |
 | `bf16` | `f32` | 1D+2D，`vcvt + part` | type expand | |
 | `i16` | `f32` / `i32` / `u32` | 1D+2D，expand helper | widening path | |
 | `i32` | `i64` | 1D+2D，expand helper | | |
