@@ -848,7 +848,30 @@ class _SemanticAnalyzer:
         self,
         env: dict[str, SemanticBinding],
     ) -> tuple[tuple[SemanticStmt, ...], dict[str, SemanticBinding]]:
-        return self._analyze_block(self.node.body, env, allow_outer_lookup=True)
+        return self._analyze_body_with_inferred_kernel_vecscope(
+            self.node.body,
+            env,
+            allow_outer_lookup=True,
+            has_explicit_vecscope=self._has_explicit_vecscope,
+        )
+
+    def _analyze_body_with_inferred_kernel_vecscope(
+        self,
+        statements: tuple[FrontendStmtNode, ...],
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+        has_explicit_vecscope: bool,
+    ) -> tuple[tuple[SemanticStmt, ...], dict[str, SemanticBinding]]:
+        # Inferred vecscope is built incrementally from left to right, splitting
+        # at hard boundaries (DMA/sync/UB-helper/control-flow) instead of
+        # wrapping the whole kernel body in one fallback region.
+        return self._analyze_block(
+            statements,
+            env,
+            allow_outer_lookup=allow_outer_lookup,
+            allow_inferred_vecscope=not has_explicit_vecscope,
+        )
 
     def _parameter_type(self, param: Any) -> SemanticType:
         if param.kind == "tensorview":
@@ -973,12 +996,12 @@ class _SemanticAnalyzer:
         semantic_statements = []
         index = 0
         while index < len(statements):
-            if self._should_infer_vecscope(
+            if self._stmt_can_participate_in_inferred_vecscope(
                 statements[index],
                 allow_inferred_vecscope=allow_inferred_vecscope,
             ):
                 end = index + 1
-                while end < len(statements) and self._should_infer_vecscope(
+                while end < len(statements) and self._stmt_can_participate_in_inferred_vecscope(
                     statements[end],
                     allow_inferred_vecscope=allow_inferred_vecscope,
                 ):
@@ -1012,6 +1035,22 @@ class _SemanticAnalyzer:
             semantic_statements.extend(emitted_stmts)
             index += 1
         return tuple(semantic_statements), current_env
+
+    def _stmt_can_participate_in_inferred_vecscope(
+        self,
+        stmt: FrontendStmtNode,
+        *,
+        allow_inferred_vecscope: bool,
+    ) -> bool:
+        if self._has_explicit_vecscope:
+            return False
+        if self._disable_inference_depth > 0:
+            return False
+        if not allow_inferred_vecscope:
+            return False
+        if self._frontend_stmt_is_vecscope_boundary(stmt):
+            return False
+        return self._frontend_stmt_can_live_in_inferred_vecscope(stmt)
 
     def _analyze_stmt_or_inline(
         self,
@@ -1129,6 +1168,7 @@ class _SemanticAnalyzer:
             isinstance(stmt, FrontendExprStmt)
             and (
                 self._is_dma_call(stmt.expr)
+                or self._is_low_level_dma_call(stmt.expr)
                 or self._is_sync_call(stmt.expr)
                 or self._is_ub_helper_call(stmt.expr)
             )
@@ -1213,10 +1253,11 @@ class _SemanticAnalyzer:
                 if self._constexpr_if_contains_vector_activity(stmt):
                     return True
                 continue
-            name = self._frontend_vector_call_name(stmt)
-            if name is None or name == "make_mask":
-                continue
-            return True
+            if self._frontend_stmt_contains_vector_activity(stmt):
+                name = self._frontend_vector_call_name(stmt)
+                if name == "make_mask":
+                    continue
+                return True
         return False
 
     def _frontend_vector_call_name(self, stmt: FrontendStmtNode) -> str | None:
@@ -1277,7 +1318,17 @@ class _SemanticAnalyzer:
                 return True
             if isinstance(stmt, SemanticStrictVecscopeStmt):
                 return True
+            if isinstance(stmt, SemanticDmaLoadStmt):
+                return True
+            if isinstance(stmt, SemanticDmaStoreStmt):
+                return True
             if isinstance(stmt, SemanticVectorStoreStmt):
+                return True
+            if isinstance(stmt, SemanticDmaConfigStmt):
+                return True
+            if isinstance(stmt, SemanticDmaUnaryConfigStmt):
+                return True
+            if isinstance(stmt, SemanticLowLevelCopyStmt):
                 return True
             if isinstance(stmt, SemanticAssignStmt) and self._expr_contains_vector_activity(stmt.value):
                 return True
@@ -1446,11 +1497,13 @@ class _SemanticAnalyzer:
         self._hidden_parameters = []
         self._inline_proc_active_stack.append(key)
         try:
-            body, _ = self._analyze_block(
+            body, _ = self._analyze_body_with_inferred_kernel_vecscope(
                 inline_proc_node.body,
                 helper_env,
                 allow_outer_lookup=False,
-                allow_inferred_vecscope=True,
+                has_explicit_vecscope=self._contains_explicit_vecscope(
+                    inline_proc_node.body
+                ),
             )
         finally:
             self._inline_proc_active_stack.pop()
@@ -1825,6 +1878,7 @@ class _SemanticAnalyzer:
                     value=value,
                     destination=destination,
                     indices=indices,
+                    dist=None,
                     mask=mask,
                 ),
                 dict(env),

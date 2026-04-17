@@ -1685,7 +1685,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
                 return None
 
         self.assertIn(
-            "`pto.vlds` does not support keyword arguments in TileLang DSL v1",
+            "unsupported keyword `offset` for `pto.vlds` in TileLang DSL v1",
             str(ctx.exception),
         )
         self.assertIn(f"{__file__}:", str(ctx.exception))
