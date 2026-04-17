@@ -679,19 +679,24 @@ class _AuthoringRenderer:
         if not isinstance(stmt.value.type, SemanticTupleType) or len(stmt.value.type.elements) != 2:
             raise NotImplementedError("multi-result lowering expects a two-result tuple type")
 
-        if stmt.value.name == "make_mask":
-            dtype_expr, remaining_expr = stmt.value.args
-            if not self._is_dtype_meta_expr(dtype_expr):
-                raise NotImplementedError("make_mask dtype lowering expects a dtype symbol")
-
+        if stmt.value.name in {"make_mask", "plt_b8", "plt_b16", "plt_b32"}:
             lines: list[str] = []
-            remaining = self._lower_remaining_to_i32(remaining_expr, env, indent=indent, into=lines)
+            if stmt.value.name == "make_mask":
+                dtype_expr, remaining_expr = stmt.value.args
+                if not self._is_dtype_meta_expr(dtype_expr):
+                    raise NotImplementedError("make_mask dtype lowering expects a dtype symbol")
+                remaining = self._lower_remaining_to_i32(remaining_expr, env, indent=indent, into=lines)
+                op_name = None
+            else:
+                remaining = self._lower_remaining_to_i32(stmt.value.args[0], env, indent=indent, into=lines)
+                op_name = stmt.value.name
             mask_target, remaining_target = stmt.targets
             mask_type, remaining_type = stmt.value.type.elements
             suffix = self._mask_suffix(mask_type)
+            lowered_op = op_name or f"plt_{suffix}"
             lines.append(
                 self._indent(indent)
-                + f"{mask_target.ssa_name}, {remaining_target.ssa_name} = pto.plt_{suffix} {remaining.name} : "
+                + f"{mask_target.ssa_name}, {remaining_target.ssa_name} = pto.{lowered_op} {remaining.name} : "
                 + f"i32 -> {self._render_type(mask_type)}, {self._render_type(remaining_type)}"
             )
             env[mask_target.name] = _RenderedValue(name=mask_target.ssa_name, type=mask_type)
@@ -737,6 +742,22 @@ class _AuthoringRenderer:
             return lines
 
         if stmt.value.name in {"vintlv", "vdintlv"}:
+            lines = []
+            lhs = self._lower_expr(stmt.value.args[0], env, indent=indent, into=lines)
+            rhs = self._lower_expr(stmt.value.args[1], env, indent=indent, into=lines)
+            low_target, high_target = stmt.targets
+            low_type, high_type = stmt.value.type.elements
+            lines.append(
+                self._indent(indent)
+                + f"{low_target.ssa_name}, {high_target.ssa_name} = pto.{stmt.value.name} "
+                + f"{lhs.name}, {rhs.name} : {self._render_type(lhs.type)}, {self._render_type(rhs.type)} "
+                + f"-> {self._render_type(low_type)}, {self._render_type(high_type)}"
+            )
+            env[low_target.name] = _RenderedValue(name=low_target.ssa_name, type=low_type)
+            env[high_target.name] = _RenderedValue(name=high_target.ssa_name, type=high_type)
+            return lines
+
+        if stmt.value.name in {"pdintlv_b8", "pintlv_b16"}:
             lines = []
             lhs = self._lower_expr(stmt.value.args[0], env, indent=indent, into=lines)
             rhs = self._lower_expr(stmt.value.args[1], env, indent=indent, into=lines)
@@ -1070,11 +1091,14 @@ class _AuthoringRenderer:
             )
             rendered_offset = self._materialize_constant(0, SemanticIndexType())
         else:
-            rendered_offset = self._lower_expr(stmt.indices[0], env, indent=indent, into=lines)
+            if stmt.op_name == "psti":
+                rendered_offset = self._lower_to_index(stmt.indices[0], env, indent=indent, into=lines)
+            else:
+                rendered_offset = self._lower_expr(stmt.indices[0], env, indent=indent, into=lines)
         dist = self._render_string_literal(stmt.dist)
         lines.append(
             self._indent(indent)
-            + f"pto.psts {value.name}, {destination.name}[{rendered_offset.name}], {dist} : "
+            + f"pto.{stmt.op_name} {value.name}, {destination.name}[{rendered_offset.name}], {dist} : "
             + f"{self._render_type(value.type)}, {self._render_type(destination.type)}, {self._render_type(rendered_offset.type)}"
         )
         return lines
@@ -2549,6 +2573,17 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
+        if expr.name in {"pset_b8", "pset_b16", "pset_b32", "pge_b8", "pge_b16", "pge_b32"}:
+            if not isinstance(expr.args[0], SemanticSymbolExpr) or not isinstance(expr.args[0].value, MaskPattern):
+                raise NotImplementedError(f"{expr.name} lowering expects a MaskPattern symbol")
+            pattern_token = expr.args[0].value.value.replace("\\", "\\\\").replace('"', '\\"')
+            pattern = f'"{pattern_token}"'
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.{expr.name} {pattern} : {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
         if expr.name == "init_align":
             into.append(
                 self._indent(indent)
@@ -2585,6 +2620,20 @@ class _AuthoringRenderer:
                 self._indent(indent)
                 + f"{result_name} = pto.vlds {source.name}[{rendered_indices}]{dist_suffix} : "
                 + f"{self._render_type(source.type)} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name in {"plds", "pldi"}:
+            source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            if expr.name == "pldi":
+                offset = self._lower_to_index(expr.args[1], env, indent=indent, into=into)
+            else:
+                offset = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            dist = self._render_string_literal(expr.args[2])
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.{expr.name} {source.name}[{offset.name}], {dist} : "
+                + f"{self._render_type(source.type)}, {self._render_type(offset.type)} -> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
@@ -2779,13 +2828,13 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
-        if expr.name == "psel":
+        if expr.name in {"psel", "pand", "por", "pxor"}:
             src0 = self._lower_expr(expr.args[0], env, indent=indent, into=into)
             src1 = self._lower_expr(expr.args[1], env, indent=indent, into=into)
             mask = self._lower_expr(expr.args[2], env, indent=indent, into=into)
             into.append(
                 self._indent(indent)
-                + f"{result_name} = pto.psel {src0.name}, {src1.name}, {mask.name} : "
+                + f"{result_name} = pto.{expr.name} {src0.name}, {src1.name}, {mask.name} : "
                 + f"{self._render_type(src0.type)}, {self._render_type(src1.type)}, {self._render_type(mask.type)} "
                 + f"-> {self._render_type(expr.type)}"
             )
@@ -3170,6 +3219,28 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=cast_name, type=_I32_TYPE)
         raise NotImplementedError("expected an i32 or index operand during TileLang DSL v1 lowering")
+
+    def _lower_to_index(
+        self,
+        expr: SemanticExpr,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        value = self._lower_expr(expr, env, indent=indent, into=into)
+        if isinstance(value.type, SemanticIndexType):
+            return value
+        if isinstance(value.type, SemanticScalarType) and is_integer_dtype(value.type.dtype):
+            bits = integer_bitwidth(value.type.dtype)
+            if bits in {32, 64}:
+                cast_name = self._new_temp()
+                into.append(
+                    self._indent(indent)
+                    + f"{cast_name} = arith.index_cast {value.name} : {value.type.dtype.name} to index"
+                )
+                return _RenderedValue(name=cast_name, type=SemanticIndexType())
+        raise NotImplementedError("expected an i32/i64/index operand during TileLang DSL v1 lowering")
 
     def _coerce_rendered_to_i64(
         self,

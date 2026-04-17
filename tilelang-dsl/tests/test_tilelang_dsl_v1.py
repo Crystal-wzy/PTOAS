@@ -103,6 +103,7 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "get_lanes"))
         self.assertTrue(hasattr(pto, "elements_per_vreg"))
         self.assertTrue(hasattr(pto, "PAT"))
+        self.assertTrue(hasattr(pto, "PredicateDist"))
         self.assertTrue(hasattr(pto, "PadMode"))
         self.assertTrue(hasattr(pto, "BarrierType"))
         self.assertTrue(hasattr(pto, "BLayout"))
@@ -143,6 +144,10 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.PositionMode.LOWEST.value, "LOWEST")
         self.assertEqual(pto.PositionMode.HIGHEST.value, "HIGHEST")
         self.assertEqual(pto.OrderMode.ASC.value, "ORDER_ASC")
+        self.assertEqual(pto.PredicateDist.NORM.value, "NORM")
+        self.assertEqual(pto.PredicateDist.US.value, "US")
+        self.assertEqual(pto.PredicateDist.DS.value, "DS")
+        self.assertEqual(pto.PredicateDist.PK.value, "PK")
         self.assertEqual(pto.VcvtRoundMode.R.value, "R")
         self.assertEqual(pto.VcvtSatMode.SAT.value, "SAT")
         self.assertEqual(pto.VcvtPartMode.ODD.value, "ODD")
@@ -4925,6 +4930,144 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             analyze_frontend_kernel(build_frontend_kernel_node(specialized))
         self.assertIn("does not support Tile element-indexing syntax", str(ctx.exception))
         self.assertIn("pto.psts(mask, buf, offset", str(ctx.exception))
+
+    def test_plds_load_lower_to_supported_op(self) -> None:
+        @pto.vkernel(
+            op="predicate_load_from_ub_buffer",
+            dtypes=[(pto.ui32, pto.ui32)],
+            advanced=True,
+        )
+        def kernel(
+            mask_src: pto.ptr(pto.ui32, pto.MemorySpace.UB),
+            mask_dst: pto.ptr(pto.ui32, pto.MemorySpace.UB),
+        ):
+            mask = pto.plds(mask_src, 0)
+            pto.psts(mask, mask_dst, 0)
+            return None
+
+        specialized = kernel.specialize()
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope = next(stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt))
+        load_assign = next(
+            stmt
+            for stmt in vecscope.body
+            if isinstance(stmt, SemanticAssignStmt)
+            and isinstance(stmt.value, SemanticCallExpr)
+            and stmt.value.name == "plds"
+        )
+        self.assertIsInstance(load_assign.value.type, SemanticMaskType)
+        self.assertEqual(load_assign.value.type.granularity, "b32")
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.plds", text)
+        self.assertIn('"NORM"', text)
+        self.assertIn("pto.psts", text)
+
+    def test_plds_rejects_unsupported_dist_token(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(
+                op="predicate_load_invalid_dist",
+                dtypes=[(pto.ui32,)],
+                advanced=True,
+            )
+            def kernel(mask_src: pto.ptr(pto.ui32, pto.MemorySpace.UB)):
+                _mask = pto.plds(mask_src, 0, pto.PredicateDist.PK)
+                return None
+
+            kernel.specialize().mlir_text()
+
+        self.assertIn("predicate load dist must be one of", str(ctx.exception))
+        self.assertIn("pto.PredicateDist.DS", str(ctx.exception))
+
+    def test_predicate_generation_and_logic_families_lower_to_supported_ops(self) -> None:
+        @pto.vkernel(
+            op="predicate_generation_and_logic_families",
+            dtypes=[(pto.ui32,)],
+            advanced=True,
+        )
+        def kernel(mask_dst: pto.ptr(pto.ui32, pto.MemorySpace.UB)):
+            mask8 = pto.pset_b8(pto.PAT.ALL)
+            mask16 = pto.pge_b16(pto.PAT.VL16)
+            mask32, _next = pto.plt_b32(64)
+            and_mask = pto.pand(mask32, mask32, mask32)
+            or_mask = pto.por(and_mask, mask32, mask32)
+            xor_mask = pto.pxor(or_mask, mask32, mask32)
+            pto.psts(xor_mask, mask_dst, 0)
+            _ = mask8
+            _ = mask16
+            return None
+
+        text = kernel.specialize().mlir_text()
+        self.assertIn("pto.pset_b8", text)
+        self.assertIn("pto.pge_b16", text)
+        self.assertIn("pto.plt_b32", text)
+        self.assertIn("pto.pand", text)
+        self.assertIn("pto.por", text)
+        self.assertIn("pto.pxor", text)
+
+    def test_predicate_load_store_alias_and_immediate_forms_lower_to_supported_ops(self) -> None:
+        @pto.vkernel(
+            op="predicate_load_store_alias_and_immediate_forms",
+            dtypes=[(pto.ui32, pto.ui32)],
+            advanced=True,
+        )
+        def kernel(
+            mask_src: pto.ptr(pto.ui32, pto.MemorySpace.UB),
+            mask_dst: pto.ptr(pto.ui32, pto.MemorySpace.UB),
+        ):
+            mask0 = pto.pld(mask_src, 0, pto.PredicateDist.NORM)
+            mask1 = pto.pldi(mask_src, pto.i32(8), pto.PredicateDist.US)
+            pto.pst(mask0, mask_dst, 0)
+            pto.psti(mask1, mask_dst, pto.i32(8), pto.PredicateDist.PK)
+            return None
+
+        text = kernel.specialize().mlir_text()
+        self.assertIn("pto.plds", text)
+        self.assertIn("pto.pldi", text)
+        self.assertIn("pto.psts", text)
+        self.assertIn("pto.psti", text)
+        self.assertIn("arith.index_cast", text)
+
+    def test_predicate_reorder_families_lower_to_supported_ops(self) -> None:
+        @pto.vkernel(
+            op="predicate_reorder_families",
+            dtypes=[(pto.ui32,)],
+            advanced=True,
+        )
+        def kernel(mask_dst: pto.ptr(pto.ui32, pto.MemorySpace.UB)):
+            mask8 = pto.pset_b8(pto.PAT.ALL)
+            mask16 = pto.pset_b16(pto.PAT.ALL)
+            low8, high8 = pto.pdintlv_b8(mask8, mask8)
+            low16, high16 = pto.pintlv_b16(mask16, mask16)
+            _ = low8
+            _ = high8
+            _ = low16
+            _ = high16
+            all32 = pto.make_mask(pto.ui32, pto.PAT.ALL)
+            pto.psts(all32, mask_dst, 0)
+            return None
+
+        text = kernel.specialize().mlir_text()
+        self.assertIn("pto.pdintlv_b8", text)
+        self.assertIn("pto.pintlv_b16", text)
+
+    def test_pdintlv_b8_rejects_wrong_mask_granularity(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(
+                op="predicate_reorder_wrong_mask_granularity",
+                dtypes=[(pto.ui32,)],
+                advanced=True,
+            )
+            def kernel(mask_src: pto.ptr(pto.ui32, pto.MemorySpace.UB)):
+                mask32 = pto.plds(mask_src, 0)
+                _low, _high = pto.pdintlv_b8(mask32, mask32)
+                return None
+
+            kernel.specialize().mlir_text()
+
+        self.assertIn("expects !pto.mask<b8> operands", str(ctx.exception))
 
     def test_strict_vecscope_rejects_implicit_capture_during_semantic_analysis(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16, pto.i32)], advanced=True)

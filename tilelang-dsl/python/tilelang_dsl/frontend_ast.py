@@ -978,6 +978,7 @@ def _build_expr(node: ast.AST, context: _FrontendBuildContext) -> FrontendExprNo
             "PIPE",
             "EVENT",
             "MaskPattern",
+            "PredicateDist",
             "Pipe",
             "Event",
             "BarrierType",

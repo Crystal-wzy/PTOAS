@@ -8,7 +8,7 @@ Operations for creating and manipulating typed masks.
 
 **Predicate Part Enum**: `pto.ppack` and `pto.punpack` require the `PredicatePart` enum. Use `PredicatePart.LOWER` or `PredicatePart.HIGHER`; these lower to the VPTO canonical `PART` tokens `"LOWER"` and `"HIGHER"`.
 
-**Predicate Dist Enum**: The `PredicateDist` enum provides type-safe distribution mode selection for predicate memory families. Load families (`plds`, `pld`, `pldi`) use `NORM`, `US`, and `DS`. Store families (`pst`, `psti`) use `NORM` and `PK`.
+**Predicate Dist Enum**: The `PredicateDist` enum provides type-safe distribution mode selection for predicate memory families. Load families (`plds`, `pld`, `pldi`) use `NORM`, `US`, and `DS`. Store families (`psts`, `pst`, `psti`) use `NORM` and `PK`.
 
 **Pattern coverage**: The VPTO canonical predicate-generation families use `PAT_*` tokens such as `PAT_ALL`, `PAT_ALLF`, `PAT_H`, `PAT_Q`, `PAT_VL*`, `PAT_M3`, and `PAT_M4`. The Python DSL surface may expose only a subset through `pto.MaskPattern`; check the enum for currently available values.
 
@@ -367,7 +367,7 @@ unpacked = pto.punpack(mask, pto.PredicatePart.HIGHER)
 
 **Example**:
 ```python
-mask = pto.plds(buf, offset, PredicateDist.NORM)
+mask = pto.plds(buf, offset, pto.PredicateDist.NORM)
 ```
 
 #### `pto.pld(buf: ptr, offset: Index, dist: PredicateDist) -> MaskType`  [Advanced Tier]
@@ -388,7 +388,7 @@ mask = pto.plds(buf, offset, PredicateDist.NORM)
 
 **Example**:
 ```python
-mask = pto.pld(buf, offset, PredicateDist.NORM)
+mask = pto.pld(buf, offset, pto.PredicateDist.NORM)
 ```
 
 #### `pto.pldi(buf: ptr, imm_offset: pto.i32, dist: PredicateDist) -> MaskType`  [Advanced Tier]
@@ -409,7 +409,7 @@ mask = pto.pld(buf, offset, PredicateDist.NORM)
 
 **Example**:
 ```python
-mask = pto.pldi(buf, 0, PredicateDist.NORM)
+mask = pto.pldi(buf, 0, pto.PredicateDist.NORM)
 ```
 
 #### `pto.psts(mask: MaskType, buf: ptr, offset: Index, dist: PredicateDist = PredicateDist.NORM) -> None`  [Advanced Tier]
@@ -436,7 +436,7 @@ constant immediate).
 
 **Example**:
 ```python
-pto.psts(mask, buf, offset, PredicateDist.NORM)
+pto.psts(mask, buf, offset, pto.PredicateDist.NORM)
 ```
 
 #### `pto.pst(mask: MaskType, buf: ptr, offset: Index, dist: PredicateDist = PredicateDist.NORM) -> None`  [Advanced Tier]
@@ -455,7 +455,7 @@ pto.psts(mask, buf, offset, PredicateDist.NORM)
 
 **Example**:
 ```python
-pto.pst(mask, buf, offset, PredicateDist.NORM)
+pto.pst(mask, buf, offset, pto.PredicateDist.NORM)
 ```
 
 #### `pto.psti(mask: MaskType, buf: ptr, imm_offset: pto.i32, dist: PredicateDist = PredicateDist.NORM) -> None`  [Advanced Tier]
@@ -474,7 +474,7 @@ pto.pst(mask, buf, offset, PredicateDist.NORM)
 
 **Example**:
 ```python
-pto.psti(mask, buf, pto.i32(8), PredicateDist.PK)
+pto.psti(mask, buf, pto.i32(8), pto.PredicateDist.PK)
 ```
 
 #### `pto.pstu(align_in: pto.align, mask: MaskType, buf: ptr) -> (pto.align, ptr)`  [Advanced Tier]

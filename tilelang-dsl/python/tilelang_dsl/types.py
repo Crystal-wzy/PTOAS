@@ -189,6 +189,13 @@ class MaskPattern(str, Enum):
     VL32 = "PAT_VL32"
 
 
+class PredicateDist(str, Enum):
+    NORM = "NORM"
+    US = "US"
+    DS = "DS"
+    PK = "PK"
+
+
 class PadMode(str, Enum):
     PadNull = "PadNull"
     PadFirstElem = "PadFirstElem"
@@ -674,6 +681,7 @@ __all__ = [
     "PIPE",
     "EVENT",
     "MaskPattern",
+    "PredicateDist",
     "PAT",
     "BarrierType",
     "PadMode",

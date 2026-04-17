@@ -617,8 +617,8 @@ delivery form differs.
 **Returns**: None (side-effect operation)
 
 **DIST semantics (VPTO-aligned)**:
-- `"NORM"`: store packed predicate payload into a normal destination space of size `VL/8`.
-- `"PK"`: store packed predicate payload into a destination space of size `VL/16`, keeping one bit out of every two bits.
+- `PredicateDist.NORM`: store packed predicate payload into a normal destination space of size `VL/8`.
+- `PredicateDist.PK`: store packed predicate payload into a destination space of size `VL/16`, keeping one bit out of every two bits.
 
 **Notes**:
 - `pto.psts` is intentionally documented as explicit `buf + offset` surface in DSL v1.
