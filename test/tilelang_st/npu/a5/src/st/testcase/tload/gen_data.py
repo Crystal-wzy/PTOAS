@@ -8,7 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 import numpy as np
-from cases import CASES
+from cases import CASES, build_expected_output
 from st_common import validate_cases, setup_case_rng, save_case_data
 
 validate_cases(CASES)
@@ -18,9 +18,13 @@ for case in CASES:
 
     dtype = case["dtype"]
     shape = case["shape"]
+    vr, vc = case["valid_shape"]
 
     input_arr = np.random.randint(1, 17, size=shape).astype(dtype)
-    golden = input_arr.copy()
+    golden = build_expected_output(case, input_arr)
 
     save_case_data(case["name"], {"input": input_arr, "golden": golden})
-    print(f"[INFO] gen_data: {case['name']} shape={shape} dtype={dtype.__name__}")
+    print(
+        f"[INFO] gen_data: {case['name']} shape={shape} "
+        f"valid_shape={(vr, vc)} dtype={dtype.__name__}"
+    )

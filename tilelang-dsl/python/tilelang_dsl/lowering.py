@@ -3586,6 +3586,14 @@ class _AuthoringRenderer:
                 stem = f"c{value}_{ty.dtype.name}"
         else:
             stem = "cst"
+        # Keep generated SSA names MLIR-safe for constants whose textual value
+        # contains punctuation such as decimal points or scientific-notation
+        # exponents (for example f32 max -> `3.4028235e+38`).
+        stem = re.sub(r"[^0-9A-Za-z_]", "_", stem)
+        stem = re.sub(r"_+", "_", stem).strip("_") or "cst"
+        if stem[0].isdigit():
+            stem = f"c_{stem}"
+
         name = f"%{stem}"
         existing = {line.split(" = ", 1)[0].strip() for line in self._constant_lines}
         if name not in existing:

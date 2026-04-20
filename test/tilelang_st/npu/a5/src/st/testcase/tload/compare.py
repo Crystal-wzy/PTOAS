@@ -11,7 +11,7 @@ import os
 import sys
 import numpy as np
 
-from cases import CASES
+from cases import CASES, select_compared_region
 from st_common import result_cmp, style_fail, style_pass, validate_cases
 
 
@@ -26,12 +26,15 @@ def main():
 
         case_dir = case["name"]
         shape = case["shape"]
-        vr, vc = case["valid_shape"]
 
         golden = np.fromfile(os.path.join(case_dir, "golden.bin"), dtype=case["dtype"]).reshape(shape)
         output = np.fromfile(os.path.join(case_dir, "output.bin"), dtype=case["dtype"]).reshape(shape)
 
-        ok = result_cmp(golden[:vr, :vc], output[:vr, :vc], case["eps"])
+        ok = result_cmp(
+            select_compared_region(case, golden),
+            select_compared_region(case, output),
+            case["eps"],
+        )
         if ok:
             print(style_pass(f"[INFO] {case['name']}: compare passed"))
         else:

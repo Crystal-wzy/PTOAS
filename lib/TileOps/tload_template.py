@@ -65,15 +65,14 @@ def _tload_preconditions_nz2nz(src, dst) -> bool:
 def template_tload_nd2nd(src: pto.PartitionTensorView, dst: pto.Tile):
     dtype = dst.element_type
     elem_bytes = pto.bytewidth(dtype)
+    if pto.constexpr(dst.pad_value != pto.PadValue.NULL):
+        pto.set_mov_pad_val(dst.pad_value.eval())
 
     g0, g1, g2, g3, g4 = src.shape
     s0, s1, s2, s3, s4 = src.strides
 
     valid_rows, valid_cols = dst.valid_shape
     ub_rows, ub_cols = dst.shape
-
-    # These preconditions are expressed through the descriptor-level constraint
-    # callable above, using direct `src.shape[i]` / `dst.shape[i]` syntax.
 
     n_burst = g3
     len_burst = g4 * elem_bytes
@@ -104,17 +103,28 @@ def template_tload_nd2nd(src: pto.PartitionTensorView, dst: pto.Tile):
         pto.set_loop_size_outtoub(loop1=loop1, loop2=loop2)
 
     for i in range(0, g0, 1):
-        src_i = pto.addptr(gm_ptr, i * s0 * elem_bytes)
-        dst_i = pto.addptr(ub_ptr, i * dst_stride0 * elem_bytes)
-        pto.copy_gm_to_ubuf(
-            dst=dst_i,
-            src=src_i,
-            n_burst=n_burst,
-            len_burst=len_burst,
-            gm_stride=gm_stride,
-            ub_stride=ub_stride,
-            enable_ub_pad=False,
-        )
+        src_i = pto.addptr(gm_ptr, i * s0)
+        dst_i = pto.addptr(ub_ptr, i * dst_stride0)
+        if pto.constexpr(dst.pad_value != pto.PadValue.NULL):
+            pto.copy_gm_to_ubuf(
+                dst=dst_i,
+                src=src_i,
+                n_burst=n_burst,
+                len_burst=len_burst,
+                gm_stride=gm_stride,
+                ub_stride=ub_stride,
+                enable_ub_pad=True,
+            )
+        else:
+            pto.copy_gm_to_ubuf(
+                dst=dst_i,
+                src=src_i,
+                n_burst=n_burst,
+                len_burst=len_burst,
+                gm_stride=gm_stride,
+                ub_stride=ub_stride,
+                enable_ub_pad=False,
+            )
 
     if loop1 != 1 or loop2 != 1:
         pto.set_loop_size_outtoub(loop1=1, loop2=1)
@@ -129,6 +139,8 @@ def template_tload_nd2nd(src: pto.PartitionTensorView, dst: pto.Tile):
 def template_tload_dn2dn(src: pto.PartitionTensorView, dst: pto.Tile):
     dtype = dst.element_type
     elem_bytes = pto.bytewidth(dtype)
+    if pto.constexpr(dst.pad_value != pto.PadValue.NULL):
+        pto.set_mov_pad_val(dst.pad_value.eval())
 
     # rank-5 partition view 元信息。
     g0, g1, g2, g3, g4 = src.shape
@@ -169,17 +181,28 @@ def template_tload_dn2dn(src: pto.PartitionTensorView, dst: pto.Tile):
         pto.set_loop_size_outtoub(loop1=loop1, loop2=loop2)
 
     for i in range(0, g0, 1):
-        src_i = pto.addptr(gm_ptr, i * s0 * elem_bytes)
-        dst_i = pto.addptr(ub_ptr, i * dst_stride0 * elem_bytes)
-        pto.copy_gm_to_ubuf(
-            dst=dst_i,
-            src=src_i,
-            n_burst=n_burst,
-            len_burst=len_burst,
-            gm_stride=gm_stride,
-            ub_stride=ub_stride,
-            enable_ub_pad=False,
-        )
+        src_i = pto.addptr(gm_ptr, i * s0)
+        dst_i = pto.addptr(ub_ptr, i * dst_stride0)
+        if pto.constexpr(dst.pad_value != pto.PadValue.NULL):
+            pto.copy_gm_to_ubuf(
+                dst=dst_i,
+                src=src_i,
+                n_burst=n_burst,
+                len_burst=len_burst,
+                gm_stride=gm_stride,
+                ub_stride=ub_stride,
+                enable_ub_pad=True,
+            )
+        else:
+            pto.copy_gm_to_ubuf(
+                dst=dst_i,
+                src=src_i,
+                n_burst=n_burst,
+                len_burst=len_burst,
+                gm_stride=gm_stride,
+                ub_stride=ub_stride,
+                enable_ub_pad=False,
+            )
 
     if loop1 != 1 or loop2 != 1:
         pto.set_loop_size_outtoub(loop1=1, loop2=1)
@@ -195,10 +218,8 @@ def template_tload_nz2nz(src: pto.PartitionTensorView, dst: pto.Tile):
     dtype = dst.element_type
     elem_bytes = pto.bytewidth(dtype)
 
-    # set padding value for ub tile if needed
-    # enable_ub_pad = dst.config.pad_value is not pto.PadValue.NULL
-    # if enable_ub_pad:        
-        # pto.set_mov_pad_val(pad_value=dst.config.pad_value.eval())
+    if pto.constexpr(dst.pad_value != pto.PadValue.NULL):
+        pto.set_mov_pad_val(dst.pad_value.eval())
 
     # rank-5 partition view 元信息。NZ 静态分块约束（g3/g4 与 dtype 的关系）
     # 由更高层 schema/static-check 保证，这里只保留运行时搬运公式。
@@ -223,15 +244,26 @@ def template_tload_nz2nz(src: pto.PartitionTensorView, dst: pto.Tile):
     # NZ2NZ 对应实现始终走 normal mode，不复用 loop1/loop2 寄存器。
     pto.set_loop_size_outtoub(loop1=1, loop2=1)
     for i in range(0, g0, 1):
-        src_i = pto.addptr(gm_ptr, i * s0 * elem_bytes)
-        dst_i = pto.addptr(ub_ptr, i * tile_stride * elem_bytes)
-        pto.copy_gm_to_ubuf(
-            dst=dst_i,
-            src=src_i,
-            n_burst=n_burst,
-            len_burst=len_burst,
-            gm_stride=gm_stride,
-            ub_stride=ub_stride,
-            enable_ub_pad=False,
-        )
+        src_i = pto.addptr(gm_ptr, i * s0)
+        dst_i = pto.addptr(ub_ptr, i * tile_stride)
+        if pto.constexpr(dst.pad_value != pto.PadValue.NULL):
+            pto.copy_gm_to_ubuf(
+                dst=dst_i,
+                src=src_i,
+                n_burst=n_burst,
+                len_burst=len_burst,
+                gm_stride=gm_stride,
+                ub_stride=ub_stride,
+                enable_ub_pad=True,
+            )
+        else:
+            pto.copy_gm_to_ubuf(
+                dst=dst_i,
+                src=src_i,
+                n_burst=n_burst,
+                len_burst=len_burst,
+                gm_stride=gm_stride,
+                ub_stride=ub_stride,
+                enable_ub_pad=False,
+            )
     return

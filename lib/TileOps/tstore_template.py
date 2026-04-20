@@ -102,8 +102,8 @@ def template_tstore_nd(src: pto.Tile, dst: pto.PartitionTensorView):
         pto.set_loop_size_ubtoout(loop1=loop1, loop2=loop2)
 
     for i in range(0, g0, 1):
-        src_i = pto.addptr(ub_ptr, i * src_stride0 * elem_bytes)
-        dst_i = pto.addptr(gm_ptr, i * s0 * elem_bytes)
+        src_i = pto.addptr(ub_ptr, i * src_stride0)
+        dst_i = pto.addptr(gm_ptr, i * s0)
         pto.copy_ubuf_to_gm(
             dst=dst_i,
             src=src_i,
@@ -164,8 +164,8 @@ def template_tstore_dn(src: pto.Tile, dst: pto.PartitionTensorView):
         pto.set_loop_size_ubtoout(loop1=loop1, loop2=loop2)
 
     for i in range(0, g0, 1):
-        src_i = pto.addptr(ub_ptr, i * src_stride0 * elem_bytes)
-        dst_i = pto.addptr(gm_ptr, i * s0 * elem_bytes)
+        src_i = pto.addptr(ub_ptr, i * src_stride0)
+        dst_i = pto.addptr(gm_ptr, i * s0)
         pto.copy_ubuf_to_gm(
             dst=dst_i,
             src=src_i,
@@ -211,8 +211,8 @@ def template_tstore_nz(src: pto.Tile, dst: pto.PartitionTensorView):
     # NZ path 本身不使用 loop1/loop2，主动切回 normal mode 避免继承旧状态。
     pto.set_loop_size_ubtoout(loop1=1, loop2=1)
     for i in range(0, g0, 1):
-        src_i = pto.addptr(ub_ptr, i * tile_stride * elem_bytes)
-        dst_i = pto.addptr(gm_ptr, i * s0 * elem_bytes)
+        src_i = pto.addptr(ub_ptr, i * tile_stride)
+        dst_i = pto.addptr(gm_ptr, i * s0)
         pto.copy_ubuf_to_gm(
             dst=dst_i,
             src=src_i,

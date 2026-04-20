@@ -23,6 +23,9 @@ using namespace PtoTestCommon;
 void LaunchTLOAD_ND_f32_16x64(float *src, float *dst, void *stream);
 void LaunchTLOAD_DN_f32_16x64(float *src, float *dst, void *stream);
 void LaunchTLOAD_NZ_f32_128x128(float *src, float *dst, void *stream);
+void LaunchTLOAD_ND_PAD_ZERO_f32_16x64(float *src, float *dst, void *stream);
+void LaunchTLOAD_DN_PAD_MAX_f32_16x64(float *src, float *dst, void *stream);
+void LaunchTLOAD_NZ_PAD_MIN_f32_128x128(float *src, float *dst, void *stream);
 
 using LaunchFn = void (*)(float *, float *, void *);
 
@@ -38,6 +41,9 @@ static const TestCase kCases[] = {
     {"nd_f32_16x64",    LaunchTLOAD_ND_f32_16x64,    16, 64,  sizeof(float)},
     {"dn_f32_16x64",    LaunchTLOAD_DN_f32_16x64,    16, 64,  sizeof(float)},
     {"nz_f32_128x128",  LaunchTLOAD_NZ_f32_128x128,  128, 128, sizeof(float)},
+    {"nd_pad_zero_f32_16x64", LaunchTLOAD_ND_PAD_ZERO_f32_16x64, 16, 64, sizeof(float)},
+    {"dn_pad_max_f32_16x64", LaunchTLOAD_DN_PAD_MAX_f32_16x64, 16, 64, sizeof(float)},
+    {"nz_pad_min_f32_128x128", LaunchTLOAD_NZ_PAD_MIN_f32_128x128, 128, 128, sizeof(float)},
 };
 static constexpr size_t kNumCases = sizeof(kCases) / sizeof(kCases[0]);
 
@@ -96,6 +102,7 @@ int main(int argc, char *argv[]) {
     const char *caseFilter = (argc > 1) ? argv[1] : nullptr;
 
     int rc = 0;
+    bool matchedCase = (caseFilter == nullptr);
     int deviceId = 0;
     aclrtStream stream = nullptr;
 
@@ -110,12 +117,23 @@ int main(int argc, char *argv[]) {
         if (caseFilter != nullptr && std::strcmp(kCases[i].name, caseFilter) != 0) {
             continue;
         }
+        matchedCase = true;
         int ret = RunCase(kCases[i], stream);
         if (ret != 0) {
             std::fprintf(stderr, "[ERROR] case %s failed\n", kCases[i].name);
             rc = 1;
             break;
         }
+    }
+
+    if (!matchedCase) {
+        std::fprintf(stderr, "[ERROR] unknown case filter: %s\n", caseFilter);
+        std::fprintf(stderr, "[ERROR] supported cases:");
+        for (size_t i = 0; i < kNumCases; ++i) {
+            std::fprintf(stderr, " %s", kCases[i].name);
+        }
+        std::fprintf(stderr, "\n");
+        rc = 1;
     }
 
     if (stream != nullptr)
