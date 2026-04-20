@@ -1148,13 +1148,51 @@ LogicalResult VbrOp::verify() {
   return success();
 }
 
-LogicalResult VcaddOp::verify() {
-  if (failed(verifyVRegTypeLike(*this, getInput().getType(), "input")) ||
-      failed(verifyVRegTypeLike(*this, getResult().getType(), "result")))
+template <typename ReductionOp>
+static LogicalResult verifyWideningReductionVecOp(ReductionOp op,
+                                                  StringRef opName) {
+  if (failed(verifyVRegTypeLike(op, op.getInput().getType(), "input")) ||
+      failed(verifyVRegTypeLike(op, op.getResult().getType(), "result")))
     return failure();
-  if (getInput().getType() != getResult().getType())
-    return emitOpError("input and result must have the same vector type");
-  return success();
+
+  auto inputType = dyn_cast<VRegType>(op.getInput().getType());
+  auto resultType = dyn_cast<VRegType>(op.getResult().getType());
+  if (!inputType || !resultType)
+    return failure();
+
+  Type inputElemType = inputType.getElementType();
+  Type expectedResultElemType = inputElemType;
+  int64_t expectedResultLanes = inputType.getElementCount();
+  if (auto inputInt = dyn_cast<IntegerType>(inputElemType)) {
+    if (inputInt.getWidth() < 8 || inputInt.getWidth() > 32)
+      return op.emitOpError(
+          "requires 8-bit, 16-bit, or 32-bit integer vector element type");
+    if (inputInt.getWidth() == 8) {
+      expectedResultElemType =
+          IntegerType::get(op.getContext(), 16, inputInt.getSignedness());
+      expectedResultLanes = inputType.getElementCount() / 2;
+    }
+    if (inputInt.getWidth() == 16) {
+      expectedResultElemType =
+          IntegerType::get(op.getContext(), 32, inputInt.getSignedness());
+      expectedResultLanes = inputType.getElementCount() / 2;
+    }
+  } else if (!inputElemType.isF16() && !inputElemType.isF32()) {
+    return op.emitOpError("requires i16/i32/f16/f32 vector element type");
+  }
+
+  if (resultType.getElementCount() == expectedResultLanes &&
+      resultType.getElementType() == expectedResultElemType)
+    return success();
+
+  return op.emitOpError() << opName << " expects result type !pto.vreg<"
+                          << expectedResultLanes << "x"
+                          << expectedResultElemType
+                          << " for input element type " << inputElemType;
+}
+
+LogicalResult VcaddOp::verify() {
+  return verifyWideningReductionVecOp(*this, "vcadd");
 }
 
 LogicalResult VcmaxOp::verify() {

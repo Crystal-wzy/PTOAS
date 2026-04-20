@@ -145,6 +145,22 @@ static FailureOr<StringRef> buildLaneTypedCallee(MLIRContext *context,
       .getValue();
 }
 
+static FailureOr<StringRef> buildLaneTypedCalleeFromInput(MLIRContext *context,
+                                                          Type inputType,
+                                                          StringRef stem,
+                                                          StringRef suffix) {
+  std::string vec =
+      getElementTypeFragment(getElementTypeFromVectorLike(inputType));
+  auto lanes = getElementCountFromVectorLike(inputType);
+  if (vec.empty() || !lanes)
+    return failure();
+
+  return StringAttr::get(context, "llvm.hivm." + stem.str() + ".v" +
+                                      std::to_string(*lanes) + vec +
+                                      suffix.str())
+      .getValue();
+}
+
 static std::string getElementTypeFragment(Type type) {
   if (type.isF16())
     return "f16";
@@ -2247,6 +2263,55 @@ public:
         mask.getType() != maskType) {
       return rewriter.notifyMatchFailure(
           op, "unexpected converted reduction operand types");
+    }
+
+    auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName,
+                                              TypeRange{resultType},
+                                              ValueRange{input, mask});
+    state.plannedDecls.push_back(
+        PlannedDecl{calleeName->str(), call.getCalleeType()});
+    rewriter.replaceOp(op, call.getResults());
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+template <typename ReductionOp>
+class LowerWideningReductionUnaryOpPattern final
+    : public OpConversionPattern<ReductionOp> {
+public:
+  explicit LowerWideningReductionUnaryOpPattern(TypeConverter &typeConverter,
+                                                MLIRContext *context,
+                                                LoweringState &state)
+      : OpConversionPattern<ReductionOp>(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(ReductionOp op, typename ReductionOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    FailureOr<StringRef> calleeName = buildLaneTypedCalleeFromInput(
+        op.getContext(), op.getInput().getType(),
+        getReductionUnaryStem<ReductionOp>(), ".x");
+    if (failed(calleeName))
+      return rewriter.notifyMatchFailure(op,
+                                         "unsupported widening reduction VPTO signature");
+
+    Type inputType =
+        this->getTypeConverter()->convertType(op.getInput().getType());
+    Type resultType =
+        this->getTypeConverter()->convertType(op.getResult().getType());
+    Type maskType = this->getTypeConverter()->convertType(op.getMask().getType());
+    if (!inputType || !resultType || !maskType)
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to convert widening reduction types");
+
+    Value input = adaptor.getInput();
+    Value mask = adaptor.getMask();
+    if (!input || !mask || input.getType() != inputType ||
+        mask.getType() != maskType) {
+      return rewriter.notifyMatchFailure(
+          op, "unexpected converted widening reduction operand types");
     }
 
     auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName,
@@ -4823,7 +4888,7 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerVecScalarMaskedOpPattern<pto::VlreluOp>,
                LowerVecScalarMaskedOpPattern<pto::VshlsOp>,
                LowerVecScalarMaskedOpPattern<pto::VshrsOp>,
-               LowerReductionUnaryOpPattern<pto::VcaddOp>,
+               LowerWideningReductionUnaryOpPattern<pto::VcaddOp>,
                LowerReductionUnaryOpPattern<pto::VcmaxOp>,
                LowerReductionUnaryOpPattern<pto::VcminOp>,
                LowerReductionUnaryOpPattern<pto::VcgaddOp>,

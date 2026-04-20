@@ -19,8 +19,8 @@ Operations that reduce a vector to a scalar or per-group result.
 
 ### `pto.vcadd`
 
-- **syntax:** `%result = pto.vcadd %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
-- **A5 types:** i16-i64, f16, f32
+- **syntax:** `%result = pto.vcadd %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<MxU>`
+- **A5 types:** i8-i32, f16, f32
 - **semantics:** Sum all elements. Result in lane 0, others zeroed.
 
 ```c
@@ -35,9 +35,11 @@ for (int i = 1; i < N; i++)
 - **inputs:** `%input` is the source vector and `%mask` selects participating
   lanes.
 - **outputs:** `%result` contains the reduction result in its low element(s).
-- **constraints and limitations:** Some narrow integer forms may widen the
-  internal accumulation or result placement. If all predicate bits are zero, the
-  result is zero.
+- **constraints and limitations:** On A5, `i8/u8` inputs produce widened
+  `i16/u16` results with half as many lanes (`M = N / 2`), and `i16/u16` inputs
+  produce widened `i32/u32` results with half as many lanes. For
+  `i32/u32/f16/f32` inputs, `U = T` and `M = N`. If all predicate bits are
+  zero, the result is zero.
 
 ---
 

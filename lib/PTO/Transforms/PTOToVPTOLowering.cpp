@@ -36,6 +36,28 @@ namespace {
 
 constexpr StringLiteral kLoweredLoopScopeAttrName = "llvm.loop.aivector_scope";
 
+static Type getVcaddResultElementType(MLIRContext *context, Type inputElementType) {
+  if (auto intType = dyn_cast<IntegerType>(inputElementType)) {
+    if (intType.getWidth() == 8)
+      return IntegerType::get(context, 16, intType.getSignedness());
+    if (intType.getWidth() == 16)
+      return IntegerType::get(context, 32, intType.getSignedness());
+  }
+  return inputElementType;
+}
+
+static pto::VRegType getVcaddResultVRegType(MLIRContext *context,
+                                            pto::VRegType inputType) {
+  int64_t resultLanes = inputType.getElementCount();
+  if (auto intType = dyn_cast<IntegerType>(inputType.getElementType())) {
+    if (intType.getWidth() == 8 || intType.getWidth() == 16)
+      resultLanes /= 2;
+  }
+  return pto::VRegType::get(
+      context, resultLanes,
+      getVcaddResultElementType(context, inputType.getElementType()));
+}
+
 struct ResolvedTensorView {
   Value root;
   Attribute layoutAttr;
@@ -2414,7 +2436,9 @@ LogicalResult buildRowReduceVecScope(StringRef family,
 
       Value reduced;
       if (family == "rowsum")
-        reduced = rewriter.create<pto::VcaddOp>(loc, vecType, srcVec, srcPredicate);
+        reduced = rewriter.create<pto::VcaddOp>(
+            loc, getVcaddResultVRegType(rewriter.getContext(), vecType), srcVec,
+            srcPredicate);
       else if (family == "rowmax")
         reduced = rewriter.create<pto::VcmaxOp>(loc, vecType, srcVec, srcPredicate);
       else if (family == "rowmin")
@@ -2423,9 +2447,11 @@ LogicalResult buildRowReduceVecScope(StringRef family,
         return emitError(loc) << "unsupported VPTO row-reduce family: " << family;
 
       Value fullMask = buildAllPredicateMask(rewriter, loc, contract.elementType);
-      if (family == "rowsum")
+      if (family == "rowsum") {
+        if (reduced.getType() != vecType)
+          reduced = rewriter.create<pto::VcvtOp>(loc, vecType, reduced);
         acc = rewriter.create<pto::VaddOp>(loc, vecType, acc, reduced, fullMask);
-      else if (family == "rowmax")
+      } else if (family == "rowmax")
         acc = rewriter.create<pto::VmaxOp>(loc, vecType, acc, reduced, fullMask);
       else
         acc = rewriter.create<pto::VminOp>(loc, vecType, acc, reduced, fullMask);
@@ -2463,7 +2489,9 @@ LogicalResult buildRowReduceVecScope(StringRef family,
 
     Value reduced;
     if (family == "rowsum")
-      reduced = rewriter.create<pto::VcaddOp>(loc, vecType, srcVec, srcPredicate);
+      reduced = rewriter.create<pto::VcaddOp>(
+          loc, getVcaddResultVRegType(rewriter.getContext(), vecType), srcVec,
+          srcPredicate);
     else if (family == "rowmax")
       reduced = rewriter.create<pto::VcmaxOp>(loc, vecType, srcVec, srcPredicate);
     else if (family == "rowmin")
@@ -2472,9 +2500,11 @@ LogicalResult buildRowReduceVecScope(StringRef family,
       return emitError(loc) << "unsupported VPTO row-reduce family: " << family;
 
     Value fullMask = buildAllPredicateMask(rewriter, loc, contract.elementType);
-    if (family == "rowsum")
+    if (family == "rowsum") {
+      if (reduced.getType() != vecType)
+        reduced = rewriter.create<pto::VcvtOp>(loc, vecType, reduced);
       acc = rewriter.create<pto::VaddOp>(loc, vecType, acc, reduced, fullMask);
-    else if (family == "rowmax")
+    } else if (family == "rowmax")
       acc = rewriter.create<pto::VmaxOp>(loc, vecType, acc, reduced, fullMask);
     else
       acc = rewriter.create<pto::VminOp>(loc, vecType, acc, reduced, fullMask);
