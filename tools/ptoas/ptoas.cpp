@@ -239,7 +239,8 @@ static llvm::cl::opt<int> graphSyncSolverEventIdMax(
 static llvm::cl::opt<bool> enableTileOpExpand(
     "enable-tile-op-expand",
     llvm::cl::desc(
-        "Enable Tile-to-Vector lowering path (memref->tile_buf recovery)"),
+        "Deprecated compatibility flag. TileOp expansion is controlled by "
+        "--pto-backend=vpto."),
     llvm::cl::init(false));
 
 #ifndef PTOAS_DEFAULT_TILELANG_PATH
@@ -1417,31 +1418,29 @@ static LogicalResult prepareVPTOForEmission(ModuleOp module) {
 
 static LogicalResult lowerPTOToVPTOBackend(ModuleOp module) {
   PassManager backendPM(module.getContext());
-  if (enableTileOpExpand) {
-    // TileOp Expand path:
-    //   1. MemrefToTileBuf: recover tile_buf from memref
-    //   2. ExpandTileOp: instantiate TileLang DSL templates, replace tile ops
-    //      with func.call to template functions (tile_buf params)
-    //   3. InlineLibCall: inline template function bodies
-    //   4. FoldTileBufIntrinsics: fold tile_buf_addr / tile_valid_rows /
-    //      tile_valid_cols to concrete memref/constant values
-    backendPM.addPass(pto::createMemrefToTileBufPass());
+  // TileOp Expand path:
+  //   1. MemrefToTileBuf: recover tile_buf from memref
+  //   2. ExpandTileOp: instantiate TileLang DSL templates, replace tile ops
+  //      with func.call to template functions (tile_buf params)
+  //   3. InlineLibCall: inline template function bodies
+  //   4. FoldTileBufIntrinsics: fold tile_buf_addr / tile_valid_rows /
+  //      tile_valid_cols to concrete memref/constant values
+  backendPM.addPass(pto::createMemrefToTileBufPass());
 
-    pto::ExpandTileOpOptions expandOpts;
-    expandOpts.tilelangPath = tilelangPath;
-    expandOpts.tilelangPkgPath = tilelangPkgPath;
-    backendPM.addPass(pto::createExpandTileOpPass(expandOpts));
+  pto::ExpandTileOpOptions expandOpts;
+  expandOpts.tilelangPath = tilelangPath;
+  expandOpts.tilelangPkgPath = tilelangPkgPath;
+  backendPM.addPass(pto::createExpandTileOpPass(expandOpts));
 
-    backendPM.addPass(pto::createPTOInlineLibCallPass());
-    backendPM.addNestedPass<mlir::func::FuncOp>(
-        pto::createFoldTileBufIntrinsicsPass());
-    // FoldTileBufIntrinsics materializes many constant branch conditions.
-    // Clean them up immediately on the TileOp expansion path before the
-    // authoring-stage VPTO verifier and let the existing CSE passes remove the
-    // resulting dead values later in the pipeline.
-    backendPM.addPass(mlir::createSCCPPass());
-    backendPM.addPass(mlir::createCanonicalizerPass());
-  }
+  backendPM.addPass(pto::createPTOInlineLibCallPass());
+  backendPM.addNestedPass<mlir::func::FuncOp>(
+      pto::createFoldTileBufIntrinsicsPass());
+  // FoldTileBufIntrinsics materializes many constant branch conditions.
+  // Clean them up immediately on the TileOp expansion path before the
+  // authoring-stage VPTO verifier and let the existing CSE passes remove the
+  // resulting dead values later in the pipeline.
+  backendPM.addPass(mlir::createSCCPPass());
+  backendPM.addPass(mlir::createCanonicalizerPass());
   if (failed(applyConfiguredPassManagerCLOptions(backendPM,
                                                  "VPTO backend lowering")))
     return failure();

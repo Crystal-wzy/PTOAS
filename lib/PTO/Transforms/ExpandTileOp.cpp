@@ -818,8 +818,7 @@ void ExpandTileOpPass::runOnOperation() {
 
   if (tilelangPath.empty()) {
     mod.emitError(
-        "ExpandTileOp requires a non-empty tilelang-path when "
-        "--enable-tile-op-expand is set");
+        "ExpandTileOp requires a non-empty tilelang-path on the VPTO backend");
     signalPassFailure();
     return;
   }

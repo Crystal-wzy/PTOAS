@@ -5,6 +5,7 @@
 
 // Test ExpandTileOp expansion for pto.tadds in the VPTO pipeline.
 //
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o - | FileCheck %s
 // RUN: ptoas --pto-arch=a5 --pto-backend=vpto --enable-tile-op-expand --emit-vpto %s -o - | FileCheck %s
 
 // CHECK: func.func @TADDS()
