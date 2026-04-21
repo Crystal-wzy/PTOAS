@@ -117,6 +117,7 @@ struct VcvtContract {
   bool requiresSat;
   bool requiresPart;
   unsigned maskBitWidth;
+  bool satBeforeRnd = false;
 };
 
 static Value getI64Constant(OpBuilder &builder, Location loc, uint64_t value) {
@@ -487,6 +488,9 @@ static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
     }
   case VcvtElemKind::BF16:
     switch (dst) {
+    case VcvtElemKind::F16:
+      return VcvtContract{"llvm.hivm.vcvtff.bf162f16.x", true, true, false, 16,
+                          true};
     case VcvtElemKind::F32:
       return VcvtContract{"llvm.hivm.vcvtff.bf162f32.x", false, false, true, 16};
     case VcvtElemKind::S32:
@@ -4140,7 +4144,7 @@ public:
     callArgs.push_back(*mask);
     argTypes.push_back((*mask).getType());
 
-    if ((*contract).requiresRnd) {
+    auto appendRndArg = [&]() -> LogicalResult {
       auto roundMode =
           op.getRndAttr() ? parseRoundModeImmediate(*op.getRnd()) : std::nullopt;
       if (!roundMode)
@@ -4148,9 +4152,10 @@ public:
       Value roundValue = getI32Constant(rewriter, op.getLoc(), *roundMode);
       callArgs.push_back(roundValue);
       argTypes.push_back(roundValue.getType());
-    }
+      return success();
+    };
 
-    if ((*contract).requiresSat) {
+    auto appendSatArg = [&]() -> LogicalResult {
       auto saturation =
           op.getSatAttr() ? parseSaturationImmediate(*op.getSat()) : std::nullopt;
       if (!saturation)
@@ -4158,6 +4163,19 @@ public:
       Value satValue = getI32Constant(rewriter, op.getLoc(), *saturation);
       callArgs.push_back(satValue);
       argTypes.push_back(satValue.getType());
+      return success();
+    };
+
+    if ((*contract).satBeforeRnd) {
+      if ((*contract).requiresSat && failed(appendSatArg()))
+        return failure();
+      if ((*contract).requiresRnd && failed(appendRndArg()))
+        return failure();
+    } else {
+      if ((*contract).requiresRnd && failed(appendRndArg()))
+        return failure();
+      if ((*contract).requiresSat && failed(appendSatArg()))
+        return failure();
     }
 
     if ((*contract).requiresPart) {

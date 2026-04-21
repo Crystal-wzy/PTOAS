@@ -657,6 +657,9 @@ static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
     }
   case VcvtElemKind::BF16:
     switch (dst) {
+    case VcvtElemKind::F16:
+      return VcvtContract{/*requiresRnd=*/true, /*requiresSat=*/true,
+                          /*requiresPart=*/false};
     case VcvtElemKind::F32:
       return VcvtContract{/*requiresRnd=*/false, /*requiresSat=*/false,
                           /*requiresPart=*/true};

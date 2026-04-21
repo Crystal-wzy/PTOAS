@@ -158,6 +158,7 @@ _VCVT_ATTR_CONTRACTS: dict[tuple[str, str], tuple[bool, bool, bool]] = {
     ("f16", "s16"): (True, True, False),
     ("f16", "s8"): (True, True, True),
     ("f16", "u8"): (True, True, True),
+    ("bf16", "f16"): (True, True, False),
     ("bf16", "f32"): (False, False, True),
     ("bf16", "s32"): (True, True, True),
     ("u8", "f16"): (False, False, True),

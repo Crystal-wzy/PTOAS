@@ -1769,6 +1769,7 @@ enum class VPTOCvtLoweringKind {
   Vtrc,
   F32ToBF16,
   F16ToF32,
+  BF16ToF16,
   BF16ToF32,
 };
 
@@ -1780,6 +1781,8 @@ static FailureOr<VPTOCvtLoweringKind> classifyA5CvtLowering(Type srcElemType,
     return VPTOCvtLoweringKind::F32ToBF16;
   if (srcElemType.isF16() && dstElemType.isF32())
     return VPTOCvtLoweringKind::F16ToF32;
+  if (srcElemType.isBF16() && dstElemType.isF16())
+    return VPTOCvtLoweringKind::BF16ToF16;
   if (srcElemType.isBF16() && dstElemType.isF32())
     return VPTOCvtLoweringKind::BF16ToF32;
   return failure();
@@ -4786,7 +4789,7 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
       classifyA5CvtLowering(contract.elementType, dstElementType);
   if (failed(loweringKind))
     return op.emitOpError(
-        "current tcvt lowering supports only f32->f32, f32->bf16, f16->f32, and bf16->f32");
+        "current tcvt lowering supports only f32->f32, f32->bf16, f16->f32, bf16->f16, and bf16->f32");
 
   FailureOr<StringAttr> roundMode = stringifyA5RoundMode(op, rewriter);
   if (failed(roundMode))
@@ -4886,6 +4889,17 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
     Value converted = rewriter.create<pto::VcvtOp>(
         op.getLoc(), dstVecType, loaded.getResult(), StringAttr(),
         StringAttr(), rewriter.getStringAttr("PART_EVEN"));
+    rewriter.create<pto::VstsOp>(
+        op.getLoc(), converted, dstBuffer, offset, StringAttr(),
+        buildAllPredicateMask(rewriter, op.getLoc(), dstElementType));
+    break;
+  }
+  case VPTOCvtLoweringKind::BF16ToF16: {
+    auto loaded =
+        rewriter.create<pto::VldsOp>(op.getLoc(), srcVecType, srcBuffer, offset, StringAttr());
+    Value converted = rewriter.create<pto::VcvtOp>(
+        op.getLoc(), dstVecType, loaded.getResult(), *roundMode,
+        rewriter.getStringAttr("RS_ENABLE"), StringAttr());
     rewriter.create<pto::VstsOp>(
         op.getLoc(), converted, dstBuffer, offset, StringAttr(),
         buildAllPredicateMask(rewriter, op.getLoc(), dstElementType));

@@ -1394,6 +1394,7 @@ family.
 - Examples:
   `f32 -> si32` requires `rnd` and `sat`;
   `f16 -> si32` requires `rnd` and `part`, and rejects `sat`;
+  `bf16 -> f16` requires `rnd` and `sat`;
   `f16 -> f32` requires `part`;
   `si32 -> f32` requires `rnd`.
 - VPTO does not define a `mask_b64` form. Conversions that produce `si64`
@@ -1417,6 +1418,14 @@ vec_i32_wide = pto.vcvt(
     mask16,
     rnd=pto.VcvtRoundMode.R,
     part=pto.VcvtPartMode.EVEN,
+)
+
+vec_f16_from_bf16 = pto.vcvt(
+    vec_bf16,
+    pto.f16,
+    mask16,
+    rnd=pto.VcvtRoundMode.R,
+    sat=pto.VcvtSatMode.SAT,
 )
 
 vec_f16_narrow = pto.vcvt(
