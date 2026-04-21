@@ -1388,6 +1388,14 @@ family.
   A5 `vcvt` type matrix, width-changing packing rules, and attribute-sensitive
   forms, refer to
   [`../vpto_spec/vpto-spec-current.md`](../vpto_spec/vpto-spec-current.md).
+- Attribute requirements are type-pair specific. The DSL enforces the same
+  per-form contract as VPTO, so some pairs require attributes while others
+  reject them.
+- Examples:
+  `f32 -> si32` requires `rnd` and `sat`;
+  `f16 -> si32` requires `rnd` and `part`, and rejects `sat`;
+  `f16 -> f32` requires `part`;
+  `si32 -> f32` requires `rnd`.
 - VPTO does not define a `mask_b64` form. Conversions that produce `si64`
   results still use the typed mask granularity of the source vector family.
 - Width-changing conversions continue to follow VPTO packing semantics even on
@@ -1402,6 +1410,14 @@ vec_f32 = pto.vcvt(vec_f16, pto.f32, mask16)
 
 mask32 = pto.make_mask(pto.f32, PAT.ALL)
 vec_i32 = pto.vcvt(vec_f32, pto.si32, mask32)
+
+vec_i32_wide = pto.vcvt(
+    vec_f16,
+    pto.si32,
+    mask16,
+    rnd=pto.VcvtRoundMode.R,
+    part=pto.VcvtPartMode.EVEN,
+)
 
 vec_f16_narrow = pto.vcvt(
     vec_f32,

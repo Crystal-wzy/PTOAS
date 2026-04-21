@@ -3197,6 +3197,125 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         self.assertIn("does not accept `part=`", str(ctx.exception))
 
+    def test_vcvt_f16_to_i32_requires_rnd_and_part(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(
+                op="vcvt_f16_to_i32_missing_rnd_unique",
+                dtypes=[(pto.i32, pto.f16)],
+                advanced=True,
+            )
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+                dst_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+                vec = pto.vlds(src, 0, dist="UNPK_B16")
+                out = pto.vcvt(
+                    vec,
+                    pto.i32,
+                    src_mask,
+                    part=pto.VcvtPartMode.EVEN,
+                )
+                pto.vsts(out, dst, 0, dst_mask)
+                return None
+
+            specialized = kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+                src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            )
+            specialized.mlir_text()
+
+        self.assertIn("requires explicit `rnd=`", str(ctx.exception))
+
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(
+                op="vcvt_f16_to_i32_missing_part_unique",
+                dtypes=[(pto.i32, pto.f16)],
+                advanced=True,
+            )
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+                dst_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+                vec = pto.vlds(src, 0, dist="UNPK_B16")
+                out = pto.vcvt(
+                    vec,
+                    pto.i32,
+                    src_mask,
+                    rnd=pto.VcvtRoundMode.R,
+                )
+                pto.vsts(out, dst, 0, dst_mask)
+                return None
+
+            specialized = kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+                src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            )
+            specialized.mlir_text()
+
+        self.assertIn("requires explicit `part=`", str(ctx.exception))
+
+    def test_vcvt_f16_to_i32_rejects_sat(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(
+                op="vcvt_f16_to_i32_sat_unique",
+                dtypes=[(pto.i32, pto.f16)],
+                advanced=True,
+            )
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+                dst_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+                vec = pto.vlds(src, 0, dist="UNPK_B16")
+                out = pto.vcvt(
+                    vec,
+                    pto.i32,
+                    src_mask,
+                    rnd=pto.VcvtRoundMode.R,
+                    sat=pto.VcvtSatMode.SAT,
+                    part=pto.VcvtPartMode.EVEN,
+                )
+                pto.vsts(out, dst, 0, dst_mask)
+                return None
+
+            specialized = kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+                src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            )
+            specialized.mlir_text()
+
+        self.assertIn("does not accept `sat=`", str(ctx.exception))
+
+    def test_vcvt_f16_to_i32_accepts_rnd_and_part(self) -> None:
+        @pto.vkernel(
+            op="vcvt_f16_to_i32_attrs_unique",
+            dtypes=[(pto.i32, pto.f16)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+            dst_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+            vec = pto.vlds(src, 0, dist="UNPK_B16")
+            out = pto.vcvt(
+                vec,
+                pto.i32,
+                src_mask,
+                rnd=pto.VcvtRoundMode.R,
+                part=pto.VcvtPartMode.EVEN,
+            )
+            pto.vsts(out, dst, 0, dst_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vcvt", text)
+        self.assertIn('rnd = "R"', text)
+        self.assertIn('part = "EVEN"', text)
+        self.assertNotIn('sat = "SAT"', text)
+
     def test_vbitcast_supports_direct_interface(self) -> None:
         @pto.vkernel(
             op="vbitcast_direct_unique",
