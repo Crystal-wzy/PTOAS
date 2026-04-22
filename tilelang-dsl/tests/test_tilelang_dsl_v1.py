@@ -160,7 +160,12 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.CmpMode.GE.value, "ge")
         self.assertEqual(pto.VcvtRoundMode.R.value, "R")
         self.assertEqual(pto.VcvtSatMode.SAT.value, "SAT")
+        self.assertEqual(pto.VcvtPartMode.EVEN.value, "EVEN")
         self.assertEqual(pto.VcvtPartMode.ODD.value, "ODD")
+        self.assertEqual(pto.VcvtPartMode.P0.value, "P0")
+        self.assertEqual(pto.VcvtPartMode.P1.value, "P1")
+        self.assertEqual(pto.VcvtPartMode.P2.value, "P2")
+        self.assertEqual(pto.VcvtPartMode.P3.value, "P3")
         self.assertEqual(pto.PostUpdateMode.POST_UPDATE.value, "POST_UPDATE")
         self.assertEqual(pto.PostUpdateMode.NO_POST_UPDATE.value, "NO_POST_UPDATE")
         self.assertEqual(pto.Event.ID31.value, "EVENT_ID31")
@@ -2982,6 +2987,68 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             text,
             r"= pto\.vcvt %[^,\s]+(?: \{[^}]+\})? : !pto\.vreg<[^>]+> -> !pto\.vreg<[^>]+>",
         )
+
+    def test_vcvt_supports_part_t_modes_with_enum(self) -> None:
+        @pto.vkernel(
+            op="vcvt_part_t_enum_unique",
+            dtypes=[(pto.i8, pto.f16)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+            dst_mask = pto.make_mask(pto.i8, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vcvt(
+                vec,
+                pto.i8,
+                src_mask,
+                rnd=pto.VcvtRoundMode.R,
+                sat=pto.VcvtSatMode.SAT,
+                part=pto.VcvtPartMode.P0,
+            )
+            pto.vsts(out, dst, 0, dst_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vcvt", text)
+        self.assertIn('rnd = "R"', text)
+        self.assertIn('sat = "SAT"', text)
+        self.assertIn('part = "P0"', text)
+
+    def test_vcvt_supports_part_t_modes_with_canonical_string(self) -> None:
+        @pto.vkernel(
+            op="vcvt_part_t_string_unique",
+            dtypes=[(pto.i8, pto.f16)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+            dst_mask = pto.make_mask(pto.i8, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vcvt(
+                vec,
+                pto.i8,
+                src_mask,
+                rnd="R",
+                sat="SAT",
+                part="P3",
+            )
+            pto.vsts(out, dst, 0, dst_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vcvt", text)
+        self.assertIn('part = "P3"', text)
 
     def test_vcvt_i32_to_i64_reuses_b32_mask_and_emits_i64_vreg(self) -> None:
         @pto.vkernel(

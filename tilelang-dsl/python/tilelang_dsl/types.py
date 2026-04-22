@@ -448,6 +448,10 @@ class VcvtSatMode(str, Enum):
 class VcvtPartMode(str, Enum):
     EVEN = "EVEN"
     ODD = "ODD"
+    P0 = "P0"
+    P1 = "P1"
+    P2 = "P2"
+    P3 = "P3"
 
 
 class PostUpdateMode(str, Enum):

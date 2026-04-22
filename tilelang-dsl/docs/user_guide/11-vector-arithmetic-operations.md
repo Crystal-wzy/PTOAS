@@ -1354,7 +1354,7 @@ family.
 **Attribute Enums**:
 - `pto.VcvtRoundMode`: `R`, `A`, `F`, `C`, `Z`, `O`
 - `pto.VcvtSatMode`: `SAT`, `NOSAT`
-- `pto.VcvtPartMode`: `EVEN`, `ODD`
+- `pto.VcvtPartMode`: `EVEN`, `ODD`, `P0`, `P1`, `P2`, `P3`
 
 **Parameters**:
 | Parameter | Type | Description |
@@ -1364,7 +1364,7 @@ family.
 | `mask` | `MaskType` | Predicate mask selecting active source lanes. Its granularity must match the source vector family, not the destination family |
 | `rnd` | `pto.VcvtRoundMode` \| `None` | Optional rounding-mode attribute lowered to VPTO `rnd` |
 | `sat` | `pto.VcvtSatMode` \| `None` | Optional saturation attribute lowered to VPTO `sat` |
-| `part` | `pto.VcvtPartMode` \| `None` | Optional even/odd packing selector lowered to VPTO `part` |
+| `part` | `pto.VcvtPartMode` \| `None` | Optional width-changing lane-placement selector lowered to VPTO `part` |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -1384,6 +1384,18 @@ family.
   `i8`/`si8`/`ui8` use `mask_b8`.
 - The enum form is preferred. For compatibility, canonical strings such as
   `"R"`, `"SAT"`, and `"EVEN"` are also accepted.
+- VPTO `part` supports two families: `Part` (`EVEN`/`ODD`) for ordinary
+  width-changing conversions (e.g. `32 -> 16`, `16 -> 32`), and `Part_T`
+  (`P0`–`P3`) for 4-way packed placement (e.g. `32 -> 8`, fp8/fp4 flows).
+
+  | Mode | VPTO spelling | Family | Description | TileLang DSL v1 status |
+  |------|---------------|--------|-------------|------------------------|
+  | `EVEN` | `PART_EVEN` | `Part` | Output to even-indexed lanes | Exposed as `pto.VcvtPartMode.EVEN` |
+  | `ODD` | `PART_ODD` | `Part` | Output to odd-indexed lanes | Exposed as `pto.VcvtPartMode.ODD` |
+  | `P0` | `PART_P0` | `Part_T` | Output to sub-part 0 in 4-way packed placement | Exposed as `pto.VcvtPartMode.P0` |
+  | `P1` | `PART_P1` | `Part_T` | Output to sub-part 1 in 4-way packed placement | Exposed as `pto.VcvtPartMode.P1` |
+  | `P2` | `PART_P2` | `Part_T` | Output to sub-part 2 in 4-way packed placement | Exposed as `pto.VcvtPartMode.P2` |
+  | `P3` | `PART_P3` | `Part_T` | Output to sub-part 3 in 4-way packed placement | Exposed as `pto.VcvtPartMode.P3` |
 - Only backend-supported source/destination type pairs are legal. For the full
   A5 `vcvt` type matrix, width-changing packing rules, and attribute-sensitive
   forms, refer to

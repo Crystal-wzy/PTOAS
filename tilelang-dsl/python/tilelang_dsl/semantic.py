@@ -5453,8 +5453,10 @@ class _SemanticAnalyzer:
         if part_mode not in {mode.value for mode in VcvtPartMode}:
             raise TypeError(
                 "pto.vcvt part must be a VcvtPartMode enum such as "
-                "`pto.VcvtPartMode.EVEN` or `pto.VcvtPartMode.ODD`, or one of the "
-                'canonical strings `"EVEN"` / `"ODD"` in TileLang DSL v1'
+                "`pto.VcvtPartMode.EVEN`, `pto.VcvtPartMode.ODD`, or "
+                "`pto.VcvtPartMode.P0`..`pto.VcvtPartMode.P3`, or one of the "
+                'canonical strings `"EVEN"`, `"ODD"`, `"P0"`, `"P1"`, `"P2"`, or `"P3"` '
+                "in TileLang DSL v1"
             )
         return SemanticLiteralExpr(value=part_mode, type=SemanticMetaType(kind="string"))
 
