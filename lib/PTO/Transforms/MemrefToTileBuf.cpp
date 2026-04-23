@@ -85,10 +85,15 @@ static pto::TileBufType reconstructTileBufType(pto::BindTileOp bindOp) {
 }
 
 // ============================================================================
-// Helper: check whether an op is a tile-level op (needs tile_buf operands)
+// Helper: check whether an op should consume recovered tile_buf operands.
+//
+// Besides tile ops themselves, tile_buf intrinsics also need to be rewired so
+// later FoldTileBufIntrinsics sees the canonical
+// unrealized_conversion_cast <- bind_tile anchor.
 // ============================================================================
-static bool isTileOp(Operation *op) {
-  return isa<pto::OpPipeInterface>(op);
+static bool shouldRewriteTileBufOperands(Operation *op) {
+  return isa<pto::OpPipeInterface, pto::TileBufAddrOp, pto::TileValidRowsOp,
+             pto::TileValidColsOp>(op);
 }
 
 // ============================================================================
@@ -138,10 +143,10 @@ LogicalResult MemrefToTileBufPass::processFunction(func::FuncOp func,
     memrefToTileBuf[bindOp.getResult()] = cast.getResult(0);
   }
 
-  // Phase 2: For each tile op, replace memref operands that have a
-  // corresponding tile_buf value.
+  // Phase 2: For each tile op / tile_buf intrinsic, replace memref operands
+  // that have a corresponding tile_buf value.
   func.walk([&](Operation *op) {
-    if (!isTileOp(op))
+    if (!shouldRewriteTileBufOperands(op))
       return;
     for (OpOperand &operand : op->getOpOperands()) {
       auto it = memrefToTileBuf.find(operand.get());
@@ -174,7 +179,8 @@ LogicalResult MemrefToTileBufPass::processFunction(func::FuncOp func,
     unsigned idx = blockArg.getArgNumber();
     pto::TileBufType tileBufTy = reconstructTileBufType(bindOp);
 
-    // Replace all tile op uses of the cast with the block arg directly.
+    // Replace all tile op / tile_buf intrinsic uses of the cast with the
+    // block arg directly.
     auto castIt = memrefToTileBuf.find(bindOp.getResult());
     if (castIt == memrefToTileBuf.end())
       continue;
@@ -203,9 +209,9 @@ LogicalResult MemrefToTileBufPass::processFunction(func::FuncOp func,
     // But the back-cast's own operand must remain the block arg.
     backCast.getInputsMutable().assign(ValueRange{blockArg});
 
-    // Now replace tile op uses: they should use the tile_buf block arg
-    // directly instead of going through the unrealized_conversion_cast
-    // chain.
+    // Now replace tile op / tile_buf intrinsic uses: they should use the
+    // tile_buf block arg directly instead of going through the
+    // unrealized_conversion_cast chain.
     tileBufVal.replaceAllUsesWith(blockArg);
     // Erase the now-dead forward cast (memref → tile_buf).
     if (auto castOp =

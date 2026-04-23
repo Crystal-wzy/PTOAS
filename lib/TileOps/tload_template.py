@@ -10,6 +10,27 @@
 
 import tilelang_dsl as pto
 
+
+def _constraint_scalar(value):
+    return value.value if hasattr(value, "value") else value
+
+
+def _known_eq(lhs, rhs) -> bool:
+    lhs_value = _constraint_scalar(lhs)
+    rhs_value = _constraint_scalar(rhs)
+    if lhs_value is None or rhs_value is None:
+        return True
+    return lhs_value == rhs_value
+
+
+def _known_le(lhs, rhs) -> bool:
+    lhs_value = _constraint_scalar(lhs)
+    rhs_value = _constraint_scalar(rhs)
+    if lhs_value is None or rhs_value is None:
+        return True
+    return lhs_value <= rhs_value
+
+
 def _match_tile_layout(dst, *, row_major: bool, s_layout) -> bool:
     b_layout_ok = (
         dst.config.b_layout == pto.BLayout.ROW_MAJOR
@@ -22,16 +43,20 @@ def _match_tile_layout(dst, *, row_major: bool, s_layout) -> bool:
 def _check_load_bounds(src, dst, *, logical_rows, logical_cols=None, stride_axis=None) -> bool:
     if src.rank != 5:
         return False
-    if stride_axis is not None and src.strides[stride_axis] != 1:
+    if stride_axis is not None and not _known_eq(src.strides[stride_axis], 1):
         return False
-    if dst.valid_shape[0] > logical_rows or logical_rows > dst.shape[0]:
+    if not _known_le(dst.valid_shape[0], logical_rows):
         return False
-    if dst.valid_shape[0] > dst.shape[0]:
+    if not _known_le(logical_rows, dst.shape[0]):
+        return False
+    if not _known_le(dst.valid_shape[0], dst.shape[0]):
         return False
     if logical_cols is not None:
-        if dst.valid_shape[1] > logical_cols or logical_cols > dst.shape[1]:
+        if not _known_le(dst.valid_shape[1], logical_cols):
             return False
-    if dst.valid_shape[1] > dst.shape[1]:
+        if not _known_le(logical_cols, dst.shape[1]):
+            return False
+    if not _known_le(dst.valid_shape[1], dst.shape[1]):
         return False
     return True
 

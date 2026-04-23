@@ -503,6 +503,17 @@ static bool containsVPTOIR(llvm::StringRef input) {
   return false;
 }
 
+static bool hasUnexpandedTileOps(ModuleOp module) {
+  bool found = false;
+  module.walk([&](Operation *op) {
+    if (found)
+      return;
+    if (isa<pto::OpPipeInterface>(op))
+      found = true;
+  });
+  return found;
+}
+
 // --------------------------------------------------------------------------
 // Post-process C++ output: rewrite marker calls into Tile member calls.
 // We emit marker calls in EmitC IR because EmitC currently does not provide a
@@ -1771,7 +1782,10 @@ int main(int argc, char **argv) {
     outputOS = &outputFile->os();
   }
 
-  if (effectiveBackend == PTOBackend::VPTO && inputIsVPTOIR) {
+  const bool hasTileOpsToExpand = hasUnexpandedTileOps(*module);
+
+  if (effectiveBackend == PTOBackend::VPTO && inputIsVPTOIR &&
+      !hasTileOpsToExpand) {
     if (ptoPrintSeamIR || !ptoSeamIRFile.empty()) {
       llvm::errs() << "Error: shared pre-backend seam IR is unavailable when "
                       "the input is already VPTO IR.\n";

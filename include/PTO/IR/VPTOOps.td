@@ -77,10 +77,13 @@ def TileBufAddrOp : PTO_Op<"tile_buf_addr", [Pure]> {
     shape and address space.
 
     This op is emitted by TileLang DSL templates and resolved by the
-    FoldTileBufIntrinsics pass after inlining.
+    FoldTileBufIntrinsics pass after inlining. Hand-written `.pto` may also
+    use it directly on the memref result of `pto.bind_tile` / lowered
+    `pto.alloc_tile`.
   }];
 
-  let arguments = (ins TileBufType:$src);
+  let arguments = (ins AnyTypeOf<[TileBufType, AnyMemRef],
+                                 "tile_buf or tile-bound memref">:$src);
   let results = (outs PtrOrMemRef:$dst);
 
   let hasVerifier = 1;

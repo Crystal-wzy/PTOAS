@@ -13,15 +13,35 @@ endif()
 get_filename_component(KERNEL_LL_DIR "${KERNEL_LL}" DIRECTORY)
 file(MAKE_DIRECTORY "${KERNEL_LL_DIR}")
 
+if(NOT DEFINED PTOAS_ENABLE_INSERT_SYNC)
+    set(PTOAS_ENABLE_INSERT_SYNC ON)
+endif()
+
+set(PTOAS_COMMAND
+    "${PTOAS_BIN}"
+    --pto-arch=a5
+)
+
+if(DEFINED PTOAS_PTO_LEVEL AND NOT PTOAS_PTO_LEVEL STREQUAL "")
+    list(APPEND PTOAS_COMMAND "--pto-level=${PTOAS_PTO_LEVEL}")
+endif()
+
+list(APPEND PTOAS_COMMAND --pto-backend=vpto)
+
+if(PTOAS_ENABLE_INSERT_SYNC)
+    list(APPEND PTOAS_COMMAND --enable-insert-sync)
+endif()
+
+list(APPEND PTOAS_COMMAND
+    --enable-tile-op-expand
+    --vpto-emit-hivm-llvm
+    "${PTO_SRC}"
+    -o
+    -
+)
+
 execute_process(
-    COMMAND "${PTOAS_BIN}"
-        --pto-arch=a5
-        --pto-backend=vpto
-        --enable-insert-sync
-        --enable-tile-op-expand
-        --vpto-emit-hivm-llvm
-        "${PTO_SRC}"
-        -o -
+    COMMAND ${PTOAS_COMMAND}
     OUTPUT_FILE "${KERNEL_LL}"
     ERROR_VARIABLE PTOAS_STDERR
     RESULT_VARIABLE PTOAS_RESULT

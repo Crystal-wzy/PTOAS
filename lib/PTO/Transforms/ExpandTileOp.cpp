@@ -477,6 +477,23 @@ static void appendJsonIntArray(std::string &json, ArrayRef<int64_t> arr) {
   json += "]";
 }
 
+/// Serialize a JSON array where dynamic dimensions become `null`.
+static void appendJsonDimArray(std::string &json, ArrayRef<int64_t> arr,
+                               bool negativeIsDynamic = false) {
+  json += "[";
+  for (size_t i = 0; i < arr.size(); ++i) {
+    if (i > 0)
+      json += ",";
+    int64_t dim = arr[i];
+    if (ShapedType::isDynamic(dim) || (negativeIsDynamic && dim < 0)) {
+      json += "null";
+      continue;
+    }
+    json += std::to_string(dim);
+  }
+  json += "]";
+}
+
 static std::string buildOperandSpecsJson(const SpecKey &key) {
   std::string json = "[";
   for (size_t i = 0; i < key.operands.size(); ++i) {
@@ -488,7 +505,7 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
       json += "{\"kind\":\"tile\",\"dtype\":\"" + op.dtype + "\",\"shape\":";
       appendJsonIntArray(json, op.tileShape);
       json += ",\"valid_shape\":";
-      appendJsonIntArray(json, op.tileValidShape);
+      appendJsonDimArray(json, op.tileValidShape, /*negativeIsDynamic=*/true);
       json += ",\"memory_space\":\"";
       json += op.tileMemorySpace;
       json += "\",\"config\":{";
@@ -506,7 +523,7 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
 
     if (op.kind == OperandKind::View) {
       json += "{\"kind\":\"view\",\"dtype\":\"" + op.dtype + "\",\"shape\":";
-      appendJsonIntArray(json, op.viewShape);
+      appendJsonDimArray(json, op.viewShape);
       if (!op.viewStrides.empty()) {
         json += ",\"strides\":[";
         for (size_t dim = 0; dim < op.viewStrides.size(); ++dim) {

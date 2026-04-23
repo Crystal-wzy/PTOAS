@@ -42,12 +42,57 @@ def compare_bin(golden_path, output_path, dtype, eps):
     return True
 
 
+def compare_matrix_valid(golden_path, output_path, rows, cols, valid_cols, dtype, eps):
+    if not os.path.exists(output_path):
+        print(f"[ERROR] Output missing: {output_path}")
+        return False
+    if not os.path.exists(golden_path):
+        print(f"[ERROR] Golden missing: {golden_path}")
+        return False
+    dtype_np = np.dtype(dtype)
+    golden = np.fromfile(golden_path, dtype=dtype_np)
+    output = np.fromfile(output_path, dtype=dtype_np)
+    expected_elems = rows * cols
+    if golden.size != expected_elems or output.size != expected_elems:
+        print(
+            f"[ERROR] Shape mismatch: expected elems={expected_elems}, "
+            f"golden={golden.size}, out={output.size}"
+        )
+        return False
+    golden = golden.reshape(rows, cols)
+    output = output.reshape(rows, cols)
+    if not np.allclose(
+        golden[:, :valid_cols],
+        output[:, :valid_cols],
+        atol=eps,
+        rtol=eps,
+        equal_nan=True,
+    ):
+        abs_diff = np.abs(
+            golden[:, :valid_cols].astype(np.float64)
+            - output[:, :valid_cols].astype(np.float64)
+        )
+        flat_idx = int(np.argmax(abs_diff))
+        row, col = divmod(flat_idx, valid_cols)
+        print(
+            f"[ERROR] Mismatch in valid region: max diff={float(abs_diff[row, col])} "
+            f"at row={row}, col={col} "
+            f"(golden={float(golden[row, col])}, out={float(output[row, col])}, dtype={dtype_np})"
+        )
+        return False
+    return True
+
+
 def main():
+    rows = int(np.fromfile("v9.bin", dtype=np.int32)[0])
+    seq = int(np.fromfile("v8.bin", dtype=np.int32)[0])
     ok = True
     ok = compare_bin("golden_v4.bin", "v4.bin", np.float32, 1e-4) and ok
     ok = compare_bin("golden_v5.bin", "v5.bin", np.float32, 1e-4) and ok
     ok = compare_bin("golden_v6.bin", "v6.bin", np.float32, 1e-4) and ok
-    ok = compare_bin("golden_v7.bin", "v7.bin", np.float32, 1e-4) and ok
+    ok = compare_matrix_valid(
+        "golden_v7.bin", "v7.bin", rows, 128, seq, np.float32, 1e-4
+    ) and ok
     if not ok:
         print("[ERROR] compare failed")
         sys.exit(2)

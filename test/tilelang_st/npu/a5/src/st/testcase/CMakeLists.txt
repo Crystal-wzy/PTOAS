@@ -20,6 +20,20 @@
 set(PTO_TILELANG_ST_TESTCASE_DIR ${CMAKE_CURRENT_LIST_DIR})
 
 function(pto_tilelang_vec_st NAME)
+    set(options DISABLE_INSERT_SYNC)
+    set(oneValueArgs PTO_LEVEL)
+    cmake_parse_arguments(PTO_TILELANG_ST "${options}" "${oneValueArgs}" "" ${ARGN})
+
+    set(PTOAS_ENABLE_INSERT_SYNC ON)
+    if(PTO_TILELANG_ST_DISABLE_INSERT_SYNC)
+        set(PTOAS_ENABLE_INSERT_SYNC OFF)
+    endif()
+
+    set(PTOAS_PTO_LEVEL "")
+    if(DEFINED PTO_TILELANG_ST_PTO_LEVEL)
+        set(PTOAS_PTO_LEVEL "${PTO_TILELANG_ST_PTO_LEVEL}")
+    endif()
+
     # Step 1: ptoas  .pto → kernel.ll
     set(PTO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/${NAME}.pto)
     set(KERNEL_LL ${CMAKE_CURRENT_BINARY_DIR}/${NAME}_kernel.ll)
@@ -31,6 +45,8 @@ function(pto_tilelang_vec_st NAME)
             -DPTOAS_BIN=${PTOAS_BIN}
             -DPTO_SRC=${PTO_SRC}
             -DKERNEL_LL=${KERNEL_LL}
+            -DPTOAS_ENABLE_INSERT_SYNC=${PTOAS_ENABLE_INSERT_SYNC}
+            -DPTOAS_PTO_LEVEL=${PTOAS_PTO_LEVEL}
             -P ${PTOAS_CAPTURE_SCRIPT}
         DEPENDS ${PTO_SRC} ${PTOAS_CAPTURE_SCRIPT}
         COMMENT "ptoas: ${NAME}.pto -> ${NAME}_kernel.ll"
@@ -116,6 +132,7 @@ set(ALL_TESTCASES
     tadd
     tcvt
     tload
+    softmax
 )
 
 if((TEST_CASE IN_LIST ALL_TESTCASES) OR (TEST_CASE STREQUAL "all"))

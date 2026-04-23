@@ -10,6 +10,27 @@
 
 import tilelang_dsl as pto
 
+
+def _constraint_scalar(value):
+    return value.value if hasattr(value, "value") else value
+
+
+def _known_eq(lhs, rhs) -> bool:
+    lhs_value = _constraint_scalar(lhs)
+    rhs_value = _constraint_scalar(rhs)
+    if lhs_value is None or rhs_value is None:
+        return True
+    return lhs_value == rhs_value
+
+
+def _known_le(lhs, rhs) -> bool:
+    lhs_value = _constraint_scalar(lhs)
+    rhs_value = _constraint_scalar(rhs)
+    if lhs_value is None or rhs_value is None:
+        return True
+    return lhs_value <= rhs_value
+
+
 def _match_store_tile_layout(src, *, row_major: bool, s_layout) -> bool:
     b_layout_ok = (
         src.config.b_layout == pto.BLayout.ROW_MAJOR
@@ -22,15 +43,15 @@ def _match_store_tile_layout(src, *, row_major: bool, s_layout) -> bool:
 def _check_store_bounds(src, dst, *, logical_rows, logical_cols, stride_axis=None) -> bool:
     if dst.rank != 5:
         return False
-    if stride_axis is not None and dst.strides[stride_axis] != 1:
+    if stride_axis is not None and not _known_eq(dst.strides[stride_axis], 1):
         return False
-    if src.valid_shape[0] != logical_rows:
+    if not _known_eq(src.valid_shape[0], logical_rows):
         return False
-    if src.valid_shape[1] != logical_cols:
+    if not _known_eq(src.valid_shape[1], logical_cols):
         return False
-    if src.valid_shape[0] > src.shape[0]:
+    if not _known_le(src.valid_shape[0], src.shape[0]):
         return False
-    if src.valid_shape[1] > src.shape[1]:
+    if not _known_le(src.valid_shape[1], src.shape[1]):
         return False
     return True
 

@@ -2032,19 +2032,38 @@ LogicalResult TensorViewAddrOp::verify() {
 }
 
 LogicalResult TileBufAddrOp::verify() {
-  auto srcType = dyn_cast<pto::TileBufType>(getSrc().getType());
-  if (!srcType)
-    return emitOpError("source must be a !pto.tile_buf<...>");
-
   Type dstType = getDst().getType();
-  Type elementType = srcType.getElementType();
-  auto srcSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(srcType.getMemorySpace());
+  Type elementType;
+  Attribute srcMemorySpace;
+  int64_t srcRank = 0;
+
+  if (auto srcTileType = dyn_cast<pto::TileBufType>(getSrc().getType())) {
+    elementType = srcTileType.getElementType();
+    srcMemorySpace = srcTileType.getMemorySpace();
+    srcRank = static_cast<int64_t>(srcTileType.getShape().size());
+  } else if (auto srcMemRefType = dyn_cast<BaseMemRefType>(getSrc().getType())) {
+    // Compatibility for the current TileOp expansion pipeline:
+    // PTOViewToMemref lowers tile_buf producers (for example alloc_tile) to
+    // memref + pto.bind_tile before MemrefToTileBuf reconstructs tile_buf
+    // values. Hand-written pto.tile_buf_addr may therefore temporarily see a
+    // tile-bound memref operand in this intermediate stage. If the pipeline is
+    // changed to avoid that PTOViewToMemref round-trip, this memref acceptance
+    // can be removed and TileBufAddrOp can go back to requiring tile_buf-only
+    // operands.
+    elementType = srcMemRefType.getElementType();
+    srcMemorySpace = srcMemRefType.getMemorySpace();
+    srcRank = srcMemRefType.getRank();
+  } else {
+    return emitOpError("source must be a !pto.tile_buf<...> or memref");
+  }
+
+  auto srcSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(srcMemorySpace);
 
   if (auto dstMemRefType = dyn_cast<BaseMemRefType>(dstType)) {
     if (dstMemRefType.getElementType() != elementType)
       return emitOpError(
           "memref result element type must match tile element type");
-    if (dstMemRefType.getRank() != static_cast<int64_t>(srcType.getShape().size()))
+    if (dstMemRefType.getRank() != srcRank)
       return emitOpError("memref result rank must match tile rank");
     auto dstSpace =
         dyn_cast_or_null<pto::AddressSpaceAttr>(dstMemRefType.getMemorySpace());

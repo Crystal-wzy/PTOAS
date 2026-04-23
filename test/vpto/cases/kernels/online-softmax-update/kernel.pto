@@ -124,12 +124,6 @@ module attributes {pto.target_arch = "a5"} {
           pto.vsts %final_sum, %ub_newsum[%row], %one_mask {dist = "1PT_B32"} : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
           pto.vsts %expmax, %ub_expmax[%row], %one_mask {dist = "1PT_B32"} : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
 
-          %zero = pto.vsub %final_max, %final_max, %active : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
-          scf.for %chunk = %c0 to %c128 step %c64 {
-            %chunk_base = arith.addi %row_qk, %chunk : index
-            pto.vsts %zero, %ub_out[%chunk_base], %active : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
-          }
-
           scf.for %chunk = %c0 to %c128 step %c64 {
             %chunk_i32 = arith.index_cast %chunk : index to i32
             %remaining_cols = arith.subi %arg7, %chunk_i32 : i32
