@@ -578,8 +578,7 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
 
   if (isa<pto::CopyUbufToUbufOp>(op)) {
     usedFields = {"family=copy_ubuf_to_ubuf"};
-    return makeUnresolved(op, "copy_ubuf_to_ubuf", "copy_ubuf_to_ubuf",
-                          usedFields, missingFields, "");
+    return makeResolved(op, "llvm.hivm.MOV.UB.TO.UB.v310", usedFields, "");
   }
 
   return failure();

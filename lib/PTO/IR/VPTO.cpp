@@ -1661,6 +1661,22 @@ LogicalResult CopyUbufToUbufOp::verify() {
   return success();
 }
 
+void DmaCopyOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+LogicalResult DmaCopyOp::verify() {
+  if (!isBufferLike(getSource().getType()) || !isBufferLike(getDestination().getType()))
+    return emitOpError("requires pointer-like source and destination");
+  if (classifyMemoryRole(getSource().getType()) != MemoryRole::UB ||
+      classifyMemoryRole(getDestination().getType()) != MemoryRole::UB)
+    return emitOpError("requires UB-backed source and destination");
+  return success();
+}
+
 void VgatherbOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {

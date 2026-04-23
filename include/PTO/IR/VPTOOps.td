@@ -299,6 +299,32 @@ def PTO_CopyUbufToUbufOp : PTO_Op<"copy_ubuf_to_ubuf"> {
   }];
 }
 
+def PTO_DmaCopyOp : PTO_Op<"dma_copy", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    PTO_BufferType:$source,
+    PTO_BufferType:$destination,
+    I64:$sid,
+    I64:$n_burst,
+    I64:$len_burst,
+    I64:$src_stride,
+    I64:$dst_stride
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source `,` $destination `,` $sid `,` $len_burst
+    `nburst` `(` $n_burst `,` $src_stride `,` $dst_stride `)`
+    attr-dict `:` type($source) `,` type($destination) `,` type($sid) `,`
+    type($n_burst) `,` type($len_burst) `,` type($src_stride) `,`
+    type($dst_stride)
+  }];
+}
+
 def PTO_VldsOp : PTO_Op<"vlds", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {

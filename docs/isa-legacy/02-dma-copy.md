@@ -198,35 +198,46 @@ pto.copy_ubuf_to_gm %ub_src, %gm_dst,
 
 - **syntax:**
 ```mlir
-pto.copy_ubuf_to_ubuf %source, %dest, %sid, %n_burst, %len_burst, %src_stride, %dst_stride
-    : !pto.ptr<T, ub>, !pto.ptr<T, ub>, i64 x5
+pto.copy_ubuf_to_ubuf %ub_src, %ub_dst,
+    %sid, %n_burst, %len_burst, %src_gap, %dst_gap
+    : !pto.ptr<T, ub>, !pto.ptr<T, ub>,
+      i64, i64, i64, i64, i64
 ```
-- **semantics:** Copy within Unified Buffer.
+- **semantics:** Raw UB→UB copy within Unified Buffer. `pto.dma_copy` uses the same operand contract.
 
-**Parameters:**
+**Parameter Table:**
 
-| Parameter | Description |
-|-----------|-------------|
-| `%source` | UB source pointer |
-| `%dest` | UB destination pointer |
-| `%sid` | Stream ID |
-| `%n_burst` | Number of bursts |
-| `%len_burst` | Length per burst |
-| `%src_stride` | Source stride |
-| `%dst_stride` | Destination stride |
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%ub_src` | ptr | UB source pointer (`!pto.ptr<T, ub>`, 32B-aligned) |
+| `%ub_dst` | ptr | UB destination pointer (`!pto.ptr<T, ub>`, 32B-aligned) |
+| `%sid` | 16 bits | Stream ID |
+| `%n_burst` | 16 bits | Number of bursts |
+| `%len_burst` | 16 bits | Burst length in units of 32 bytes |
+| `%src_gap` | 16 bits | Source gap between consecutive bursts, in units of 32 bytes |
+| `%dst_gap` | 16 bits | Destination gap between consecutive bursts, in units of 32 bytes |
 
 ---
 
-## Burst / Stride / Pad Model
+## Burst / Stride / Gap / Pad Model
 
-All A5 DMA addresses are **stride-based**: stride is the distance from the start of one row to the start of the next row (`stride >= lenBurst`). There is no separate "gap" parameter.
+The legacy DMA copy family uses two different innermost-burst contracts:
+
+- `pto.copy_gm_to_ubuf` / `pto.copy_ubuf_to_gm` are **stride-based**. Their
+  source and destination stride operands are start-to-start distances in bytes.
+- `pto.copy_ubuf_to_ubuf` is **gap-based**. Its
+  `%len_burst`, `%src_gap`, and `%dst_gap` operands are encoded in units of
+  32 bytes.
 
 ### Key Terms
 
 ```
-burst    = lenBurst contiguous bytes transferred per row
-stride   = distance (bytes) from start of row[r] to start of row[r+1]
-pad      = ub_stride - lenBurst, padded to the 32B alignment boundary
+GM↔UB burst = lenBurst contiguous bytes transferred per row
+GM↔UB stride = distance (bytes) from start of row[r] to start of row[r+1]
+pad = ub_stride - lenBurst, padded to the 32B alignment boundary
+UB→UB burst = len_burst * 32 bytes
+UB→UB next source start = previous source start + (len_burst + src_gap) * 32 bytes
+UB→UB next destination start = previous destination start + (len_burst + dst_gap) * 32 bytes
 ```
 
 ### Alignment Constraints
@@ -234,6 +245,20 @@ pad      = ub_stride - lenBurst, padded to the 32B alignment boundary
 - **UB addresses** (both source and destination) must be **32-byte aligned**.
 - **GM→UB padding**: When `data_select_bit = true`, each UB row is padded from `lenBurst` up to the **32B-aligned boundary** of `ub_stride` with `pad_val` (set via `set_mov_pad_val`). This ensures every UB row starts at a 32B-aligned offset.
 - **UB→GM de-padding**: MTE3 reads `lenBurst` bytes from each 32B-aligned UB row (skipping any padding that was added during load), writing only valid data to GM. This effectively strips padding on store.
+
+### UB→UB Raw Copy (`pto.copy_ubuf_to_ubuf`)
+
+For UB→UB raw copy, each burst copies `len_burst * 32` bytes.
+
+After burst `r`, the next burst starts at:
+
+```text
+src_next = src_curr + (len_burst + src_gap) * 32 bytes
+dst_next = dst_curr + (len_burst + dst_gap) * 32 bytes
+```
+
+So `src_gap` and `dst_gap` are not start-to-start strides. They are additional
+gaps inserted after the copied 32B blocks.
 
 ### 2D Diagram: GM→UB (pto.copy_gm_to_ubuf)
 

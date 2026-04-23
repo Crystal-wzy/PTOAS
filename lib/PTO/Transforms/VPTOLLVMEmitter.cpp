@@ -938,6 +938,41 @@ static FailureOr<Value> packCopyUbToGmConfig0(Operation *anchor, Value sid,
   return packCopyUbToGmConfig0(anchor, operands);
 }
 
+static FailureOr<Value>
+packCopyUbToUbConfig(Operation *anchor, ValueRange operands) {
+  if (operands.size() != 7)
+    return failure();
+
+  OpBuilder builder(anchor);
+  builder.setInsertionPoint(anchor);
+  Location loc = anchor->getLoc();
+
+  auto getI64Operand = [&](unsigned idx) -> Value {
+    return castIntegerLikeTo(anchor, operands[idx], builder.getI64Type());
+  };
+
+  Value nBurst = getI64Operand(3);
+  Value lenBurst = getI64Operand(4);
+  Value srcStride = getI64Operand(5);
+  Value dstStride = getI64Operand(6);
+  if (!nBurst || !lenBurst || !srcStride || !dstStride)
+    return failure();
+
+  auto shl = [&](Value value, uint64_t amount) -> Value {
+    return builder.create<arith::ShLIOp>(loc, value,
+                                         getI64Constant(builder, loc, amount));
+  };
+  auto bitOr = [&](Value lhs, Value rhs) -> Value {
+    return builder.create<arith::OrIOp>(loc, lhs, rhs);
+  };
+
+  Value config = nBurst;
+  config = bitOr(config, shl(lenBurst, 16));
+  config = bitOr(config, shl(srcStride, 32));
+  config = bitOr(config, shl(dstStride, 48));
+  return config;
+}
+
 static FailureOr<Value> packVbitsortConfig(Operation *anchor, Value repeatTimes) {
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
@@ -1317,6 +1352,10 @@ static FailureOr<StringRef> buildCopyGmToUbCallee(MLIRContext *context,
 static StringRef buildCopyUbToGmCallee(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.MOV.UB.TO.OUT.ALIGN.V2.DV")
       .getValue();
+}
+
+static StringRef buildCopyUbToUbCallee(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.MOV.UB.TO.UB.v310").getValue();
 }
 
 static StringRef buildPstiCallee(MLIRContext *context) {
@@ -2251,6 +2290,48 @@ public:
     auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName,
                                               TypeRange{}, args);
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
+    rewriter.eraseOp(op);
+    (void)call;
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+class LowerCopyUbufToUbufOpPattern final
+    : public OpConversionPattern<pto::CopyUbufToUbufOp> {
+public:
+  explicit LowerCopyUbufToUbufOpPattern(TypeConverter &typeConverter,
+                                        MLIRContext *context,
+                                        LoweringState &state)
+      : OpConversionPattern<pto::CopyUbufToUbufOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::CopyUbufToUbufOp op,
+                  pto::CopyUbufToUbufOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto llvmSourceType =
+        dyn_cast<LLVM::LLVMPointerType>(adaptor.getOperands()[0].getType());
+    auto llvmDestType =
+        dyn_cast<LLVM::LLVMPointerType>(adaptor.getOperands()[1].getType());
+    if (!llvmSourceType || !llvmDestType)
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer copy operands");
+
+    FailureOr<Value> config = packCopyUbToUbConfig(op, adaptor.getOperands());
+    if (failed(config))
+      return rewriter.notifyMatchFailure(op, "failed to materialize copy config");
+
+    StringRef calleeName = buildCopyUbToUbCallee(op.getContext());
+    SmallVector<Value> args{adaptor.getOperands()[1], adaptor.getOperands()[0],
+                            *config};
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{llvmDestType, llvmSourceType, rewriter.getI64Type()},
+        TypeRange{});
+    auto call = rewriter.create<func::CallOp>(op.getLoc(), calleeName,
+                                              TypeRange{}, args);
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
     rewriter.eraseOp(op);
     (void)call;
     return success();
@@ -5086,7 +5167,8 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerPredicateStoreOpPattern<pto::PstsOp>,
                LowerPstuOpPattern, LowerVstusOpPattern, LowerVsturOpPattern,
                LowerCopyOpPattern<pto::CopyGmToUbufOp>,
-               LowerCopyOpPattern<pto::CopyUbufToGmOp>>(
+               LowerCopyOpPattern<pto::CopyUbufToGmOp>,
+               LowerCopyUbufToUbufOpPattern>(
       typeConverter, patterns.getContext(), state);
 }
 
@@ -5141,7 +5223,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::VbitsortOp, pto::VtrcOp, pto::VcvtOp,
                       pto::VbitcastOp,
                       pto::VcmpOp, pto::VcmpsOp,
-                      pto::CopyGmToUbufOp, pto::CopyUbufToGmOp>();
+                      pto::CopyGmToUbufOp, pto::CopyUbufToGmOp,
+                      pto::CopyUbufToUbufOp>();
   target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 }
 

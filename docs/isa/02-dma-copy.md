@@ -9,9 +9,12 @@ This document describes the public grouped DMA interfaces:
 
 - `pto.dma_load`
 - `pto.dma_store`
+- `pto.dma_copy`
 
-The legacy low-level DMA configuration and raw copy interfaces are documented in
-[02-dma-copy-legacy.md](02-dma-copy-legacy.md).
+This chapter covers the public grouped DMA interfaces. The legacy raw copy
+family remains documented separately; in particular, `pto.copy_ubuf_to_ubuf`
+shares the same UB→UB copy contract as `pto.dma_copy` but remains a legacy
+surface op.
 
 ---
 
@@ -120,14 +123,49 @@ pto.dma_store %ub_in, %gm_out, %sid, %zero, %len_burst
 
 ---
 
-For the legacy low-level DMA copy family, see
-[02-dma-copy-legacy.md](02-dma-copy-legacy.md).
+### `pto.dma_copy`
+
+- **syntax:**
+```mlir
+pto.dma_copy %ub_src, %ub_dst, %sid, %len_burst
+  nburst(%n_burst, %src_gap, %dst_gap)
+  : !pto.ptr<T, ub>, !pto.ptr<T, ub>, i64, i64, i64, i64, i64
+```
+- **semantics:** Grouped UB→UB raw copy..
+
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%ub_src` | ptr | UB source pointer (`!pto.ptr<T, ub>`, 32B-aligned) |
+| `%ub_dst` | ptr | UB destination pointer (`!pto.ptr<T, ub>`, 32B-aligned) |
+| `%sid` | 16 bits | Stream ID |
+| `%len_burst` | 16 bits | Burst length in units of 32 bytes |
+| `nburst(%n_burst, %src_gap, %dst_gap)` | 16 bits / 16 bits / 16 bits | Required UB→UB outer burst group: count, source gap, destination gap |
+
+**Constraints:**
+
+- UB source and destination addresses must be 32B-aligned.
+- `%len_burst`, `%src_gap`, and `%dst_gap` are encoded in units of 32 bytes.
+
+**Example:**
+
+```mlir
+pto.dma_copy %ub_src, %ub_dst, %sid, %len32b
+  nburst(%rows, %src_gap, %dst_gap)
+  : !pto.ptr<i16, ub>, !pto.ptr<i16, ub>, i64, i64, i64, i64, i64
+```
 
 ---
 
-## Burst / Stride / Pad Model
+## GM↔UB Burst / Stride / Pad Model
 
-All A5 DMA addresses are **stride-based**: stride is the distance from the start of one row to the start of the next row (`stride >= lenBurst`). There is no separate "gap" parameter.
+This section describes the grouped GM↔UB DMA interfaces in this document:
+`pto.dma_load` and `pto.dma_store`.
+
+For these grouped GM↔UB DMA ops, the innermost `nburst(...)` group is
+**stride-based**: the source and destination stride operands are the
+start-to-start byte distance from one burst row to the next row.
 
 ### Key Terms
 
@@ -142,6 +180,25 @@ pad      = ub_stride - lenBurst, padded to the 32B alignment boundary
 - **UB addresses** (both source and destination) must be **32-byte aligned**.
 - **GM→UB padding**: When `pad(...)` is present on `pto.dma_load`, each UB row is padded from `lenBurst` up to the **32B-aligned boundary** of `ub_stride` with `pad_val`. This ensures every UB row starts at a 32B-aligned offset.
 - **UB→GM de-padding**: MTE3 reads `lenBurst` bytes from each 32B-aligned UB row (skipping any padding that was added during load), writing only valid data to GM. This effectively strips padding on store.
+
+---
+
+## UB→UB Burst / Gap Model
+
+This section describes the grouped UB→UB DMA interface in this document:
+`pto.dma_copy`.
+
+For `pto.dma_copy`, each burst copies `len_burst * 32` bytes.
+
+The next burst starts at:
+
+```text
+src_next = src_curr + (len_burst + src_gap) * 32 bytes
+dst_next = dst_curr + (len_burst + dst_gap) * 32 bytes
+```
+
+So `src_gap` and `dst_gap` are additional gaps after the copied 32B blocks.
+They are not start-to-start strides.
 
 ### 2D Diagram: GM→UB (`pto.dma_load`)
 

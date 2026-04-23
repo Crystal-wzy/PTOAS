@@ -16,11 +16,11 @@ next_ptr = pto.addptr(ub_ptr, 4096)
 **Problem**: Users must manage byte offsets and memory spaces manually.
 
 ### 2. **Verbose Copy Operations**
-The `pto.copy_ubuf_to_ubuf` operation has 7 parameters:
-- `src_offset`, `src_stride0`, `src_stride1`
-- `dst_offset`, `dst_stride0`, `dst_stride1`
+The `pto.copy_ubuf_to_ubuf` / `pto.dma_copy` operand contract is low-level:
+- source pointer, destination pointer, `sid`
+- `n_burst`, `len_burst`, `src_gap`, `dst_gap`
 
-**Problem**: Correctly setting stride parameters is error-prone, especially for multi-dimensional data.
+**Problem**: Correctly setting burst and gap parameters is error-prone, especially for multi-dimensional data.
 
 ### 3. **Precise Mask Type Matching**
 ```python

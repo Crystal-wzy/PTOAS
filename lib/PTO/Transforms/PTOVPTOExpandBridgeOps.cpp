@@ -186,6 +186,18 @@ struct ExpandDmaStorePattern : public OpRewritePattern<pto::DmaStoreOp> {
   }
 };
 
+struct ExpandDmaCopyPattern : public OpRewritePattern<pto::DmaCopyOp> {
+  using OpRewritePattern<pto::DmaCopyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(pto::DmaCopyOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<pto::CopyUbufToUbufOp>(
+        op, op.getSource(), op.getDestination(), op.getSid(), op.getNBurst(),
+        op.getLenBurst(), op.getSrcStride(), op.getDstStride());
+    return success();
+  }
+};
+
 struct PTOVPTOExpandBridgeOpsPass
     : public pto::impl::PTOVPTOExpandBridgeOpsBase<PTOVPTOExpandBridgeOpsPass> {
   using pto::impl::PTOVPTOExpandBridgeOpsBase<
@@ -197,8 +209,8 @@ struct PTOVPTOExpandBridgeOpsPass
       return;
 
     RewritePatternSet patterns(&getContext());
-    patterns.add<ExpandUvldPattern, ExpandDmaLoadPattern, ExpandDmaStorePattern>(
-        &getContext());
+    patterns.add<ExpandUvldPattern, ExpandDmaLoadPattern, ExpandDmaStorePattern,
+                 ExpandDmaCopyPattern>(&getContext());
     if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns))))
       signalPassFailure();
   }
