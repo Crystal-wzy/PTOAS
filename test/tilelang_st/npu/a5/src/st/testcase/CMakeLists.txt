@@ -138,6 +138,8 @@ set(ALL_TESTCASES
     tlog
     tneg
     tnot
+    tpartadd
+    tpartmul
     trecip
     trsqrt
     tsqrt
