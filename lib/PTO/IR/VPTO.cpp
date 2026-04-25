@@ -3132,7 +3132,24 @@ static LogicalResult verifyFloatBinaryVecNoMaskOp(BinaryVecNoMaskOp op) {
   return success();
 }
 
-LogicalResult VpreluOp::verify() { return verifyFloatBinaryVecNoMaskOp(*this); }
+template <typename BinaryVecMaskOp>
+static LogicalResult verifyFloatBinaryVecMaskOp(BinaryVecMaskOp op) {
+  if (failed(verifyVRegTypeLike(op, op.getLhs().getType(), "lhs type")) ||
+      failed(verifyVRegTypeLike(op, op.getRhs().getType(), "rhs type")) ||
+      failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")) ||
+      failed(verifyVRegTypeLike(op, op.getResult().getType(), "result type")))
+    return failure();
+  if (op.getLhs().getType() != op.getRhs().getType() ||
+      op.getLhs().getType() != op.getResult().getType())
+    return op.emitOpError("requires lhs, rhs, and result to share one vector type");
+  auto lhsType = cast<VRegType>(op.getLhs().getType());
+  Type elemType = lhsType.getElementType();
+  if (!elemType.isF16() && !elemType.isF32())
+    return op.emitOpError("requires f16 or f32 vector element type");
+  return success();
+}
+
+LogicalResult VpreluOp::verify() { return verifyFloatBinaryVecMaskOp(*this); }
 LogicalResult VexpdifOp::verify() {
   if (failed(verifyVRegTypeLike(*this, getInput().getType(), "input type")) ||
       failed(verifyVRegTypeLike(*this, getMax().getType(), "max type")) ||

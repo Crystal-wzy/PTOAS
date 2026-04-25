@@ -40,7 +40,7 @@ module attributes {pto.target_arch = "a5"} {
       scf.for %offset = %c0 to %c1024 step %c64 {
         %vec = pto.vlds %ub_in[%offset] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
         %alpha = pto.vlds %ub_alpha[%offset] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
-        %sum = pto.vprelu %vec, %alpha : !pto.vreg<64xf32>, !pto.vreg<64xf32> -> !pto.vreg<64xf32>
+        %sum = pto.vprelu %vec, %alpha, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
         pto.vsts %sum, %ub_out[%offset], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
       }
     }

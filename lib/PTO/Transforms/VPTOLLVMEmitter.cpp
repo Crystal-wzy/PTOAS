@@ -1676,6 +1676,8 @@ static StringRef getBinaryMaskedStem() {
     return "vshl";
   if constexpr (std::is_same_v<BinaryOp, pto::VshrOp>)
     return "vshr";
+  if constexpr (std::is_same_v<BinaryOp, pto::VpreluOp>)
+    return "vprelu";
   return {};
 }
 
@@ -2379,11 +2381,6 @@ static FailureOr<StringRef> buildVgatherbCallee(MLIRContext *context,
 static FailureOr<StringRef> buildVscatterCallee(MLIRContext *context,
                                                 Type valueType) {
   return buildLaneTypedCallee(context, valueType, "vscatter", ".v300");
-}
-
-static FailureOr<StringRef> buildVpreluCallee(MLIRContext *context,
-                                              Type resultType) {
-  return buildLaneTypedCallee(context, resultType, "vprelu", ".x");
 }
 
 static FailureOr<StringRef> buildVaxpyCallee(MLIRContext *context,
@@ -5622,52 +5619,6 @@ private:
   LoweringState &state;
 };
 
-class LowerVpreluOpPattern final : public OpConversionPattern<pto::VpreluOp> {
-public:
-  explicit LowerVpreluOpPattern(TypeConverter &typeConverter,
-                                MLIRContext *context, LoweringState &state)
-      : OpConversionPattern<pto::VpreluOp>(typeConverter, context),
-        state(state) {}
-
-  LogicalResult
-  matchAndRewrite(pto::VpreluOp op, pto::VpreluOp::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto laneCount = getElementCountFromVectorLike(op.getResult().getType());
-    Type elemType = getElementTypeFromVectorLike(op.getResult().getType());
-    if (!laneCount || !elemType)
-      return rewriter.notifyMatchFailure(op, "unsupported vprelu signature");
-
-    FailureOr<Value> mask = materializeDynamicPltMask(
-        rewriter, state, op.getLoc(), getI32Constant(rewriter, op.getLoc(), *laneCount),
-        elemType);
-    if (failed(mask))
-      return rewriter.notifyMatchFailure(op, "failed to materialize vprelu mask");
-
-    Type resultType = this->getTypeConverter()->convertType(op.getResult().getType());
-    if (!resultType)
-      return rewriter.notifyMatchFailure(op, "failed to convert vprelu result type");
-
-    FailureOr<StringRef> calleeName =
-        buildVpreluCallee(op.getContext(), op.getResult().getType());
-    if (failed(calleeName))
-      return rewriter.notifyMatchFailure(op, "unsupported vprelu callee");
-
-    auto funcType = rewriter.getFunctionType(
-        TypeRange{adaptor.getLhs().getType(), adaptor.getRhs().getType(),
-                  (*mask).getType()},
-        TypeRange{resultType});
-    auto call = rewriter.create<func::CallOp>(
-        op.getLoc(), *calleeName, TypeRange{resultType},
-        ValueRange{adaptor.getLhs(), adaptor.getRhs(), *mask});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.replaceOp(op, call.getResults());
-    return success();
-  }
-
-private:
-  LoweringState &state;
-};
-
 class LowerVaxpyOpPattern final : public OpConversionPattern<pto::VaxpyOp> {
 public:
   explicit LowerVaxpyOpPattern(TypeConverter &typeConverter,
@@ -6704,6 +6655,7 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerBinaryMaskedOpPattern<pto::VandOp>,
                LowerBinaryMaskedOpPattern<pto::VorOp>,
                LowerBinaryMaskedOpPattern<pto::VxorOp>,
+               LowerBinaryMaskedOpPattern<pto::VpreluOp>,
                LowerCarryBinaryOpPattern<pto::VaddcOp>,
                LowerCarryBinaryOpPattern<pto::VsubcOp>,
                LowerCarryBinaryOpPattern<pto::VaddcsOp>,
@@ -6795,7 +6747,7 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerVstarOpPattern, LowerVstasOpPattern,
                LowerVgather2OpPattern, LowerVgather2BcOpPattern,
                LowerVgatherbOpPattern, LowerVscatterOpPattern,
-               LowerVpreluOpPattern, LowerVaxpyOpPattern,
+               LowerVaxpyOpPattern,
                LowerVciOpPattern, LowerVexpdifOpPattern,
                LowerVbitsortOpPattern, LowerVtrcOpPattern, LowerVcvtOpPattern,
                LowerVbitcastOpPattern, LowerPbitcastOpPattern,

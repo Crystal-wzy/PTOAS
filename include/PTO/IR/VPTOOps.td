@@ -1806,7 +1806,22 @@ class PTO_UnmaskedBinaryVecOp<string mnemonic> : PTO_Op<mnemonic, [Pure]> {
   }];
 }
 
-def PTO_VpreluOp : PTO_UnmaskedBinaryVecOp<"vprelu">;
+class PTO_BinaryVecMaskedOp<string mnemonic> : PTO_Op<mnemonic, [Pure]> {
+  let arguments = (ins
+    PTO_VectorType:$lhs,
+    PTO_VectorType:$rhs,
+    PTO_MaskTypeConstraint:$mask
+  );
+  let results = (outs PTO_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $mask attr-dict `:` type($lhs) `,` type($rhs) `,` type($mask) `->` type($result)
+  }];
+}
+
+def PTO_VpreluOp : PTO_BinaryVecMaskedOp<"vprelu">;
 def PTO_VexpdifOp : PTO_Op<"vexpdif", [Pure]> {
   let arguments = (ins
     PTO_VectorType:$input,

@@ -40,7 +40,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vprelu`
 
-- **syntax:** `%result = pto.vprelu %input, %alpha : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vprelu %input, %alpha, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<bW> -> !pto.vreg<NxT>`
 - **A5 types:** f16, f32
 - **semantics:** Parametric ReLU with per-element alpha vector.
 
@@ -49,8 +49,8 @@ for (int i = 0; i < N; i++)
     dst[i] = (src[i] >= 0) ? src[i] : alpha[i] * src[i];
 ```
 
-- **inputs:** `%input` is the activation vector and `%alpha` is the per-element
-  slope vector.
+- **inputs:** `%input` is the activation vector, `%alpha` is the per-element
+  slope vector, and `%mask` selects active lanes.
 - **outputs:** `%result` is the parametric-ReLU vector.
 - **constraints and limitations:** Floating-point element types only on the
   current A5 surface.
