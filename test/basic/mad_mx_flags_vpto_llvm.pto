@@ -1,0 +1,23 @@
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-llvm %s -o - | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @mad_mx_flags() {
+    %c0 = arith.constant 0 : i64
+    %c8 = arith.constant 8 : i64
+    %c16 = arith.constant 16 : i64
+    %lhs = pto.castptr %c0 : i64 -> !pto.ptr<f8E4M3FN, left>
+    %rhs = pto.castptr %c0 : i64 -> !pto.ptr<f8E4M3FN, right>
+    %dst = pto.castptr %c0 : i64 -> !pto.ptr<f32, acc>
+    %bias = pto.castptr %c8 : i64 -> !pto.ptr<f32, bias>
+
+    pto.mad_mx_acc %lhs, %rhs, %dst, %c16, %c16, %c16 {unit_flag_ctrl = 3 : i32}
+      : !pto.ptr<f8E4M3FN, left>, !pto.ptr<f8E4M3FN, right>, !pto.ptr<f32, acc>, i64, i64, i64
+    pto.mad_mx_bias %lhs, %rhs, %dst, %bias, %c16, %c16, %c16
+      : !pto.ptr<f8E4M3FN, left>, !pto.ptr<f8E4M3FN, right>, !pto.ptr<f32, acc>, !pto.ptr<f32, bias>, i64, i64, i64
+    return
+  }
+}
+
+// CHECK: call void @llvm.hivm.MMAD.MX.e4m3e4m3{{.*}}i64 2413929400539086864
+// CHECK: call void @llvm.hivm.MMAD.MX.e4m3e4m3{{.*}}ptr addrspace(5) inttoptr (i64 34359738368 to ptr addrspace(5))
+// CHECK-SAME: i64 6917529027909582864

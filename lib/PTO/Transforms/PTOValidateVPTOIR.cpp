@@ -195,7 +195,8 @@ public:
     if (!op)
       return VPTOBufferAddressFamily::None;
 
-    if (isa<CopyGmToUbufOp, CopyUbufToUbufOp, CopyUbufToGmOp>(op))
+    if (isa<CopyGmToUbufOp, CopyUbufToUbufOp, CopyUbufToGmOp,
+            CopyCbufToUbufOp, CopyUbufToCbufOp>(op))
       return VPTOBufferAddressFamily::Copy;
 
     if (isa<VldsPostOp, VstsPostOp, VldasOp, VldusOp, PstuOp, VstusOp, VsturOp,

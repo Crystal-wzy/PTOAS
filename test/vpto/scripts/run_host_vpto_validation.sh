@@ -22,7 +22,9 @@ PTOAS_FLAGS="${PTOAS_FLAGS:---pto-arch a5}"
 VPTO_FLAGS="${VPTO_FLAGS:---pto-backend=vpto --vpto-emit-hivm-llvm}"
 AICORE_ARCH="${AICORE_ARCH:-dav-c310-vec}"
 CUBE_AICORE_ARCH="${CUBE_AICORE_ARCH:-dav-c310-cube}"
-CUBE_CASES="${CUBE_CASES:-mad_mx mad_f16f16f32 mad_f32f32f32 mad_bf16bf16f32}"
+CUBE_CASES="${CUBE_CASES:-mad_bias mad_mx mad_f16f16f32 mad_f32f32f32 mad_bf16bf16f32 cube-bridge-matmul cube-bridge-store-nz2dn-nchw cube-bridge-store-nz2dn-ncdhw cube-load-frac-layouts cbuf-ubuf-roundtrip-mixed}"
+GENERIC_AICORE_ARCH="${GENERIC_AICORE_ARCH:-dav-c310}"
+GENERIC_CASES="${GENERIC_CASES:-}"
 # set he HOST_RUNNER to "ssh root@localhost" if must change user to root to access the device 
 HOST_RUNNER="${HOST_RUNNER:-}"
 CASE_NAME="${CASE_NAME:-}"
@@ -32,8 +34,12 @@ SIM_LIB_DIR="${SIM_LIB_DIR:-}"
 COMPILE_ONLY="${COMPILE_ONLY:-0}"
 
 declare -a CUBE_CASE_LIST=()
+declare -a GENERIC_CASE_LIST=()
 if [[ -n "${CUBE_CASES}" ]]; then
   read -r -a CUBE_CASE_LIST <<< "${CUBE_CASES//,/ }"
+fi
+if [[ -n "${GENERIC_CASES}" ]]; then
+  read -r -a GENERIC_CASE_LIST <<< "${GENERIC_CASES//,/ }"
 fi
 
 log() {
@@ -168,7 +174,6 @@ WORK_SPACE="$(cd "${WORK_SPACE}" && pwd)"
 
 discover_cases() {
   local required_files=(
-    kernel.pto
     stub.cpp
     launch.cpp
     main.cpp
@@ -182,6 +187,8 @@ discover_cases() {
     for f in "${required_files[@]}"; do
       [[ -f "${requested_dir}/${f}" ]] || die "case ${CASE_NAME} is missing ${f}"
     done
+    [[ -f "${requested_dir}/kernel.pto" || -f "${requested_dir}/cube.pto" ]] ||
+      die "case ${CASE_NAME} must provide kernel.pto and/or cube.pto"
     printf "%s\n" "${CASE_NAME#/}"
     return 0
   fi
@@ -195,6 +202,9 @@ discover_cases() {
       fi
     done
     [[ "${ok}" -eq 1 ]] || continue
+    if [[ ! -f "${dir}/kernel.pto" && ! -f "${dir}/cube.pto" ]]; then
+      continue
+    fi
     local rel="${dir#${CASES_ROOT}/}"
     printf "%s\n" "${rel}"
   done
@@ -216,14 +226,54 @@ case_uses_cube_mode() {
   return 1
 }
 
+case_uses_generic_mode() {
+  local case_name="$1"
+  local case_base="${case_name##*/}"
+  for item in "${GENERIC_CASE_LIST[@]}"; do
+    [[ -n "${item}" ]] || continue
+    if [[ "${case_name}" == "${item}" || "${case_name}" == */"${item}" ||
+          "${case_base}" == "${item}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 build_case_vpto_flags() {
   local case_name="$1"
-  local base_flags="$2"
-  if case_uses_cube_mode "${case_name}"; then
+  local pto_name="$2"
+  local base_flags="$3"
+  if case_uses_generic_mode "${case_name}"; then
+    echo "${base_flags} --vpto-march ${GENERIC_AICORE_ARCH} --vpto-cce-aicore-arch ${GENERIC_AICORE_ARCH}"
+    return
+  fi
+  if [[ "${pto_name}" == "cube.pto" ]]; then
+    echo "${base_flags} --vpto-march ${CUBE_AICORE_ARCH} --vpto-cce-aicore-arch ${CUBE_AICORE_ARCH}"
+    return
+  fi
+  if [[ ! -f "${CASES_ROOT}/${case_name}/cube.pto" ]] && case_uses_cube_mode "${case_name}"; then
     echo "${base_flags} --vpto-march ${CUBE_AICORE_ARCH} --vpto-cce-aicore-arch ${CUBE_AICORE_ARCH}"
     return
   fi
   echo "${base_flags}"
+}
+
+source_aicore_arch() {
+  local case_name="$1"
+  local pto_name="$2"
+  if case_uses_generic_mode "${case_name}"; then
+    echo "${GENERIC_AICORE_ARCH}"
+    return
+  fi
+  if [[ "${pto_name}" == "cube.pto" ]]; then
+    echo "${CUBE_AICORE_ARCH}"
+    return
+  fi
+  if [[ ! -f "${CASES_ROOT}/${case_name}/cube.pto" ]] && case_uses_cube_mode "${case_name}"; then
+    echo "${CUBE_AICORE_ARCH}"
+    return
+  fi
+  echo "${AICORE_ARCH}"
 }
 
 build_launch_object() {
@@ -251,12 +301,33 @@ build_launch_object() {
     -o "${out_obj}"
 }
 
+merge_device_objects() {
+  local out_obj="$1"
+  shift
+  local device_objs=("$@")
+  [[ "${#device_objs[@]}" -gt 0 ]] || die "merge_device_objects requires at least one device object"
+
+  if [[ "${#device_objs[@]}" -eq 1 ]]; then
+    cp "${device_objs[0]}" "${out_obj}"
+    return 0
+  fi
+
+  "${LD_LLD_BIN}" \
+    -m aicorelinux \
+    -Ttext 0 \
+    "${device_objs[@]}" \
+    -o "${out_obj}" \
+    -r \
+    --allow-multiple-definition
+}
+
 build_host_stub() {
   local case_dir="$1"
-  local device_obj="$2"
+  local module_id="$2"
   local stub_obj="$3"
-  local module_id="$4"
-  local case_arch="$5"
+  local case_arch="$4"
+  local device_obj="$5"
+  [[ -f "${device_obj}" ]] || die "build_host_stub requires a valid device object: ${device_obj}"
   local host_target_args=(
     -triple "${HOST_TRIPLE}"
     -target-cpu "${HOST_TARGET_CPU}"
@@ -272,6 +343,8 @@ build_host_stub() {
     "${host_target_args[@]}" \
     -fcce-aicpu-legacy-launch \
     -fcce-is-host \
+    -cce-enable-mix \
+    -mllvm -enable-mix=true \
     -cce-launch-with-flagv2-impl \
     -fcce-aicore-arch "${case_arch}" \
     -fcce-fatobj-compile \
@@ -285,9 +358,7 @@ build_host_stub() {
     -mrelocation-model pic \
     -pic-level 2 \
     -fhalf-no-semantic-interposition \
-    -fenable-matrix \
-    -mllvm -enable-matrix \
-    -mframe-pointer=non-leaf \
+    -mframe-pointer=none \
     -fmath-errno \
     -ffp-contract=on \
     -fno-rounding-math \
@@ -326,7 +397,6 @@ build_host_stub() {
     -mllvm -cce-aicore-dcci-insert-for-scalar=false \
     -fcce-include-aibinary "${device_obj}" \
     -fcce-device-module-id "${module_id}" \
-    -target-feature +outline-atomics \
     -faddrsig \
     -D__GCC_HAVE_DWARF2_CFI_ASM=1 \
     -o "${stub_obj}" \
@@ -417,47 +487,67 @@ build_one_impl() {
   local out_dir="${WORK_SPACE}/${case_token}"
   local case_module_id
   case_module_id="$(printf '%s' "${MODULE_ID}-${case_name}" | md5sum | cut -c1-16)"
-  local llvm_ir="${out_dir}/${case_token}.ll"
-  local device_obj="${out_dir}/${case_token}.o"
   local launch_obj="${out_dir}/launch.o"
+  local merged_device_obj="${out_dir}/kernel_device_merged.o"
   local host_stub_obj="${out_dir}/kernel_host_from_llvm.o"
   local repack_obj="${out_dir}/${case_token}_stub.cpp.o"
   local repack_so="${out_dir}/lib${case_token}_kernel.so"
-  local case_arch="${AICORE_ARCH}"
-  if case_uses_cube_mode "${case_name}"; then
-    case_arch="${CUBE_AICORE_ARCH}"
+  local host_case_arch="${AICORE_ARCH}"
+  if [[ -f "${case_dir}/cube.pto" && -f "${case_dir}/kernel.pto" ]]; then
+    host_case_arch="${GENERIC_AICORE_ARCH}"
+  elif [[ -f "${case_dir}/cube.pto" ]] || case_uses_cube_mode "${case_name}"; then
+    host_case_arch="${CUBE_AICORE_ARCH}"
   fi
-  local case_vpto_flags
-  case_vpto_flags="$(build_case_vpto_flags "${case_name}" "${VPTO_FLAGS}")"
 
-  [[ -f "${case_dir}/kernel.pto" ]] || die "missing kernel.pto for ${case_name}"
   [[ -f "${case_dir}/stub.cpp" ]] || die "missing stub.cpp for ${case_name}"
   [[ -f "${case_dir}/main.cpp" ]] || die "missing main.cpp for ${case_name}"
   [[ -f "${case_dir}/launch.cpp" ]] || die "missing launch.cpp for ${case_name}"
   [[ -f "${case_dir}/golden.py" ]] || die "missing golden.py for ${case_name}"
   [[ -f "${case_dir}/compare.py" ]] || die "missing compare.py for ${case_name}"
+  [[ -f "${case_dir}/kernel.pto" || -f "${case_dir}/cube.pto" ]] ||
+    die "missing kernel.pto and cube.pto for ${case_name}"
 
-  log "[$case_name] mode: $(case_uses_cube_mode "${case_name}" && echo cube || echo vec) (aicore_arch=${case_arch})"
-  log "[$case_name] step 1/6: lower VPTO MLIR to LLVM IR"
-  "${PTOAS_BIN}" ${PTOAS_FLAGS} ${case_vpto_flags} \
-    "${case_dir}/kernel.pto" -o "${llvm_ir}"
+  local -a pto_sources=()
+  [[ -f "${case_dir}/kernel.pto" ]] && pto_sources+=("kernel.pto")
+  [[ -f "${case_dir}/cube.pto" ]] && pto_sources+=("cube.pto")
 
-  log "[$case_name] step 2/6: compile LLVM IR to device object"
-  "${BISHENG_BIN}" \
-    --target=hiipu64-hisilicon-cce \
-    -march="${case_arch}" \
-    --cce-aicore-arch="${case_arch}" \
-    --cce-aicore-only \
-    -O2 \
-    -c -x ir "${llvm_ir}" \
-    -o "${device_obj}"
+  local -a device_objs=()
+  local pto_name
+  for pto_name in "${pto_sources[@]}"; do
+    local source_stem="${pto_name%.pto}"
+    local llvm_ir="${out_dir}/${source_stem}.ll"
+    local device_obj="${out_dir}/${source_stem}.o"
+    local source_arch
+    source_arch="$(source_aicore_arch "${case_name}" "${pto_name}")"
+    local case_vpto_flags
+    case_vpto_flags="$(build_case_vpto_flags "${case_name}" "${pto_name}" "${VPTO_FLAGS}")"
 
-  log "[$case_name] step 3/6: build launch object and host fatobj stub"
-  build_launch_object "${case_dir}" "${launch_obj}" "${case_arch}"
-  build_host_stub "${case_dir}" "${device_obj}" "${host_stub_obj}" "${case_module_id}" "${case_arch}"
+    log "[$case_name] compile ${pto_name} as $( [[ "${source_arch}" == "${CUBE_AICORE_ARCH}" ]] && echo cube || echo vec ) (aicore_arch=${source_arch})"
+  log "[$case_name] step 1/7: lower ${pto_name} to LLVM IR"
+    "${PTOAS_BIN}" ${PTOAS_FLAGS} ${case_vpto_flags} \
+      "${case_dir}/${pto_name}" -o "${llvm_ir}"
 
-  log "[$case_name] step 4/6: link kernel shared library"
-  link_kernel_so "${case_token}" "${host_stub_obj}" "${launch_obj}" "${repack_obj}" "${repack_so}" "${case_module_id}" "${case_arch}"
+    log "[$case_name] step 2/7: compile ${pto_name} LLVM IR to device object"
+    "${BISHENG_BIN}" \
+      --target=hiipu64-hisilicon-cce \
+      -march="${source_arch}" \
+      --cce-aicore-arch="${source_arch}" \
+      --cce-aicore-only \
+      -O2 \
+      -c -x ir "${llvm_ir}" \
+      -o "${device_obj}"
+    device_objs+=("${device_obj}")
+  done
+
+  log "[$case_name] step 3/7: merge device objects"
+  merge_device_objects "${merged_device_obj}" "${device_objs[@]}"
+
+  log "[$case_name] step 4/7: build launch object and host fatobj stub"
+  build_launch_object "${case_dir}" "${launch_obj}" "${host_case_arch}"
+  build_host_stub "${case_dir}" "${case_module_id}" "${host_stub_obj}" "${host_case_arch}" "${merged_device_obj}"
+
+  log "[$case_name] step 5/7: link kernel shared library"
+  link_kernel_so "${case_token}" "${host_stub_obj}" "${launch_obj}" "${repack_obj}" "${repack_so}" "${case_module_id}" "${host_case_arch}"
 
   if [[ "${COMPILE_ONLY}" == "1" ]]; then
     log "[$case_name] compile-only mode: stop after kernel shared library"
@@ -465,14 +555,14 @@ build_one_impl() {
     return 0
   fi
 
-  log "[$case_name] step 5/6: build host executable and golden"
+  log "[$case_name] step 6/7: build host executable and golden"
   build_host_executable "${case_token}" "${case_dir}" "${out_dir}"
   (
     cd "${out_dir}"
     python3 "${case_dir}/golden.py"
   )
 
-  log "[$case_name] step 6/6: run NPU validation"
+  log "[$case_name] step 7/7: run NPU validation"
   local remote_run_cmd
   remote_run_cmd=$(cat <<EOF
 cd "${out_dir}" && \

@@ -120,42 +120,42 @@ pto.dma_store %ub_in, %gm_out, %len_burst
 
 - **syntax:**
 ```mlir
-pto.dma_copy %ub_src, %ub_dst, %len_burst
-  nburst(%n_burst, %src_gap, %dst_gap)
-  : !pto.ptr<T, ub>, !pto.ptr<T, ub>, i64, i64, i64, i64
+pto.dma_copy %ub_src, %dst, %len_burst
+  nburst(%n_burst, %src_stride, %dst_stride)
+  : !pto.ptr<T, ub>, !pto.ptr<T, ub|mat>, i64, i64, i64, i64
 ```
-- **semantics:** Grouped UB→UB raw copy..
+- **semantics:** Grouped UB→destination raw copy. When `%dst` is in UB, the transfer is UB→UB. When `%dst` is in MAT/CBUF, the transfer is UB→CBUF.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
 | `%ub_src` | ptr | UB source pointer (`!pto.ptr<T, ub>`, 32B-aligned) |
-| `%ub_dst` | ptr | UB destination pointer (`!pto.ptr<T, ub>`, 32B-aligned) |
+| `%dst` | ptr | Destination pointer (`!pto.ptr<T, ub>` or `!pto.ptr<T, mat>`, 32B-aligned) |
 | `%len_burst` | 16 bits | Burst length in units of 32 bytes |
-| `nburst(%n_burst, %src_gap, %dst_gap)` | 16 bits / 16 bits / 16 bits | Required UB→UB outer burst group: count, source gap, destination gap |
+| `nburst(%n_burst, %src_stride, %dst_stride)` | 16 bits / 16 bits / 16 bits | Required copy burst group: count, source step field, destination step field |
 
 **Constraints:**
 
 - UB source and destination addresses must be 32B-aligned.
-- `%len_burst`, `%src_gap`, and `%dst_gap` are encoded in units of 32 bytes.
+- `%len_burst`, `%src_stride`, and `%dst_stride` are encoded in units of 32 bytes.
 
 **Example:**
 
 ```mlir
-pto.dma_copy %ub_src, %ub_dst, %len32b
-  nburst(%rows, %src_gap, %dst_gap)
-  : !pto.ptr<i16, ub>, !pto.ptr<i16, ub>, i64, i64, i64, i64
+pto.dma_copy %ub_src, %dst, %len32b
+  nburst(%rows, %src_stride, %dst_stride)
+  : !pto.ptr<i16, ub>, !pto.ptr<i16, ub|mat>, i64, i64, i64, i64
 ```
 
 ---
 
-## GM↔UB Burst / Stride / Pad Model
+## Grouped DMA Burst / Stride / Pad Model
 
-This section describes the grouped GM↔UB DMA interfaces in this document:
+This section describes the grouped DMA interfaces in this document:
 `pto.dma_load` and `pto.dma_store`.
 
-For these grouped GM↔UB DMA ops, the innermost `nburst(...)` group is
+For these grouped DMA ops, the innermost `nburst(...)` group is
 **stride-based**: the source and destination stride operands are the
 start-to-start byte distance from one burst row to the next row.
 
@@ -175,9 +175,9 @@ pad      = ub_stride - lenBurst, padded to the 32B alignment boundary
 
 ---
 
-## UB→UB Burst / Gap Model
+## UB Copy Burst / Step Model
 
-This section describes the grouped UB→UB DMA interface in this document:
+This section describes the grouped UB-copy interface in this document:
 `pto.dma_copy`.
 
 For `pto.dma_copy`, each burst copies `len_burst * 32` bytes.
@@ -185,12 +185,12 @@ For `pto.dma_copy`, each burst copies `len_burst * 32` bytes.
 The next burst starts at:
 
 ```text
-src_next = src_curr + (len_burst + src_gap) * 32 bytes
-dst_next = dst_curr + (len_burst + dst_gap) * 32 bytes
+src_next = src_curr + (len_burst + src_stride) * 32 bytes
+dst_next = dst_curr + (len_burst + dst_stride) * 32 bytes
 ```
 
-So `src_gap` and `dst_gap` are additional gaps after the copied 32B blocks.
-They are not start-to-start strides.
+So `src_stride` and `dst_stride` are step fields that advance to the next burst
+after the copied 32B blocks.
 
 ### 2D Diagram: GM→UB (`pto.dma_load`)
 
@@ -222,7 +222,7 @@ pad    = filled with pad_val to 32B boundary (`pad(...)` present)
 [PAD]  = pad_val fill (from `pad(...)`)
 ```
 
-### 2D Diagram: UB→GM (`pto.dma_store`)
+### 2D Diagram: UB→GM (`pto.dma_store` with GM destination)
 
 ```
 UB (source, `!pto.ptr<T, ub>`, 32B-aligned start addr):
@@ -299,12 +299,12 @@ for (int lN = 0; lN < cN; ++lN) {
 If no `loop(...)` group is present, only the innermost `nburst(...)` loop
 remains.
 
-### UB→GM Full Loop
+### UB→Destination Full Loop
 
 For a form
 
 ```mlir
-pto.dma_store %ub_src, %gm_dst, %len_burst
+pto.dma_store %ub_src, %dst, %len_burst
   nburst(%n_burst, %src_stride, %dst_stride)
   loop(%c0, %s0, %d0)
   loop(%c1, %s1, %d1)
@@ -320,9 +320,9 @@ for (int lN = 0; lN < cN; ++lN) {
   for (int l1 = 0; l1 < c1; ++l1) {
     for (int l0 = 0; l0 < c0; ++l0) {
       uint8_t *ub_base = ub_src + l0 * s0 + l1 * s1 + ... + lN * sN;
-      uint8_t *gm_base = gm_dst + l0 * d0 + l1 * d1 + ... + lN * dN;
+      uint8_t *dst_base = dst + l0 * d0 + l1 * d1 + ... + lN * dN;
       for (int r = 0; r < n_burst; ++r) {
-        memcpy(gm_base + r * dst_stride,
+        memcpy(dst_base + r * dst_stride,
                ub_base + r * src_stride,
                len_burst);
       }

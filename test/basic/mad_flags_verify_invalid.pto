@@ -1,0 +1,14 @@
+// RUN: not ptoas --pto-arch=a5 --pto-backend=vpto %s -o - 2>&1 | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @mad_flags_verify_invalid(%lhs: !pto.ptr<f16, left>,
+                                      %rhs: !pto.ptr<f16, right>,
+                                      %dst: !pto.ptr<f32, acc>) {
+    %c16 = arith.constant 16 : i64
+    pto.mad %lhs, %rhs, %dst, %c16, %c16, %c16 {unit_flag_ctrl = 1 : i32}
+      : !pto.ptr<f16, left>, !pto.ptr<f16, right>, !pto.ptr<f32, acc>, i64, i64, i64
+    return
+  }
+}
+
+// CHECK: expects unit_flag_ctrl to be 0, 2, or 3

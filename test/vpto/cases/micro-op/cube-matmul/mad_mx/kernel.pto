@@ -14,6 +14,9 @@ module attributes {pto.target_arch = "a5"} {
     %c1_i64 = arith.constant 1 : i64
     %c8_i64 = arith.constant 8 : i64
     %c16_i64 = arith.constant 16 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c68720525568_i64 = arith.constant 68720525568 : i64
 
     %l1_a = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, mat>
     %l1_b = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, mat>
@@ -21,25 +24,31 @@ module attributes {pto.target_arch = "a5"} {
     %l0b = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, right>
     %l0c = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, acc>
 
-    pto.copy_gm_to_cbuf %a_gm, %l1_a, %c1_i64, %c8_i64, %c0_i64, %c0_i64
+    pto.copy_gm_to_cbuf %a_gm, %l1_a, %c1_i64, %c32_i64, %c0_i64, %c0_i64
       : !pto.ptr<f8E4M3FN, gm>, !pto.ptr<f8E4M3FN, mat>, i64, i64, i64, i64
-    pto.copy_gm_to_cbuf %b_gm, %l1_b, %c1_i64, %c8_i64, %c0_i64, %c0_i64
+    pto.copy_gm_to_cbuf %b_gm, %l1_b, %c1_i64, %c32_i64, %c0_i64, %c0_i64
       : !pto.ptr<f8E4M3FN, gm>, !pto.ptr<f8E4M3FN, mat>, i64, i64, i64, i64
 
-    pto.set_flag["PIPE_MTE2", "PIPE_M", "EVENT_ID0"]
-    pto.wait_flag["PIPE_MTE2", "PIPE_M", "EVENT_ID0"]
+    pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
 
-    pto.load_cbuf_to_ca_mx %l1_a, %l0a, %c16_i64, %c16_i64
+    pto.load_cbuf_to_ca_mx %l1_a, %l0a, %c16_i64, %c64_i64
       : !pto.ptr<f8E4M3FN, mat>, !pto.ptr<f8E4M3FN, left>, i64, i64
-    pto.load_cbuf_to_cb_mx %l1_b, %l0b, %c16_i64, %c16_i64
+    pto.load_cbuf_to_cb_mx %l1_b, %l0b, %c64_i64, %c16_i64
       : !pto.ptr<f8E4M3FN, mat>, !pto.ptr<f8E4M3FN, right>, i64, i64
-    pto.mad_mx %l0a, %l0b, %l0c, %c16_i64, %c16_i64, %c16_i64
+    pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
+    pto.mad_mx %l0a, %l0b, %l0c, %c16_i64, %c16_i64, %c64_i64
+      : !pto.ptr<f8E4M3FN, left>, !pto.ptr<f8E4M3FN, right>, !pto.ptr<f32, acc>, i64, i64, i64
+    pto.mad_mx %l0a, %l0b, %l0c, %c16_i64, %c16_i64, %c64_i64 {unit_flag_ctrl = 2 : i32, disable_gemv = false}
+      : !pto.ptr<f8E4M3FN, left>, !pto.ptr<f8E4M3FN, right>, !pto.ptr<f32, acc>, i64, i64, i64
+    pto.mad_mx %l0a, %l0b, %l0c, %c16_i64, %c16_i64, %c64_i64 {unit_flag_ctrl = 3 : i32}
       : !pto.ptr<f8E4M3FN, left>, !pto.ptr<f8E4M3FN, right>, !pto.ptr<f32, acc>, i64, i64, i64
 
     pto.set_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
     pto.wait_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
 
-    pto.copy_matrix_cc_to_gm %l0c, %c_gm, %c16_i64, %c16_i64
+    pto.copy_matrix_cc_to_gm %l0c, %c_gm, %c68720525568_i64, %c16_i64
       : !pto.ptr<f32, acc>, !pto.ptr<f32, gm>, i64, i64
     pto.barrier #pto.pipe<PIPE_ALL>
     return

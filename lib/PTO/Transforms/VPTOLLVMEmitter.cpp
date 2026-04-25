@@ -484,6 +484,37 @@ static std::string getCopyElementFragment(Type elementType) {
   return {};
 }
 
+static std::string getNd2NzCopyElementFragment(Type elementType) {
+  if (!elementType)
+    return {};
+  std::string typeText;
+  llvm::raw_string_ostream os(typeText);
+  elementType.print(os);
+  os.flush();
+  std::string lower = StringRef(typeText).lower();
+  if (StringRef(lower).contains("e4m3") || StringRef(lower).contains("e5m2") ||
+      StringRef(lower).contains("e8m0") || StringRef(lower).contains("hif8"))
+    return "U8";
+
+  if (elementType.isF16() || elementType.isBF16())
+    return "U16";
+  if (elementType.isF32())
+    return "U32";
+  if (auto intType = dyn_cast<IntegerType>(elementType)) {
+    switch (intType.getWidth()) {
+    case 8:
+      return "U8";
+    case 16:
+      return "U16";
+    case 32:
+      return "U32";
+    default:
+      return {};
+    }
+  }
+  return {};
+}
+
 static std::optional<uint64_t> parsePredicatePatternImmediate(StringRef pattern) {
   if (pattern == "PAT_ALL")
     return 0;
@@ -1155,6 +1186,78 @@ packCopyUbToUbConfig(Operation *anchor, ValueRange operands) {
 }
 
 static FailureOr<Value>
+packCopyCbufToUbConfig(Operation *anchor, ValueRange operands) {
+  if (operands.size() != 7)
+    return failure();
+  OpBuilder builder(anchor);
+  builder.setInsertionPoint(anchor);
+  Location loc = anchor->getLoc();
+
+  auto getI64Operand = [&](unsigned idx) -> Value {
+    return castIntegerLikeTo(anchor, operands[idx], builder.getI64Type());
+  };
+
+  Value sid = getI64Operand(2);
+  Value nBurst = getI64Operand(3);
+  Value lenBurst = getI64Operand(4);
+  Value srcStride = getI64Operand(5);
+  Value dstStride = getI64Operand(6);
+  if (!sid || !nBurst || !lenBurst || !srcStride || !dstStride)
+    return failure();
+
+  auto shl = [&](Value value, uint64_t amount) -> Value {
+    return builder.create<arith::ShLIOp>(loc, value,
+                                         getI64Constant(builder, loc, amount));
+  };
+  auto bitOr = [&](Value lhs, Value rhs) -> Value {
+    return builder.create<arith::OrIOp>(loc, lhs, rhs);
+  };
+
+  Value config = sid;
+  config = bitOr(config, shl(nBurst, 4));
+  config = bitOr(config, shl(lenBurst, 16));
+  config = bitOr(config, shl(srcStride, 32));
+  config = bitOr(config, shl(dstStride, 48));
+  return config;
+}
+
+static FailureOr<Value>
+packCopyUbToCbufConfig(Operation *anchor, ValueRange operands) {
+  if (operands.size() != 7)
+    return failure();
+  OpBuilder builder(anchor);
+  builder.setInsertionPoint(anchor);
+  Location loc = anchor->getLoc();
+
+  auto getI64Operand = [&](unsigned idx) -> Value {
+    return castIntegerLikeTo(anchor, operands[idx], builder.getI64Type());
+  };
+
+  Value sid = getI64Operand(2);
+  Value nBurst = getI64Operand(3);
+  Value lenBurst = getI64Operand(4);
+  Value srcStride = getI64Operand(5);
+  Value dstStride = getI64Operand(6);
+  if (!sid || !nBurst || !lenBurst || !srcStride || !dstStride)
+    return failure();
+
+  auto shl = [&](Value value, uint64_t amount) -> Value {
+    return builder.create<arith::ShLIOp>(loc, value,
+                                         getI64Constant(builder, loc, amount));
+  };
+  auto bitOr = [&](Value lhs, Value rhs) -> Value {
+    return builder.create<arith::OrIOp>(loc, lhs, rhs);
+  };
+
+  Value config = sid;
+  config = bitOr(config, shl(nBurst, 4));
+  config = bitOr(config, shl(lenBurst, 16));
+  config = bitOr(config, shl(srcStride, 32));
+  config = bitOr(config, shl(dstStride, 48));
+  return config;
+}
+
+static FailureOr<Value>
 packCopyGmToCbufConfig0(Operation *anchor, Value nBurst, Value lenBurst) {
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
@@ -1376,14 +1479,17 @@ packLoadCbufToS4Config1(Operation *anchor, Value srcStride, Value dstStride) {
 }
 
 static FailureOr<Value>
-packCopyMatrixCcToGmConfig0(Operation *anchor, Value m, Value n) {
+packLoadCbufToCaConfig0(Operation *anchor, Value mStart, Value kStart,
+                        Value mStep, Value kStep) {
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
   Location loc = anchor->getLoc();
 
-  Value mI64 = castIntegerLikeTo(anchor, m, builder.getI64Type());
-  Value nI64 = castIntegerLikeTo(anchor, n, builder.getI64Type());
-  if (!mI64 || !nI64)
+  Value mStartI64 = castIntegerLikeTo(anchor, mStart, builder.getI64Type());
+  Value kStartI64 = castIntegerLikeTo(anchor, kStart, builder.getI64Type());
+  Value mStepI64 = castIntegerLikeTo(anchor, mStep, builder.getI64Type());
+  Value kStepI64 = castIntegerLikeTo(anchor, kStep, builder.getI64Type());
+  if (!mStartI64 || !kStartI64 || !mStepI64 || !kStepI64)
     return failure();
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
@@ -1394,39 +1500,46 @@ packCopyMatrixCcToGmConfig0(Operation *anchor, Value m, Value n) {
     return builder.create<arith::OrIOp>(loc, lhs, rhs);
   };
 
-  Value sid = getI64Constant(builder, loc, 0);
-  Value loopDstStride = nI64;
-
-  Value config0 = sid;
-  config0 = bitOr(config0, shl(nI64, 4));         // n_size[15:4]
-  config0 = bitOr(config0, shl(mI64, 16));        // m_size[31:16]
-  config0 = bitOr(config0, shl(loopDstStride, 32)); // loop_dst_stride[63:32]
+  Value config0 = mStartI64;
+  config0 = bitOr(config0, shl(kStartI64, 16));
+  config0 = bitOr(config0, shl(mStepI64, 32));
+  config0 = bitOr(config0, shl(kStepI64, 40));
   return config0;
 }
 
 static FailureOr<Value>
-packCopyMatrixCcToGmConfig1(Operation *anchor, Value n) {
-  OpBuilder builder(anchor);
-  builder.setInsertionPoint(anchor);
-
-  Value nI64 = castIntegerLikeTo(anchor, n, builder.getI64Type());
-  if (!nI64)
-    return failure();
-
-  // config1 currently enables the minimal default behavior:
-  // loop_src_stride = n, all control bits = 0.
-  return nI64;
-}
-
-static FailureOr<Value>
-packLoadCbufToCaConfig0(Operation *anchor, Value m, Value k) {
+packLoadCbufToCaConfig1(Operation *anchor, Value srcStride, Value dstStride) {
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
   Location loc = anchor->getLoc();
 
-  Value mI64 = castIntegerLikeTo(anchor, m, builder.getI64Type());
-  Value kI64 = castIntegerLikeTo(anchor, k, builder.getI64Type());
-  if (!mI64 || !kI64)
+  Value srcStrideI64 =
+      castIntegerLikeTo(anchor, srcStride, builder.getI64Type());
+  Value dstStrideI64 =
+      castIntegerLikeTo(anchor, dstStride, builder.getI64Type());
+  if (!srcStrideI64 || !dstStrideI64)
+    return failure();
+
+  auto shl = [&](Value value, uint64_t amount) -> Value {
+    return builder.create<arith::ShLIOp>(loc, value,
+                                         getI64Constant(builder, loc, amount));
+  };
+  return builder.create<arith::OrIOp>(loc, srcStrideI64, shl(dstStrideI64, 16))
+      .getResult();
+}
+
+static FailureOr<Value>
+packLoadCbufToCbConfig0(Operation *anchor, Value mStart, Value kStart,
+                        Value mStep, Value kStep) {
+  OpBuilder builder(anchor);
+  builder.setInsertionPoint(anchor);
+  Location loc = anchor->getLoc();
+
+  Value mStartI64 = castIntegerLikeTo(anchor, mStart, builder.getI64Type());
+  Value kStartI64 = castIntegerLikeTo(anchor, kStart, builder.getI64Type());
+  Value mStepI64 = castIntegerLikeTo(anchor, mStep, builder.getI64Type());
+  Value kStepI64 = castIntegerLikeTo(anchor, kStep, builder.getI64Type());
+  if (!mStartI64 || !kStartI64 || !mStepI64 || !kStepI64)
     return failure();
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
@@ -1437,85 +1550,38 @@ packLoadCbufToCaConfig0(Operation *anchor, Value m, Value k) {
     return builder.create<arith::OrIOp>(loc, lhs, rhs);
   };
 
-  Value mStart = getI64Constant(builder, loc, 0);
-  Value kStart = getI64Constant(builder, loc, 0);
-  Value mStep = mI64;
-  Value kStep = getI64Constant(builder, loc, 1);
-
-  Value config0 = mStart;
-  config0 = bitOr(config0, shl(kStart, 16));
-  config0 = bitOr(config0, shl(mStep, 32));
-  config0 = bitOr(config0, shl(kStep, 40));
+  Value config0 = mStartI64;
+  config0 = bitOr(config0, shl(kStartI64, 16));
+  config0 = bitOr(config0, shl(mStepI64, 32));
+  config0 = bitOr(config0, shl(kStepI64, 40));
   return config0;
 }
 
 static FailureOr<Value>
-packLoadCbufToCaConfig1(Operation *anchor, Value k) {
+packLoadCbufToCbConfig1(Operation *anchor, Value srcStride, Value dstStride) {
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
   Location loc = anchor->getLoc();
 
-  Value kI64 = castIntegerLikeTo(anchor, k, builder.getI64Type());
-  if (!kI64)
+  Value srcStrideI64 =
+      castIntegerLikeTo(anchor, srcStride, builder.getI64Type());
+  Value dstStrideI64 =
+      castIntegerLikeTo(anchor, dstStride, builder.getI64Type());
+  if (!srcStrideI64 || !dstStrideI64)
     return failure();
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
     return builder.create<arith::ShLIOp>(loc, value,
                                          getI64Constant(builder, loc, amount));
   };
-  return builder.create<arith::OrIOp>(loc, shl(kI64, 16), kI64).getResult();
+  return builder.create<arith::OrIOp>(loc, srcStrideI64, shl(dstStrideI64, 16))
+      .getResult();
 }
 
-static FailureOr<Value>
-packLoadCbufToCbConfig0(Operation *anchor, Value k, Value n) {
-  OpBuilder builder(anchor);
-  builder.setInsertionPoint(anchor);
-  Location loc = anchor->getLoc();
-
-  Value kI64 = castIntegerLikeTo(anchor, k, builder.getI64Type());
-  Value nI64 = castIntegerLikeTo(anchor, n, builder.getI64Type());
-  if (!kI64 || !nI64)
-    return failure();
-
-  auto shl = [&](Value value, uint64_t amount) -> Value {
-    return builder.create<arith::ShLIOp>(loc, value,
-                                         getI64Constant(builder, loc, amount));
-  };
-  auto bitOr = [&](Value lhs, Value rhs) -> Value {
-    return builder.create<arith::OrIOp>(loc, lhs, rhs);
-  };
-
-  Value mStart = getI64Constant(builder, loc, 0);
-  Value kStart = getI64Constant(builder, loc, 0);
-  Value mStep = kI64;
-  Value kStep = getI64Constant(builder, loc, 1);
-
-  Value config0 = mStart;
-  config0 = bitOr(config0, shl(kStart, 16));
-  config0 = bitOr(config0, shl(mStep, 32));
-  config0 = bitOr(config0, shl(kStep, 40));
-  return config0;
-}
-
-static FailureOr<Value>
-packLoadCbufToCbConfig1(Operation *anchor, Value n) {
-  OpBuilder builder(anchor);
-  builder.setInsertionPoint(anchor);
-  Location loc = anchor->getLoc();
-
-  Value nI64 = castIntegerLikeTo(anchor, n, builder.getI64Type());
-  if (!nI64)
-    return failure();
-
-  auto shl = [&](Value value, uint64_t amount) -> Value {
-    return builder.create<arith::ShLIOp>(loc, value,
-                                         getI64Constant(builder, loc, amount));
-  };
-  return builder.create<arith::OrIOp>(loc, shl(nI64, 16), nI64).getResult();
-}
-
-static FailureOr<Value>
-packMadConfig(Operation *anchor, Value m, Value n, Value k) {
+static FailureOr<Value> packMadConfig(Operation *anchor, Value m, Value n,
+                                      Value k, uint32_t unitFlagCtrl,
+                                      bool disableGemv, bool cmatrixSource,
+                                      bool cmatrixInit) {
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
   Location loc = anchor->getLoc();
@@ -1535,14 +1601,32 @@ packMadConfig(Operation *anchor, Value m, Value n, Value k) {
   };
 
   Value config = mI64;
-  config = bitOr(config, shl(kI64, 16));
-  config = bitOr(config, shl(nI64, 32));
-  config = bitOr(config, shl(getI64Constant(builder, loc, 0), 48)); // unitFlag
-  config = bitOr(config, shl(getI64Constant(builder, loc, 0), 56)); // gemvCtrl
-  config = bitOr(config, shl(getI64Constant(builder, loc, 0), 57)); // btBufCtrl
-  config =
-      bitOr(config, shl(getI64Constant(builder, loc, 1), 58)); // zeroCmatrixCtrl
+  config = bitOr(config, shl(kI64, 12));
+  config = bitOr(config, shl(nI64, 24));
+  config = bitOr(config, shl(getI64Constant(builder, loc, unitFlagCtrl), 55));
+  if (disableGemv)
+    config = bitOr(config, shl(getI64Constant(builder, loc, 1), 61));
+  if (cmatrixSource)
+    config = bitOr(config, shl(getI64Constant(builder, loc, 1), 62));
+  if (cmatrixInit)
+    config = bitOr(config, shl(getI64Constant(builder, loc, 1), 63));
   return config;
+}
+
+static Value buildMadBiasDestination(Operation *anchor,
+                                     ConversionPatternRewriter &rewriter,
+                                     Value dst, Value bias) {
+  Type i64Ty = rewriter.getI64Type();
+  Value dstAddr = rewriter.create<LLVM::PtrToIntOp>(anchor->getLoc(), i64Ty, dst);
+  Value biasAddr =
+      rewriter.create<LLVM::PtrToIntOp>(anchor->getLoc(), i64Ty, bias);
+  Value lowMask = getI64Constant(rewriter, anchor->getLoc(), 0xffffffffULL);
+  Value dstLow = rewriter.create<arith::AndIOp>(anchor->getLoc(), dstAddr, lowMask);
+  Value biasLow = rewriter.create<arith::AndIOp>(anchor->getLoc(), biasAddr, lowMask);
+  Value biasHigh = rewriter.create<arith::ShLIOp>(
+      anchor->getLoc(), biasLow, getI64Constant(rewriter, anchor->getLoc(), 32));
+  Value packed = rewriter.create<arith::OrIOp>(anchor->getLoc(), dstLow, biasHigh);
+  return rewriter.create<LLVM::IntToPtrOp>(anchor->getLoc(), dst.getType(), packed);
 }
 
 static FailureOr<Value> packVbitsortConfig(Operation *anchor, Value repeatTimes) {
@@ -1939,8 +2023,16 @@ static StringRef buildCopyUbToUbCallee(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.MOV.UB.TO.UB.v310").getValue();
 }
 
-static FailureOr<StringRef> buildMadCallee(MLIRContext *context,
-                                                pto::MadOp op) {
+static StringRef buildCopyCbufToUbCallee(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.MOV.L1.TO.UB.v310").getValue();
+}
+
+static StringRef buildCopyUbToCbufCallee(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.MOV.UB.TO.L1.v310").getValue();
+}
+
+template <typename MadLikeOp>
+static FailureOr<StringRef> buildMadCallee(MLIRContext *context, MadLikeOp op) {
   auto lhsType = dyn_cast<pto::PtrType>(op.getLhs().getType());
   auto rhsType = dyn_cast<pto::PtrType>(op.getRhs().getType());
   auto dstType = dyn_cast<pto::PtrType>(op.getDst().getType());
@@ -1958,8 +2050,9 @@ static FailureOr<StringRef> buildMadCallee(MLIRContext *context,
   return failure();
 }
 
+template <typename MadMxLikeOp>
 static FailureOr<StringRef> buildMadMxCallee(MLIRContext *context,
-                                                  pto::MadMxOp op) {
+                                             MadMxLikeOp op) {
   auto lhsType = dyn_cast<pto::PtrType>(op.getLhs().getType());
   auto rhsType = dyn_cast<pto::PtrType>(op.getRhs().getType());
   if (!lhsType || !rhsType)
@@ -1985,13 +2078,64 @@ static FailureOr<StringRef> buildCopyGmToCbufCallee(MLIRContext *context,
       .getValue();
 }
 
-static StringRef buildCopyGmToCbufMultiNd2NzCallee(MLIRContext *context) {
-  return StringAttr::get(context, "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ")
+static FailureOr<StringRef>
+buildCopyGmToCbufMultiNd2NzCallee(MLIRContext *context, Type sourceType) {
+  auto ptrType = dyn_cast<pto::PtrType>(sourceType);
+  if (!ptrType)
+    return failure();
+  std::string elem = getNd2NzCopyElementFragment(ptrType.getElementType());
+  if (elem.empty())
+    return failure();
+  return StringAttr::get(context, "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ." +
+                                      elem + ".V310")
       .getValue();
 }
 
-static StringRef buildCopyGmToCbufMultiDn2NzCallee(MLIRContext *context) {
-  return StringAttr::get(context, "llvm.hivm.MOV.OUT.TO.L1.MULTI.DN2NZ")
+static std::string getDn2NzCopyElementFragment(Type type) {
+  auto ptrType = dyn_cast<pto::PtrType>(type);
+  if (!ptrType)
+    return {};
+
+  Type elementType = ptrType.getElementType();
+  std::string typeText;
+  llvm::raw_string_ostream os(typeText);
+  elementType.print(os);
+  os.flush();
+  std::string lower = StringRef(typeText).lower();
+  if (StringRef(lower).contains("e4m3") || StringRef(lower).contains("e5m2") ||
+      StringRef(lower).contains("e8m0") || StringRef(lower).contains("hif8"))
+    return "u8";
+
+  if (elementType.isF16() || elementType.isBF16())
+    return "u16";
+  if (elementType.isF32())
+    return "u32";
+
+  if (auto intType = dyn_cast<IntegerType>(elementType)) {
+    switch (intType.getWidth()) {
+    case 8:
+      return "u8";
+    case 16:
+      return "u16";
+    case 32:
+      return "u32";
+    default:
+      return {};
+    }
+  }
+  return {};
+}
+
+static FailureOr<StringRef>
+buildCopyGmToCbufMultiDn2NzCallee(MLIRContext *context, Type sourceType) {
+  auto ptrType = dyn_cast<pto::PtrType>(sourceType);
+  if (!ptrType)
+    return failure();
+  std::string elem = getDn2NzCopyElementFragment(sourceType);
+  if (elem.empty())
+    return failure();
+  return StringAttr::get(context,
+                         "llvm.hivm.MOV.OUT.TO.L1.MULTI.DN2NZ." + elem)
       .getValue();
 }
 
@@ -2064,13 +2208,30 @@ static FailureOr<StringRef> buildCopyMatrixCcToUbCallee(MLIRContext *context,
   return failure();
 }
 
-static StringRef buildCopyCbufToBtCallee(pto::CopyCbufToBtOp op) {
-  return StringAttr::get(op.getContext(), "llvm.hivm.MOV.L1.TO.BT.f16")
-      .getValue();
+static FailureOr<StringRef> buildCopyCbufToBtCallee(pto::CopyCbufToBtOp op) {
+  auto ptrType = dyn_cast<pto::PtrType>(op.getSource().getType());
+  if (!ptrType)
+    return failure();
+  Type srcElem = ptrType.getElementType();
+  if (srcElem.isF16())
+    return StringAttr::get(op.getContext(), "llvm.hivm.MOV.L1.TO.BT.f16")
+        .getValue();
+  if (srcElem.isBF16())
+    return StringAttr::get(op.getContext(), "llvm.hivm.MOV.L1.TO.BT.bf16")
+        .getValue();
+  if (srcElem.isF32())
+    return StringAttr::get(op.getContext(), "llvm.hivm.MOV.L1.TO.BT.f32")
+        .getValue();
+  if (auto intType = dyn_cast<IntegerType>(srcElem);
+      intType && intType.getWidth() == 32) {
+    return StringAttr::get(op.getContext(), "llvm.hivm.MOV.L1.TO.BT.s32")
+        .getValue();
+  }
+  return failure();
 }
 
 static StringRef buildCopyCbufToFbufCallee(MLIRContext *context) {
-  return StringAttr::get(context, "llvm.hivm.MOV.L1.TO.FB.V2").getValue();
+  return StringAttr::get(context, "llvm.hivm.MOV.L1.TO.FB.v220").getValue();
 }
 
 static StringRef buildPstiCallee(MLIRContext *context) {
@@ -2683,6 +2844,16 @@ StringRef buildSyncCallee<pto::BarrierOp>(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.BARRIER").getValue();
 }
 
+template <>
+StringRef buildSyncCallee<pto::SyncSetOp>(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.SET.INTRA.BLOCK.mode").getValue();
+}
+
+template <>
+StringRef buildSyncCallee<pto::SyncWaitOp>(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.WAIT.INTRA.BLOCK.mode").getValue();
+}
+
 static StringRef buildMemBarCallee(MemBarKind kind, MLIRContext *context) {
   switch (kind) {
   case MemBarKind::VV_ALL:
@@ -3190,6 +3361,110 @@ private:
   LoweringState &state;
 };
 
+class LowerCopyCbufToUbufOpPattern final
+    : public OpConversionPattern<pto::CopyCbufToUbufOp> {
+public:
+  explicit LowerCopyCbufToUbufOpPattern(TypeConverter &typeConverter,
+                                        MLIRContext *context,
+                                        LoweringState &state)
+      : OpConversionPattern<pto::CopyCbufToUbufOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::CopyCbufToUbufOp op,
+                  pto::CopyCbufToUbufOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value sourceRaw = adaptor.getSource();
+    Value destinationRaw = adaptor.getDestination();
+    if (!sourceRaw || !destinationRaw)
+      return rewriter.notifyMatchFailure(op, "expected converted operands");
+    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) ||
+        !isa<LLVM::LLVMPointerType>(destinationRaw.getType()))
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+
+    constexpr unsigned cbufAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::MAT);
+    constexpr unsigned ubufAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::VEC);
+    FailureOr<Value> source =
+        reinterpretPointerToAddrSpace(op, sourceRaw, cbufAddressSpace);
+    FailureOr<Value> destination =
+        reinterpretPointerToAddrSpace(op, destinationRaw, ubufAddressSpace);
+    if (failed(source) || failed(destination))
+      return rewriter.notifyMatchFailure(op, "failed to map cbuf/ubuf pointer spaces");
+
+    FailureOr<Value> config = packCopyCbufToUbConfig(op, adaptor.getOperands());
+    if (failed(config))
+      return rewriter.notifyMatchFailure(op, "failed to materialize copy config");
+
+    StringRef calleeName = buildCopyCbufToUbCallee(op.getContext());
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{destination->getType(), source->getType(),
+                  rewriter.getI64Type()},
+        TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
+                                  ValueRange{*destination, *source, *config});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+class LowerCopyUbufToCbufOpPattern final
+    : public OpConversionPattern<pto::CopyUbufToCbufOp> {
+public:
+  explicit LowerCopyUbufToCbufOpPattern(TypeConverter &typeConverter,
+                                        MLIRContext *context,
+                                        LoweringState &state)
+      : OpConversionPattern<pto::CopyUbufToCbufOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::CopyUbufToCbufOp op,
+                  pto::CopyUbufToCbufOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value sourceRaw = adaptor.getSource();
+    Value destinationRaw = adaptor.getDestination();
+    if (!sourceRaw || !destinationRaw)
+      return rewriter.notifyMatchFailure(op, "expected converted operands");
+    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) ||
+        !isa<LLVM::LLVMPointerType>(destinationRaw.getType()))
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+
+    constexpr unsigned ubufAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::VEC);
+    constexpr unsigned cbufAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::MAT);
+    FailureOr<Value> source =
+        reinterpretPointerToAddrSpace(op, sourceRaw, ubufAddressSpace);
+    FailureOr<Value> destination =
+        reinterpretPointerToAddrSpace(op, destinationRaw, cbufAddressSpace);
+    if (failed(source) || failed(destination))
+      return rewriter.notifyMatchFailure(op, "failed to map ubuf/cbuf pointer spaces");
+
+    FailureOr<Value> config = packCopyUbToCbufConfig(op, adaptor.getOperands());
+    if (failed(config))
+      return rewriter.notifyMatchFailure(op, "failed to materialize copy config");
+
+    StringRef calleeName = buildCopyUbToCbufCallee(op.getContext());
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{destination->getType(), source->getType(),
+                  rewriter.getI64Type()},
+        TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
+                                  ValueRange{*destination, *source, *config});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 class LowerMadOpPattern final
     : public OpConversionPattern<pto::MadOp> {
 public:
@@ -3236,7 +3511,9 @@ public:
       return rewriter.notifyMatchFailure(
           op, "unsupported mad element types for mad/mad_mx dispatch");
     }
-    FailureOr<Value> config = packMadConfig(op, m, n, k);
+    FailureOr<Value> config =
+        packMadConfig(op, m, n, k, op.getUnitFlagCtrl(), op.getDisableGemv(),
+                      /*cmatrixSource=*/false, /*cmatrixInit=*/true);
     if (failed(config))
       return rewriter.notifyMatchFailure(op, "failed to pack mad config");
 
@@ -3249,6 +3526,150 @@ public:
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     rewriter.eraseOp(op);
     (void)call;
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+template <typename MadAccLikeOp>
+class LowerMadAccLikePattern final : public OpConversionPattern<MadAccLikeOp> {
+public:
+  explicit LowerMadAccLikePattern(TypeConverter &typeConverter,
+                                  MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<MadAccLikeOp>(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(MadAccLikeOp op, typename MadAccLikeOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value lhsRaw = adaptor.getLhs();
+    Value rhsRaw = adaptor.getRhs();
+    Value dstRaw = adaptor.getDst();
+    Value m = adaptor.getM();
+    Value n = adaptor.getN();
+    Value k = adaptor.getK();
+    if (!lhsRaw || !rhsRaw || !dstRaw || !m || !n || !k)
+      return rewriter.notifyMatchFailure(op, "expected converted mad operands");
+
+    if (!isa<LLVM::LLVMPointerType>(lhsRaw.getType()) ||
+        !isa<LLVM::LLVMPointerType>(rhsRaw.getType()) ||
+        !isa<LLVM::LLVMPointerType>(dstRaw.getType())) {
+      return rewriter.notifyMatchFailure(op,
+                                         "expected LLVM pointer lhs/rhs/dst");
+    }
+
+    Type i64Ty = rewriter.getI64Type();
+    constexpr unsigned caAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::LEFT);
+    constexpr unsigned cbAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::RIGHT);
+    constexpr unsigned ccAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::ACC);
+    FailureOr<Value> lhs =
+        reinterpretPointerToAddrSpace(op, lhsRaw, caAddressSpace);
+    FailureOr<Value> rhs =
+        reinterpretPointerToAddrSpace(op, rhsRaw, cbAddressSpace);
+    FailureOr<Value> dst =
+        reinterpretPointerToAddrSpace(op, dstRaw, ccAddressSpace);
+    if (failed(lhs) || failed(rhs) || failed(dst))
+      return rewriter.notifyMatchFailure(op, "failed to map cube pointer spaces");
+
+    FailureOr<StringRef> calleeName = buildMadCallee(op.getContext(), op);
+    if (failed(calleeName)) {
+      return rewriter.notifyMatchFailure(
+          op, "unsupported mad element types for mad dispatch");
+    }
+
+    FailureOr<Value> config =
+        packMadConfig(op, m, n, k, op.getUnitFlagCtrl(), op.getDisableGemv(),
+                      /*cmatrixSource=*/false, /*cmatrixInit=*/false);
+    if (failed(config))
+      return rewriter.notifyMatchFailure(op, "failed to pack mad config");
+
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{dst->getType(), lhs->getType(), rhs->getType(), i64Ty},
+        TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{},
+                                  ValueRange{*dst, *lhs, *rhs, *config});
+    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+template <typename MadBiasLikeOp>
+class LowerMadBiasLikePattern final : public OpConversionPattern<MadBiasLikeOp> {
+public:
+  explicit LowerMadBiasLikePattern(TypeConverter &typeConverter,
+                                   MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<MadBiasLikeOp>(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(MadBiasLikeOp op, typename MadBiasLikeOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value lhsRaw = adaptor.getLhs();
+    Value rhsRaw = adaptor.getRhs();
+    Value dstRaw = adaptor.getDst();
+    Value biasRaw = adaptor.getBias();
+    Value m = adaptor.getM();
+    Value n = adaptor.getN();
+    Value k = adaptor.getK();
+    if (!lhsRaw || !rhsRaw || !dstRaw || !biasRaw || !m || !n || !k)
+      return rewriter.notifyMatchFailure(op, "expected converted mad_bias operands");
+
+    if (!isa<LLVM::LLVMPointerType>(lhsRaw.getType()) ||
+        !isa<LLVM::LLVMPointerType>(rhsRaw.getType()) ||
+        !isa<LLVM::LLVMPointerType>(dstRaw.getType()) ||
+        !isa<LLVM::LLVMPointerType>(biasRaw.getType())) {
+      return rewriter.notifyMatchFailure(op,
+                                         "expected LLVM pointer lhs/rhs/dst/bias");
+    }
+
+    Type i64Ty = rewriter.getI64Type();
+    constexpr unsigned caAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::LEFT);
+    constexpr unsigned cbAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::RIGHT);
+    constexpr unsigned ccAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::ACC);
+    constexpr unsigned btAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::BIAS);
+    FailureOr<Value> lhs =
+        reinterpretPointerToAddrSpace(op, lhsRaw, caAddressSpace);
+    FailureOr<Value> rhs =
+        reinterpretPointerToAddrSpace(op, rhsRaw, cbAddressSpace);
+    FailureOr<Value> dst =
+        reinterpretPointerToAddrSpace(op, dstRaw, ccAddressSpace);
+    FailureOr<Value> bias =
+        reinterpretPointerToAddrSpace(op, biasRaw, btAddressSpace);
+    if (failed(lhs) || failed(rhs) || failed(dst) || failed(bias)) {
+      return rewriter.notifyMatchFailure(op, "failed to map cube pointer spaces");
+    }
+
+    FailureOr<StringRef> calleeName = buildMadCallee(op.getContext(), op);
+    if (failed(calleeName)) {
+      return rewriter.notifyMatchFailure(
+          op, "unsupported mad element types for mad dispatch");
+    }
+
+    FailureOr<Value> config =
+        packMadConfig(op, m, n, k, op.getUnitFlagCtrl(), op.getDisableGemv(),
+                      /*cmatrixSource=*/true, /*cmatrixInit=*/false);
+    if (failed(config))
+      return rewriter.notifyMatchFailure(op, "failed to pack mad config");
+
+    Value packedDst = buildMadBiasDestination(op, rewriter, *dst, *bias);
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{dst->getType(), lhs->getType(), rhs->getType(), i64Ty},
+        TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{},
+                                  ValueRange{packedDst, *lhs, *rhs, *config});
+    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
+    rewriter.eraseOp(op);
     return success();
   }
 
@@ -3306,7 +3727,9 @@ public:
       return rewriter.notifyMatchFailure(
           op, "unsupported mad_mx element types for mad_mx dispatch");
     }
-    FailureOr<Value> config = packMadConfig(op, m, n, k);
+    FailureOr<Value> config =
+        packMadConfig(op, m, n, k, op.getUnitFlagCtrl(), op.getDisableGemv(),
+                      /*cmatrixSource=*/false, /*cmatrixInit=*/true);
     if (failed(config))
       return rewriter.notifyMatchFailure(op, "failed to pack mad config");
 
@@ -3440,20 +3863,24 @@ public:
     if (failed(config0) || failed(config1))
       return rewriter.notifyMatchFailure(op, "failed to pack multi copy config");
 
-    StringRef calleeName = [] (MLIRContext *ctx) -> StringRef {
+    FailureOr<StringRef> calleeName = [&] (MLIRContext *ctx, Type sourceType)
+        -> FailureOr<StringRef> {
       if constexpr (std::is_same_v<CopyOp, pto::CopyGmToCbufMultiNd2NzOp>)
-        return buildCopyGmToCbufMultiNd2NzCallee(ctx);
-      return buildCopyGmToCbufMultiDn2NzCallee(ctx);
-    }(op.getContext());
+        return buildCopyGmToCbufMultiNd2NzCallee(ctx, op.getSource().getType());
+      return buildCopyGmToCbufMultiDn2NzCallee(ctx, sourceType);
+    }(op.getContext(), op.getSource().getType());
+    if (failed(calleeName))
+      return rewriter.notifyMatchFailure(
+          op, "unsupported copy_gm_to_cbuf_multi element type");
 
     Type i64Ty = rewriter.getI64Type();
     auto funcType = rewriter.getFunctionType(
         TypeRange{destination->getType(), source->getType(), i64Ty, i64Ty},
         TypeRange{});
     rewriter.create<func::CallOp>(
-        op.getLoc(), calleeName, TypeRange{},
+        op.getLoc(), *calleeName, TypeRange{},
         ValueRange{*destination, *source, *config0, *config1});
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     rewriter.eraseOp(op);
     return success();
   }
@@ -3501,12 +3928,14 @@ public:
     Type i64Ty = rewriter.getI64Type();
     Value destination =
         rewriter.create<LLVM::PtrToIntOp>(op.getLoc(), i64Ty, *destinationPtr);
-    StringRef calleeName = buildCopyCbufToBtCallee(op);
+    FailureOr<StringRef> calleeName = buildCopyCbufToBtCallee(op);
+    if (failed(calleeName))
+      return rewriter.notifyMatchFailure(op, "unsupported copy_cbuf_to_bt source element type");
     auto funcType = rewriter.getFunctionType(
         TypeRange{i64Ty, source->getType(), i64Ty}, TypeRange{});
-    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
+    rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{},
                                   ValueRange{destination, *source, *config});
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     rewriter.eraseOp(op);
     return success();
   }
@@ -3537,8 +3966,7 @@ public:
 
     constexpr unsigned cbufAddressSpace =
         static_cast<unsigned>(pto::AddressSpace::MAT);
-    constexpr unsigned fbufAddressSpace =
-        static_cast<unsigned>(pto::AddressSpace::BIAS);
+    constexpr unsigned fbufAddressSpace = 7;
     FailureOr<Value> source =
         reinterpretPointerToAddrSpace(op, sourceRaw, cbufAddressSpace);
     FailureOr<Value> destination =
@@ -3581,9 +4009,14 @@ public:
                                 ConversionPatternRewriter &rewriter) const override {
     Value sourceRaw = adaptor.getSource();
     Value destinationRaw = adaptor.getDestination();
-    Value m = adaptor.getM();
-    Value k = adaptor.getK();
-    if (!sourceRaw || !destinationRaw || !m || !k)
+    Value mStart = adaptor.getMStart();
+    Value kStart = adaptor.getKStart();
+    Value mStep = adaptor.getMStep();
+    Value kStep = adaptor.getKStep();
+    Value srcStride = adaptor.getSrcStride();
+    Value dstStride = adaptor.getDstStride();
+    if (!sourceRaw || !destinationRaw || !mStart || !kStart || !mStep ||
+        !kStep || !srcStride || !dstStride)
       return rewriter.notifyMatchFailure(op, "expected converted operands");
 
     if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) ||
@@ -3603,11 +4036,14 @@ public:
     if (failed(source) || failed(destination))
       return rewriter.notifyMatchFailure(op, "failed to map cbuf/ca pointer spaces");
 
-    FailureOr<Value> config0 = packLoadCbufToCaConfig0(op, m, k);
-    FailureOr<Value> config1 = packLoadCbufToCaConfig1(op, k);
+    FailureOr<Value> config0 =
+        packLoadCbufToCaConfig0(op, mStart, kStart, mStep, kStep);
+    FailureOr<Value> config1 =
+        packLoadCbufToCaConfig1(op, srcStride, dstStride);
     if (failed(config0) || failed(config1))
       return rewriter.notifyMatchFailure(op, "failed to pack load_cbuf_to_ca config");
-    Value transpose = getI64Constant(rewriter, op.getLoc(), 0);
+    Value transpose =
+        getI64Constant(rewriter, op.getLoc(), op.getTranspose() ? 1 : 0);
 
     FailureOr<StringRef> calleeName =
         buildLoadCbufToCaCallee(op.getContext(), op.getSource().getType());
@@ -3710,9 +4146,14 @@ public:
                                 ConversionPatternRewriter &rewriter) const override {
     Value sourceRaw = adaptor.getSource();
     Value destinationRaw = adaptor.getDestination();
-    Value k = adaptor.getK();
-    Value n = adaptor.getN();
-    if (!sourceRaw || !destinationRaw || !k || !n)
+    Value mStart = adaptor.getMStart();
+    Value kStart = adaptor.getKStart();
+    Value mStep = adaptor.getMStep();
+    Value kStep = adaptor.getKStep();
+    Value srcStride = adaptor.getSrcStride();
+    Value dstStride = adaptor.getDstStride();
+    if (!sourceRaw || !destinationRaw || !mStart || !kStart || !mStep ||
+        !kStep || !srcStride || !dstStride)
       return rewriter.notifyMatchFailure(op, "expected converted operands");
 
     if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) ||
@@ -3732,11 +4173,15 @@ public:
     if (failed(source) || failed(destination))
       return rewriter.notifyMatchFailure(op, "failed to map cbuf/cb pointer spaces");
 
-    FailureOr<Value> config0 = packLoadCbufToCbConfig0(op, k, n);
-    FailureOr<Value> config1 = packLoadCbufToCbConfig1(op, n);
+    bool transpose = op.getTranspose();
+    FailureOr<Value> config0 =
+        packLoadCbufToCbConfig0(op, mStart, kStart, mStep, kStep);
+    FailureOr<Value> config1 =
+        packLoadCbufToCbConfig1(op, srcStride, dstStride);
     if (failed(config0) || failed(config1))
       return rewriter.notifyMatchFailure(op, "failed to pack load_cbuf_to_cb config");
-    Value transpose = getI64Constant(rewriter, op.getLoc(), 0);
+    Value transposeValue =
+        getI64Constant(rewriter, op.getLoc(), transpose ? 1 : 0);
 
     FailureOr<StringRef> calleeName =
         buildLoadCbufToCbCallee(op.getContext(), op.getSource().getType());
@@ -3749,7 +4194,7 @@ public:
         TypeRange{});
     rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{},
                                   ValueRange{*destination, *source, *config0,
-                                             *config1, transpose});
+                                             *config1, transposeValue});
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     rewriter.eraseOp(op);
     return success();
@@ -3788,8 +4233,31 @@ public:
     if (failed(src) || failed(dst))
       return rewriter.notifyMatchFailure(op, "failed to map cbuf/ca pointer spaces");
 
-    FailureOr<Value> config0 = packLoadCbufToCaConfig0(op, adaptor.getM(), adaptor.getK());
-    FailureOr<Value> config1 = packLoadCbufToCaConfig1(op, adaptor.getK());
+    Type sourceElemType = cast<pto::PtrType>(op.getSource().getType()).getElementType();
+    unsigned elemBitWidth = sourceElemType.getIntOrFloatBitWidth();
+    if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
+      return rewriter.notifyMatchFailure(op,
+                                         "unsupported load_cbuf_to_ca_mx element type");
+    uint64_t elemBytes = elemBitWidth / 8;
+    Location loc = op.getLoc();
+    auto constant = [&](uint64_t value) -> Value {
+      return rewriter.create<arith::ConstantIntOp>(loc, value, 64);
+    };
+    auto ceilDivConst = [&](Value value, uint64_t divisor) -> Value {
+      Value bias = constant(divisor - 1);
+      Value sum = rewriter.create<arith::AddIOp>(loc, value, bias);
+      return rewriter.create<arith::DivUIOp>(loc, sum, constant(divisor));
+    };
+    Value zero = constant(0);
+    Value mStep = ceilDivConst(adaptor.getM(), 16);
+    Value kBytes =
+        rewriter.create<arith::MulIOp>(loc, adaptor.getK(), constant(elemBytes));
+    Value kStep = ceilDivConst(kBytes, 32);
+    Value stride = ceilDivConst(adaptor.getM(), 16);
+    FailureOr<Value> config0 =
+        packLoadCbufToCaConfig0(op, zero, zero, mStep, kStep);
+    FailureOr<Value> config1 =
+        packLoadCbufToCaConfig1(op, stride, stride);
     if (failed(config0) || failed(config1))
       return rewriter.notifyMatchFailure(op,
                                          "failed to pack load_cbuf_to_ca_mx config");
@@ -3840,8 +4308,31 @@ public:
     if (failed(src) || failed(dst))
       return rewriter.notifyMatchFailure(op, "failed to map cbuf/cb pointer spaces");
 
-    FailureOr<Value> config0 = packLoadCbufToCbConfig0(op, adaptor.getK(), adaptor.getN());
-    FailureOr<Value> config1 = packLoadCbufToCbConfig1(op, adaptor.getN());
+    Type sourceElemType = cast<pto::PtrType>(op.getSource().getType()).getElementType();
+    unsigned elemBitWidth = sourceElemType.getIntOrFloatBitWidth();
+    if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
+      return rewriter.notifyMatchFailure(op,
+                                         "unsupported load_cbuf_to_cb_mx element type");
+    uint64_t elemBytes = elemBitWidth / 8;
+    Location loc = op.getLoc();
+    auto constant = [&](uint64_t value) -> Value {
+      return rewriter.create<arith::ConstantIntOp>(loc, value, 64);
+    };
+    auto ceilDivConst = [&](Value value, uint64_t divisor) -> Value {
+      Value bias = constant(divisor - 1);
+      Value sum = rewriter.create<arith::AddIOp>(loc, value, bias);
+      return rewriter.create<arith::DivUIOp>(loc, sum, constant(divisor));
+    };
+    Value zero = constant(0);
+    Value mStep = ceilDivConst(adaptor.getN(), 16);
+    Value kBytes =
+        rewriter.create<arith::MulIOp>(loc, adaptor.getK(), constant(elemBytes));
+    Value kStep = ceilDivConst(kBytes, 32);
+    Value stride = ceilDivConst(adaptor.getN(), 16);
+    FailureOr<Value> config0 =
+        packLoadCbufToCbConfig0(op, zero, zero, mStep, kStep);
+    FailureOr<Value> config1 =
+        packLoadCbufToCbConfig1(op, stride, stride);
     if (failed(config0) || failed(config1))
       return rewriter.notifyMatchFailure(op,
                                          "failed to pack load_cbuf_to_cb_mx config");
@@ -3877,9 +4368,9 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     Value sourceRaw = adaptor.getSource();
     Value destinationRaw = adaptor.getDestination();
-    Value m = adaptor.getM();
-    Value n = adaptor.getN();
-    if (!sourceRaw || !destinationRaw || !m || !n)
+    Value xm = adaptor.getXm();
+    Value xt = adaptor.getXt();
+    if (!sourceRaw || !destinationRaw || !xm || !xt)
       return rewriter.notifyMatchFailure(op, "expected converted operands");
 
     if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) ||
@@ -3888,8 +4379,8 @@ public:
     }
 
     Type i64Ty = rewriter.getI64Type();
-    if (m.getType() != i64Ty || n.getType() != i64Ty)
-      return rewriter.notifyMatchFailure(op, "expected i64 m/n operands");
+    if (xm.getType() != i64Ty || xt.getType() != i64Ty)
+      return rewriter.notifyMatchFailure(op, "expected i64 xm/xt operands");
 
     constexpr unsigned gmAddressSpace =
         static_cast<unsigned>(pto::AddressSpace::GM);
@@ -3901,17 +4392,12 @@ public:
     if (failed(source) || failed(destination))
       return rewriter.notifyMatchFailure(op, "failed to map cc/gm pointer spaces");
 
-    FailureOr<Value> config0 = packCopyMatrixCcToGmConfig0(op, m, n);
-    FailureOr<Value> config1 = packCopyMatrixCcToGmConfig1(op, n);
-    if (failed(config0) || failed(config1))
-      return rewriter.notifyMatchFailure(op, "failed to pack copy_matrix_cc_to_gm config");
-
     StringRef calleeName = buildCopyMatrixCcToGmCallee(op.getContext());
     auto funcType = rewriter.getFunctionType(
         TypeRange{destination->getType(), source->getType(), i64Ty, i64Ty},
         TypeRange{});
     rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
-                                  ValueRange{*destination, *source, *config0, *config1});
+                                  ValueRange{*destination, *source, xm, xt});
     state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
     rewriter.eraseOp(op);
     return success();
@@ -6349,6 +6835,52 @@ private:
   LoweringState &state;
 };
 
+template <typename SyncOp>
+class LowerInterCoreSyncOpPattern final : public OpConversionPattern<SyncOp> {
+public:
+  explicit LowerInterCoreSyncOpPattern(TypeConverter &typeConverter,
+                                       MLIRContext *context,
+                                       LoweringState &state)
+      : OpConversionPattern<SyncOp>(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(SyncOp op, typename SyncOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto pipe = parsePipeImmediate(stringifyPIPE(op.getPipe().getPipe()));
+    if (!pipe)
+      return rewriter.notifyMatchFailure(op, "unsupported inter-core sync pipe");
+
+    Value pipeValue = getI64Constant(rewriter, op.getLoc(), *pipe);
+    Value eventValue;
+    if (IntegerAttr eventIdAttr = op.getEventIdAttr()) {
+      eventValue = getI64Constant(rewriter, op.getLoc(), eventIdAttr.getInt());
+    } else {
+      Value eventIdDyn = adaptor.getEventIdDyn();
+      if (!eventIdDyn)
+        return rewriter.notifyMatchFailure(
+            op, "expected static or dynamic event-id operand");
+
+      eventValue = castIntegerLikeTo(op, eventIdDyn, rewriter.getI64Type());
+      if (!eventValue) {
+        return rewriter.notifyMatchFailure(
+            op, "failed to cast dynamic event-id to i64");
+      }
+    }
+
+    StringRef calleeName = buildSyncCallee<SyncOp>(op.getContext());
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{rewriter.getI64Type(), rewriter.getI64Type()}, TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
+                                  ValueRange{pipeValue, eventValue});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 class LowerBarrierOpPattern final : public OpConversionPattern<pto::BarrierOp> {
 public:
   explicit LowerBarrierOpPattern(TypeConverter &typeConverter,
@@ -6857,6 +7389,8 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerPredicateStoreOpPattern<pto::PstiOp>,
                LowerPredicateStoreOpPattern<pto::PstsOp>,
                LowerPstuOpPattern, LowerVstusOpPattern, LowerVsturOpPattern,
+               LowerInterCoreSyncOpPattern<pto::SyncSetOp>,
+               LowerInterCoreSyncOpPattern<pto::SyncWaitOp>,
                LowerCopyGmToCbufOpPattern, LowerLoadCbufToCaOpPattern,
                LowerLoadCbufToCbOpPattern,
                LowerLoadCbufToS4OpPattern<pto::LoadCbufToCaS4Op>,
@@ -6868,10 +7402,15 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerCopyCbufToBtOpPattern, LowerCopyCbufToFbufOpPattern,
                LowerCopyGmToCbufMultiOpPattern<pto::CopyGmToCbufMultiNd2NzOp>,
                LowerCopyGmToCbufMultiOpPattern<pto::CopyGmToCbufMultiDn2NzOp>,
-               LowerMadOpPattern, LowerMadMxOpPattern,
+               LowerMadOpPattern, LowerMadAccLikePattern<pto::MadAccOp>,
+               LowerMadBiasLikePattern<pto::MadBiasOp>, LowerMadMxOpPattern,
+               LowerMadAccLikePattern<pto::MadMxAccOp>,
+               LowerMadBiasLikePattern<pto::MadMxBiasOp>,
                LowerCopyOpPattern<pto::CopyGmToUbufOp>,
                LowerCopyOpPattern<pto::CopyUbufToGmOp>,
-               LowerCopyUbufToUbufOpPattern>(
+               LowerCopyUbufToUbufOpPattern,
+               LowerCopyCbufToUbufOpPattern,
+               LowerCopyUbufToCbufOpPattern>(
       typeConverter, patterns.getContext(), state);
 }
 
@@ -6882,8 +7421,9 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
   target.addLegalDialect<arith::ArithDialect, cf::ControlFlowDialect,
                          func::FuncDialect, scf::SCFDialect>();
   target.addLegalOp<UnrealizedConversionCastOp>();
-  target.addIllegalOp<pto::SetFlagOp, pto::WaitFlagOp, pto::BarrierOp,
-                      pto::MemBarOp, pto::GetBufOp, pto::RlsBufOp>();
+  target.addIllegalOp<pto::SetFlagOp, pto::WaitFlagOp, pto::SyncSetOp,
+                      pto::SyncWaitOp, pto::BarrierOp, pto::MemBarOp,
+                      pto::GetBufOp, pto::RlsBufOp>();
   target.addIllegalOp<pto::GetBlockIdxOp, pto::GetSubBlockIdxOp,
                       pto::GetBlockNumOp, pto::GetSubBlockNumOp,
                       pto::GetCtrlOp>();
@@ -6933,7 +7473,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::VbitcastOp,
                       pto::VcmpOp, pto::VcmpsOp,
                       pto::CopyGmToUbufOp, pto::CopyUbufToGmOp,
-                      pto::CopyUbufToUbufOp,
+                      pto::CopyUbufToUbufOp, pto::CopyCbufToUbufOp,
+                      pto::CopyUbufToCbufOp,
                       pto::CopyGmToCbufOp, pto::LoadCbufToCaOp,
                       pto::LoadCbufToCbOp, pto::LoadCbufToCaS4Op,
                       pto::LoadCbufToCbS4Op, pto::LoadCbufToCaMxOp,
@@ -6942,7 +7483,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::CopyCbufToBtOp, pto::CopyCbufToFbufOp,
                       pto::CopyGmToCbufMultiNd2NzOp,
                       pto::CopyGmToCbufMultiDn2NzOp,
-                      pto::MadOp, pto::MadMxOp>();
+                      pto::MadOp, pto::MadAccOp, pto::MadBiasOp, pto::MadMxOp,
+                      pto::MadMxAccOp, pto::MadMxBiasOp>();
   target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 }
 

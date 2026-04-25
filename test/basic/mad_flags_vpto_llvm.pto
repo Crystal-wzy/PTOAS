@@ -1,0 +1,28 @@
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-llvm %s -o - | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @mad_flags() {
+    %c0 = arith.constant 0 : i64
+    %c4 = arith.constant 4 : i64
+    %c16 = arith.constant 16 : i64
+    %c32 = arith.constant 32 : i64
+    %c48 = arith.constant 48 : i64
+    %lhs = pto.castptr %c0 : i64 -> !pto.ptr<f16, left>
+    %rhs = pto.castptr %c0 : i64 -> !pto.ptr<f16, right>
+    %dst = pto.castptr %c0 : i64 -> !pto.ptr<f32, acc>
+    %bias = pto.castptr %c4 : i64 -> !pto.ptr<f32, bias>
+
+    pto.mad %lhs, %rhs, %dst, %c16, %c48, %c32
+      : !pto.ptr<f16, left>, !pto.ptr<f16, right>, !pto.ptr<f32, acc>, i64, i64, i64
+    pto.mad_acc %lhs, %rhs, %dst, %c16, %c48, %c32 {unit_flag_ctrl = 2 : i32, disable_gemv = false}
+      : !pto.ptr<f16, left>, !pto.ptr<f16, right>, !pto.ptr<f32, acc>, i64, i64, i64
+    pto.mad_bias %lhs, %rhs, %dst, %bias, %c16, %c48, %c32
+      : !pto.ptr<f16, left>, !pto.ptr<f16, right>, !pto.ptr<f32, acc>, !pto.ptr<f32, bias>, i64, i64, i64
+    return
+  }
+}
+
+// CHECK: call void @llvm.hivm.MAD.f162f32.c310{{.*}}i64 -6917529026835644400
+// CHECK: call void @llvm.hivm.MAD.f162f32.c310{{.*}}i64 72057594843365392
+// CHECK: call void @llvm.hivm.MAD.f162f32.c310{{.*}}ptr addrspace(5) inttoptr (i64 17179869184 to ptr addrspace(5))
+// CHECK-SAME: i64 6917529028446519312

@@ -1,0 +1,37 @@
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --mlir-print-ir-before=pto-vpto-expand-bridge-ops %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=ROUNDTRIP
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --mlir-print-ir-after=pto-vpto-expand-bridge-ops %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXPAND
+
+module attributes {"pto.target_arch" = "a5"} {
+  func.func @cube_store_dma_copy_probe(%src_mat: !pto.ptr<f16, mat>,
+                                       %dst_ub: !pto.ptr<f16, vec>,
+                                       %src_ub: !pto.ptr<f16, vec>,
+                                       %dst_mat: !pto.ptr<f16, mat>) {
+    %c1_i64 = arith.constant 1 : i64
+    %c16_i64 = arith.constant 16 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %c64_i64 = arith.constant 64 : i64
+
+    pto.cube_store %src_mat, %dst_ub, %c16_i64
+      nburst(%c1_i64, %c32_i64, %c64_i64)
+      loop(%c1_i64, %c64_i64, %c32_i64)
+      : !pto.ptr<f16, mat>, !pto.ptr<f16, vec>, i64, i64, i64, i64, loop i64, i64, i64
+
+    pto.dma_copy %src_ub, %dst_mat, %c16_i64
+      nburst(%c1_i64, %c32_i64, %c64_i64)
+      : !pto.ptr<f16, vec>, !pto.ptr<f16, mat>, i64, i64, i64, i64
+
+    return
+  }
+}
+
+// ROUNDTRIP-LABEL: func.func @cube_store_dma_copy_probe(
+// ROUNDTRIP: pto.cube_store %{{.*}}, %{{.*}}, %{{.*}}
+// ROUNDTRIP-SAME: nburst(%{{.*}}, %{{.*}}, %{{.*}})
+// ROUNDTRIP-SAME: loop(%{{.*}}, %{{.*}}, %{{.*}})
+// ROUNDTRIP: pto.dma_copy %{{.*}}, %{{.*}}, %{{.*}}
+// ROUNDTRIP-SAME: nburst(%{{.*}}, %{{.*}}, %{{.*}})
+
+// EXPAND-LABEL: func.func @cube_store_dma_copy_probe(
+// EXPAND: scf.for
+// EXPAND: pto.copy_cbuf_to_ubuf
+// EXPAND: pto.copy_ubuf_to_cbuf

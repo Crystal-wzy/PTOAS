@@ -79,7 +79,15 @@ straight to ad hoc compiler probes:
 6. inspect:
    - `<workspace>/<case-token>/*.ll`
    - `<workspace>/<case-token>/validation.log`
-7. only after seeing the real generated `.ll` and Bisheng failure should you
+7. if you only have an AICore `.bc` from `-save-temps`, convert it back to
+   textual LLVM IR with:
+   - `source scripts/ptoas_env.sh`
+   - `bisheng --target=hiipu64-hisilicon-cce -Xclang -cce-bitcode-is-aicore -S -emit-llvm -c <foo>.bc -o <foo>.ll`
+   - this is useful for installed PTO / `pto-isa` traces where `*.tmp.bc`
+     exists but no `.ll` was saved
+   - do not use bare `bisheng -S -emit-llvm <foo>.bc`; on this machine that
+     falls back to the host target and can crash in the backend
+8. only after seeing the real generated `.ll` and Bisheng failure should you
    refine the call shape
 
 This route is preferred because it preserves the real PTOAS lowering context,
@@ -92,8 +100,10 @@ Use probes in this order:
 1. installed headers
 2. `strings bisheng`
 3. repo-generated VPTO LLVM IR from `run_host_vpto_validation.sh`
-4. only then minimal handwritten `.ll` probes
-5. handwritten `.cce` frontend probes are last resort
+4. if needed, recover textual LLVM IR from saved AICore bitcode with:
+   - `bisheng --target=hiipu64-hisilicon-cce -Xclang -cce-bitcode-is-aicore -S -emit-llvm -c <foo>.bc -o <foo>.ll`
+5. only then minimal handwritten `.ll` probes
+6. handwritten `.cce` frontend probes are last resort
 
 Handwritten `.ll` probes are acceptable for quick ABI sanity checks such as:
 - whether Bisheng recognizes a specific `llvm.hivm.*` name
@@ -173,7 +183,9 @@ after that the real compiler frontend:
 5. inspect:
    - `*.ccei` for the exact installed PTO wrapper call sequence
    - `strings *.bc | rg 'llvm.hivm\\.'` to see which HIVM intrinsics survived
-6. if needed, rerun the same frontend compile with `-S`, `-emit-llvm`, or the
+6. if needed, recover textual IR from the saved AICore bitcode:
+   - `bisheng --target=hiipu64-hisilicon-cce -Xclang -cce-bitcode-is-aicore -S -emit-llvm -c <foo>.bc -o <foo>.ll`
+7. if needed, rerun the same frontend compile with `-S`, `-emit-llvm`, or the
    equivalent `cc1` invocation from `-v` to inspect the real LLVM IR emitted by
    the compiler frontend before instruction selection
 

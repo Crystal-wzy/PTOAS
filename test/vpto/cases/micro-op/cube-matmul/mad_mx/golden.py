@@ -15,7 +15,7 @@ import numpy as np
 
 M = 16
 N = 16
-K = 16
+K = 64
 
 
 def generate(output_dir: Path) -> None:

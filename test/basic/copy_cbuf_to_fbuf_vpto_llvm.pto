@@ -1,0 +1,18 @@
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-llvm %s -o - | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @copy_cbuf_to_fbuf_basic() {
+    %c0 = arith.constant 0 : i64
+    %c2 = arith.constant 2 : i64
+    %c4 = arith.constant 4 : i64
+    %src = pto.castptr %c0 : i64 -> !pto.ptr<ui64, mat>
+    %dst = pto.castptr %c0 : i64 -> !pto.ptr<ui64, scaling>
+
+    pto.copy_cbuf_to_fbuf %src, %dst, %c2, %c4, %c0, %c0
+      : !pto.ptr<ui64, mat>, !pto.ptr<ui64, scaling>, i64, i64, i64, i64
+    return
+  }
+}
+
+// CHECK: call void @llvm.hivm.MOV.L1.TO.FB.v220
+// CHECK-SAME: ptr addrspace(7) null

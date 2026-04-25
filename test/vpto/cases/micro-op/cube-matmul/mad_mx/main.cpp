@@ -52,7 +52,7 @@ void LaunchMad_mx_kernel(uint8_t *a, uint8_t *b, float *c, void *stream);
 int main() {
   constexpr size_t kM = 16;
   constexpr size_t kN = 16;
-  constexpr size_t kK = 16;
+  constexpr size_t kK = 64;
   constexpr size_t aElem = kM * kK;
   constexpr size_t bElem = kK * kN;
   constexpr size_t cElem = kM * kN;

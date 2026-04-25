@@ -555,6 +555,15 @@ static bool containsVPTOIR(llvm::StringRef input) {
         (line.contains("!pto.vec<") || line.contains("!pto.mask") ||
          line.contains("!pto.align") ||
          containsVPTOOpPrefix(line, "pto.copy_") ||
+         containsVPTOOpPrefix(line, "pto.dma_load") ||
+         containsVPTOOpPrefix(line, "pto.dma_store") ||
+         containsVPTOOpPrefix(line, "pto.dma_copy") ||
+         containsVPTOOpPrefix(line, "pto.cube_load") ||
+         containsVPTOOpPrefix(line, "pto.cube_load_frac") ||
+         containsVPTOOpPrefix(line, "pto.left_load") ||
+         containsVPTOOpPrefix(line, "pto.right_load") ||
+         containsVPTOOpPrefix(line, "pto.acc_store_fix") ||
+         containsVPTOOpPrefix(line, "pto.acc_store") ||
          containsVPTOOpPrefix(line, "pto.set_loop") ||
          containsVPTOOpPrefix(line, "pto.set_mov_pad_val") ||
          containsVPTOOpPrefix(line, "pto.v") ||
@@ -562,6 +571,7 @@ static bool containsVPTOIR(llvm::StringRef input) {
          containsVPTOOpPrefix(line, "pto.pset_") ||
          containsVPTOOpPrefix(line, "pto.psts") ||
          containsVPTOOpPrefix(line, "pto.pdintlv_") ||
+         containsVPTOOpPrefix(line, "pto.mem_bar") ||
          containsVPTOOpPrefix(line, "pto.set_flag") ||
          containsVPTOOpPrefix(line, "pto.wait_flag") ||
          containsVPTOOpPrefix(line, "pto.pipe_barrier") ||
