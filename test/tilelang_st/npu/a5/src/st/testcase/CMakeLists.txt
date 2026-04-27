@@ -140,6 +140,14 @@ set(ALL_TESTCASES
     tcolmin
     tcolsum
     tcolprod
+    tcolexpand
+    tcolexpandadd
+    tcolexpandsub
+    tcolexpandmul
+    tcolexpanddiv
+    tcolexpandmax
+    tcolexpandmin
+    tcolexpandexpdif
     softmax
     tabs
     texp
