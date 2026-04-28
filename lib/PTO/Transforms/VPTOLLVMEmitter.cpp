@@ -543,10 +543,10 @@ static std::optional<uint64_t> parseRoundModeImmediate(StringRef roundMode) {
 }
 
 static std::optional<uint64_t> parseSaturationImmediate(StringRef sat) {
-  if (sat == "SAT" || sat == "RS_ENABLE")
-    return 0;
-  if (sat == "NOSAT" || sat == "RS_DISABLE")
+  if (sat == "SAT")
     return 1;
+  if (sat == "NOSAT")
+    return 0;
   return std::nullopt;
 }
 
