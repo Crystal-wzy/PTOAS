@@ -46,31 +46,22 @@ module {
       : !pto.tensor_view<1x1x1x64x64xf32> -> !pto.partition_tensor_view<1x1x1x64x64xf32>
 
     %a = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xf32>
     %b = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xf32>
     %c = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xf32>
 
     pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x64x64xf32>)
-              outs(%a : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+              outs(%a : !pto.tile_buf<vec, 64x64xf32>)
     pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x64x64xf32>)
-              outs(%b : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+              outs(%b : !pto.tile_buf<vec, 64x64xf32>)
 
-    pto.tmin ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=0>,
-                          !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-             outs(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64,
-                                     blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tmin ins(%a, %b : !pto.tile_buf<vec, 64x64xf32>,
+                          !pto.tile_buf<vec, 64x64xf32>)
+             outs(%c : !pto.tile_buf<vec, 64x64xf32>)
 
-    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%c : !pto.tile_buf<vec, 64x64xf32>)
                outs(%c_part : !pto.partition_tensor_view<1x1x1x64x64xf32>)
     return
   }
@@ -109,31 +100,22 @@ module {
       : !pto.tensor_view<1x1x1x64x64xi32> -> !pto.partition_tensor_view<1x1x1x64x64xi32>
 
     %a = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xi32>
     %b = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xi32>
     %c = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xi32>
 
     pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x64x64xi32>)
-              outs(%a : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+              outs(%a : !pto.tile_buf<vec, 64x64xi32>)
     pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x64x64xi32>)
-              outs(%b : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+              outs(%b : !pto.tile_buf<vec, 64x64xi32>)
 
-    pto.tmin ins(%a, %b : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=64, v_col=64,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=0>,
-                          !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=64, v_col=64,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-             outs(%c : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=64, v_col=64,
-                                     blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tmin ins(%a, %b : !pto.tile_buf<vec, 64x64xi32>,
+                          !pto.tile_buf<vec, 64x64xi32>)
+             outs(%c : !pto.tile_buf<vec, 64x64xi32>)
 
-    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%c : !pto.tile_buf<vec, 64x64xi32>)
                outs(%c_part : !pto.partition_tensor_view<1x1x1x64x64xi32>)
     return
   }
@@ -172,31 +154,22 @@ module {
       : !pto.tensor_view<1x1x1x64x64xi16> -> !pto.partition_tensor_view<1x1x1x64x64xi16>
 
     %a = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i16, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xi16>
     %b = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i16, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xi16>
     %c = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i16, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xi16>
 
     pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x64x64xi16>)
-              outs(%a : !pto.tile_buf<loc=vec, dtype=i16, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+              outs(%a : !pto.tile_buf<vec, 64x64xi16>)
     pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x64x64xi16>)
-              outs(%b : !pto.tile_buf<loc=vec, dtype=i16, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+              outs(%b : !pto.tile_buf<vec, 64x64xi16>)
 
-    pto.tmin ins(%a, %b : !pto.tile_buf<loc=vec, dtype=i16, rows=64, cols=64, v_row=64, v_col=64,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=0>,
-                          !pto.tile_buf<loc=vec, dtype=i16, rows=64, cols=64, v_row=64, v_col=64,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-             outs(%c : !pto.tile_buf<loc=vec, dtype=i16, rows=64, cols=64, v_row=64, v_col=64,
-                                     blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tmin ins(%a, %b : !pto.tile_buf<vec, 64x64xi16>,
+                          !pto.tile_buf<vec, 64x64xi16>)
+             outs(%c : !pto.tile_buf<vec, 64x64xi16>)
 
-    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=i16, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%c : !pto.tile_buf<vec, 64x64xi16>)
                outs(%c_part : !pto.partition_tensor_view<1x1x1x64x64xi16>)
     return
   }
@@ -235,31 +208,22 @@ module {
       : !pto.tensor_view<1x1x1x64x64xf16> -> !pto.partition_tensor_view<1x1x1x64x64xf16>
 
     %a = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xf16>
     %b = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xf16>
     %c = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=64, v_col=64,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      : !pto.tile_buf<vec, 64x64xf16>
 
     pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x64x64xf16>)
-              outs(%a : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+              outs(%a : !pto.tile_buf<vec, 64x64xf16>)
     pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x64x64xf16>)
-              outs(%b : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+              outs(%b : !pto.tile_buf<vec, 64x64xf16>)
 
-    pto.tmin ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=64, v_col=64,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=0>,
-                          !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=64, v_col=64,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-             outs(%c : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=64, v_col=64,
-                                     blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tmin ins(%a, %b : !pto.tile_buf<vec, 64x64xf16>,
+                          !pto.tile_buf<vec, 64x64xf16>)
+             outs(%c : !pto.tile_buf<vec, 64x64xf16>)
 
-    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=64, v_col=64,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%c : !pto.tile_buf<vec, 64x64xf16>)
                outs(%c_part : !pto.partition_tensor_view<1x1x1x64x64xf16>)
     return
   }
@@ -299,31 +263,22 @@ module {
       : !pto.tensor_view<1x1x1x60x60xf32> -> !pto.partition_tensor_view<1x1x1x60x60xf32>
 
     %a = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=60, v_col=60,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 64x64xf32, valid=60x60, pad=2>
     %b = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=60, v_col=60,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 64x64xf32, valid=60x60, pad=2>
     %c = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=60, v_col=60,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 64x64xf32, valid=60x60, pad=2>
 
     pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x60x60xf32>)
-              outs(%a : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=60, v_col=60,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+              outs(%a : !pto.tile_buf<vec, 64x64xf32, valid=60x60, pad=2>)
     pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x60x60xf32>)
-              outs(%b : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=60, v_col=60,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+              outs(%b : !pto.tile_buf<vec, 64x64xf32, valid=60x60, pad=2>)
 
-    pto.tmin ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=60, v_col=60,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=2>,
-                          !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=60, v_col=60,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=2>)
-             outs(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=60, v_col=60,
-                                     blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+    pto.tmin ins(%a, %b : !pto.tile_buf<vec, 64x64xf32, valid=60x60, pad=2>,
+                          !pto.tile_buf<vec, 64x64xf32, valid=60x60, pad=2>)
+             outs(%c : !pto.tile_buf<vec, 64x64xf32, valid=60x60, pad=2>)
 
-    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=60, v_col=60,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+    pto.tstore ins(%c : !pto.tile_buf<vec, 64x64xf32, valid=60x60, pad=2>)
                outs(%c_part : !pto.partition_tensor_view<1x1x1x60x60xf32>)
     return
   }
@@ -363,31 +318,22 @@ module {
       : !pto.tensor_view<1x1x1x60x60xi32> -> !pto.partition_tensor_view<1x1x1x60x60xi32>
 
     %a = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=60, v_col=60,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 64x64xi32, valid=60x60, pad=2>
     %b = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=60, v_col=60,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 64x64xi32, valid=60x60, pad=2>
     %c = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=60, v_col=60,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 64x64xi32, valid=60x60, pad=2>
 
     pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x60x60xi32>)
-              outs(%a : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=60, v_col=60,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+              outs(%a : !pto.tile_buf<vec, 64x64xi32, valid=60x60, pad=2>)
     pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x60x60xi32>)
-              outs(%b : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=60, v_col=60,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+              outs(%b : !pto.tile_buf<vec, 64x64xi32, valid=60x60, pad=2>)
 
-    pto.tmin ins(%a, %b : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=60, v_col=60,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=2>,
-                          !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=60, v_col=60,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=2>)
-             outs(%c : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=60, v_col=60,
-                                     blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+    pto.tmin ins(%a, %b : !pto.tile_buf<vec, 64x64xi32, valid=60x60, pad=2>,
+                          !pto.tile_buf<vec, 64x64xi32, valid=60x60, pad=2>)
+             outs(%c : !pto.tile_buf<vec, 64x64xi32, valid=60x60, pad=2>)
 
-    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=i32, rows=64, cols=64, v_row=60, v_col=60,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+    pto.tstore ins(%c : !pto.tile_buf<vec, 64x64xi32, valid=60x60, pad=2>)
                outs(%c_part : !pto.partition_tensor_view<1x1x1x60x60xi32>)
     return
   }
@@ -426,31 +372,22 @@ module {
       : !pto.tensor_view<1x1x1x1x3600xf16> -> !pto.partition_tensor_view<1x1x1x1x3600xf16>
 
     %a = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=4096, v_row=1, v_col=3600,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 2x4096xf16, valid=1x3600, pad=2>
     %b = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=4096, v_row=1, v_col=3600,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 2x4096xf16, valid=1x3600, pad=2>
     %c = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=4096, v_row=1, v_col=3600,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 2x4096xf16, valid=1x3600, pad=2>
 
     pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x1x3600xf16>)
-              outs(%a : !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=4096, v_row=1, v_col=3600,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+              outs(%a : !pto.tile_buf<vec, 2x4096xf16, valid=1x3600, pad=2>)
     pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x1x3600xf16>)
-              outs(%b : !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=4096, v_row=1, v_col=3600,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+              outs(%b : !pto.tile_buf<vec, 2x4096xf16, valid=1x3600, pad=2>)
 
-    pto.tmin ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=4096, v_row=1, v_col=3600,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=2>,
-                          !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=4096, v_row=1, v_col=3600,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=2>)
-             outs(%c : !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=4096, v_row=1, v_col=3600,
-                                     blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+    pto.tmin ins(%a, %b : !pto.tile_buf<vec, 2x4096xf16, valid=1x3600, pad=2>,
+                          !pto.tile_buf<vec, 2x4096xf16, valid=1x3600, pad=2>)
+             outs(%c : !pto.tile_buf<vec, 2x4096xf16, valid=1x3600, pad=2>)
 
-    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=4096, v_row=1, v_col=3600,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+    pto.tstore ins(%c : !pto.tile_buf<vec, 2x4096xf16, valid=1x3600, pad=2>)
                outs(%c_part : !pto.partition_tensor_view<1x1x1x1x3600xf16>)
     return
   }
@@ -491,31 +428,22 @@ module {
       : !pto.tensor_view<1x1x1x16x200xi16> -> !pto.partition_tensor_view<1x1x1x16x200xi16>
 
     %a = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i16, rows=20, cols=512, v_row=16, v_col=200,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 20x512xi16, valid=16x200, pad=2>
     %b = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i16, rows=20, cols=512, v_row=16, v_col=200,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 20x512xi16, valid=16x200, pad=2>
     %c = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i16, rows=20, cols=512, v_row=16, v_col=200,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=2>
+      : !pto.tile_buf<vec, 20x512xi16, valid=16x200, pad=2>
 
     pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x16x200xi16>)
-              outs(%a : !pto.tile_buf<loc=vec, dtype=i16, rows=20, cols=512, v_row=16, v_col=200,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+              outs(%a : !pto.tile_buf<vec, 20x512xi16, valid=16x200, pad=2>)
     pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x16x200xi16>)
-              outs(%b : !pto.tile_buf<loc=vec, dtype=i16, rows=20, cols=512, v_row=16, v_col=200,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+              outs(%b : !pto.tile_buf<vec, 20x512xi16, valid=16x200, pad=2>)
 
-    pto.tmin ins(%a, %b : !pto.tile_buf<loc=vec, dtype=i16, rows=20, cols=512, v_row=16, v_col=200,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=2>,
-                          !pto.tile_buf<loc=vec, dtype=i16, rows=20, cols=512, v_row=16, v_col=200,
-                                        blayout=row_major, slayout=none_box, fractal=512, pad=2>)
-             outs(%c : !pto.tile_buf<loc=vec, dtype=i16, rows=20, cols=512, v_row=16, v_col=200,
-                                     blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+    pto.tmin ins(%a, %b : !pto.tile_buf<vec, 20x512xi16, valid=16x200, pad=2>,
+                          !pto.tile_buf<vec, 20x512xi16, valid=16x200, pad=2>)
+             outs(%c : !pto.tile_buf<vec, 20x512xi16, valid=16x200, pad=2>)
 
-    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=i16, rows=20, cols=512, v_row=16, v_col=200,
-                                      blayout=row_major, slayout=none_box, fractal=512, pad=2>)
+    pto.tstore ins(%c : !pto.tile_buf<vec, 20x512xi16, valid=16x200, pad=2>)
                outs(%c_part : !pto.partition_tensor_view<1x1x1x16x200xi16>)
     return
   }

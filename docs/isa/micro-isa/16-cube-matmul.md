@@ -1,6 +1,6 @@
 # 16. Cube Matrix Multiply (MAT)
 
-> **Category:** Cube unit — GM/L1 staging, L0A/L0B loads, L0C accumulate, and matrix-side side-buffer moves  
+> **Category:** Cube unit — GM/L1 staging, L0A/L0B loads, L0C accumulate, and matrix-side side-buffer moves
 > **Pipelines:** MTE2 (GM→L1 / cbuf), Cube (L0A/L0B→L0C), MTE3/FIX (L0C→{GM,L1,UB}, L1→{BT,FB})
 
 This group documents **buffer-pointer** PTO ops used to express a minimal **cube matmul data path** on A5: data is moved from GM into L1-aligned buffers (`cbuf`), loaded into L0A/L0B, multiplied into L0C (`cc`), then written back or redistributed to GM/L1/UB and related matrix-side buffers. These ops are distinct from the vector `!pto.vreg<…>` surface in groups 3–13.
