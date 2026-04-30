@@ -76,16 +76,16 @@ VERSION_NOTES = {
         "0.1": "Doc Init",
         "0.2": "Update micro Instruction latency and throughput",
         "0.3": "Add runtime block query and vector-interval legality notes; Normalize load/store distribution families; Update get_buf/rls_buf details",
-        "0.4": "Refresh bundled micro Instruction SPEC and add a standalone Tile Instruction companion doc",
+        "0.4": "Update DMA instruction docs and add PTO Tile Instruction SPEC",
     },
     TILEOP_TARGET: {
-        "0.4": "Generate standalone Tile Instruction SPEC",
+        "0.4": "Initial PTO Tile Instruction SPEC covering core TileOps",
     },
     MERGED_TARGET: {
         "0.1": "Doc Init",
         "0.2": "Update micro Instruction latency and throughput",
         "0.3": "Add runtime block query and vector-interval legality notes; Normalize load/store distribution families; Update get_buf/rls_buf details",
-        "0.4": "Refresh bundled PTO ISA spec snapshot and rewrite Tile Instruction links",
+        "0.4": "Update DMA instruction docs and add PTO Tile Instruction SPEC",
     },
 }
 
