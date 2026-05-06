@@ -14,6 +14,21 @@ module {
     // CHECK-NEXT: pto.tmov
     pto.tmov ins(%mat : !pto.tile_buf<loc=mat, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
              outs(%left : !pto.tile_buf<loc=left, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=row_major, fractal=512, pad=0>)
+    // CHECK: pto.barrier <PIPE_ALL>
+    // CHECK-NEXT: return
+    return
+  }
+
+  func.func @manual_pipe_all_barrier_not_duplicated(%src: memref<16x16xf32, #pto.address_space<gm>>) {
+    // CHECK-LABEL: func.func @manual_pipe_all_barrier_not_duplicated
+    // CHECK: pto.barrier <PIPE_ALL>
+    // CHECK-NEXT: pto.tload
+    %mat = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>
+    pto.barrier <PIPE_ALL>
+    pto.tload ins(%src : memref<16x16xf32, #pto.address_space<gm>>)
+              outs(%mat : !pto.tile_buf<loc=mat, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+    // CHECK: pto.barrier <PIPE_ALL>
+    // CHECK-NEXT: return
     return
   }
 
@@ -35,6 +50,8 @@ module {
     // CHECK: pto.barrier <PIPE_ALL>
     // CHECK-NEXT: pto.tpush
     pto.tpush(%acc_tile, %pipe : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.pipe) {split = 0}
+    // CHECK: pto.barrier <PIPE_ALL>
+    // CHECK-NEXT: return
     return
   }
 
@@ -59,6 +76,8 @@ module {
     // CHECK: pto.barrier <PIPE_ALL>
     // CHECK-NEXT: pto.tfree
     pto.tfree(%pipe : !pto.pipe) {split = 2}
+    // CHECK: pto.barrier <PIPE_ALL>
+    // CHECK-NEXT: return
     return
   }
 }
@@ -66,9 +85,11 @@ module {
 // CPP-LABEL: AICORE void cube_push_gm
 // CPP: pipe_barrier(PIPE_ALL);
 // CPP-NEXT: TPUSH
+// CPP: pipe_barrier(PIPE_ALL);
 
 // CPP-LABEL: AICORE void vector_pop_gm
 // CPP: pipe_barrier(PIPE_ALL);
 // CPP-NEXT: TPOP
 // CPP: pipe_barrier(PIPE_ALL);
 // CPP-NEXT: TFREE
+// CPP: pipe_barrier(PIPE_ALL);

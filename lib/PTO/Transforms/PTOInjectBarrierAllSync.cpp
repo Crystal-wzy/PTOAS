@@ -12,7 +12,10 @@
 #include "PTO/Transforms/Passes.h"
 #include "PTO/IR/PTO.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+
+#include <iterator>
 
 namespace mlir {
 namespace pto {
@@ -31,14 +34,23 @@ namespace {
 
 static bool hasReadOrWriteMemoryEffect(Operation *op) {
   auto memEffect = dyn_cast<MemoryEffectOpInterface>(op);
-  if (!memEffect)
-    return false;
+  return memEffect && (memEffect.hasEffect<MemoryEffects::Read>() ||
+                       memEffect.hasEffect<MemoryEffects::Write>());
+}
 
-  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
-  memEffect.getEffects(effects);
-  return llvm::any_of(effects, [](const auto &effect) {
-    return isa<MemoryEffects::Read, MemoryEffects::Write>(effect.getEffect());
-  });
+static bool isPipeAllBarrier(Operation *op) {
+  auto barrier = dyn_cast_or_null<pto::BarrierOp>(op);
+  return barrier && barrier.getPipe().getPipe() == pto::PIPE::PIPE_ALL;
+}
+
+static bool hasPreviousPipeAllBarrier(Operation *op) {
+  Block *block = op->getBlock();
+  if (!block)
+    return false;
+  auto it = op->getIterator();
+  if (it == block->begin())
+    return false;
+  return isPipeAllBarrier(&*std::prev(it));
 }
 
 static bool shouldInjectBarrierAllBefore(Operation *op) {
@@ -55,20 +67,36 @@ struct PTOInjectBarrierAllSyncPass
           PTOInjectBarrierAllSyncPass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    MLIRContext *ctx = func.getContext();
     SmallVector<Operation *> insertionPoints;
+    SmallVector<func::ReturnOp> tailInsertionPoints;
+    bool sawMemoryEffectingPipeOp = false;
 
     func.walk<WalkOrder::PreOrder>([&](Operation *op) {
-      if (shouldInjectBarrierAllBefore(op))
+      if (shouldInjectBarrierAllBefore(op)) {
+        sawMemoryEffectingPipeOp = true;
+        if (hasPreviousPipeAllBarrier(op))
+          return WalkResult::advance();
         insertionPoints.push_back(op);
+      }
       return WalkResult::advance();
     });
 
-    IRRewriter rewriter(ctx);
-    auto pipeAll = pto::PipeAttr::get(ctx, pto::PIPE::PIPE_ALL);
+    if (sawMemoryEffectingPipeOp) {
+      func.walk([&](func::ReturnOp ret) {
+        if (!hasPreviousPipeAllBarrier(ret))
+          tailInsertionPoints.push_back(ret);
+      });
+    }
+
+    OpBuilder builder(func.getContext());
+    auto pipeAll = pto::PipeAttr::get(func.getContext(), pto::PIPE::PIPE_ALL);
     for (Operation *op : insertionPoints) {
-      rewriter.setInsertionPoint(op);
-      rewriter.create<pto::BarrierOp>(op->getLoc(), pipeAll);
+      builder.setInsertionPoint(op);
+      builder.create<pto::BarrierOp>(op->getLoc(), pipeAll);
+    }
+    for (func::ReturnOp ret : tailInsertionPoints) {
+      builder.setInsertionPoint(ret);
+      builder.create<pto::BarrierOp>(ret.getLoc(), pipeAll);
     }
   }
 };
