@@ -51,7 +51,6 @@ Uses vstus+vstas for unaligned column fill, matching TFillPad.hpp.
     dtype = dst.element_type
     _, cols = dst.shape
     src_valid_rows, src_valid_cols = src.valid_shape
-    _, _ = dst.shape
     dst_valid_rows, dst_valid_cols = dst.valid_shape
 
     lanes = pto.get_lanes(dtype)
