@@ -106,6 +106,16 @@ void CodeGenerator::emitSyncOp(IRRewriter &rewriter, SyncOp *syncOp) {
   if (!setWait || setWait->eventIds.empty())
     return;
 
+  // The first/last-iter wrapping path (scf.if(isFirstIter/isLastIter) {
+  // set/wait }) lives behind the MmadL1 decomposition optimization in the
+  // solver, which is currently force-disabled by SyncSolverOptions ctor.
+  // If anyone re-enables it, codegen needs a matching update before this
+  // assert can be relaxed.
+  assert(!setWait->checkFirstIter &&
+         "checkFirstIter wrapping not implemented in codegen");
+  assert(!setWait->checkLastIter &&
+         "checkLastIter wrapping not implemented in codegen");
+
   // One set/wait op per assigned event id. The current solver only assigns
   // a single id per node, but the codegen handles multi-id assignments so a
   // future multi-buffer pass can plug in without re-touching this layer.
