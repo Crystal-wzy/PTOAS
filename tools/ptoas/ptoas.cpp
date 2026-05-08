@@ -42,6 +42,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringMap.h"
+#include <memory>
 #include <string>
 
 using namespace mlir;
@@ -1178,12 +1179,17 @@ int main(int argc, char **argv) {
 
   
 
-  // [Fix] ToolOutputFile Usage
-  std::error_code ec;
-  llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
-  if (ec) {
-    llvm::errs() << ec.message() << "\n";
-    return 1;
+  std::unique_ptr<llvm::ToolOutputFile> outputFile;
+  llvm::raw_ostream *outputOS = &llvm::outs();
+  if (outputFilename != "-") {
+    std::error_code ec;
+    outputFile = std::make_unique<llvm::ToolOutputFile>(
+        outputFilename, ec, llvm::sys::fs::OF_None);
+    if (ec) {
+      llvm::errs() << ec.message() << "\n";
+      return 1;
+    }
+    outputOS = &outputFile->os();
   }
 
   if (emitMlirIR) {
@@ -1191,10 +1197,13 @@ int main(int argc, char **argv) {
       llvm::errs() << "Error: Pass execution failed.\n";
       return 1;
     }
-    module->print(outputFile.os());
+    module->print(*outputOS);
+    if (outputFile)
+      outputFile->keep();
     return 0;
   }
 
+  pm.addPass(pto::createPTOMaterializeTileHandlesPass());
   pm.addPass(createCSEPass());
   if (arch == "a3") {
     pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
@@ -1237,9 +1246,11 @@ int main(int argc, char **argv) {
   rewriteScalarConstantDecls(cppOutput);
   rewriteHoistedGlobalTensorDecls(cppOutput);
   
-  outputFile.os() << cppOutput;
+  *outputOS << cppOutput;
+  outputOS->flush();
 
-  outputFile.keep(); // Success, keep the file
+  if (outputFile)
+    outputFile->keep(); // Success, keep the file
 
   return 0;
 }
