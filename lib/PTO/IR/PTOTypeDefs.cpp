@@ -442,15 +442,31 @@ static LogicalResult parseCompactTileBufFields(AsmParser &parser,
 static Type buildTileBufType(AsmParser &parser,
                              const ParsedTileBufFields &fields) {
   MLIRContext *ctx = parser.getContext();
+  auto emitError = [&]() -> InFlightDiagnostic {
+    return parser.emitError(parser.getNameLoc());
+  };
 
-  if (fields.rows < 0 || fields.cols < 0) {
-    parser.emitError(parser.getNameLoc(), "rows/cols must be non-negative");
+  // 1. Shape positivity check
+  if (fields.rows <= 0 || fields.cols <= 0) {
+    emitError() << "tile_buf rows/cols must be positive";
+    return Type();
+  }
+
+  // 2. ValidShape bounds check
+  int64_t vrow = fields.vrow < 0 ? ShapedType::kDynamic : fields.vrow;
+  int64_t vcol = fields.vcol < 0 ? ShapedType::kDynamic : fields.vcol;
+  if (vrow != ShapedType::kDynamic && vrow > fields.rows) {
+    emitError() << "tile_buf valid_row (" << vrow << ") exceeds row (" << fields.rows << ")";
+    return Type();
+  }
+  if (vcol != ShapedType::kDynamic && vcol > fields.cols) {
+    emitError() << "tile_buf valid_col (" << vcol << ") exceeds col (" << fields.cols << ")";
     return Type();
   }
 
   auto memorySpace = resolveTileBufMemorySpace(fields.locStr);
   if (!memorySpace.has_value()) {
-    parser.emitError(parser.getNameLoc(), "unknown loc: ") << fields.locStr;
+    emitError() << "unknown loc: " << fields.locStr;
     return Type();
   }
 
@@ -459,28 +475,38 @@ static Type buildTileBufType(AsmParser &parser,
   auto pv = symbolizePadValue(fields.padInt);
   auto compact = symbolizeCompactMode(fields.compactInt);
   if (!bl.has_value()) {
-    parser.emitError(parser.getNameLoc(), "unknown blayout: ")
-        << fields.blayoutStr;
+    emitError() << "unknown blayout: " << fields.blayoutStr;
     return Type();
   }
   if (!sl.has_value()) {
-    parser.emitError(parser.getNameLoc(), "unknown slayout: ")
-        << fields.slayoutStr;
+    emitError() << "unknown slayout: " << fields.slayoutStr;
     return Type();
   }
   if (!pv.has_value()) {
-    parser.emitError(parser.getNameLoc(), "unknown pad: ") << fields.padInt;
+    emitError() << "unknown pad: " << fields.padInt;
     return Type();
   }
   if (!compact.has_value()) {
-    parser.emitError(parser.getNameLoc(), "unknown compact: ")
-        << fields.compactInt;
+    emitError() << "unknown compact: " << fields.compactInt;
+    return Type();
+  }
+
+  // 3. Fractal value check (only Mx/AB/C sizes allowed)
+  if (fields.fractal != kFractalMxSize && fields.fractal != kFractalABSize && fields.fractal != kFractalCSize) {
+    emitError() << "unsupported s_fractal_size: " << fields.fractal
+                << ", must be one of {"
+                << kFractalMxSize << ", "
+                << kFractalABSize << ", "
+                << kFractalCSize << "}";
     return Type();
   }
 
   BLayout effectiveBLayout =
       resolveTileBufBLayout(parser.getContext(), memorySpace.value(),
                             bl.value());
+
+  // (32-byte alignment and boxed layout divisibility checks removed
+  // - not general hardware requirements; validation handled elsewhere)
 
   auto blAttr = BLayoutAttr::get(ctx, effectiveBLayout);
   auto slAttr = SLayoutAttr::get(ctx, sl.value());

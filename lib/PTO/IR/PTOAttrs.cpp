@@ -87,9 +87,12 @@ LogicalResult TileBufConfigAttr::verify(function_ref<InFlightDiagnostic()> emitE
     return emitError() << "s_fractal_size must be i32", failure();
 
   int32_t s = (int32_t)sFractalSize.getInt();
-  if (s != kFractalSize32 && s != kFractalSize16 &&
-      s != kFractalSize512 && s != kFractalSize1024)
-    return emitError() << "unsupported s_fractal_size: " << s, failure();
+  if (s != kFractalMxSize && s != kFractalABSize && s != kFractalCSize)
+    return emitError() << "unsupported s_fractal_size: " << s
+                       << ", must be one of {"
+                       << kFractalMxSize << ", "
+                       << kFractalABSize << ", "
+                       << kFractalCSize << "}", failure();
 
   int32_t blv = getLayoutInt(bLayout, -1);
   if (blv != kBLayoutRowMajor && blv != kBLayoutColMajor)

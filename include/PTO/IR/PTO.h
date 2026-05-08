@@ -69,6 +69,19 @@
 namespace mlir {
 namespace pto {
 
+//===----------------------------------------------------------------------===//
+// S Fractal Size Constants
+//===----------------------------------------------------------------------===//
+
+/// Fractal size for mxBox layout (16x2 inner block, 32 bytes total).
+inline constexpr int32_t kFractalMxSize = 32;
+
+/// Fractal size for AB matrices in matmul (16xN inner block, 512 bytes).
+inline constexpr int32_t kFractalABSize = 512;
+
+/// Fractal size for C matrix in matmul (16x16 inner block, 1024 bytes).
+inline constexpr int32_t kFractalCSize = 1024;
+
 struct DmaLoopConfig {
   Value count;
   Value srcStride;
