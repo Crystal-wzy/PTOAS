@@ -35,6 +35,7 @@ from .types import (
     TileConfig,
     TileSpecialization,
     TypeVariable,
+    VectorType,
     WildcardType,
     is_integer_dtype,
 )
@@ -740,7 +741,7 @@ class BoundKernelParameter:
 
     @property
     def element_dtype(self) -> ScalarType | None:
-        if self.kind in ("tensorview", "partition_tensor_view", "tile", "ptr"):
+        if self.kind in ("tensorview", "partition_tensor_view", "tile", "ptr", "vector"):
             return self.dtype
         return None
 
@@ -2047,6 +2048,12 @@ def _validate_parameter_spec(param: inspect.Parameter) -> KernelParameterSpec:
             kind="tile",
             annotation=annotation,
         )
+    if isinstance(annotation, VectorType):
+        return KernelParameterSpec(
+            name=param.name,
+            kind="vector",
+            annotation=annotation,
+        )
     if isinstance(annotation, PointerType):
         return KernelParameterSpec(
             name=param.name,
@@ -2090,6 +2097,9 @@ def _default_dtype_signature(
         if param_spec.kind in {"tensorview", "partition_tensor_view", "tile"}:
             defaults.append(AnyType)
             continue
+        if param_spec.kind == "vector":
+            defaults.append(param_spec.annotation.element_dtype)
+            continue
         if param_spec.kind == "ptr":
             defaults.append(param_spec.annotation.element_dtype)
             continue
@@ -2127,6 +2137,18 @@ def _bind_parameter(
             dtype=bound_dtype,
         )
     if param_spec.kind == "tile":
+        return BoundKernelParameter(
+            name=param_spec.name,
+            kind=param_spec.kind,
+            annotation=param_spec.annotation,
+            dtype=bound_dtype,
+        )
+    if param_spec.kind == "vector":
+        if param_spec.annotation.element_dtype != bound_dtype:
+            raise TypeError(
+                f"vector parameter '{param_spec.name}' annotation {param_spec.annotation!r} "
+                f"does not match selected dtype {bound_dtype!r}"
+            )
         return BoundKernelParameter(
             name=param_spec.name,
             kind=param_spec.kind,

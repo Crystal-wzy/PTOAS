@@ -62,6 +62,7 @@ from .types import (
     TileSpecialization,
     TypeVar,
     TypeVariable,
+    VectorType,
     VRegType,
     WildcardType,
     bf16,
@@ -90,6 +91,7 @@ from .types import (
     mask_b32,
     ptr,
     align,
+    vector,
     vreg,
 )
 
@@ -113,10 +115,12 @@ __all__ = [
     "PartitionTensorView",
     "Tile",
     "PointerType",
+    "VectorType",
     "VRegType",
     "MaskType",
     "AlignType",
     "ptr",
+    "vector",
     "vreg",
     "align",
     "MemorySpace",

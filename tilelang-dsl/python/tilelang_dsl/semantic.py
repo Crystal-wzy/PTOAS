@@ -99,6 +99,7 @@ from .types import (
     ui16,
     ui32,
     ui64,
+    VectorType,
 )
 
 
@@ -400,6 +401,12 @@ class SemanticMaskType(SemanticType):
 class SemanticVRegType(SemanticType):
     element_dtype: ScalarType
     lanes: int
+
+
+@dataclass(frozen=True)
+class SemanticVectorType(SemanticType):
+    element_dtype: ScalarType
+    shape: tuple[int, ...]
 
 
 _I32_TYPE = SemanticScalarType(dtype=i32)
@@ -906,6 +913,12 @@ class _SemanticAnalyzer:
                 valid_shape=valid_shape,
                 memory_space=memory_space,
                 config=None if spec is None else (spec.config or TileConfig()),
+            )
+        if param.kind == "vector":
+            vector_type = param.annotation
+            return SemanticVectorType(
+                element_dtype=param.dtype,
+                shape=vector_type.shape,
             )
         if param.kind == "ptr":
             memory_space = param.annotation.memory_space.value
@@ -2404,6 +2417,17 @@ class _SemanticAnalyzer:
                         f"annotated vector type `{vreg_type!r}` does not match inferred !pto.vreg<{inferred_type.lanes}x{inferred_type.element_dtype.name}>"
                     )
                 return inferred_type
+            if annotation_expr.type.kind == "vector_type" and isinstance(inferred_type, SemanticVectorType):
+                vector_type = self._require_vector_type_expr(annotation_expr, "annotated builtin vector type")
+                if (
+                    inferred_type.element_dtype != vector_type.element_dtype
+                    or inferred_type.shape != vector_type.shape
+                ):
+                    shape_text = "x".join(str(dim) for dim in inferred_type.shape)
+                    raise TypeError(
+                        f"annotated builtin vector type `{vector_type!r}` does not match inferred !pto.vector<{shape_text}x{inferred_type.element_dtype.name}>"
+                    )
+                return inferred_type
             if annotation_expr.type.kind == "mask_type" and isinstance(inferred_type, SemanticMaskType):
                 mask_type = self._require_mask_type_expr(annotation_expr, "annotated mask type")
                 if inferred_type.granularity != mask_type.granularity:
@@ -3760,6 +3784,8 @@ class _SemanticAnalyzer:
             return self._analyze_ptr_type(args)
         if name == "vreg":
             return self._analyze_vreg_type(args)
+        if name == "vector":
+            return self._analyze_vector_type(args)
         if name == "castptr":
             return self._analyze_castptr(args)
         if name == "addptr":
@@ -4186,6 +4212,16 @@ class _SemanticAnalyzer:
         return SemanticLiteralExpr(
             value=VRegType(element_dtype=dtype, lanes=vreg_type.lanes),
             type=SemanticMetaType(kind="vreg_type"),
+        )
+
+    def _analyze_vector_type(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+        if len(args) != 2:
+            raise TypeError("pto.vector expects exactly 2 positional arguments in TileLang DSL v1")
+        dtype = self._require_dtype_symbol(args[0], "pto.vector element type")
+        shape = self._require_vector_shape_expr(args[1], "pto.vector shape")
+        return SemanticLiteralExpr(
+            value=VectorType(element_dtype=dtype, shape=shape),
+            type=SemanticMetaType(kind="vector_type"),
         )
 
     def _analyze_castptr(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
@@ -5213,6 +5249,45 @@ class _SemanticAnalyzer:
         ):
             return expr.binding.value
         raise TypeError(f"{context} must be a vector type constructed with pto.vreg(...)")
+
+    def _require_vector_type_expr(self, expr: SemanticExpr, context: str) -> VectorType:
+        if (
+            isinstance(expr, SemanticLiteralExpr)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "vector_type"
+            and isinstance(expr.value, VectorType)
+        ):
+            return expr.value
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "vector_type"
+            and isinstance(expr.binding.value, VectorType)
+        ):
+            return expr.binding.value
+        raise TypeError(f"{context} must be a builtin vector type constructed with pto.vector(...)")
+
+    def _require_vector_shape_expr(self, expr: SemanticExpr, context: str) -> tuple[int, ...]:
+        if not isinstance(expr, SemanticTupleExpr):
+            dim = self._static_index_value(expr, default=None)
+            if dim is None:
+                raise TypeError(f"{context} must be a static integer or tuple of static integers")
+            if dim <= 0:
+                raise TypeError(f"{context} shape entries must be positive")
+            return (dim,)
+        if isinstance(expr, SemanticTupleExpr):
+            shape: list[int] = []
+            for element in expr.elements:
+                dim = self._static_index_value(element, default=None)
+                if dim is None:
+                    raise TypeError(f"{context} tuple entries must be static integers")
+                if dim <= 0:
+                    raise TypeError(f"{context} shape entries must be positive")
+                shape.append(dim)
+            if not shape:
+                raise TypeError(f"{context} must be a non-empty shape")
+            return tuple(shape)
+        raise TypeError(f"{context} must be a static integer or tuple of static integers")
 
     def _require_mask_type_expr(self, expr: SemanticExpr, context: str) -> MaskType:
         if (
@@ -6535,6 +6610,7 @@ __all__ = [
     "SemanticTupleExpr",
     "SemanticTupleType",
     "SemanticType",
+    "SemanticVectorType",
     "SemanticVRegType",
     "SemanticVScatterStmt",
     "SemanticVectorPairStoreStmt",

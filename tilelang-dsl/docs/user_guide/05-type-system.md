@@ -152,6 +152,50 @@ lanes1 = pto.elements_per_vreg(pto.f32)  # 64
 Current TileLang DSL v1 vector lowering supports the 8/16/32-bit integer
 families (`i*`, `si*`, `ui*`) plus `f16`, `bf16`, and `f32` element types.
 
+### Builtin Vector Type
+
+TileLang DSL v1 also exposes builtin MLIR vector types through
+`pto.vector(element_dtype, shape)`.
+
+```python
+executed_ty = pto.vector(pto.i16, (4,))  # vector<4xi16>
+```
+
+This type is different from `pto.vreg(...)`:
+
+- `pto.vreg(dtype)` models a VPTO vector register with fixed 256-byte width.
+- `pto.vector(dtype, shape)` models a builtin MLIR `vector<...>` type with an
+  explicit static shape.
+
+Use `pto.vector(...)` when a kernel parameter or intermediate value must match
+an existing builtin vector operand in PTO IR, for example an auxiliary
+`vector<4xi16>` operand carried by a tile op template.
+
+```python
+@pto.vkernel(
+    target="a5",
+    op="pto.tmrgsort ins(src0, src1, tmp) -> outs(dst, ex_vec)",
+    dtypes=[(pto.f32, pto.f32, pto.f32, pto.f32, pto.i16)],
+)
+def template(
+    src0: pto.Tile,
+    src1: pto.Tile,
+    tmp: pto.Tile,
+    dst: pto.Tile,
+    ex_vec: pto.vector(pto.i16, (4,)),
+):
+    return None
+```
+
+Notes:
+
+- `shape` must be a Python tuple of integers. For a 1-D vector, write `(4,)`,
+  not `(4)`. The trailing comma is Python's single-element tuple syntax.
+- The current public surface is intended for static builtin vector types.
+- In descriptor `dtypes=[...]`, builtin vector operands are matched by their
+  element dtype (`pto.i16` in the example above). The vector shape contract is
+  carried by the parameter annotation `pto.vector(...)`.
+
 ### Vector Type Reinterpretation (vbitcast)
 
 Vector registers support bitwise type reinterpretation via `pto.vbitcast`:

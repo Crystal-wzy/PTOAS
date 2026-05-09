@@ -161,10 +161,12 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "Tile"))
         self.assertTrue(hasattr(pto, "TileSpecialization"))
         self.assertTrue(hasattr(pto, "PointerType"))
+        self.assertTrue(hasattr(pto, "VectorType"))
         self.assertTrue(hasattr(pto, "VRegType"))
         self.assertTrue(hasattr(pto, "MaskType"))
         self.assertTrue(hasattr(pto, "AlignType"))
         self.assertTrue(hasattr(pto, "ptr"))
+        self.assertTrue(hasattr(pto, "vector"))
         self.assertTrue(hasattr(pto, "vreg"))
         self.assertTrue(hasattr(pto, "align"))
         self.assertTrue(hasattr(pto, "mask_b8"))
@@ -769,6 +771,92 @@ def template_dn(inp: pto.TensorView, out: pto.Tile):
             )
 
         self.assertEqual(selected.name, "template_nd")
+
+    def test_select_descriptor_accepts_aux_vector_operand_for_vector_annotation(self) -> None:
+        source = """
+import tilelang_dsl as pto
+
+@pto.vkernel(
+    target="a5",
+    op="pto.expand_helper_vector_operand_unique",
+    dtypes=[(pto.f32, pto.i16, pto.f32)],
+)
+def template(src: pto.Tile, ex_vec: pto.vector(pto.i16, (4,)), dst: pto.Tile):
+    return None
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir) / "expand_helper_vector_operand_unique.py"
+            module_path.write_text(source, encoding="utf-8")
+
+            mod = expand_helper._import_py_file(module_path)
+            self.assertIsNotNone(mod)
+            descriptors = expand_helper._find_descriptors(mod)
+            self.assertTrue(descriptors)
+
+            operand_specs = expand_helper._parse_operand_specs(
+                """
+[
+  {
+    "kind": "tile",
+    "dtype": "f32",
+    "shape": [1, 256],
+    "valid_shape": [1, 256],
+    "memory_space": "ub",
+    "config": {
+      "b_layout": "row_major",
+      "s_layout": "none_box",
+      "s_fractal_size": 512,
+      "pad_value": "0x0"
+    }
+  },
+  {
+    "kind": "vector",
+    "dtype": "i16",
+    "shape": [4]
+  },
+  {
+    "kind": "tile",
+    "dtype": "f32",
+    "shape": [1, 256],
+    "valid_shape": [1, 256],
+    "memory_space": "ub",
+    "config": {
+      "b_layout": "row_major",
+      "s_layout": "none_box",
+      "s_fractal_size": 512,
+      "pad_value": "0x0"
+    }
+  }
+]
+"""
+            )
+
+            selected = expand_helper._select_descriptor(
+                descriptors,
+                target="a5",
+                op_name="pto.expand_helper_vector_operand_unique",
+                operand_specs=operand_specs,
+            )
+            tile_specs = {}
+            for param, operand_spec in zip(selected.parameters, operand_specs):
+                if param.kind != "tile":
+                    continue
+                tile_specs[param.name] = pto.TileSpecialization(
+                    shape=operand_spec["shape"],
+                    memory_space=operand_spec["memory_space"],
+                    config=operand_spec["config"],
+                    valid_shape=operand_spec["valid_shape"],
+                )
+            mlir_text = selected.specialize(**tile_specs).mlir_text()
+
+        self.assertEqual(selected.name, "template")
+        self.assertEqual(selected.parameters[1].kind, "vector")
+        self.assertEqual(selected.parameters[1].annotation, pto.vector(pto.i16, (4,)))
+        self.assertIn("vector<4xi16>", mlir_text)
+        context_attrs = expand_helper._build_positional_context_attrs(operand_specs)
+        self.assertEqual(context_attrs["arg1_kind"], "vector")
+        self.assertEqual(context_attrs["arg1_shape"], (4,))
+        self.assertEqual(context_attrs["arg1_rank"], 1)
 
 
 class TileLangDSLSupportMatrixTests(unittest.TestCase):
@@ -1870,6 +1958,23 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(vec_type.element_dtype, pto.f32)
         self.assertEqual(vec_type.lanes, 64)
         self.assertEqual(repr(vec_type), "vreg(f32)")
+
+    def test_vector_type_constructor_exposes_shape(self) -> None:
+        vec_type = pto.vector(pto.i16, (4,))
+        self.assertIsInstance(vec_type, pto.VectorType)
+        self.assertEqual(vec_type.element_dtype, pto.i16)
+        self.assertEqual(vec_type.shape, (4,))
+        self.assertEqual(repr(vec_type), "vector(i16, (4,))")
+
+    def test_vector_parameter_annotation_binds_as_vector_kind(self) -> None:
+        @pto.vkernel(op="vector_surface_unique", dtypes=[(pto.f32, pto.i16, pto.f32)], advanced=True)
+        def kernel(src: pto.Tile, ex_vec: pto.vector(pto.i16, (4,)), dst: pto.Tile):
+            return None
+
+        self.assertEqual(kernel.parameters[1].kind, "vector")
+        self.assertEqual(kernel.parameters[1].dtype, pto.i16)
+        self.assertEqual(kernel.parameters[1].annotation, pto.vector(pto.i16, (4,)))
+        self.assertEqual(kernel.parameters[1].element_dtype, pto.i16)
 
     def test_mask_type_constants_expose_granularity(self) -> None:
         self.assertIsInstance(pto.mask_b8, pto.MaskType)

@@ -78,7 +78,7 @@ namespace {
 // ============================================================================
 // OperandTypeInfo: describes one operand for template specialization.
 //
-// Three kinds of operands:
+// Four kinds of operands:
 //   Tile   — from TileBufType.  dtype + shape + memorySpace + config
 //            all participate in the specialization key (SpecKey).
 //   View   — from MemRefType (lowered PartitionTensorViewType). Only dtype
@@ -86,9 +86,13 @@ namespace {
 //            shape/strides/memorySpace don't affect code generation. They are
 //            carried here solely for JSON serialization to the Python DSL for
 //            constraint checking.
+//   Vector — from builtin VectorType. The element dtype and vector shape
+//            participate in SpecKey so helper-side schema filtering can
+//            distinguish auxiliary vector operands such as tmrgsort's
+//            `excuted : vector<4xi16>`.
 //   Scalar — from a scalar element type.  Only dtype participates in SpecKey.
 // ============================================================================
-enum class OperandKind { Tile, View, Scalar };
+enum class OperandKind { Tile, View, Vector, Scalar };
 
 struct OperandTypeInfo {
   OperandKind kind = OperandKind::Tile;
@@ -108,6 +112,9 @@ struct OperandTypeInfo {
   SmallVector<int64_t> viewStrides;
   std::string viewMemorySpace; // "gm" or "ub"
 
+  // --- Vector-only (builtin VectorType) ---
+  SmallVector<int64_t> vectorShape;
+
   /// Equality for SpecKey caching — only compares fields relevant to each kind.
   bool operator==(const OperandTypeInfo &rhs) const {
     if (kind != rhs.kind || dtype != rhs.dtype)
@@ -118,6 +125,8 @@ struct OperandTypeInfo {
              tileMemorySpace == rhs.tileMemorySpace &&
              blayout == rhs.blayout && slayout == rhs.slayout &&
              fractal == rhs.fractal && pad == rhs.pad;
+    if (kind == OperandKind::Vector)
+      return vectorShape == rhs.vectorShape;
     // View and Scalar: dtype alone is sufficient for template caching.
     return true;
   }
@@ -152,8 +161,11 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
           h = llvm::hash_combine(h, d);
         for (int64_t d : op.tileValidShape)
           h = llvm::hash_combine(h, d);
+      } else if (op.kind == OperandKind::Vector) {
+        for (int64_t d : op.vectorShape)
+          h = llvm::hash_combine(h, d);
       }
-      // View/Scalar: only kind + dtype contribute to hash.
+      // View/Vector/Scalar: only kind + dtype contribute to hash.
     }
     for (const auto &[attrName, attrValue] : key.contextAttrs)
       h = llvm::hash_combine(h, attrName, attrValue);
@@ -526,6 +538,17 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
     return info;
   }
 
+  // Auxiliary vector operand — from builtin VectorType (e.g. vector<4xi16>).
+  if (auto vecTy = dyn_cast<VectorType>(ty)) {
+    OperandTypeInfo info;
+    info.kind = OperandKind::Vector;
+    info.dtype = getDtypeString(vecTy.getElementType());
+    if (info.dtype.empty())
+      return std::nullopt;
+    info.vectorShape.assign(vecTy.getShape().begin(), vecTy.getShape().end());
+    return info;
+  }
+
   // Scalar operand — from a scalar element type.
   OperandTypeInfo info;
   info.kind = OperandKind::Scalar;
@@ -652,6 +675,13 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
         json += "]";
       }
       json += ",\"memory_space\":\"" + op.viewMemorySpace + "\"}";
+      continue;
+    }
+
+    if (op.kind == OperandKind::Vector) {
+      json += "{\"kind\":\"vector\",\"dtype\":\"" + op.dtype + "\",\"shape\":";
+      appendJsonIntArray(json, op.vectorShape);
+      json += "}";
       continue;
     }
 
@@ -828,7 +858,8 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
   for (const auto &op : key.operands) {
     uniqueName += op.kind == OperandKind::Tile   ? "_tile"
                  : op.kind == OperandKind::View ? "_view"
-                                                : "_scalar";
+                 : op.kind == OperandKind::Vector ? "_vector"
+                                                  : "_scalar";
     uniqueName += "_" + op.dtype;
     if (op.kind == OperandKind::Tile) {
       for (int64_t d : op.tileShape)
@@ -839,6 +870,9 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
       uniqueName += "_sl" + std::to_string(op.slayout);
       uniqueName += "_fr" + std::to_string(op.fractal);
       uniqueName += "_pd" + llvm::utohexstr(op.pad, /*LowerCase=*/false);
+    } else if (op.kind == OperandKind::Vector) {
+      for (int64_t d : op.vectorShape)
+        uniqueName += "_" + std::to_string(d);
     }
   }
   for (const auto &[attrName, attrValue] : key.contextAttrs)

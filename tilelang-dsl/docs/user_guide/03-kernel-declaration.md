@@ -85,6 +85,11 @@ The `dtypes` parameter supports flexible type matching:
    - `pto.i64`, `pto.si64`, `pto.ui64`
    - `pto.mask_b8`, `pto.mask_b16`, `pto.mask_b32`
 
+   Builtin vector operands still use their element dtype in `dtypes=[...]`.
+   For example, a parameter annotated as `ex_vec: pto.vector(pto.i16, (4,))`
+   contributes `pto.i16` to the signature tuple, while the vector shape
+   contract stays in the parameter annotation.
+
 2. **Type Wildcards**: Generic type patterns:
    - `pto.AnyFloat`: Matches any floating-point type (`f16`, `bf16`, `f32`)
    - `pto.AnyInt`: Matches any integer type (`i*`, `si*`, `ui*`)
@@ -204,6 +209,36 @@ def template_tload(src: pto.TensorView, dst: pto.Tile):
 ```
 
 This is the recommended constraint style for current TileLang DSL head.
+
+##### Builtin Vector Parameters
+
+When a kernel needs to match a builtin MLIR vector operand, annotate that
+parameter with `pto.vector(element_dtype, shape)`.
+
+```python
+@pto.vkernel(
+    target="a5",
+    op="pto.tmrgsort ins(src0, src1, tmp) -> outs(dst, ex_vec)",
+    dtypes=[(pto.f32, pto.f32, pto.f32, pto.f32, pto.i16)],
+)
+def template(
+    src0: pto.Tile,
+    src1: pto.Tile,
+    tmp: pto.Tile,
+    dst: pto.Tile,
+    ex_vec: pto.vector(pto.i16, (4,)),
+):
+    return None
+```
+
+Rules:
+
+- Use `pto.vector(...)` for builtin vector operands, not Python `list`.
+- `shape` is a Python tuple. A 1-D vector of length 4 is written `(4,)`.
+- `dtypes=[...]` still records only the element dtype for that operand (`pto.i16`
+  in the example above).
+- `pto.vector(...)` is distinct from `pto.vreg(...)`: the former models builtin
+  `vector<...>`, the latter models fixed-width VPTO vector registers.
 
 #### Kernel Selection Mechanism
 

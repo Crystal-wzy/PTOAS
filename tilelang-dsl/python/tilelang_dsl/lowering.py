@@ -68,6 +68,7 @@ from .semantic import (
     SemanticTupleType,
     SemanticVScatterStmt,
     SemanticVRegType,
+    SemanticVectorType,
     SemanticVectorPairStoreStmt,
     SemanticVectorStoreStmt,
     SemanticWaitFlagDevStmt,
@@ -4131,6 +4132,9 @@ class _AuthoringRenderer:
             return f"!pto.mask<{ty.granularity}>"
         if isinstance(ty, SemanticVRegType):
             return f"!pto.vreg<{ty.lanes}x{ty.element_dtype.name}>"
+        if isinstance(ty, SemanticVectorType):
+            dims = "x".join(str(dim) for dim in ty.shape)
+            return f"vector<{dims}x{ty.element_dtype.name}>"
         raise NotImplementedError(f"unsupported semantic type {ty!r}")
 
     def _is_memref_like_type(self, ty: SemanticType) -> bool:

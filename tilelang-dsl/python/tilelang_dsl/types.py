@@ -97,6 +97,15 @@ class VRegType:
 
 
 @dataclass(frozen=True)
+class VectorType:
+    element_dtype: ScalarType
+    shape: tuple[int, ...]
+
+    def __repr__(self) -> str:
+        return f"vector({self.element_dtype!r}, {self.shape!r})"
+
+
+@dataclass(frozen=True)
 class MaskType:
     granularity: str
 
@@ -680,6 +689,25 @@ def vreg(dtype: ScalarType) -> VRegType:
     return VRegType(element_dtype=dtype, lanes=get_lanes(dtype))
 
 
+def vector(dtype: ScalarType, shape: tuple[int, ...] | list[int] | int) -> VectorType:
+    if not isinstance(dtype, ScalarType):
+        raise TypeError("vector() expects a TileLang scalar dtype")
+    if isinstance(shape, int) and not isinstance(shape, bool):
+        normalized_shape = (shape,)
+    elif isinstance(shape, (list, tuple)):
+        normalized_shape = tuple(shape)
+    else:
+        raise TypeError("vector() expects a shape integer or a non-empty sequence of integers")
+    if not normalized_shape:
+        raise TypeError("vector() expects a non-empty shape")
+    for dim in normalized_shape:
+        if not isinstance(dim, int) or isinstance(dim, bool):
+            raise TypeError("vector() shape entries must be integers")
+        if dim <= 0:
+            raise TypeError("vector() shape entries must be positive")
+    return VectorType(element_dtype=dtype, shape=normalized_shape)
+
+
 def integer_bitwidth(dtype: ScalarType) -> int | None:
     if not isinstance(dtype, ScalarType):
         return None
@@ -737,9 +765,11 @@ __all__ = [
     "Tile",
     "PointerType",
     "VRegType",
+    "VectorType",
     "MaskType",
     "ptr",
     "vreg",
+    "vector",
     "MemorySpace",
     "Pipe",
     "Event",
