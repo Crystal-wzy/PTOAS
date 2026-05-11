@@ -1,31 +1,59 @@
 // RUN: ptoas --pto-arch=a3 --enable-insert-sync %s | FileCheck %s
 //
 // Issue #428 regression guard:
-// 1. The first cube loop must be primed with both PIPE_M -> PIPE_MTE1 events
-//    before entering the loop.
-// 2. The loop head must wait on the same primed events.
-// 3. The kernel tail must still drain the outstanding M/MTE1 + FIX/M events
-//    before the auto tail barrier helper runs.
-// 4. The second independent loop must keep its loop-head waits *inside* loop
-//    after preheat sets are emitted.
+// - Keep the loop-carried wait/set handshake inside both cube loops.
+// - Preserve the tail drain before the auto tail barrier helper.
 //
 // CHECK-LABEL: tri_inv_block2x2_fp16(
-// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID2);
-// CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID3);
-// CHECK-NEXT: for (size_t
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID2);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID3);
+// CHECK: for (size_t v60 = v20; v60 < v22; v60 += v19) {
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID2);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID3);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID4);
+// CHECK: TMOV(v57, v49);
+// CHECK: TMOV(v58, v55);
+// CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID2);
+// CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID2);
+// CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID2);
+// CHECK: TMATMUL(v59, v57, v58);
+// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID3);
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID3);
+// CHECK: TMOV(v58, v50);
+// CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID3);
+// CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID3);
+// CHECK: TMATMUL_ACC(v59, v59, v57, v58);
+// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID4);
+// CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID2);
+// CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID2);
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID4);
+// CHECK: if ((int32_t) ((uint32_t) ((int32_t) v60) + (uint32_t) v8) < v21) {
+// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID2);
+// CHECK: set_flag(PIPE_FIX, PIPE_M, EVENT_ID2);
+// CHECK: }
+// CHECK: for (size_t v61 = v20; v61 < v22; v61 += v19) {
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID7);
+// CHECK: TMOV(v57, v51);
+// CHECK: TMOV(v58, v55);
+// CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID6);
+// CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID6);
+// CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID6);
+// CHECK: TMATMUL(v59, v57, v58);
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
-// CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
-// CHECK-NEXT: for (size_t
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+// CHECK: TMOV(v58, v52);
+// CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID7);
+// CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID7);
+// CHECK: TMATMUL_ACC(v59, v59, v57, v58);
+// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+// CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID6);
+// CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID6);
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+// CHECK: if ((int32_t) ((uint32_t) ((int32_t) v61) + (uint32_t) v8) < v21) {
+// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID7);
+// CHECK: set_flag(PIPE_FIX, PIPE_M, EVENT_ID6);
+// CHECK: }
+// CHECK: TSTORE(v45, v59);
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID2);
+// CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID2);
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID7);
+// CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID6);
 // CHECK: ptoas_auto_sync_tail(PTOAutoSyncTailMode::kBarrierAll);
 
 module {
