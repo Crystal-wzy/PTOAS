@@ -7,8 +7,8 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // -----------------------------------------------------------------------------
-// case: vpto/cube-load-frac-layouts
-// family: vpto
+// case: micro-op/cube-matmul/cube-load-frac-layouts
+// family: micro-op/cube-matmul
 // target_ops: pto.cube_load_frac, pto.copy_gm_to_cbuf, pto.left_load,
 //   pto.right_load, pto.mad, pto.acc_store_gm
 // scenarios: nd2nz, dn2nz, nchw->nc1hwc0, nchw->fractalz4d,

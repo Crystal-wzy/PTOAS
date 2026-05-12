@@ -645,7 +645,3 @@ pto.acc_store_ub %l0c, %ub_out, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64,
 
 - VPTO->LLVM (`--vpto-emit-hivm-llvm`) lowers this chapter's ops to
   `llvm.hivm.*` intrinsics with cube-related address spaces.
-- Basic coverage is under `test/basic/vpto_mad_*.pto` and
-  `test/basic/vpto_cube_dma_matmul_*.pto`.
-- Micro-op coverage for `mad` / `mad_bias` / `mad_mx` families is under
-  `test/vpto/cases/micro-op/cube-matmul/`.

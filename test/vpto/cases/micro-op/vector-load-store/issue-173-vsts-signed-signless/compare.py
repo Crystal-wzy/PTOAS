@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 # CANN Open Software License Agreement Version 2.0 (the "License").
@@ -7,23 +7,29 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+# case: micro-op/vector-load-store/issue-173-vsts-signed-signless
+# family: micro-op/vector-load-store
+# target_ops: pto.vlds, pto.vsts
+# scenarios: signed-i16, signless-i16, same-module, issue-173-regression
 
 import os
 import sys
+
 import numpy as np
 
 
-def compare_bin(golden_path, output_path, dtype, eps):
+def compare_bin(golden_path: str, output_path: str) -> bool:
     if not os.path.exists(golden_path) or not os.path.exists(output_path):
         return False
-    golden = np.fromfile(golden_path, dtype=dtype)
-    output = np.fromfile(output_path, dtype=dtype)
-    return golden.shape == output.shape and np.allclose(golden, output, atol=eps, rtol=eps, equal_nan=True)
+    golden = np.fromfile(golden_path, dtype=np.int16)
+    output = np.fromfile(output_path, dtype=np.int16)
+    return golden.shape == output.shape and np.array_equal(golden, output)
 
 
-def main():
+def main() -> None:
     strict = os.getenv("COMPARE_STRICT", "1") != "0"
-    ok = compare_bin("golden_v3.bin", "v3.bin", np.float32, 1e-4)
+    ok = compare_bin("golden_v2.bin", "v2.bin")
+    ok = compare_bin("golden_v4.bin", "v4.bin") and ok
     if not ok:
         if strict:
             print("[ERROR] compare failed")

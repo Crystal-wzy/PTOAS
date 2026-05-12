@@ -882,7 +882,7 @@ def template_xxx(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
 
 - Python DSL 模板编写和实例化的单元测试
   以当前 `lib/TileOps/tadd_template.py` 为例，新增/维护
-  `test/basic/expand_tile_op_tilelang.pto`
+  `test/lit/vpto/expand_tile_op_tilelang.pto`
   作为 `pto.tadd` TileLang 模板实例化的基础回归。该用例覆盖：
   1. `ExpandTileOp` 是否能匹配 `pto.tadd` 并调用 Python DSL helper；
   2. 模板实例化后的 `func.call` 是否能被 inline；
@@ -962,7 +962,7 @@ def template_xxx(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
   使用以下命令生成最终 fatobj，并由 `ptoas` 内部完成 VPTO lowering、device 编译、stub 生成和打包：
 
   ```bash
-  ./build/tools/ptoas/ptoas test/basic/expand_tile_op_tilelang.pto \
+  ./build/tools/ptoas/ptoas test/lit/vpto/expand_tile_op_tilelang.pto \
     --pto-arch=a5 \
     --pto-backend=vpto \
     --enable-tile-op-expand \

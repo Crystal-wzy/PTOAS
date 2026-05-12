@@ -7,8 +7,8 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-# case: vpto/dma-copy-rearrange
-# family: vpto
+# case: micro-op/vector-load-store/dma-copy-rearrange
+# family: micro-op/vector-load-store
 # target_ops: pto.copy_gm_to_ubuf, pto.dma_copy, pto.copy_ubuf_to_gm
 # scenarios: i16, ub-rearrange, permute-4x16-rows
 

@@ -7,8 +7,8 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // -----------------------------------------------------------------------------
-// case: vpto/cube-bridge-matmul
-// family: vpto
+// case: micro-op/cube-matmul/cube-bridge-matmul
+// family: micro-op/cube-matmul
 // target_ops: pto.cube_load, pto.left_load, pto.right_load, pto.acc_store_gm
 // scenarios: f16xf16->f32 cube bridge wrappers
 // -----------------------------------------------------------------------------

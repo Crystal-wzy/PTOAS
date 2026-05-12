@@ -7,10 +7,10 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // -----------------------------------------------------------------------------
-// case: vpto/issue-173-vsts-signed-signless
-// family: vpto
-// target_ops: pto.vlds, pto.vsts
-// scenarios: signed-i16, signless-i16, same-module, issue-173-regression
+// case: micro-op/vector-load-store/dma-copy-rearrange
+// family: micro-op/vector-load-store
+// target_ops: pto.copy_gm_to_ubuf, pto.dma_copy, pto.copy_ubuf_to_gm
+// scenarios: i16, ub-rearrange, permute-4x16-rows
 // -----------------------------------------------------------------------------
 
 #include "test_common.h"
@@ -54,22 +54,24 @@ struct MrgSortExecutedNumList {
     }                                                                            \
   } while (0)
 
-void LaunchCopySignedI16Kernel(int16_t *v1, int16_t *v2, void *stream);
-void LaunchCopySignlessI16Kernel(int16_t *v3, int16_t *v4, void *stream);
+void LaunchDma_copy_rearrange_kernel(int16_t *v1, int16_t *v2,
+                                     int64_t n_burst, int64_t len_burst,
+                                     int64_t src_gap, int64_t dst_gap,
+                                     void *stream);
 
 int main() {
-  constexpr size_t elemCount = 1024;
+  constexpr size_t elemCount = 64;
   constexpr size_t fileSize = elemCount * sizeof(int16_t);
   size_t inputFileSize = fileSize;
 
   int16_t *v1Host = nullptr;
   int16_t *v2Host = nullptr;
-  int16_t *v3Host = nullptr;
-  int16_t *v4Host = nullptr;
   int16_t *v1Device = nullptr;
   int16_t *v2Device = nullptr;
-  int16_t *v3Device = nullptr;
-  int16_t *v4Device = nullptr;
+  const int64_t nBurst = 1;
+  const int64_t lenBurst = 1;
+  const int64_t srcGap = 0;
+  const int64_t dstGap = 0;
   int rc = 0;
   bool aclInited = false;
   bool deviceSet = false;
@@ -86,13 +88,8 @@ int main() {
 
   ACL_CHECK(aclrtMallocHost((void **)(&v1Host), fileSize));
   ACL_CHECK(aclrtMallocHost((void **)(&v2Host), fileSize));
-  ACL_CHECK(aclrtMallocHost((void **)(&v3Host), fileSize));
-  ACL_CHECK(aclrtMallocHost((void **)(&v4Host), fileSize));
-
   ACL_CHECK(aclrtMalloc((void **)&v1Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST));
   ACL_CHECK(aclrtMalloc((void **)&v2Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST));
-  ACL_CHECK(aclrtMalloc((void **)&v3Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST));
-  ACL_CHECK(aclrtMalloc((void **)&v4Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST));
 
   FILE_CHECK(ReadFile("./v1.bin", inputFileSize, v1Host, fileSize) &&
                  inputFileSize == fileSize,
@@ -101,45 +98,26 @@ int main() {
   FILE_CHECK(ReadFile("./v2.bin", inputFileSize, v2Host, fileSize) &&
                  inputFileSize == fileSize,
              "./v2.bin");
-  inputFileSize = fileSize;
-  FILE_CHECK(ReadFile("./v3.bin", inputFileSize, v3Host, fileSize) &&
-                 inputFileSize == fileSize,
-             "./v3.bin");
-  inputFileSize = fileSize;
-  FILE_CHECK(ReadFile("./v4.bin", inputFileSize, v4Host, fileSize) &&
-                 inputFileSize == fileSize,
-             "./v4.bin");
 
   ACL_CHECK(aclrtMemcpy(v1Device, fileSize, v1Host, fileSize,
                         ACL_MEMCPY_HOST_TO_DEVICE));
   ACL_CHECK(aclrtMemcpy(v2Device, fileSize, v2Host, fileSize,
                         ACL_MEMCPY_HOST_TO_DEVICE));
-  ACL_CHECK(aclrtMemcpy(v3Device, fileSize, v3Host, fileSize,
-                        ACL_MEMCPY_HOST_TO_DEVICE));
-  ACL_CHECK(aclrtMemcpy(v4Device, fileSize, v4Host, fileSize,
-                        ACL_MEMCPY_HOST_TO_DEVICE));
 
-  LaunchCopySignedI16Kernel(v1Device, v2Device, stream);
-  LaunchCopySignlessI16Kernel(v3Device, v4Device, stream);
+  LaunchDma_copy_rearrange_kernel(v1Device, v2Device, nBurst, lenBurst,
+                                  srcGap, dstGap, stream);
   ACL_CHECK(aclrtSynchronizeStream(stream));
 
   ACL_CHECK(aclrtMemcpy(v2Host, fileSize, v2Device, fileSize,
                         ACL_MEMCPY_DEVICE_TO_HOST));
-  ACL_CHECK(aclrtMemcpy(v4Host, fileSize, v4Device, fileSize,
-                        ACL_MEMCPY_DEVICE_TO_HOST));
 
   FILE_CHECK(WriteFile("./v2.bin", v2Host, fileSize), "./v2.bin");
-  FILE_CHECK(WriteFile("./v4.bin", v4Host, fileSize), "./v4.bin");
 
 cleanup:
   aclrtFree(v1Device);
   aclrtFree(v2Device);
-  aclrtFree(v3Device);
-  aclrtFree(v4Device);
   aclrtFreeHost(v1Host);
   aclrtFreeHost(v2Host);
-  aclrtFreeHost(v3Host);
-  aclrtFreeHost(v4Host);
   if (stream != nullptr)
     aclrtDestroyStream(stream);
   if (deviceSet)

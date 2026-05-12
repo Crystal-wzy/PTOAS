@@ -148,6 +148,6 @@ export LD_LIBRARY_PATH=$LLVM_INSTALL_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PA
 最小验证结果：
 
 - build 版 `ptoas --version` 输出 `ptoas 0.22`
-- build 版 `ptoas` 可成功处理 `test/basic/empty_func.pto`
+- build 版 `ptoas` 可成功处理 `test/lit/pto/empty_func.pto`
 - install 版 Python 绑定可在 `PYTHONPATH=/opt/llvm/python_packages/mlir_core:$PTO_INSTALL_DIR` 下正常导入
 - 若 install 版 `ptoas` 配合 `LD_LIBRARY_PATH=/opt/llvm/lib:$PTO_INSTALL_DIR/lib`，可正常执行

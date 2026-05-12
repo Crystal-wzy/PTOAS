@@ -7,8 +7,8 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-# case: vpto/issue-173-vsts-signed-signless
-# family: vpto
+# case: micro-op/vector-load-store/issue-173-vsts-signed-signless
+# family: micro-op/vector-load-store
 # target_ops: pto.vlds, pto.vsts
 # scenarios: signed-i16, signless-i16, same-module, issue-173-regression
 
