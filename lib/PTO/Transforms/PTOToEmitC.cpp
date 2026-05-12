@@ -6301,7 +6301,9 @@ struct PTODeclareLocalArrayToEmitC
 
 // pto.local_array_get %a[%i0, %i1, ...] -> rvalue.
 // Lowers to a single emitc.subscript with the full index pack; the C++ emitter
-// prints it as `a[i0][i1]...`.
+// prints it as `a[i0][i1]...`. The adaptor already exposes target-typed values
+// (the type converter has remapped !pto.local_array -> !emitc.array and
+// index/integer indices), so they're forwarded directly to the builder.
 struct PTOLocalArrayGetToEmitC
     : public OpConversionPattern<mlir::pto::LocalArrayGetOp> {
   using OpConversionPattern<
@@ -6310,27 +6312,22 @@ struct PTOLocalArrayGetToEmitC
   LogicalResult matchAndRewrite(mlir::pto::LocalArrayGetOp op,
                                 OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    Value array = peelUnrealized(adaptor.getArray());
-    SmallVector<Value> indices;
-    indices.reserve(adaptor.getIndices().size());
-    for (Value idx : adaptor.getIndices())
-      indices.push_back(peelUnrealized(idx));
-
     Type resultTy =
         getTypeConverter()->convertType(op.getResult().getType());
     if (!resultTy)
       return rewriter.notifyMatchFailure(
           op, "failed to map local_array element type");
 
-    auto sub = rewriter.create<emitc::SubscriptOp>(op.getLoc(), resultTy,
-                                                   array, indices);
+    auto sub = rewriter.create<emitc::SubscriptOp>(
+        op.getLoc(), resultTy, adaptor.getArray(), adaptor.getIndices());
     rewriter.replaceOp(op, sub.getResult());
     return success();
   }
 };
 
 // pto.local_array_set %a[%i0, %i1, ...], %v -> emitc.assign to subscript slot.
-// The C++ emitter prints this as `a[i0][i1]... = v;`.
+// The C++ emitter prints this as `a[i0][i1]... = v;`. As above, adaptor values
+// are already target-typed; pass them through directly.
 struct PTOLocalArraySetToEmitC
     : public OpConversionPattern<mlir::pto::LocalArraySetOp> {
   using OpConversionPattern<
@@ -6339,21 +6336,13 @@ struct PTOLocalArraySetToEmitC
   LogicalResult matchAndRewrite(mlir::pto::LocalArraySetOp op,
                                 OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    Value array = peelUnrealized(adaptor.getArray());
-    Value value = peelUnrealized(adaptor.getValue());
-    SmallVector<Value> indices;
-    indices.reserve(adaptor.getIndices().size());
-    for (Value idx : adaptor.getIndices())
-      indices.push_back(peelUnrealized(idx));
-
-    Type elemTy = getTypeConverter()->convertType(value.getType());
-    if (!elemTy)
-      return rewriter.notifyMatchFailure(
-          op, "failed to map local_array value type");
+    Value value = adaptor.getValue();
+    Type elemTy = value.getType();
 
     Value slot = rewriter
-                     .create<emitc::SubscriptOp>(op.getLoc(), elemTy, array,
-                                                 indices)
+                     .create<emitc::SubscriptOp>(op.getLoc(), elemTy,
+                                                 adaptor.getArray(),
+                                                 adaptor.getIndices())
                      .getResult();
     rewriter.create<emitc::AssignOp>(op.getLoc(), slot, value);
     rewriter.eraseOp(op);
