@@ -369,10 +369,12 @@ def FoldTileBufIntrinsics : Pass<"pto-fold-tile-buf-intrinsics", "mlir::func::Fu
     structured-view intrinsics whose operands are now bound to concrete values.
 
     This pass resolves them:
-    - pto.tile_buf_addr → replaced by the underlying pto.bind_tile source
-      memref, or pto.castptr when the requested result type is !pto.ptr
+    - pto.tile_buf_addr → replaced by the memref recovered from the active
+      materialized tile handle, or by pto.castptr when the requested result
+      type is !pto.ptr
     - pto.tile_valid_rows → folded to arith.constant if v_row is static,
-      or replaced with the dynamic index value from bind_tile
+      or replaced with the dynamic valid_row operand carried by the
+      materialized tile handle
     - pto.tile_valid_cols → same as above for v_col
 
     tensor_view family:

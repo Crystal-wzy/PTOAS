@@ -6,6 +6,9 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
+// https://discourse.llvm.org/t/matchandrewrite-hiding-virtual-functions/84933/8
+#pragma GCC diagnostic ignored "-Woverloaded-virtual"
+
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 

@@ -17,8 +17,8 @@
 // CHECK-NOT: pto.tile_buf_addr
 // CHECK-NOT: pto.tile_valid_rows
 // CHECK-NOT: pto.tile_valid_cols
+// CHECK-NOT: pto.bind_tile
 // CHECK: pto.pointer_cast(
-// CHECK: pto.bind_tile
 // CHECK: arith.constant 16 : index
 // CHECK: arith.constant 64 : index
 // CHECK: pto.vlds

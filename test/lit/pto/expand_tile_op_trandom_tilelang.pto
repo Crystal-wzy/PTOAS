@@ -23,10 +23,10 @@ module {
       : !pto.tile_buf<loc=vec, dtype=ui32, rows=16, cols=64, v_row=16, v_col=64,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %seed = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=2, v_row=1, v_col=2,
+      : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=8, v_row=1, v_col=2,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %counter = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=4, v_row=1, v_col=4,
+      : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=8, v_row=1, v_col=4,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
     // Note: pto.trandom may not be defined in current PTO IR

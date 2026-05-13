@@ -22,6 +22,9 @@
 //   - pto.get_tensor_view_stride → extract dimension stride
 //
 // This pass resolves them against the concrete values at the call site.
+// For tile_buf intrinsics, the active VPTO path folds against materialized tile
+// handles produced by the shared tile-handle bridge (`pto.alloc_tile` or
+// `pto.materialize_tile`).
 // For tensor_view intrinsics, the pass traces through the full
 // unrealized_conversion_cast → memref.subview → memref.reinterpret_cast
 // chain to fold directly to constants or SSA operands from the
@@ -52,30 +55,53 @@ namespace pto {
 
 namespace {
 
-/// Locate the `pto.bind_tile` op that produced `tileBuf`, expecting the
-/// strict pattern emitted by MemrefToTileBuf:
-///
-///   %bound  = pto.bind_tile %src, %vrow, %vcol : memref -> memref
-///   %tile   = builtin.unrealized_conversion_cast %bound : memref -> !pto.tile_buf
-///
-/// Returns nullptr (with an error emitted on `loc`) if the pattern does not
-/// hold — the caller is expected to signal pass failure.
-static pto::BindTileOp findBindTileForTileBuf(Value tileBuf, Operation *user) {
-  auto cast = tileBuf.getDefiningOp<UnrealizedConversionCastOp>();
-  if (!cast || cast.getNumOperands() != 1) {
-    user->emitError(
-        "FoldTileBufIntrinsics: expected tile_buf to be defined by a "
-        "single-operand builtin.unrealized_conversion_cast");
-    return nullptr;
+static void eraseDeadAllocTileOps(func::FuncOp func) {
+  SmallVector<pto::AllocTileOp> deadAllocs;
+  func.walk([&](pto::AllocTileOp alloc) {
+    if (alloc.getResult().use_empty())
+      deadAllocs.push_back(alloc);
+  });
+
+  for (pto::AllocTileOp alloc : llvm::reverse(deadAllocs))
+    alloc.erase();
+}
+
+struct TileHandleInfo {
+  Value sourceMemref;
+  Value addr;
+  Value validRow;
+  Value validCol;
+  pto::TileBufConfigAttr config;
+};
+
+static std::optional<TileHandleInfo> resolveTileHandle(Value tileBuf,
+                                                       Operation *user) {
+  if (auto alloc = tileBuf.getDefiningOp<pto::AllocTileOp>()) {
+    auto tileTy = dyn_cast<pto::TileBufType>(alloc.getResult().getType());
+    if (!tileTy) {
+      user->emitError(
+          "FoldTileBufIntrinsics: pto.alloc_tile must produce !pto.tile_buf");
+      return std::nullopt;
+    }
+    return TileHandleInfo{Value(), alloc.getAddr(), alloc.getValidRow(),
+                          alloc.getValidCol(), tileTy.getConfigAttr()};
   }
-  auto bindOp = cast.getOperand(0).getDefiningOp<pto::BindTileOp>();
-  if (!bindOp) {
-    user->emitError(
-        "FoldTileBufIntrinsics: expected unrealized_conversion_cast operand "
-        "to be defined by pto.bind_tile");
-    return nullptr;
+
+  if (auto materialize = tileBuf.getDefiningOp<pto::MaterializeTileOp>()) {
+    return TileHandleInfo{materialize.getSource(), Value(),
+                          materialize.getValidRow(), materialize.getValidCol(),
+                          materialize.getConfig()};
   }
-  return bindOp;
+
+  user->emitError("FoldTileBufIntrinsics: expected tile_buf to be defined by "
+                  "the active materialized tile-handle bridge "
+                  "(pto.alloc_tile or pto.materialize_tile)");
+  return std::nullopt;
+}
+
+static MemRefType getCanonicalMemRefTypeForTileBuf(pto::TileBufType tileTy) {
+  return MemRefType::get(tileTy.getShape(), tileTy.getElementType(),
+                         AffineMap(), tileTy.getMemorySpace());
 }
 
 struct ViewChain {
@@ -243,8 +269,9 @@ struct FoldTileBufIntrinsicsPass
 
     // Leftover TileLang template instances (private, uncalled after
     // PTOInlineLibCall) still contain pto.tile_buf_addr / tile_valid_*
-    // ops on tile_buf function arguments — they have no bind_tile to
-    // fold against and will be removed by later DCE.  Skip them.
+    // ops on tile_buf function arguments — they have no materialized tile
+    // handle anchor to fold against and will be removed by later DCE. Skip
+    // them.
     if (func->hasAttr("pto.tilelang.instance"))
       return;
 
@@ -270,31 +297,56 @@ struct FoldTileBufIntrinsicsPass
         tvStrideOps.push_back(tvStride);
     });
 
-    // Fold pto.tile_buf_addr → bind_tile's source memref (the static-layout
-    // pto.pointer_cast result), or further to pto.castptr when the requested
-    // result type is already !pto.ptr<...>. This bypasses the dynamic-offset
-    // memref produced by bind_tile itself, so downstream vlds/vsts
-    // canonicalization sees a clean strided<[..],offset:0> layout.
+    // Fold pto.tile_buf_addr by recovering the active materialized tile
+    // handle contract:
+    //   - pto.materialize_tile → use the source memref directly
+    //   - pto.alloc_tile       → rebuild a memref from the explicit addr
+    // When the requested result type is already !pto.ptr<...>, cast from the
+    // recovered memref instead of leaving tile_buf_addr in the IR.
     for (auto addrOp : addrOps) {
-      pto::BindTileOp bindOp = findBindTileForTileBuf(addrOp.getSrc(), addrOp);
-      if (!bindOp)
+      auto handleInfo = resolveTileHandle(addrOp.getSrc(), addrOp);
+      if (!handleInfo)
         return signalPassFailure();
 
-      Value srcMemref = bindOp.getSource();
-      if (!isa<MemRefType>(srcMemref.getType())) {
-        addrOp.emitError(
-            "FoldTileBufIntrinsics: pto.bind_tile source is not a memref");
+      auto tileTy = dyn_cast<pto::TileBufType>(addrOp.getSrc().getType());
+      if (!tileTy) {
+        addrOp.emitError("FoldTileBufIntrinsics: tile_buf_addr source must be "
+                         "!pto.tile_buf");
         return signalPassFailure();
       }
 
       if (auto resultMemrefType = dyn_cast<MemRefType>(addrOp.getDst().getType())) {
-        // The declared tile_buf_addr result type may differ from the actual
-        // bind_tile source layout (e.g. plain shape vs. strided layout) — the
-        // downstream vector ops are polymorphic over strided layouts of the
-        // same element type and shape, so retype the result in place.
-        if (srcMemref.getType() != resultMemrefType)
-          addrOp.getDst().setType(cast<MemRefType>(srcMemref.getType()));
-        addrOp.getDst().replaceAllUsesWith(srcMemref);
+        if (handleInfo->sourceMemref) {
+          Value srcMemref = handleInfo->sourceMemref;
+          if (!isa<MemRefType>(srcMemref.getType())) {
+            addrOp.emitError(
+                "FoldTileBufIntrinsics: pto.materialize_tile source is not a memref");
+            return signalPassFailure();
+          }
+
+          // The declared tile_buf_addr result type may differ from the actual
+          // materialized source layout (e.g. plain shape vs. strided layout).
+          if (srcMemref.getType() != resultMemrefType)
+            addrOp.getDst().setType(cast<MemRefType>(srcMemref.getType()));
+          addrOp.getDst().replaceAllUsesWith(srcMemref);
+          addrOp.erase();
+          continue;
+        }
+
+        if (!handleInfo->addr) {
+          addrOp.emitError("FoldTileBufIntrinsics: pto.alloc_tile used by "
+                           "tile_buf_addr must carry an addr operand on the "
+                           "VPTO path");
+          return signalPassFailure();
+        }
+
+        builder.setInsertionPoint(addrOp);
+        Value replacement = builder.create<pto::PointerCastOp>(
+            addrOp.getLoc(), resultMemrefType, ValueRange{handleInfo->addr},
+            handleInfo->validRow ? handleInfo->validRow : Value(),
+            handleInfo->validCol ? handleInfo->validCol : Value(),
+            handleInfo->config);
+        addrOp.getDst().replaceAllUsesWith(replacement);
         addrOp.erase();
         continue;
       }
@@ -306,15 +358,41 @@ struct FoldTileBufIntrinsicsPass
         return signalPassFailure();
       }
 
+      Value memrefValue;
+      if (handleInfo->sourceMemref) {
+        memrefValue = handleInfo->sourceMemref;
+        if (!isa<MemRefType>(memrefValue.getType())) {
+          addrOp.emitError(
+              "FoldTileBufIntrinsics: pto.materialize_tile source is not a memref");
+          return signalPassFailure();
+        }
+      } else {
+        if (!handleInfo->addr) {
+          addrOp.emitError("FoldTileBufIntrinsics: pto.alloc_tile used by "
+                           "tile_buf_addr must carry an addr operand on the "
+                           "VPTO path");
+          return signalPassFailure();
+        }
+
+        builder.setInsertionPoint(addrOp);
+        auto canonicalMemrefType = getCanonicalMemRefTypeForTileBuf(tileTy);
+        memrefValue = builder.create<pto::PointerCastOp>(
+            addrOp.getLoc(), canonicalMemrefType, ValueRange{handleInfo->addr},
+            handleInfo->validRow ? handleInfo->validRow : Value(),
+            handleInfo->validCol ? handleInfo->validCol : Value(),
+            handleInfo->config);
+      }
+
       builder.setInsertionPoint(addrOp);
       Value replacement =
-          builder.create<pto::CastPtrOp>(addrOp.getLoc(), resultPtrType, srcMemref);
+          builder.create<pto::CastPtrOp>(addrOp.getLoc(), resultPtrType,
+                                         memrefValue);
       addrOp.getDst().replaceAllUsesWith(replacement);
       addrOp.erase();
     }
 
-    // Fold pto.tile_valid_rows → arith.constant (static) or bind_tile's
-    // valid_row operand (dynamic).
+    // Fold pto.tile_valid_rows → arith.constant (static) or the dynamic
+    // valid_row operand carried by the new tile handle bridge.
     for (auto rowsOp : rowsOps) {
       builder.setInsertionPoint(rowsOp);
       auto tbTy = dyn_cast<pto::TileBufType>(rowsOp.getSrc().getType());
@@ -329,28 +407,25 @@ struct FoldTileBufIntrinsicsPass
         replacement =
             builder.create<arith::ConstantIndexOp>(rowsOp.getLoc(), vRow);
       } else {
-        pto::BindTileOp bindOp =
-            findBindTileForTileBuf(rowsOp.getSrc(), rowsOp);
-        if (!bindOp)
+        auto handleInfo = resolveTileHandle(rowsOp.getSrc(), rowsOp);
+        if (!handleInfo)
           return signalPassFailure();
-        replacement = bindOp.getValidRow();
+        replacement = handleInfo->validRow;
         if (!replacement) {
           rowsOp.emitError(
-              "tile_valid_rows: dynamic v_row but bind_tile has no "
-              "valid_row operand");
+              "tile_valid_rows: dynamic v_row but the materialized tile "
+              "handle has no valid_row operand");
           return signalPassFailure();
         }
-        // bind_tile's valid_row is `index` (matches tile_valid_rows result),
-        // so no type adaptation is required.
         assert(replacement.getType() == rowsOp.getResult().getType() &&
-               "tile_valid_rows fold: type mismatch with bind_tile valid_row");
+               "tile_valid_rows fold: type mismatch with handle valid_row");
       }
       rowsOp.getResult().replaceAllUsesWith(replacement);
       rowsOp.erase();
     }
 
-    // Fold pto.tile_valid_cols → arith.constant (static) or bind_tile's
-    // valid_col operand (dynamic).
+    // Fold pto.tile_valid_cols → arith.constant (static) or the dynamic
+    // valid_col operand carried by the new tile handle bridge.
     for (auto colsOp : colsOps) {
       builder.setInsertionPoint(colsOp);
       auto tbTy = dyn_cast<pto::TileBufType>(colsOp.getSrc().getType());
@@ -365,19 +440,18 @@ struct FoldTileBufIntrinsicsPass
         replacement =
             builder.create<arith::ConstantIndexOp>(colsOp.getLoc(), vCol);
       } else {
-        pto::BindTileOp bindOp =
-            findBindTileForTileBuf(colsOp.getSrc(), colsOp);
-        if (!bindOp)
+        auto handleInfo = resolveTileHandle(colsOp.getSrc(), colsOp);
+        if (!handleInfo)
           return signalPassFailure();
-        replacement = bindOp.getValidCol();
+        replacement = handleInfo->validCol;
         if (!replacement) {
           colsOp.emitError(
-              "tile_valid_cols: dynamic v_col but bind_tile has no "
-              "valid_col operand");
+              "tile_valid_cols: dynamic v_col but the materialized tile "
+              "handle has no valid_col operand");
           return signalPassFailure();
         }
         assert(replacement.getType() == colsOp.getResult().getType() &&
-               "tile_valid_cols fold: type mismatch with bind_tile valid_col");
+               "tile_valid_cols fold: type mismatch with handle valid_col");
       }
       colsOp.getResult().replaceAllUsesWith(replacement);
       colsOp.erase();
@@ -519,6 +593,8 @@ struct FoldTileBufIntrinsicsPass
       for (auto *op : llvm::reverse(deadMemrefOps))
         op->erase();
     }
+
+    eraseDeadAllocTileOps(func);
   }
 };
 

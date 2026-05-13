@@ -21,14 +21,14 @@ module {
 
   // CHECK-LABEL: func.func @linear_chain
   // CHECK: pto.tload
-  // CHECK: pto.set_flag[<PIPE_MTE2>, <PIPE_V>
-  // CHECK: pto.wait_flag[<PIPE_MTE2>, <PIPE_V>
+  // CHECK: pto.set_flag["PIPE_MTE2", "PIPE_V"
+  // CHECK: pto.wait_flag["PIPE_MTE2", "PIPE_V"
   // CHECK: pto.tmuls
-  // CHECK: pto.set_flag[<PIPE_V>, <PIPE_MTE3>
-  // CHECK: pto.wait_flag[<PIPE_V>, <PIPE_MTE3>
+  // CHECK: pto.set_flag["PIPE_V", "PIPE_MTE3"
+  // CHECK: pto.wait_flag["PIPE_V", "PIPE_MTE3"
   // CHECK: pto.tstore
-  // CHECK-NOT: pto.set_flag[<PIPE_MTE2>, <PIPE_MTE3>
-  // CHECK-NOT: pto.wait_flag[<PIPE_MTE2>, <PIPE_MTE3>
+  // CHECK-NOT: pto.set_flag["PIPE_MTE2", "PIPE_MTE3"
+  // CHECK-NOT: pto.wait_flag["PIPE_MTE2", "PIPE_MTE3"
 
   func.func @linear_chain(%arg0: !pto.ptr<f32>, %arg1: !pto.ptr<f32>,
                           %arg2: index, %arg3: index, %arg4: index,
@@ -147,7 +147,7 @@ module {
 // ----------------------------------------------------------------------------
 
   // CHECK-LABEL: func.func @event_id_fallback
-  // CHECK-COUNT-9: {{pto\.set_flag\[<PIPE_MTE2>, <PIPE_V>, <EVENT_ID[0-9]+>\]}}
+  // CHECK-COUNT-9: {{pto\.set_flag\["PIPE_MTE2", "PIPE_V", "EVENT_ID[0-9]+"\]}}
   // CHECK: pto.tmuls ins(%4, %cst :
 
   func.func @event_id_fallback(%arg0: !pto.ptr<f32>,

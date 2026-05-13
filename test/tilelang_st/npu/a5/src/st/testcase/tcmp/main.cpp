@@ -30,10 +30,10 @@ void LaunchTCMP_i32_128x128_lt(int32_t *a, int32_t *b, int8_t *c, void *stream);
 void LaunchTCMP_i32_64x64_eq(int32_t *a, int32_t *b, int8_t *c, void *stream);
 void LaunchTCMP_i32_16x32_eq(int32_t *a, int32_t *b, int8_t *c, void *stream);
 void LaunchTCMP_f32_128x128_le(float *a, float *b, int8_t *c, void *stream);
-void LaunchTCMP_i32_77x80_eq(int32_t *a, int32_t *b, int8_t *c, void *stream);
+void LaunchTCMP_i32_77x96_eq(int32_t *a, int32_t *b, int8_t *c, void *stream);
 void LaunchTCMP_i32_32x32_eq(int32_t *a, int32_t *b, int8_t *c, void *stream);
 void LaunchTCMP_i16_32x32_eq(int16_t *a, int16_t *b, int8_t *c, void *stream);
-void LaunchTCMP_i16_77x80_le(int16_t *a, int16_t *b, int8_t *c, void *stream);
+void LaunchTCMP_i16_77x96_le(int16_t *a, int16_t *b, int8_t *c, void *stream);
 
 struct TestCase {
     const char *name;
@@ -59,14 +59,14 @@ static const TestCase kCases[] = {
     {"i32_16x32_eq", (void (*)(void*, void*, void*, void*))LaunchTCMP_i32_16x32_eq, 16, 32, sizeof(int32_t), sizeof(int8_t)},
     // Case 7: f32 128x128 le with valid 64x64 (float_128x128_64x64)
     {"f32_128x128_le", (void (*)(void*, void*, void*, void*))LaunchTCMP_f32_128x128_le, 128, 128, sizeof(float), sizeof(int8_t)},
-    // Case 8: i32 77x80 eq with valid 32x32 (int32_77x80_32x32)
-    {"i32_77x80_eq", (void (*)(void*, void*, void*, void*))LaunchTCMP_i32_77x80_eq, 77, 80, sizeof(int32_t), sizeof(int8_t)},
+    // Case 8: i32 77x96 eq with valid 32x32 (int32_77x96_32x32)
+    {"i32_77x96_eq", (void (*)(void*, void*, void*, void*))LaunchTCMP_i32_77x96_eq, 77, 96, sizeof(int32_t), sizeof(int8_t)},
     // Case 9: i32 32x32 eq (int32_32x32_32x32)
     {"i32_32x32_eq", (void (*)(void*, void*, void*, void*))LaunchTCMP_i32_32x32_eq, 32, 32, sizeof(int32_t), sizeof(int8_t)},
     // Case 10: i16 32x32 eq with valid 16x32 (int16_32x32_16x32)
     {"i16_32x32_eq", (void (*)(void*, void*, void*, void*))LaunchTCMP_i16_32x32_eq, 32, 32, sizeof(int16_t), sizeof(int8_t)},
-    // Case 11: i16 77x80 le with valid 32x32 (int16_77x80_32x32)
-    {"i16_77x80_le", (void (*)(void*, void*, void*, void*))LaunchTCMP_i16_77x80_le, 77, 80, sizeof(int16_t), sizeof(int8_t)},
+    // Case 11: i16 77x96 le with valid 32x32 (int16_77x96_32x32)
+    {"i16_77x96_le", (void (*)(void*, void*, void*, void*))LaunchTCMP_i16_77x96_le, 77, 96, sizeof(int16_t), sizeof(int8_t)},
 };
 static constexpr size_t kNumCases = sizeof(kCases) / sizeof(kCases[0]);
 

@@ -95,16 +95,6 @@ static bool isMaskGranularityAdjacentWidening(StringRef inputGranularity,
          (inputGranularity == "b16" && resultGranularity == "b32");
 }
 
-static LogicalResult verifyEnclosingLoopLike(Operation *op,
-                                             StringRef opNameForDiag) {
-  if (!op->getParentOfType<LoopLikeOpInterface>()) {
-    return op->emitOpError()
-           << "requires enclosing loop structure for " << opNameForDiag
-           << " lowering";
-  }
-  return success();
-}
-
 static LogicalResult verifyNotNestedInVecScope(Operation *op,
                                                StringRef opNameForDiag) {
   if (op->getParentOfType<VecScopeOp>() ||
@@ -667,12 +657,6 @@ static bool isSupportedPredicateStoreDist(StringRef dist) {
   return dist == "NORM" || dist == "PK";
 }
 
-static bool isSupportedStrideToken(StringRef stride) {
-  return stride == "STRIDE_S3_B16" || stride == "STRIDE_S4_B64" ||
-         stride == "STRIDE_S8_B32" || stride == "STRIDE_S2_B64" ||
-         stride == "STRIDE_VSST_S8_B16";
-}
-
 static bool isSupportedPartToken(StringRef part) {
   return part == "LOWER" || part == "HIGHER";
 }
@@ -974,11 +958,6 @@ static std::optional<unsigned> getDistElementWidth(Type type) {
   if (type.isF64())
     return 64;
   return std::nullopt;
-}
-
-static bool matchesWidthFamily(StringRef dist, unsigned width,
-                               ArrayRef<unsigned> allowedWidths) {
-  return llvm::is_contained(allowedWidths, width);
 }
 
 static bool isSupportedVldx2DistToken(StringRef dist) {
@@ -1407,7 +1386,7 @@ static FailureOr<AccStoreMode> parseAccStoreModeKeyword(StringRef keyword) {
   return failure();
 }
 
-static ParseResult parseAccStoreModeGroup(
+[[maybe_unused]] static ParseResult parseAccStoreModeGroup(
     OpAsmParser &parser, StringRef &modeKeyword,
     SmallVectorImpl<OpAsmParser::UnresolvedOperand> &modeOperands) {
   if (parser.parseKeyword(&modeKeyword))
@@ -1451,9 +1430,9 @@ static ParseResult parseAccStoreModeGroup(
   return success();
 }
 
-static ParseResult parseAccStoreModeTypes(OpAsmParser &parser,
-                                          StringRef modeKeyword,
-                                          SmallVectorImpl<Type> &modeTypes) {
+[[maybe_unused]] static ParseResult
+parseAccStoreModeTypes(OpAsmParser &parser, StringRef modeKeyword,
+                       SmallVectorImpl<Type> &modeTypes) {
   if (parser.parseKeyword(modeKeyword))
     return failure();
   auto parseModeTypeWithParens = [&]() -> ParseResult {
@@ -1492,8 +1471,10 @@ static ParseResult parseAccStoreModeTypes(OpAsmParser &parser,
   return success();
 }
 
-static void printAccStoreModeGroup(OpAsmPrinter &printer, AccStoreMode mode,
-                                   Value split, Value loop0SrcStride) {
+[[maybe_unused]] static void printAccStoreModeGroup(OpAsmPrinter &printer,
+                                                    AccStoreMode mode,
+                                                    Value split,
+                                                    Value loop0SrcStride) {
   printer << ", " << pto::stringifyAccStoreMode(mode);
   switch (mode) {
   case AccStoreMode::Nz2nd:
@@ -1510,8 +1491,10 @@ static void printAccStoreModeGroup(OpAsmPrinter &printer, AccStoreMode mode,
   llvm_unreachable("unexpected mte_l0c mode");
 }
 
-static void printAccStoreModeTypes(OpAsmPrinter &printer, AccStoreMode mode,
-                                   Type splitType, Type loop0SrcStrideType) {
+[[maybe_unused]] static void printAccStoreModeTypes(OpAsmPrinter &printer,
+                                                    AccStoreMode mode,
+                                                    Type splitType,
+                                                    Type loop0SrcStrideType) {
   printer << ", " << pto::stringifyAccStoreMode(mode);
   switch (mode) {
   case AccStoreMode::Nz2nd:
@@ -1528,7 +1511,7 @@ static void printAccStoreModeTypes(OpAsmPrinter &printer, AccStoreMode mode,
   llvm_unreachable("unexpected mte_l0c mode");
 }
 
-static ParseResult parseMteL0cL1OptionalLoop3(
+[[maybe_unused]] static ParseResult parseMteL0cL1OptionalLoop3(
     OpAsmParser &parser,
     SmallVectorImpl<OpAsmParser::UnresolvedOperand> &loop3CountOperands,
     SmallVectorImpl<OpAsmParser::UnresolvedOperand> &loop3SrcStrideOperands,
@@ -1546,7 +1529,7 @@ static ParseResult parseMteL0cL1OptionalLoop3(
   return success();
 }
 
-static ParseResult parseMteL0cL1OptionalFpc(
+[[maybe_unused]] static ParseResult parseMteL0cL1OptionalFpc(
     OpAsmParser &parser,
     SmallVectorImpl<OpAsmParser::UnresolvedOperand> &fpcOperands) {
   if (failed(parser.parseOptionalKeyword("fpc")))
@@ -1560,17 +1543,19 @@ static ParseResult parseMteL0cL1OptionalFpc(
   return success();
 }
 
-static void printMteL0cL1OptionalFpc(OpAsmPrinter &printer, Value fpc) {
+[[maybe_unused]] static void printMteL0cL1OptionalFpc(OpAsmPrinter &printer,
+                                                      Value fpc) {
   if (fpc)
     printer << ", fpc(" << fpc << ")";
 }
 
-static void printMteL0cL1OptionalFpcType(OpAsmPrinter &printer, Type fpcType) {
+[[maybe_unused]] static void
+printMteL0cL1OptionalFpcType(OpAsmPrinter &printer, Type fpcType) {
   if (fpcType)
     printer << ", fpc(" << fpcType << ")";
 }
 
-static ParseResult parseMteL0cL1OptionalLoop3Types(
+[[maybe_unused]] static ParseResult parseMteL0cL1OptionalLoop3Types(
     OpAsmParser &parser, SmallVectorImpl<Type> &loop3CountTypes,
     SmallVectorImpl<Type> &loop3SrcStrideTypes,
     SmallVectorImpl<Type> &loop3DstStrideTypes, StringRef opName) {
@@ -1595,7 +1580,7 @@ static ParseResult parseMteL0cL1OptionalLoop3Types(
   return success();
 }
 
-static LogicalResult verifyAccStoreLikeModeOperands(
+[[maybe_unused]] static LogicalResult verifyAccStoreLikeModeOperands(
     Operation *op, AccStoreMode mode, Value split, Value loop0SrcStride,
     Value loop3Count, Value loop3SrcStride, Value loop3DstStride,
     StringRef nz2ndSplitError, StringRef nz2ndLoop0Error,
@@ -1700,7 +1685,7 @@ static bool isStructuredAccStoreScalingPayload(Value value) {
          ptrType.getMemorySpace().getAddressSpace() == AddressSpace::SCALING;
 }
 
-static bool isStructuredAccStoreScalingPayloadType(Type type) {
+[[maybe_unused]] static bool isStructuredAccStoreScalingPayloadType(Type type) {
   auto ptrType = dyn_cast_or_null<PtrType>(type);
   return ptrType &&
          ptrType.getMemorySpace().getAddressSpace() == AddressSpace::SCALING;
@@ -1714,7 +1699,7 @@ static Type getStructuredAccStoreScalingElementType(Value value) {
   return ptrType.getElementType();
 }
 
-static bool isStructuredAccStoreIntegerPayload(Value value) {
+[[maybe_unused]] static bool isStructuredAccStoreIntegerPayload(Value value) {
   return value.getType().isSignlessInteger();
 }
 
@@ -1743,7 +1728,7 @@ static bool isStructuredAccStoreFloatScalarPayload(Value value) {
   return isStructuredAccStoreFloatScalarPayloadType(value.getType());
 }
 
-static bool isStructuredAccStoreIntegerPayloadType(Type type) {
+[[maybe_unused]] static bool isStructuredAccStoreIntegerPayloadType(Type type) {
   return type.isSignlessInteger();
 }
 
@@ -2403,7 +2388,7 @@ static void addStructuredAccStoreAttrs(OperationState &result,
                                                  *state.satMode));
 }
 
-static ParseResult resolveStructuredMteL0cL1OptionalOperands(
+[[maybe_unused]] static ParseResult resolveStructuredMteL0cL1OptionalOperands(
     OpAsmParser &parser, StructuredAccStoreAsmState &state,
     SmallVectorImpl<Value> &resolvedOperands, OperationState &result) {
   auto location = parser.getCurrentLocation();
@@ -4099,14 +4084,14 @@ LogicalResult TileBufAddrOp::verify() {
     srcMemorySpace = srcTileType.getMemorySpace();
     srcRank = static_cast<int64_t>(srcTileType.getShape().size());
   } else if (auto srcMemRefType = dyn_cast<BaseMemRefType>(getSrc().getType())) {
-    // Compatibility for the current TileOp expansion pipeline:
-    // PTOViewToMemref lowers tile_buf producers (for example alloc_tile) to
-    // memref + pto.bind_tile before MemrefToTileBuf reconstructs tile_buf
-    // values. Hand-written pto.tile_buf_addr may therefore temporarily see a
-    // tile-bound memref operand in this intermediate stage. If the pipeline is
-    // changed to avoid that PTOViewToMemref round-trip, this memref acceptance
-    // can be removed and TileBufAddrOp can go back to requiring tile_buf-only
-    // operands.
+    // Compatibility for the legacy memref-bridge path:
+    // PTOViewToMemref may lower tile_buf producers (for example alloc_tile) to
+    // memref + pto.bind_tile before the deprecated MemrefToTileBuf bridge
+    // reconstructs tile_buf values. Hand-written pto.tile_buf_addr may
+    // therefore temporarily see a tile-bound memref operand in that
+    // intermediate form. The active shared materialization bridge no longer
+    // relies on this round-trip, so this memref acceptance remains only for
+    // compatibility with the legacy path.
     elementType = srcMemRefType.getElementType();
     srcMemorySpace = srcMemRefType.getMemorySpace();
     srcRank = srcMemRefType.getRank();

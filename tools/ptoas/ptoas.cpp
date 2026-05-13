@@ -1415,15 +1415,12 @@ static void prepareVPTOForEmission(PassManager &pm) {
 
 static void lowerPTOToVPTOBackend(PassManager &pm, int argc, char **argv) {
   // TileOp Expand path:
-  //   1. MemrefToTileBuf: recover tile_buf from memref
-  //   2. ExpandTileOp: instantiate TileLang DSL templates, replace tile ops
+  //   1. ExpandTileOp: instantiate TileLang DSL templates, replace tile ops
   //      with func.call to template functions (tile_buf params)
-  //   3. InlineLibCall: inline template function bodies
-  //   4. FoldTileBufIntrinsics: fold tile_buf_addr / tile_valid_rows /
+  //   2. InlineLibCall: inline template function bodies
+  //   3. FoldTileBufIntrinsics: fold tile_buf_addr / tile_valid_rows /
   //      tile_valid_cols to concrete memref/constant values
   auto &kernelModulePM = pm.nest<ModuleOp>();
-  kernelModulePM.addPass(pto::createMemrefToTileBufPass());
-
   pto::ExpandTileOpOptions expandOpts = resolveExpandTileOpOptions(argc, argv);
   kernelModulePM.addPass(pto::createExpandTileOpPass(expandOpts));
 
@@ -1827,6 +1824,8 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  // Reintroduce tile-native handles once on the shared mainline so both
+  // backends consume the same post-planning seam IR.
   pm.addPass(pto::createPTOMaterializeTileHandlesPass());
   pm.addPass(createCSEPass());
   if (failed(applyConfiguredPassManagerCLOptions(pm, "main PTOAS pipeline")))

@@ -458,66 +458,66 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     return
   }
 
-  // Case 8: i32 77x80 EQ with valid 32x32 (int32_77x80_32x32)
-  func.func @TCMP_i32_77x80_eq(%a_ptr: !pto.ptr<i32>, %b_ptr: !pto.ptr<i32>, %c_ptr: !pto.ptr<i8>) attributes {pto.aicore} {
+  // Case 8: i32 77x96 EQ with valid 32x32 (int32_77x96_32x32)
+  func.func @TCMP_i32_77x96_eq(%a_ptr: !pto.ptr<i32>, %b_ptr: !pto.ptr<i32>, %c_ptr: !pto.ptr<i8>) attributes {pto.aicore} {
     %c0    = arith.constant 0    : index
     %c1    = arith.constant 1    : index
     %c77   = arith.constant 77   : index
-    %c80   = arith.constant 80   : index
-    %c6160 = arith.constant 6160 : index
+    %c96   = arith.constant 96   : index
+    %c7392 = arith.constant 7392 : index
 
     %a_view = pto.make_tensor_view %a_ptr,
-      shape = [%c1, %c1, %c1, %c77, %c80],
-      strides = [%c6160, %c6160, %c6160, %c80, %c1]
-      : !pto.tensor_view<1x1x1x77x80xi32>
+      shape = [%c1, %c1, %c1, %c77, %c96],
+      strides = [%c7392, %c7392, %c7392, %c96, %c1]
+      : !pto.tensor_view<1x1x1x77x96xi32>
     %b_view = pto.make_tensor_view %b_ptr,
-      shape = [%c1, %c1, %c1, %c77, %c80],
-      strides = [%c6160, %c6160, %c6160, %c80, %c1]
-      : !pto.tensor_view<1x1x1x77x80xi32>
+      shape = [%c1, %c1, %c1, %c77, %c96],
+      strides = [%c7392, %c7392, %c7392, %c96, %c1]
+      : !pto.tensor_view<1x1x1x77x96xi32>
     %c_view = pto.make_tensor_view %c_ptr,
-      shape = [%c1, %c1, %c1, %c77, %c80],
-      strides = [%c6160, %c6160, %c6160, %c80, %c1]
-      : !pto.tensor_view<1x1x1x77x80xi8>
+      shape = [%c1, %c1, %c1, %c77, %c96],
+      strides = [%c7392, %c7392, %c7392, %c96, %c1]
+      : !pto.tensor_view<1x1x1x77x96xi8>
 
     %a_part = pto.partition_view %a_view,
       offsets = [%c0, %c0, %c0, %c0, %c0],
-      sizes = [%c1, %c1, %c1, %c77, %c80]
-      : !pto.tensor_view<1x1x1x77x80xi32> -> !pto.partition_tensor_view<1x1x1x77x80xi32>
+      sizes = [%c1, %c1, %c1, %c77, %c96]
+      : !pto.tensor_view<1x1x1x77x96xi32> -> !pto.partition_tensor_view<1x1x1x77x96xi32>
     %b_part = pto.partition_view %b_view,
       offsets = [%c0, %c0, %c0, %c0, %c0],
-      sizes = [%c1, %c1, %c1, %c77, %c80]
-      : !pto.tensor_view<1x1x1x77x80xi32> -> !pto.partition_tensor_view<1x1x1x77x80xi32>
+      sizes = [%c1, %c1, %c1, %c77, %c96]
+      : !pto.tensor_view<1x1x1x77x96xi32> -> !pto.partition_tensor_view<1x1x1x77x96xi32>
     %c32 = arith.constant 32 : index
     %c_part = pto.partition_view %c_view,
       offsets = [%c0, %c0, %c0, %c0, %c0],
       sizes = [%c1, %c1, %c1, %c32, %c32]
-      : !pto.tensor_view<1x1x1x77x80xi8> -> !pto.partition_tensor_view<1x1x1x32x32xi8>
+      : !pto.tensor_view<1x1x1x77x96xi8> -> !pto.partition_tensor_view<1x1x1x32x32xi8>
 
     %a = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=80, v_row=32, v_col=32,
+      : !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=96, v_row=32, v_col=32,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %b = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=80, v_row=32, v_col=32,
+      : !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=96, v_row=32, v_col=32,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %c = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=80, v_row=32, v_col=32,
+      : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=96, v_row=32, v_col=32,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
-    pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x77x80xi32>)
-              outs(%a : !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=80, v_row=32, v_col=32,
+    pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x77x96xi32>)
+              outs(%a : !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=96, v_row=32, v_col=32,
                                       blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x77x80xi32>)
-              outs(%b : !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=80, v_row=32, v_col=32,
+    pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x77x96xi32>)
+              outs(%b : !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=96, v_row=32, v_col=32,
                                       blayout=row_major, slayout=none_box, fractal=512, pad=0>)
 
-    pto.tcmp ins(%a, %b {cmpMode = #pto<cmp eq>} : !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=80, v_row=32, v_col=32,
+    pto.tcmp ins(%a, %b {cmpMode = #pto<cmp eq>} : !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=96, v_row=32, v_col=32,
                                          blayout=row_major, slayout=none_box, fractal=512, pad=0>,
-                           !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=80, v_row=32, v_col=32,
+                           !pto.tile_buf<loc=vec, dtype=i32, rows=77, cols=96, v_row=32, v_col=32,
                                          blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-             outs(%c : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=80, v_row=32, v_col=32,
+             outs(%c : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=96, v_row=32, v_col=32,
                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
 
-    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=80, v_row=32, v_col=32,
+    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=96, v_row=32, v_col=32,
                                       blayout=row_major, slayout=none_box, fractal=512, pad=0>)
                outs(%c_part : !pto.partition_tensor_view<1x1x1x32x32xi8>)
     return
@@ -650,66 +650,66 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     return
   }
 
-  // Case 11: i16 77x80 LE with valid 32x32 (int16_77x80_32x32)
-  func.func @TCMP_i16_77x80_le(%a_ptr: !pto.ptr<i16>, %b_ptr: !pto.ptr<i16>, %c_ptr: !pto.ptr<i8>) attributes {pto.aicore} {
+  // Case 11: i16 77x96 LE with valid 32x32 (int16_77x96_32x32)
+  func.func @TCMP_i16_77x96_le(%a_ptr: !pto.ptr<i16>, %b_ptr: !pto.ptr<i16>, %c_ptr: !pto.ptr<i8>) attributes {pto.aicore} {
     %c0    = arith.constant 0    : index
     %c1    = arith.constant 1    : index
     %c77   = arith.constant 77   : index
-    %c80   = arith.constant 80   : index
-    %c6160 = arith.constant 6160 : index
+    %c96   = arith.constant 96   : index
+    %c7392 = arith.constant 7392 : index
 
     %a_view = pto.make_tensor_view %a_ptr,
-      shape = [%c1, %c1, %c1, %c77, %c80],
-      strides = [%c6160, %c6160, %c6160, %c80, %c1]
-      : !pto.tensor_view<1x1x1x77x80xi16>
+      shape = [%c1, %c1, %c1, %c77, %c96],
+      strides = [%c7392, %c7392, %c7392, %c96, %c1]
+      : !pto.tensor_view<1x1x1x77x96xi16>
     %b_view = pto.make_tensor_view %b_ptr,
-      shape = [%c1, %c1, %c1, %c77, %c80],
-      strides = [%c6160, %c6160, %c6160, %c80, %c1]
-      : !pto.tensor_view<1x1x1x77x80xi16>
+      shape = [%c1, %c1, %c1, %c77, %c96],
+      strides = [%c7392, %c7392, %c7392, %c96, %c1]
+      : !pto.tensor_view<1x1x1x77x96xi16>
     %c_view = pto.make_tensor_view %c_ptr,
-      shape = [%c1, %c1, %c1, %c77, %c80],
-      strides = [%c6160, %c6160, %c6160, %c80, %c1]
-      : !pto.tensor_view<1x1x1x77x80xi8>
+      shape = [%c1, %c1, %c1, %c77, %c96],
+      strides = [%c7392, %c7392, %c7392, %c96, %c1]
+      : !pto.tensor_view<1x1x1x77x96xi8>
 
     %a_part = pto.partition_view %a_view,
       offsets = [%c0, %c0, %c0, %c0, %c0],
-      sizes = [%c1, %c1, %c1, %c77, %c80]
-      : !pto.tensor_view<1x1x1x77x80xi16> -> !pto.partition_tensor_view<1x1x1x77x80xi16>
+      sizes = [%c1, %c1, %c1, %c77, %c96]
+      : !pto.tensor_view<1x1x1x77x96xi16> -> !pto.partition_tensor_view<1x1x1x77x96xi16>
     %b_part = pto.partition_view %b_view,
       offsets = [%c0, %c0, %c0, %c0, %c0],
-      sizes = [%c1, %c1, %c1, %c77, %c80]
-      : !pto.tensor_view<1x1x1x77x80xi16> -> !pto.partition_tensor_view<1x1x1x77x80xi16>
+      sizes = [%c1, %c1, %c1, %c77, %c96]
+      : !pto.tensor_view<1x1x1x77x96xi16> -> !pto.partition_tensor_view<1x1x1x77x96xi16>
     %c32 = arith.constant 32 : index
     %c_part = pto.partition_view %c_view,
       offsets = [%c0, %c0, %c0, %c0, %c0],
       sizes = [%c1, %c1, %c1, %c32, %c32]
-      : !pto.tensor_view<1x1x1x77x80xi8> -> !pto.partition_tensor_view<1x1x1x32x32xi8>
+      : !pto.tensor_view<1x1x1x77x96xi8> -> !pto.partition_tensor_view<1x1x1x32x32xi8>
 
     %a = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=80, v_row=32, v_col=32,
+      : !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=96, v_row=32, v_col=32,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %b = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=80, v_row=32, v_col=32,
+      : !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=96, v_row=32, v_col=32,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %c = pto.alloc_tile
-      : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=80, v_row=32, v_col=32,
+      : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=96, v_row=32, v_col=32,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
-    pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x77x80xi16>)
-              outs(%a : !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=80, v_row=32, v_col=32,
+    pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x77x96xi16>)
+              outs(%a : !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=96, v_row=32, v_col=32,
                                       blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x77x80xi16>)
-              outs(%b : !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=80, v_row=32, v_col=32,
+    pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x77x96xi16>)
+              outs(%b : !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=96, v_row=32, v_col=32,
                                       blayout=row_major, slayout=none_box, fractal=512, pad=0>)
 
-    pto.tcmp ins(%a, %b {cmpMode = #pto<cmp le>} : !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=80, v_row=32, v_col=32,
+    pto.tcmp ins(%a, %b {cmpMode = #pto<cmp le>} : !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=96, v_row=32, v_col=32,
                                          blayout=row_major, slayout=none_box, fractal=512, pad=0>,
-                           !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=80, v_row=32, v_col=32,
+                           !pto.tile_buf<loc=vec, dtype=i16, rows=77, cols=96, v_row=32, v_col=32,
                                          blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-             outs(%c : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=80, v_row=32, v_col=32,
+             outs(%c : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=96, v_row=32, v_col=32,
                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
 
-    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=80, v_row=32, v_col=32,
+    pto.tstore ins(%c : !pto.tile_buf<loc=vec, dtype=i8, rows=77, cols=96, v_row=32, v_col=32,
                                       blayout=row_major, slayout=none_box, fractal=512, pad=0>)
                outs(%c_part : !pto.partition_tensor_view<1x1x1x32x32xi8>)
     return

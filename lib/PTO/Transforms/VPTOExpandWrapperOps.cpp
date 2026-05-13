@@ -136,8 +136,9 @@ static Value offsetPointerByBytes(Value basePtr, Value byteOffset,
   return rewriter.create<pto::CastPtrOp>(loc, ptrType, advanced);
 }
 
-static Value materializeFpcValue(Value fpc, PatternRewriter &rewriter,
-                                 Location loc) {
+[[maybe_unused]] static Value materializeFpcValue(Value fpc,
+                                                  PatternRewriter &rewriter,
+                                                  Location loc) {
   if (!fpc)
     return {};
   if (fpc.getType().isInteger(64))

@@ -97,11 +97,11 @@ CASES = [
         "cmp_mode": "le",
         "eps": 0,
     },
-    # Case 8: i32 77x80 EQ with valid 32x32 (int32_77x80_32x32)
+    # Case 8: i32 77x96 EQ with valid 32x32 (int32_77x96_32x32)
     {
-        "name": "i32_77x80_eq",
+        "name": "i32_77x96_eq",
         "dtype": np.int32,
-        "shape": (77, 80),
+        "shape": (77, 96),
         "valid_shape": (32, 32),
         "dst_dtype": np.int8,
         "cmp_mode": "eq",
@@ -127,11 +127,11 @@ CASES = [
         "cmp_mode": "eq",
         "eps": 0,
     },
-    # Case 11: i16 77x80 LE with valid 32x32 (int16_77x80_32x32)
+    # Case 11: i16 77x96 LE with valid 32x32 (int16_77x96_32x32)
     {
-        "name": "i16_77x80_le",
+        "name": "i16_77x96_le",
         "dtype": np.int16,
-        "shape": (77, 80),
+        "shape": (77, 96),
         "valid_shape": (32, 32),
         "dst_dtype": np.int8,
         "cmp_mode": "le",

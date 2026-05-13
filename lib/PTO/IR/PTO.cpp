@@ -185,8 +185,6 @@ static LogicalResult verifyArithmeticElemTypeForArch(
     Operation *op, Type elemTy, PTOArch targetArch, bool allowInt8OnA5,
     bool allowBf16OnA5, StringRef a2a3Error, StringRef a5Error);
 static bool isRowMajorTileBuf(Type ty);
-static ParseResult parseQuotedPipeToken(OpAsmParser &parser, PipeAttr &attr);
-static ParseResult parseQuotedEventToken(OpAsmParser &parser, EventAttr &attr);
 static ParseResult parseLegacyOrAttrPipe(OpAsmParser &parser, PipeAttr &attr);
 static ParseResult parseLegacyOrAttrEvent(OpAsmParser &parser, EventAttr &attr);
 static ParseResult parseI32LiteralAttr(OpAsmParser &parser, IntegerAttr &attr);
@@ -6857,30 +6855,6 @@ LogicalResult RlsBufOp::verify() {
                          getModeAttr());
 }
 
-static ParseResult parseQuotedPipeToken(OpAsmParser &parser, PipeAttr &attr) {
-  std::string pipeName;
-  auto loc = parser.getCurrentLocation();
-  if (failed(parser.parseString(&pipeName)))
-    return failure();
-  auto pipe = symbolizePIPE(pipeName);
-  if (!pipe)
-    return parser.emitError(loc) << "invalid pipe token: " << pipeName;
-  attr = PipeAttr::get(parser.getContext(), *pipe);
-  return success();
-}
-
-static ParseResult parseQuotedEventToken(OpAsmParser &parser, EventAttr &attr) {
-  std::string eventName;
-  auto loc = parser.getCurrentLocation();
-  if (failed(parser.parseString(&eventName)))
-    return failure();
-  auto event = symbolizeEVENT(eventName);
-  if (!event)
-    return parser.emitError(loc) << "invalid event token: " << eventName;
-  attr = EventAttr::get(parser.getContext(), *event);
-  return success();
-}
-
 static ParseResult parseLegacyOrAttrMemBar(OpAsmParser &parser,
                                            MemBarAttr &attr) {
   auto loc = parser.getCurrentLocation();
@@ -7050,33 +7024,6 @@ ParseResult MemBarOp::parse(OpAsmParser &parser, OperationState &result) {
 
 void MemBarOp::print(OpAsmPrinter &p) {
   printLegacyOrAttrMemBar(p, getKind(), (*this)->getAttrs());
-}
-
-static ParseResult parseLegacyOrAttrOpType(OpAsmParser &parser,
-                                           Attribute &opTypeAttr) {
-  auto loc = parser.getCurrentLocation();
-  std::string token;
-  if (succeeded(parser.parseOptionalString(&token))) {
-    if (auto pipe = symbolizePIPE(token)) {
-      opTypeAttr = PipeAttr::get(parser.getContext(), *pipe);
-      return success();
-    }
-    if (auto opType = symbolizeSyncOpType(token)) {
-      opTypeAttr = PipeEventTypeAttr::get(parser.getContext(), *opType);
-      return success();
-    }
-    return parser.emitError(loc) << "invalid get_buf/rls_buf token: " << token;
-  }
-
-  if (succeeded(parser.parseOptionalLSquare())) {
-    if (failed(parser.parseAttribute(opTypeAttr)))
-      return failure();
-    return success();
-  }
-
-  if (failed(parser.parseAttribute(opTypeAttr)))
-    return failure();
-  return success();
 }
 
 static ParseResult parseBufSyncOp(OpAsmParser &parser, OperationState &result) {

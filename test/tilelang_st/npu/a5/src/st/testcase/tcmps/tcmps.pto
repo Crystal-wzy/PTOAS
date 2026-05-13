@@ -400,13 +400,13 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     %src = pto.alloc_tile
       : !pto.tile_buf<vec, 256x16xf32>
     %dst = pto.alloc_tile
-      : !pto.tile_buf<vec, 256x16xui8>
+      : !pto.tile_buf<vec, 256x32xui8, valid=256x16>
 
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x256x16xf32>)
               outs(%src : !pto.tile_buf<vec, 256x16xf32>)
     pto.tcmps ins(%src, %scalar {cmpMode = #pto<cmp lt>} : !pto.tile_buf<vec, 256x16xf32>, f32)
-              outs(%dst : !pto.tile_buf<vec, 256x16xui8>)
-    pto.tstore ins(%dst : !pto.tile_buf<vec, 256x16xui8>)
+              outs(%dst : !pto.tile_buf<vec, 256x32xui8, valid=256x16>)
+    pto.tstore ins(%dst : !pto.tile_buf<vec, 256x32xui8, valid=256x16>)
                outs(%dst_part : !pto.partition_tensor_view<1x1x1x256x16xui8>)
     return
   }

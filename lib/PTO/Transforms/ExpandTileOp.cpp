@@ -864,8 +864,6 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
     llvm::errs() << "ExpandTileOp: no func.func in DSL output\n";
     return nullptr;
   }
-  func::FuncOp srcFn = parsedFuncs.front();
-
   OpBuilder builder(ctx);
   builder.setInsertionPointToEnd(mod.getBody());
   SmallVector<func::FuncOp, 4> clonedFuncs;
