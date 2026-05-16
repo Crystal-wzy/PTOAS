@@ -6,18 +6,22 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-"""TileLang DSL template for pto.tdivs
+"""TileLang DSL template for pto.tdivs with IEEE 754 high-precision support
 
 Supports two operand orders:
   1. tdivs(src_tile, scalar, dst) -> src / scalar
   2. tdivs(scalar, src_tile, dst) -> scalar / src
 
-TODO: Add support for high-precision division (e.g., f64 or extended precision)
+High-precision mode uses IEEE 754 compliant division algorithms from div_hp module
+for improved accuracy with precision-sensitive, subnormal, and overflow boundary cases.
 """
 
 import sys
 from pathlib import Path
 import tilelang_dsl as pto
+
+# Import shared high-precision division algorithms
+from div_hp import _div_ieee754_f32_impl, _div_ieee754_f16_impl
 
 
 @pto.vkernel(
@@ -25,18 +29,32 @@ import tilelang_dsl as pto
     op="pto.tdivs",
 )
 def template_tdivs_tile_scalar(src: pto.Tile, scalar: pto.AnyType, dst: pto.Tile):
-    """src / scalar"""
+    """src / scalar with optional high-precision mode"""
     dtype = src.element_type
     valid_rows, valid_cols = src.valid_shape
 
-    for row in range(0, valid_rows, 1):
-        remained = valid_cols
-        for col in range(0, valid_cols, pto.get_lanes(dtype)):
-            mask, remained = pto.make_mask(dtype, remained)
-            vec = pto.vlds(src[row, col:])
-            scalar_vec = pto.vbr(scalar)
-            result = pto.vdiv(vec, scalar_vec, mask)
-            pto.vsts(result, dst[row, col:], mask)
+    precision_type = pto.get_op_attr("precisionType", "default")
+    if pto.constexpr(precision_type == "high_precision"):
+        for row in range(0, valid_rows, 1):
+            remained = valid_cols
+            for col in range(0, valid_cols, pto.get_lanes(dtype)):
+                mask, remained = pto.make_mask(dtype, remained)
+                vec = pto.vlds(src[row, col:])
+                scalar_vec = pto.vbr(scalar)
+                if pto.constexpr(dtype == pto.f32):
+                    result = _div_ieee754_f32_impl(vec, scalar_vec, mask)
+                else:  # dtype == pto.f16 (guaranteed by MLIR validation)
+                    result = _div_ieee754_f16_impl(vec, scalar_vec, mask)
+                pto.vsts(result, dst[row, col:], mask)
+    else:
+        for row in range(0, valid_rows, 1):
+            remained = valid_cols
+            for col in range(0, valid_cols, pto.get_lanes(dtype)):
+                mask, remained = pto.make_mask(dtype, remained)
+                vec = pto.vlds(src[row, col:])
+                scalar_vec = pto.vbr(scalar)
+                result = pto.vdiv(vec, scalar_vec, mask)
+                pto.vsts(result, dst[row, col:], mask)
     return
 
 
@@ -45,17 +63,30 @@ def template_tdivs_tile_scalar(src: pto.Tile, scalar: pto.AnyType, dst: pto.Tile
     op="pto.tdivs",
 )
 def template_tdivs_scalar_tile(scalar: pto.AnyType, src: pto.Tile, dst: pto.Tile):
-    """scalar / src"""
+    """scalar / src with optional high-precision mode"""
     dtype = src.element_type
     valid_rows, valid_cols = src.valid_shape
 
-    for row in range(0, valid_rows, 1):
-        remained = valid_cols
-        for col in range(0, valid_cols, pto.get_lanes(dtype)):
-            mask, remained = pto.make_mask(dtype, remained)
-            vec = pto.vlds(src[row, col:])
-            scalar_vec = pto.vbr(scalar)
-            result = pto.vdiv(scalar_vec, vec, mask)
-            # TO DO: support high precision division
-            pto.vsts(result, dst[row, col:], mask)
+    precision_type = pto.get_op_attr("precisionType", "default")
+    if pto.constexpr(precision_type == "high_precision"):
+        for row in range(0, valid_rows, 1):
+            remained = valid_cols
+            for col in range(0, valid_cols, pto.get_lanes(dtype)):
+                mask, remained = pto.make_mask(dtype, remained)
+                vec = pto.vlds(src[row, col:])
+                scalar_vec = pto.vbr(scalar)
+                if pto.constexpr(dtype == pto.f32):
+                    result = _div_ieee754_f32_impl(scalar_vec, vec, mask)
+                else:  # dtype == pto.f16 (guaranteed by MLIR validation)
+                    result = _div_ieee754_f16_impl(scalar_vec, vec, mask)
+                pto.vsts(result, dst[row, col:], mask)
+    else:
+        for row in range(0, valid_rows, 1):
+            remained = valid_cols
+            for col in range(0, valid_cols, pto.get_lanes(dtype)):
+                mask, remained = pto.make_mask(dtype, remained)
+                vec = pto.vlds(src[row, col:])
+                scalar_vec = pto.vbr(scalar)
+                result = pto.vdiv(scalar_vec, vec, mask)
+                pto.vsts(result, dst[row, col:], mask)
     return

@@ -24,8 +24,24 @@ using namespace PtoTestCommon;
 // Kernel launch wrappers (defined in launch.cpp)
 void LaunchTDIV_f32_16x64(float *a, float *b, float *c, void *stream);
 void LaunchTDIV_f32_32x32(float *a, float *b, float *c, void *stream);
+void LaunchTDIV_f32_64x64(float *a, float *b, float *c, void *stream);
+void LaunchTDIV_f16_16x256(void *a, void *b, void *c, void *stream);
+void LaunchTDIV_f32_16x64_hp_precision(float *a, float *b, float *c, void *stream);
+void LaunchTDIV_f16_16x64_hp_precision(void *a, void *b, void *c, void *stream);
+void LaunchTDIV_f32_16x64_hp_subnormal(float *a, float *b, float *c, void *stream);
+void LaunchTDIV_f16_16x64_hp_subnormal(void *a, void *b, void *c, void *stream);
+void LaunchTDIV_f32_16x64_hp_overflow(float *a, float *b, float *c, void *stream);
+void LaunchTDIV_f16_16x64_hp_overflow(void *a, void *b, void *c, void *stream);
+void LaunchTDIV_f32_32x32_hp(float *a, float *b, float *c, void *stream);
+void LaunchTDIV_f32_64x64_hp(float *a, float *b, float *c, void *stream);
+void LaunchTDIV_f16_16x256_hp(void *a, void *b, void *c, void *stream);
+void LaunchTDIV_f32_16x64_hp_partial(float *a, float *b, float *c, void *stream);
+void LaunchTDIV_f16_16x64_hp_partial(void *a, void *b, void *c, void *stream);
+void LaunchTDIV_f32_2x16_hp(float *a, float *b, float *c, void *stream);
+void LaunchTDIV_f16_2x32_hp(void *a, void *b, void *c, void *stream);
 
-using LaunchFn = void (*)(float *, float *, float *, void *);
+// Generic launch function type for void* pointers
+using LaunchFn = void (*)(void *a, void *b, void *c, void *stream);
 
 struct TestCase {
     const char *name;
@@ -38,8 +54,23 @@ struct TestCase {
 };
 
 static const TestCase kCases[] = {
-    {"f32_16x64", LaunchTDIV_f32_16x64, 16, 64, 16, 64, sizeof(float)},
-    {"f32_32x32", LaunchTDIV_f32_32x32, 32, 32, 32, 32, sizeof(float)},
+    {"f32_16x64", (LaunchFn)LaunchTDIV_f32_16x64, 16, 64, 16, 64, 4},
+    {"f32_32x32", (LaunchFn)LaunchTDIV_f32_32x32, 32, 32, 32, 32, 4},
+    {"f32_64x64", (LaunchFn)LaunchTDIV_f32_64x64, 64, 64, 64, 64, 4},
+    {"f16_16x256", (LaunchFn)LaunchTDIV_f16_16x256, 16, 256, 16, 256, 2},
+    {"f32_16x64_hp_precision", (LaunchFn)LaunchTDIV_f32_16x64_hp_precision, 16, 64, 16, 64, 4},
+    {"f16_16x64_hp_precision", (LaunchFn)LaunchTDIV_f16_16x64_hp_precision, 16, 64, 16, 64, 2},
+    {"f32_16x64_hp_subnormal", (LaunchFn)LaunchTDIV_f32_16x64_hp_subnormal, 16, 64, 16, 64, 4},
+    {"f16_16x64_hp_subnormal", (LaunchFn)LaunchTDIV_f16_16x64_hp_subnormal, 16, 64, 16, 64, 2},
+    {"f32_16x64_hp_overflow", (LaunchFn)LaunchTDIV_f32_16x64_hp_overflow, 16, 64, 16, 64, 4},
+    {"f16_16x64_hp_overflow", (LaunchFn)LaunchTDIV_f16_16x64_hp_overflow, 16, 64, 16, 64, 2},
+    {"f32_32x32_hp", (LaunchFn)LaunchTDIV_f32_32x32_hp, 32, 32, 32, 32, 4},
+    {"f32_64x64_hp", (LaunchFn)LaunchTDIV_f32_64x64_hp, 64, 64, 64, 64, 4},
+    {"f16_16x256_hp", (LaunchFn)LaunchTDIV_f16_16x256_hp, 16, 256, 16, 256, 2},
+    {"f32_16x64_hp_partial", (LaunchFn)LaunchTDIV_f32_16x64_hp_partial, 16, 64, 16, 31, 4},
+    {"f16_16x64_hp_partial", (LaunchFn)LaunchTDIV_f16_16x64_hp_partial, 16, 64, 16, 63, 2},
+    {"f32_2x16_hp", (LaunchFn)LaunchTDIV_f32_2x16_hp, 2, 16, 2, 16, 4},
+    {"f16_2x32_hp", (LaunchFn)LaunchTDIV_f16_2x32_hp, 2, 32, 2, 32, 2},
 };
 static constexpr size_t kNumCases = sizeof(kCases) / sizeof(kCases[0]);
 

@@ -6,31 +6,56 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-"""TileLang DSL template for pto.trecip"""
+"""TileLang DSL template for pto.trecip with IEEE 754 high-precision support
+
+Computes reciprocal: dst = 1 / src
+High-precision mode uses IEEE 754 compliant division algorithms.
+"""
 
 import tilelang_dsl as pto
 
-# TODO: Add implementation for HIGH_PRECISION type
+# Import shared high-precision division algorithms
+from div_hp import _div_ieee754_f32_impl, _div_ieee754_f16_impl
+
+
 @pto.vkernel(
     target="a5",
     op="pto.trecip",
     dtypes=[(pto.f16, pto.f16), (pto.f32, pto.f32)]
 )
 def template_trecip(src: pto.Tile, dst: pto.Tile):
+    """Reciprocal with optional high-precision mode: dst = 1 / src"""
     dtype = dst.element_type
     valid_rows, valid_cols = dst.valid_shape
 
-    for row in range(0, valid_rows, 1):
-        remained = valid_cols
-        for col in range(0, valid_cols, pto.get_lanes(dtype)):
-            mask, remained = pto.make_mask(dtype, remained)
-            vinput = pto.vlds(src[row, col:])
-            if pto.constexpr(dtype == pto.f16):
-                one_scalar = pto.f16(1.0)
-            else:
-                one_scalar = pto.f32(1.0)
-            one = pto.vbr(one_scalar)
-            # one = pto.vbr(dtype(1.0))
-            result = pto.vdiv(one, vinput, mask)
-            pto.vsts(result, dst[row, col:], mask)
+    precision_type = pto.get_op_attr("precisionType", "default")
+    if pto.constexpr(precision_type == "high_precision"):
+        for row in range(0, valid_rows, 1):
+            remained = valid_cols
+            for col in range(0, valid_cols, pto.get_lanes(dtype)):
+                mask, remained = pto.make_mask(dtype, remained)
+                vinput = pto.vlds(src[row, col:])
+                if pto.constexpr(dtype == pto.f16):
+                    one_scalar = pto.f16(1.0)
+                else:
+                    one_scalar = pto.f32(1.0)
+                one = pto.vbr(one_scalar)
+                if pto.constexpr(dtype == pto.f32):
+                    result = _div_ieee754_f32_impl(one, vinput, mask)
+                else:  # dtype == pto.f16 (guaranteed by MLIR validation)
+                    result = _div_ieee754_f16_impl(one, vinput, mask)
+                pto.vsts(result, dst[row, col:], mask)
+    else:
+        for row in range(0, valid_rows, 1):
+            remained = valid_cols
+            for col in range(0, valid_cols, pto.get_lanes(dtype)):
+                mask, remained = pto.make_mask(dtype, remained)
+                vinput = pto.vlds(src[row, col:])
+                if pto.constexpr(dtype == pto.f16):
+                    one_scalar = pto.f16(1.0)
+                else:
+                    one_scalar = pto.f32(1.0)
+                one = pto.vbr(one_scalar)
+                result = pto.vdiv(one, vinput, mask)
+                pto.vsts(result, dst[row, col:], mask)
     return

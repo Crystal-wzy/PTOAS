@@ -30,6 +30,19 @@ void LaunchTDIVS_f32_32x64_scalar_src(float *src, float *dst, void *stream);
 void LaunchTDIVS_f16_63x64_scalar_src(uint16_t *src, uint16_t *dst, void *stream);
 void LaunchTDIVS_f32_7x448_scalar_src(float *src, float *dst, void *stream);
 void LaunchTDIVS_f32_256x16_scalar_src(float *src, float *dst, void *stream);
+// HIGH_PRECISION mode kernels
+void LaunchTDIVS_f32_32x64_hp(float *src, float *dst, void *stream);
+void LaunchTDIVS_f16_63x64_hp(uint16_t *src, uint16_t *dst, void *stream);
+void LaunchTDIVS_f32_16x64_hp_subnormal(float *src, float *dst, void *stream);
+void LaunchTDIVS_f16_16x64_hp_subnormal(uint16_t *src, uint16_t *dst, void *stream);
+void LaunchTDIVS_f32_16x64_hp_overflow(float *src, float *dst, void *stream);
+void LaunchTDIVS_f16_16x64_hp_overflow(uint16_t *src, uint16_t *dst, void *stream);
+void LaunchTDIVS_f32_32x64_hp_scalar_src(float *src, float *dst, void *stream);
+void LaunchTDIVS_f16_63x64_hp_scalar_src(uint16_t *src, uint16_t *dst, void *stream);
+void LaunchTDIVS_f32_16x64_hp_subnormal_scalar_src(float *src, float *dst, void *stream);
+void LaunchTDIVS_f16_16x64_hp_subnormal_scalar_src(uint16_t *src, uint16_t *dst, void *stream);
+void LaunchTDIVS_f32_16x64_hp_overflow_scalar_src(float *src, float *dst, void *stream);
+void LaunchTDIVS_f16_16x64_hp_overflow_scalar_src(uint16_t *src, uint16_t *dst, void *stream);
 
 struct TestCase {
     const char *name;
@@ -50,6 +63,20 @@ static const TestCase kCases[] = {
     {"f16_63x64_scalar_src",   (void (*)(void*,void*,void*))LaunchTDIVS_f16_63x64_scalar_src,   63,  64,  63,  64,  sizeof(uint16_t)},
     {"f32_7x448_scalar_src",   (void (*)(void*,void*,void*))LaunchTDIVS_f32_7x448_scalar_src,   7,   448, 7,   448, sizeof(float)},
     {"f32_256x16_scalar_src",  (void (*)(void*,void*,void*))LaunchTDIVS_f32_256x16_scalar_src,  256, 16,  256, 16,  sizeof(float)},
+    // HIGH_PRECISION mode - src / scalar direction
+    {"f32_32x64_hp",            (void (*)(void*,void*,void*))LaunchTDIVS_f32_32x64_hp,            32,  64,  32,  64,  sizeof(float)},
+    {"f16_63x64_hp",            (void (*)(void*,void*,void*))LaunchTDIVS_f16_63x64_hp,            63,  64,  63,  64,  sizeof(uint16_t)},
+    {"f32_16x64_hp_subnormal",  (void (*)(void*,void*,void*))LaunchTDIVS_f32_16x64_hp_subnormal,  16,  64,  16,  64,  sizeof(float)},
+    {"f16_16x64_hp_subnormal",  (void (*)(void*,void*,void*))LaunchTDIVS_f16_16x64_hp_subnormal,  16,  64,  16,  64,  sizeof(uint16_t)},
+    {"f32_16x64_hp_overflow",   (void (*)(void*,void*,void*))LaunchTDIVS_f32_16x64_hp_overflow,   16,  64,  16,  64,  sizeof(float)},
+    {"f16_16x64_hp_overflow",   (void (*)(void*,void*,void*))LaunchTDIVS_f16_16x64_hp_overflow,   16,  64,  16,  64,  sizeof(uint16_t)},
+    // HIGH_PRECISION mode - scalar / src direction
+    {"f32_32x64_hp_scalar_src",            (void (*)(void*,void*,void*))LaunchTDIVS_f32_32x64_hp_scalar_src,            32,  64,  32,  64,  sizeof(float)},
+    {"f16_63x64_hp_scalar_src",            (void (*)(void*,void*,void*))LaunchTDIVS_f16_63x64_hp_scalar_src,            63,  64,  63,  64,  sizeof(uint16_t)},
+    {"f32_16x64_hp_subnormal_scalar_src",  (void (*)(void*,void*,void*))LaunchTDIVS_f32_16x64_hp_subnormal_scalar_src,  16,  64,  16,  64,  sizeof(float)},
+    {"f16_16x64_hp_subnormal_scalar_src",  (void (*)(void*,void*,void*))LaunchTDIVS_f16_16x64_hp_subnormal_scalar_src,  16,  64,  16,  64,  sizeof(uint16_t)},
+    {"f32_16x64_hp_overflow_scalar_src",   (void (*)(void*,void*,void*))LaunchTDIVS_f32_16x64_hp_overflow_scalar_src,   16,  64,  16,  64,  sizeof(float)},
+    {"f16_16x64_hp_overflow_scalar_src",   (void (*)(void*,void*,void*))LaunchTDIVS_f16_16x64_hp_overflow_scalar_src,   16,  64,  16,  64,  sizeof(uint16_t)},
 };
 static constexpr size_t kNumCases = sizeof(kCases) / sizeof(kCases[0]);
 
