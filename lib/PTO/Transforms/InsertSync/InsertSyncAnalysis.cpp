@@ -171,15 +171,6 @@ static bool containsExactAccess(const SmallVector<const BaseMemInfo *> &infos,
   });
 }
 
-static const BaseMemInfo *
-findExactAccess(const SmallVector<const BaseMemInfo *> &infos,
-                const BaseMemInfo *access) {
-  auto it = llvm::find_if(infos, [&](const BaseMemInfo *info) {
-    return isSameExactAccess(info, access);
-  });
-  return it == infos.end() ? nullptr : *it;
-}
-
 } // namespace
 
 static constexpr unsigned kPipeStateSize =
@@ -527,36 +518,25 @@ bool InsertSyncAnalysis::CanPrunePipeVBarrier(
   // a vector-pipe barrier once the producer repeat is large enough. Keep the
   // check conservative: all dependency pairs for this candidate must describe
   // the exact same access.
-  SmallVector<const BaseMemInfo *, 2> rawAccesses;
+  SmallVector<const BaseMemInfo *, 2> producerAccesses;
   for (const auto &pair : depBaseMemInfosVec) {
     if (!isSameExactAccess(pair.first, pair.second)) return false;
 
     if (containsExactAccess(nowCompound->useVec, pair.first) &&
         containsExactAccess(frontCompound->defVec, pair.second)) {
-      if (!llvm::is_contained(rawAccesses, pair.second))
-        rawAccesses.push_back(pair.second);
+      if (!llvm::is_contained(producerAccesses, pair.second))
+        producerAccesses.push_back(pair.second);
     } else {
       return false;
     }
   }
-  if (rawAccesses.empty()) return false;
+  if (producerAccesses.empty()) return false;
 
-  for (const BaseMemInfo *rawAccess : rawAccesses) {
-    const CompoundInstanceElement *nearestProducer = nullptr;
-    const BaseMemInfo *nearestProducerAccess = nullptr;
-    for (int index = static_cast<int>(nowCompound->GetIndex()) - 1; index >= 0;
-         --index) {
-      auto *compound = dyn_cast<CompoundInstanceElement>(syncIR_[index].get());
-      if (!compound || compound->kPipeValue != PipelineType::PIPE_V) continue;
-      nearestProducerAccess = findExactAccess(compound->defVec, rawAccess);
-      if (!nearestProducerAccess) continue;
-      nearestProducer = compound;
-      break;
-    }
-
-    if (!nearestProducer || !nearestProducerAccess) return false;
-
-    auto repeat = getRepeatCountForAccess(nearestProducerAccess->baseBuffer);
+  // The caller is analyzing this specific front->now dependency. Do not look
+  // for a later text-order writer here; it may belong to a different branch
+  // path or a zero-trip loop body.
+  for (const BaseMemInfo *producerAccess : producerAccesses) {
+    auto repeat = getRepeatCountForAccess(producerAccess->baseBuffer);
     if (!repeat || *repeat < kPipeVPruneMinRepeat) return false;
   }
 
