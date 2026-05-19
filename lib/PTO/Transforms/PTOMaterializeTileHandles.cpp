@@ -511,6 +511,16 @@ static Value computeExplicitAddress(Value value, OpBuilder &builder,
   if (auto subview = value.getDefiningOp<memref::SubViewOp>())
     return computeSubviewAddress(subview, builder, loc);
 
+  if (auto select = value.getDefiningOp<arith::SelectOp>()) {
+    Value trueAddr = computeExplicitAddress(select.getTrueValue(), builder, loc);
+    Value falseAddr =
+        computeExplicitAddress(select.getFalseValue(), builder, loc);
+    if (!trueAddr || !falseAddr)
+      return Value();
+    return builder.create<arith::SelectOp>(loc, select.getCondition(),
+                                           trueAddr, falseAddr);
+  }
+
   if (auto cast = value.getDefiningOp<memref::CastOp>())
     return computeExplicitAddress(cast.getSource(), builder, loc);
 

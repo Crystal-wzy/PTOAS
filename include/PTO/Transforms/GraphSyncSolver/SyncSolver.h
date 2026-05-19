@@ -245,6 +245,10 @@ protected:
   llvm::SmallVector<std::tuple<CorePipeInfo, CorePipeInfo>>
   checkMemoryConflicts(RWOperation *rwOp1, RWOperation *rwOp2);
 
+  llvm::SmallVector<std::tuple<CorePipeInfo, CorePipeInfo>>
+  checkMemoryConflictsForOcc(Occurrence *occ1, Occurrence *occ2,
+                             RWOperation *rwOp1, RWOperation *rwOp2);
+
   bool checkMemoryConflictBetweenOccExclusive(
       Occurrence *occ1, Occurrence *occ2,
       std::function<bool(RWOperation *)> filter = [](RWOperation *) {

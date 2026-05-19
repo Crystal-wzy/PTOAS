@@ -1433,7 +1433,7 @@ struct PTOViewToMemrefPass
 
         // After alloc_multi_tile has been replaced, the source SSA value
         // is a memref (no longer multi_tile_buf). We accept the raw Value.
-        Value srcMem = op.getSource();
+        Value srcMem = op->getOperand(0);
         if (!llvm::isa<MemRefType>(srcMem.getType())) {
           op.emitError(
               "multi_tile_get expects its source to have been lowered to "

@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <climits>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <tuple>
@@ -42,28 +43,6 @@ using namespace mlir;
 using namespace pto::syncsolver;
 
 namespace {
-// Walk back through metadata-only ops (`pto.bind_tile`) to a
-// `pto.slot_marker` and return its slot SSA value. Used to plumb the slot
-// expression from a multi-buffer access into the sync codegen so dyn-event
-// `set_flag_dyn` / `wait_flag_dyn` can be emitted with the correct
-// runtime event-id index.
-mlir::Value findSlotMarkerExpr(mlir::Value v) {
-  int hops = 0;
-  while (v && hops++ < 32) {
-    mlir::Operation *op = v.getDefiningOp();
-    if (!op)
-      return {};
-    if (auto sm = mlir::dyn_cast<mlir::pto::SlotMarkerOp>(op))
-      return sm.getSlot();
-    if (auto bind = mlir::dyn_cast<mlir::pto::BindTileOp>(op)) {
-      v = bind.getSource();
-      continue;
-    }
-    return {};
-  }
-  return {};
-}
-
 // Pick a slot SSA expression that this access touches, scanning the
 // rwOp's read + write memrefs. Returns null if none of them reach a
 // slot_marker -- in that case codegen falls back to the existing N-static
@@ -72,12 +51,30 @@ mlir::Value findSlotSSAExprForRWOp(RWOperation *rwOp) {
   if (!rwOp)
     return {};
   for (auto &v : rwOp->readMemVals)
-    if (auto slot = findSlotMarkerExpr(v))
+    if (auto slot = mlir::pto::findSlotMarkerExpr(v))
       return slot;
   for (auto &v : rwOp->writeMemVals)
-    if (auto slot = findSlotMarkerExpr(v))
+    if (auto slot = mlir::pto::findSlotMarkerExpr(v))
       return slot;
   return {};
+}
+
+mlir::pto::SlotRelation compareMemInfoSlotSSA(const MemInfo &memInfo1,
+                                              const MemInfo &memInfo2) {
+  size_t n = std::max<size_t>(memInfo1.getSz(), memInfo2.getSz());
+  if (n < 2 || n > std::numeric_limits<uint32_t>::max())
+    return mlir::pto::SlotRelation::kUnknown;
+  Value slot1 = mlir::pto::findSlotMarkerExpr(memInfo1.value);
+  Value slot2 = mlir::pto::findSlotMarkerExpr(memInfo2.value);
+  if (!slot1 || !slot2)
+    return mlir::pto::SlotRelation::kUnknown;
+  return mlir::pto::compareSlotSSA(slot1, slot2, static_cast<uint32_t>(n));
+}
+
+bool isForwardDepDroppableBySlotAffine(const MemInfo &memInfo1,
+                                       const MemInfo &memInfo2) {
+  return compareMemInfoSlotSSA(memInfo1, memInfo2) ==
+         mlir::pto::SlotRelation::kDisjoint;
 }
 } // namespace
 
@@ -335,6 +332,63 @@ Solver::checkMemoryConflicts(RWOperation *rwOp1, RWOperation *rwOp2) {
   return it->second = collectedConflicts;
 }
 
+llvm::SmallVector<std::tuple<CorePipeInfo, CorePipeInfo>>
+Solver::checkMemoryConflictsForOcc(Occurrence *occ1, Occurrence *occ2,
+                                   RWOperation *rwOp1, RWOperation *rwOp2) {
+  assert(occ1 != nullptr && occ2 != nullptr);
+  assert(rwOp1 != nullptr && rwOp2 != nullptr);
+  if (isBackwardSync(occ1, occ2)) {
+    return checkMemoryConflicts(rwOp1, rwOp2);
+  }
+
+  auto coreSrc = rwOp1->coreType;
+  auto coreDst = rwOp2->coreType;
+  if (options.isCrossCoreMode()) {
+    if (coreDst == pto::TCoreType::CUBE_AND_VECTOR) {
+      coreDst = (coreSrc == pto::TCoreType::VECTOR) ? pto::TCoreType::CUBE
+                                                     : pto::TCoreType::VECTOR;
+    }
+    assert(coreSrc == pto::TCoreType::VECTOR ||
+           coreSrc == pto::TCoreType::CUBE);
+    assert(coreDst == pto::TCoreType::VECTOR ||
+           coreDst == pto::TCoreType::CUBE);
+  }
+
+  auto hasForwardConflict =
+      [&](const llvm::SmallVector<MemInfo> &memInfoList1,
+          const llvm::SmallVector<MemInfo> &memInfoList2) -> bool {
+    for (auto &memInfo1 : memInfoList1) {
+      for (auto &memInfo2 : memInfoList2) {
+        if (!checkMemInfoConflict(rwOp1, rwOp2, memInfo1, memInfo2)) {
+          continue;
+        }
+        if (isForwardDepDroppableBySlotAffine(memInfo1, memInfo2)) {
+          continue;
+        }
+        return true;
+      }
+    }
+    return false;
+  };
+
+  llvm::SetVector<std::tuple<CorePipeInfo, CorePipeInfo>> collectedConflictsSet;
+  if (hasForwardConflict(rwOp1->readMemInfo, rwOp2->writeMemInfo)) {
+    collectedConflictsSet.insert({CorePipeInfo(coreSrc, rwOp1->pipeRead),
+                                  CorePipeInfo(coreDst, rwOp2->pipeWrite)});
+  }
+  if (hasForwardConflict(rwOp1->writeMemInfo, rwOp2->readMemInfo)) {
+    collectedConflictsSet.insert({CorePipeInfo(coreSrc, rwOp1->pipeWrite),
+                                  CorePipeInfo(coreDst, rwOp2->pipeRead)});
+  }
+  if (hasForwardConflict(rwOp1->writeMemInfo, rwOp2->writeMemInfo)) {
+    collectedConflictsSet.insert({CorePipeInfo(coreSrc, rwOp1->pipeWrite),
+                                  CorePipeInfo(coreDst, rwOp2->pipeWrite)});
+  }
+  llvm::SmallVector<std::tuple<CorePipeInfo, CorePipeInfo>> collectedConflicts(
+      collectedConflictsSet.begin(), collectedConflictsSet.end());
+  return collectedConflicts;
+}
+
 bool Solver::checkMemoryConflictBetweenOccExclusive(
     Occurrence *occ1, Occurrence *occ2,
     std::function<bool(RWOperation *)> filter) {
@@ -431,6 +485,21 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   int64_t lcm = 1;
   int64_t minWriteSize = LONG_MAX;
   LoopLikeOpInterface multibufferLoop{nullptr};
+  bool sawComparableSlotPair = false;
+  bool allComparableSlotPairsEqual = true;
+
+  auto noteSlotRelation = [&](const MemInfo &memInfo1,
+                              const MemInfo &memInfo2) {
+    auto relation = compareMemInfoSlotSSA(memInfo1, memInfo2);
+    if (relation == mlir::pto::SlotRelation::kUnknown) {
+      allComparableSlotPairsEqual = false;
+      return;
+    }
+    sawComparableSlotPair = true;
+    if (relation != mlir::pto::SlotRelation::kEqual) {
+      allComparableSlotPairsEqual = false;
+    }
+  };
 
   if (options.isTestMode()) {
     auto *parLoop1 = occ1->getParentOfType<Loop>();
@@ -462,6 +531,7 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   for (auto &memInfo1 : rwOp1->readMemInfo) {
     for (auto &memInfo2 : rwOp2->writeMemInfo) {
       if (checkMemInfoConflict(rwOp1, rwOp2, memInfo1, memInfo2)) {
+        noteSlotRelation(memInfo1, memInfo2);
         int64_t curLcm = std::lcm(memInfo1.getSz(), memInfo2.getSz());
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo2.getSz());
@@ -471,6 +541,7 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   for (auto &memInfo1 : rwOp1->writeMemInfo) {
     for (auto &memInfo2 : rwOp2->readMemInfo) {
       if (checkMemInfoConflict(rwOp1, rwOp2, memInfo1, memInfo2)) {
+        noteSlotRelation(memInfo1, memInfo2);
         int64_t curLcm = std::lcm(memInfo1.getSz(), memInfo2.getSz());
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo1.getSz());
@@ -480,6 +551,7 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   for (auto &memInfo1 : rwOp1->writeMemInfo) {
     for (auto &memInfo2 : rwOp2->writeMemInfo) {
       if (checkMemInfoConflict(rwOp1, rwOp2, memInfo1, memInfo2)) {
+        noteSlotRelation(memInfo1, memInfo2);
         int64_t curLcm = std::lcm(memInfo1.getSz(), memInfo2.getSz());
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo1.getSz());
@@ -491,6 +563,9 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   // In case no write sizes were positive.
   if (minWriteSize == LONG_MAX) {
     minWriteSize = 1;
+    return {};
+  }
+  if (sawComparableSlotPair && allComparableSlotPairsEqual) {
     return {};
   }
 
@@ -2360,7 +2435,8 @@ SyncBeforeAfterMap Solver::getBeforeAfterSyncMaps() {
 void Solver::processConflict(Occurrence *occ1, Occurrence *occ2,
                              RWOperation *rwOp1, RWOperation *rwOp2,
                              bool isUseless) {
-  for (auto [corePipeSrc, corePipeDst] : checkMemoryConflicts(rwOp1, rwOp2)) {
+  for (auto [corePipeSrc, corePipeDst] :
+       checkMemoryConflictsForOcc(occ1, occ2, rwOp1, rwOp2)) {
     if (options.alwaysUsePipeSAsWaitingPipe) {
       corePipeDst.pipe = pto::PIPE::PIPE_S;
     }
