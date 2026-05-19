@@ -11,6 +11,7 @@
 
 #include "PTOPlanMemory.h"
 
+#include "PTO/IR/PTOMultiBuffer.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -404,9 +405,35 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       // of the result as a use of the source in liveness analysis.
       UpdateBufferAlias(bindOp.getResult(), bindOp.getSource());
       return WalkResult::advance();
+    } else if (auto slotOp = dyn_cast<pto::SlotMarkerOp>(op)) {
+      // SlotMarker is metadata-only: it tags which physical slot of a
+      // multi-buffer alloc this view refers to. From the planner's point of
+      // view its result aliases the source; the slot index travels with the
+      // op and is consumed later by PTOResolveBufferSelect / sync.
+      UpdateBufferAlias(slotOp.getResult(), slotOp.getSource());
+      return WalkResult::advance();
     } else if (isLocalMemPlan() && dyn_cast<memref::AllocOp>(op)) {
+      auto allocOp = cast<memref::AllocOp>(op);
       if (failed(CheckLocalBufferAllocOp(op))) {
         return WalkResult::interrupt();
+      }
+      // Pick up the multi-buffer slot count when present. Range checking
+      // mirrors the type-level verifier so a malformed memref alloc (e.g.
+      // from a hand-written test) still gets a clear diagnostic. The
+      // sibling expansion in `ExpandMultiBufferStorageEntry` supports any
+      // N in the legal range.
+      if (auto attr = allocOp->getAttrOfType<IntegerAttr>(
+              mlir::pto::kPtoMultiBufferAttrName)) {
+        uint64_t n = attr.getValue().getZExtValue();
+        if (n < mlir::pto::kPtoMultiBufferMinNum ||
+            n > mlir::pto::kPtoMultiBufferMaxNum) {
+          allocOp.emitError()
+              << "pto.multi_buffer must be in ["
+              << mlir::pto::kPtoMultiBufferMinNum << ", "
+              << mlir::pto::kPtoMultiBufferMaxNum << "] (got " << n << ")";
+          return WalkResult::interrupt();
+        }
+        buffer2MultiNum[allocOp.getResult()] = static_cast<uint32_t>(n);
       }
       UpdateOpBufferInfo(op, op->getResults());
       return WalkResult::advance();
@@ -633,7 +660,16 @@ MemLivenessAnalysis::CheckLocalBufferAllocOp(Operation *op) const {
 bool MemLivenessAnalysis::isSkippableOp(Operation *op) const {
   // Call-like ops are still modeled explicitly. Only pure terminators and
   // dim queries are skipped here.
-  return isa<func::ReturnOp, scf::YieldOp, memref::DimOp>(op);
+  //
+  // `pto.slot_marker` is a metadata-only view added by PTOViewToMemref to
+  // thread multi-buffer slot selection through the memref layer. Until
+  // PlanMemory acquires first-class multi-buffer support (the design's
+  // §5.2 work), treat it as a passthrough so the rest of the pipeline can
+  // still be exercised. The N-way physical fan-out lives on the
+  // `pto.multi_buffer` attr of the underlying `memref.alloc` and is a
+  // follow-up.
+  return isa<func::ReturnOp, scf::YieldOp, memref::DimOp,
+             mlir::pto::SlotMarkerOp>(op);
 }
 
 LogicalResult
@@ -1124,10 +1160,24 @@ void MemPlan::ValidateParameters(std::unique_ptr<StorageEntry> &e) const {
 
 void MemPlan::UpdateBuffer2Offsets() {
   for (auto &e : StorageEntryVec) {
+    // Skip sibling (slot >= 1) entries -- their offsets are written via the
+    // primary entry's `relationOtherBuffers` traversal below. Without this
+    // skip the sibling offsets would be appended in StorageEntryVec order
+    // rather than slot order, breaking the runtime contract that
+    // `buffer2Offsets[buffer][k]` is slot k's physical offset.
+    if (e->isMultiBufferSlot)
+      continue;
     for (Value &buffer : e->inplaceBuffers) {
-      // MultiBuffer can cause multiple addrs.
       buffer2Offsets[buffer].push_back(
           (e->bitsOffset + kBitsToByte - 1) / kBitsToByte);
+      // Multi-buffer primary: append sibling offsets in slot order so the
+      // final offsets list is [slot0, slot1, ..., slotN-1].
+      for (auto *sibling : e->relationOtherBuffers) {
+        if (!sibling)
+          continue;
+        buffer2Offsets[buffer].push_back(
+            (sibling->bitsOffset + kBitsToByte - 1) / kBitsToByte);
+      }
     }
   }
   // In the MultiBuffer scenario, single reuse db will result in additional
@@ -1256,20 +1306,31 @@ void MemPlan::GlobalWorkspaceNoReuse(StorageEntry *rootStorageEntry) {
 }
 
 void MemPlan::ExpandMultiBufferStorageEntry() {
-  // StorageEntry that needs to be expanded.
+  // For each multi-buffer primary entry, create (N - 1) sibling entries so
+  // the planner can lay out one physical slot per sibling. Siblings are
+  // pushed into `StorageEntryVec` and participate in normal Stage0/Stage2
+  // address allocation. The primary keeps `relationOtherBuffers` pointing
+  // at the siblings in slot order (slot 1..N-1), and `relationPongEntry`
+  // aliases the first sibling so existing N == 2 codepaths keep working.
   size_t size = StorageEntryVec.size();
   for (size_t i = 0; i < size; i++) {
-    if (StorageEntryVec[i]->multiBufferNum > 1) {
-      std::unique_ptr<StorageEntry> entry = std::make_unique<StorageEntry>();
-      entry->bufInfo = StorageEntryVec[i]->bufInfo;
-      entry->bufferLifeVec = StorageEntryVec[i]->bufferLifeVec;
-      entry->alignedConstBits = StorageEntryVec[i]->alignedConstBits;
-      entry->inplaceBuffers = StorageEntryVec[i]->inplaceBuffers;
-      entry->multiBufferNum = StorageEntryVec[i]->multiBufferNum;
-      // Ping saves information related to Pong.
-      StorageEntryVec[i]->relationPongEntry = entry.get();
+    auto *primary = StorageEntryVec[i].get();
+    if (primary->multiBufferNum <= 1)
+      continue;
+    uint32_t n = primary->multiBufferNum;
+    for (uint32_t slot = 1; slot < n; ++slot) {
+      auto entry = std::make_unique<StorageEntry>();
+      entry->bufInfo = primary->bufInfo;
+      entry->bufferLifeVec = primary->bufferLifeVec;
+      entry->alignedConstBits = primary->alignedConstBits;
+      entry->inplaceBuffers = primary->inplaceBuffers;
+      entry->multiBufferNum = n;
+      entry->isMultiBufferSlot = true;
+      primary->relationOtherBuffers.push_back(entry.get());
       StorageEntryVec.push_back(std::move(entry));
     }
+    if (!primary->relationOtherBuffers.empty())
+      primary->relationPongEntry = primary->relationOtherBuffers.front();
   }
 }
 
@@ -1809,9 +1870,13 @@ void MemPlan::PlanRelationPongEntryAddress(uint64_t offset, StorageEntry *e) {
     pingEntry2RelationPongEntry[e] = std::move(entry);
   } else if (e->multiBufferNum == kDoubleBufferCount) {
     e->relationPongEntry->bitsOffset = offset;
-  } else {
-    llvm_unreachable("Does not support multi buffer num greater than 2 !");
   }
+  // N > 2: the Stage1 "place ping next to a free pong slot" optimization is
+  // not modeled for the general N-way case in this release. Sibling entries
+  // get their own addresses via the normal Stage0/Stage2 paths in
+  // `PlanReusableLocalBuffer` / `PlanSingleLocalBuffer`. This branch is a
+  // no-op rather than an unreachable so the planner can keep making forward
+  // progress on N > 2 inputs.
 }
 
 bool MemPlan::VerifyConflictStage2(PlanRecHis &his, const StorageEntry *e,

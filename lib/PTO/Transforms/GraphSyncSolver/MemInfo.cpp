@@ -14,6 +14,7 @@
 #include "../Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <cstdint>
@@ -70,10 +71,76 @@ PointerLikeInfo getPointerLikeInfo(pto::PointerCastOp pointerCastOp) {
   return pointerLikeInfo;
 }
 
+// Walk back through metadata-only view ops (`pto.bind_tile`) to the
+// nearest `pto.pointer_cast`. Used to anchor slot_marker MemInfo on its
+// underlying multi-address alloc cast.
+static pto::PointerCastOp findUnderlyingPointerCast(Value v) {
+  int hops = 0;
+  while (v && hops++ < 32) {
+    Operation *op = v.getDefiningOp();
+    if (!op)
+      return {};
+    if (auto pc = llvm::dyn_cast<pto::PointerCastOp>(op))
+      return pc;
+    if (auto bind = llvm::dyn_cast<pto::BindTileOp>(op)) {
+      v = bind.getSource();
+      continue;
+    }
+    return {};
+  }
+  return {};
+}
+
+// Build a MemInfo for a `pto.slot_marker` use. For a constant slot K the
+// MemInfo carries just slot K's physical address so two const-slot
+// accesses on different slots come back as non-conflicting via the
+// existing `PointerLikeInfo::checkConflict` byte-range overlap. For a
+// dynamic slot the MemInfo carries all N physical addresses; downstream
+// `checkMultiBufferEventIdInfo` then deduces N event ids using the
+// `(i % N) == (j % N)` slot-skipping rule, which is exactly the
+// multi-buffer prefetch pattern.
+//
+// Note on `parentLoop`: `getPointerLikeInfo` records the parent loop of
+// the cast op, which is typically outside the multi-buffer scf.for (the
+// alloc/cast lives at function scope). The multi-buffer geometry, though,
+// is keyed by the loop that *uses* the slot. We override `parentLoop`
+// with the slot_marker's enclosing LoopLikeOpInterface so
+// `getMultiBufferLoop` finds the right anchor.
+static MemInfo getMemInfoForSlotMarker(pto::SlotMarkerOp slotMarker) {
+  pto::PointerCastOp castOp = findUnderlyingPointerCast(slotMarker.getSource());
+  if (!castOp) {
+    return MemInfo(slotMarker.getResult(),
+                   isWorkSpaceFuncArgument(slotMarker.getResult()));
+  }
+
+  PointerLikeInfo info = getPointerLikeInfo(castOp);
+
+  IntegerAttr constSlotAttr;
+  if (matchPattern(slotMarker.getSlot(), m_Constant(&constSlotAttr)) &&
+      info.addresses.size() > 1) {
+    int64_t slotIdx = constSlotAttr.getValue().getSExtValue();
+    if (slotIdx >= 0 && slotIdx < static_cast<int64_t>(info.addresses.size())) {
+      int64_t picked = info.addresses[static_cast<size_t>(slotIdx)];
+      info.addresses.clear();
+      info.addresses.push_back(picked);
+    }
+  }
+
+  if (auto useLoop =
+          slotMarker->template getParentOfType<LoopLikeOpInterface>()) {
+    info.parentLoop = useLoop;
+  }
+
+  return MemInfo(slotMarker.getResult(), info);
+}
+
 MemInfo getMemInfo(Value val) {
   if (auto *defOp = val.getDefiningOp()) {
     if (auto pointerCastOp = llvm::dyn_cast<pto::PointerCastOp>(defOp)) {
       return MemInfo(val, getPointerLikeInfo(pointerCastOp));
+    }
+    if (auto slotMarker = llvm::dyn_cast<pto::SlotMarkerOp>(defOp)) {
+      return getMemInfoForSlotMarker(slotMarker);
     }
   }
   return MemInfo(val, isWorkSpaceFuncArgument(val));

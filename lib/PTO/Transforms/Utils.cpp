@@ -85,6 +85,13 @@ std::optional<AddressSpaceAttr> GetBufferSpaceAttr(Value operand) {
 std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
   if (auto subViewOp = dyn_cast<memref::SubViewOp>(op)) {
     return std::make_pair(subViewOp.getResult(), subViewOp.getViewSource());
+  } else if (auto bindTileOp = dyn_cast<pto::BindTileOp>(op)) {
+    return std::make_pair(bindTileOp.getResult(), bindTileOp.getSource());
+  } else if (auto slotMarkerOp = dyn_cast<pto::SlotMarkerOp>(op)) {
+    // `pto.slot_marker` is a metadata-only view that tags a memref with the
+    // physical slot of a multi-buffer alloc. From an alias-walking
+    // standpoint it behaves like any other view-like op.
+    return std::make_pair(slotMarkerOp.getResult(), slotMarkerOp.getSource());
   } else if (auto extSliceOp = dyn_cast<tensor::ExtractSliceOp>(op)) {
     return std::make_pair(extSliceOp.getResult(), extSliceOp.getSource());
   } else if (auto collapseShapeOp = dyn_cast<memref::CollapseShapeOp>(op)) {

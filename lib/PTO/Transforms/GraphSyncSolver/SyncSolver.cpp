@@ -14,6 +14,7 @@
 #include "PTO/Transforms/GraphSyncSolver/MemInfo.h"
 #include "PTO/Transforms/GraphSyncSolver/SyncSolverIR.h"
 #include "PTO/Transforms/GraphSyncSolver/Utility.h"
+#include "PTO/Transforms/SlotAffineAnalysis.h"
 
 #include "PTO/IR/PTO.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -39,6 +40,46 @@
 
 using namespace mlir;
 using namespace pto::syncsolver;
+
+namespace {
+// Walk back through metadata-only ops (`pto.bind_tile`) to a
+// `pto.slot_marker` and return its slot SSA value. Used to plumb the slot
+// expression from a multi-buffer access into the sync codegen so dyn-event
+// `set_flag_dyn` / `wait_flag_dyn` can be emitted with the correct
+// runtime event-id index.
+mlir::Value findSlotMarkerExpr(mlir::Value v) {
+  int hops = 0;
+  while (v && hops++ < 32) {
+    mlir::Operation *op = v.getDefiningOp();
+    if (!op)
+      return {};
+    if (auto sm = mlir::dyn_cast<mlir::pto::SlotMarkerOp>(op))
+      return sm.getSlot();
+    if (auto bind = mlir::dyn_cast<mlir::pto::BindTileOp>(op)) {
+      v = bind.getSource();
+      continue;
+    }
+    return {};
+  }
+  return {};
+}
+
+// Pick a slot SSA expression that this access touches, scanning the
+// rwOp's read + write memrefs. Returns null if none of them reach a
+// slot_marker -- in that case codegen falls back to the existing N-static
+// `set_flag` / `wait_flag` fanout.
+mlir::Value findSlotSSAExprForRWOp(RWOperation *rwOp) {
+  if (!rwOp)
+    return {};
+  for (auto &v : rwOp->readMemVals)
+    if (auto slot = findSlotMarkerExpr(v))
+      return slot;
+  for (auto &v : rwOp->writeMemVals)
+    if (auto slot = findSlotMarkerExpr(v))
+      return slot;
+  return {};
+}
+} // namespace
 
 // Reset per-pass bookkeeping to start fresh.
 void Solver::reset(bool resetEventIdRanOutOpts) {
@@ -2258,6 +2299,14 @@ SyncBeforeAfterMap Solver::getBeforeAfterSyncMaps() {
       waitOp->eventIdInfo = conflictPair->eventIdInfo;
       setOp->checkLastIter = conflictPair->setOnLastIterOnly;
       waitOp->checkFirstIter = conflictPair->waitOnFirstIterOnly;
+      // For multi-buffer back-edge syncs, plumb each side's slot SSA. The
+      // set side sits at op1 (producer); the wait side sits at op2
+      // (consumer). Codegen uses these to lower into `pto.set_flag_dyn` /
+      // `pto.wait_flag_dyn`.
+      if (conflictPair->eventIdInfo.eventIdNum > 1) {
+        setOp->slotSSAExpr = findSlotSSAExprForRWOp(conflictPair->op1);
+        waitOp->slotSSAExpr = findSlotSSAExprForRWOp(conflictPair->op2);
+      }
       LLVM_DEBUG({
         setOp->debugId = conflictPair->id;
         waitOp->debugId = conflictPair->id;

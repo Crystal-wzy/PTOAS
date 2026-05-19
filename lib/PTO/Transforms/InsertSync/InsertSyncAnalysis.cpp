@@ -11,8 +11,10 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
+#include "PTO/IR/PTO.h"
 #include "PTO/Transforms/InsertSync/InsertSyncAnalysis.h"
 #include "PTO/Transforms/InsertSync/SyncCommon.h"
+#include "PTO/Transforms/SlotAffineAnalysis.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/Support/Casting.h"
@@ -292,6 +294,29 @@ void InsertSyncAnalysis::InsertSync(
   MemAnalyze(nowCompound, frontCompound, syncRecordList, forEndIndex);
 }
 
+// Returns true if a *same-iter* multi-buffer dep pair can be dropped
+// because the producer's and consumer's slot SSA expressions are provably
+// disjoint modulo N. Only applied to forward (non-back-edge) deps -- the
+// back-edge path still needs to sync per-slot via dyn event id (the
+// prefetch idiom). When the analysis is inconclusive (kUnknown / kEqual)
+// the dep is kept and the existing conservative path runs.
+static bool isForwardDepDroppableBySlotAffine(const BaseMemInfo *a,
+                                              const BaseMemInfo *b) {
+  if (!a || !b)
+    return false;
+  size_t aN = a->baseAddresses.size();
+  size_t bN = b->baseAddresses.size();
+  size_t n = std::max(aN, bN);
+  if (n < 2)
+    return false;
+  Value slotA = findSlotMarkerExpr(a->baseBuffer);
+  Value slotB = findSlotMarkerExpr(b->baseBuffer);
+  if (!slotA || !slotB)
+    return false;
+  return compareSlotSSA(slotA, slotB, static_cast<uint32_t>(n)) ==
+         SlotRelation::kDisjoint;
+}
+
 void InsertSyncAnalysis::MemAnalyze(
     CompoundInstanceElement *nowCompound, CompoundInstanceElement *frontCompound,
     SyncRecordList &syncRecordList,
@@ -303,6 +328,21 @@ void InsertSyncAnalysis::MemAnalyze(
   DepBaseMemInfoPairVec depVec;
   if (!IsMemInfoHasDependency(nowCompound, frontCompound, depVec)) {
     return;
+  }
+
+  // Same-iter (forward) deps: drop pairs that the affine analysis proves
+  // touch disjoint slots in every iteration of the multi-buffer loop.
+  // Back-edge deps stay untouched -- they still need per-slot syncing
+  // through the dyn-event-id pipeline.
+  if (!forEndIndex.has_value()) {
+    auto isDroppable = [](const std::pair<const BaseMemInfo *,
+                                          const BaseMemInfo *> &pair) {
+      return isForwardDepDroppableBySlotAffine(pair.first, pair.second);
+    };
+    depVec.erase(std::remove_if(depVec.begin(), depVec.end(), isDroppable),
+                 depVec.end());
+    if (depVec.empty())
+      return;
   }
 
   if (forEndIndex.has_value()) {
@@ -385,9 +425,38 @@ void InsertSyncAnalysis::InsertSyncOperation(
     setOp->SetDepSyncIRIndex(frontCompound->GetIndex());
     waitOp->SetDepSyncIRIndex(frontCompound->GetIndex());
 
-    // Back-edge dependencies may require multi-buffer event IDs.
+    // Back-edge dependencies may require multi-buffer event IDs. When N
+    // dyn event IDs are warranted, also plumb the per-side slot SSA so
+    // codegen can lower into `pto.set_flag_dyn` / `pto.wait_flag_dyn`.
     if (forEndIndex.has_value()) {
       int eventIdNum = GetEventIdNum(depBaseMemInfosVec);
+      if (eventIdNum > 1) {
+        // Each dep pair has (now=consumer, front=producer). The producer's
+        // slot SSA gates the `set_flag_dyn`; the consumer's gates the
+        // `wait_flag_dyn`. Walk the first viable dep pair to extract them.
+        Value producerSlot;
+        Value consumerSlot;
+        for (auto &pair : depBaseMemInfosVec) {
+          if (pair.second && pair.second->baseBuffer)
+            producerSlot = findSlotMarkerExpr(pair.second->baseBuffer);
+          if (pair.first && pair.first->baseBuffer)
+            consumerSlot = findSlotMarkerExpr(pair.first->baseBuffer);
+          if (producerSlot && consumerSlot)
+            break;
+        }
+        if (!producerSlot || !consumerSlot) {
+          // No slot SSA threaded through -- fall back to single event id.
+          // This keeps non-multi-buffer codepaths untouched even if their
+          // baseAddresses happen to have multiple entries for some other
+          // reason (e.g. memref subview).
+          eventIdNum = 1;
+        } else {
+          setOp->slotSSAExpr = producerSlot;
+          setOp->slotCount = static_cast<uint32_t>(eventIdNum);
+          waitOp->slotSSAExpr = consumerSlot;
+          waitOp->slotCount = static_cast<uint32_t>(eventIdNum);
+        }
+      }
       setOp->eventIdNum = eventIdNum;
       waitOp->eventIdNum = eventIdNum;
     }
@@ -550,6 +619,16 @@ SmallVector<Value> InsertSyncAnalysis::GetMemInfoBuffers(
 
 int InsertSyncAnalysis::GetEventIdNum(
     const DepBaseMemInfoPairVec &depBaseMemInfosVec) {
+  // A back-edge dependency benefits from N dynamic event IDs whenever at
+  // least one side is a multi-buffer access. We detect that from the
+  // BaseMemInfo's `baseAddresses` size, which `UpdateSlotMarkerAliasBufferInfo`
+  // populated:
+  //   - kSingle / const-slot              : size == 1
+  //   - dyn-slot (PTOIRTranslator default) : size == N (all slots, conservative)
+  // For the alias to even reach this point both sides share a root, so the
+  // slot count derived from either side's full address set should be the
+  // same N. We pick the max to be robust against accidental narrowing.
+  int eventIdNum = 1;
   for (const auto &pair : depBaseMemInfosVec) {
     bool isLocalA =
         pair.first && (pair.first->scope == pto::AddressSpace::MAT ||
@@ -557,9 +636,23 @@ int InsertSyncAnalysis::GetEventIdNum(
     bool isLocalB =
         pair.second && (pair.second->scope == pto::AddressSpace::MAT ||
                         pair.second->scope == pto::AddressSpace::VEC);
-    if (isLocalA || isLocalB) return 1;
+    if (!isLocalA && !isLocalB)
+      continue;
+    size_t aN = pair.first ? pair.first->baseAddresses.size() : 1;
+    size_t bN = pair.second ? pair.second->baseAddresses.size() : 1;
+    int pairN = static_cast<int>(std::max(aN, bN));
+    if (pairN <= 1)
+      continue;
+    if (eventIdNum == 1) {
+      eventIdNum = pairN;
+    } else if (eventIdNum != pairN) {
+      // Multiple dep pairs disagreeing on N: fall back to single event id
+      // for safety. With more work this could be relaxed by per-pair
+      // multi-buffer reasoning.
+      return 1;
+    }
   }
-  return 1;
+  return eventIdNum;
 }
 
 bool InsertSyncAnalysis::IsGMHazard(

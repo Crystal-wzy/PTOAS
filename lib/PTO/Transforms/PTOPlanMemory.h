@@ -150,7 +150,21 @@ struct StorageEntry {
   SmallVector<Value> inplaceBuffers;
 
   /// multiBuffer relation StorageEntry.
+  /// For N >= 2 this aliases `relationOtherBuffers.front()` -- kept around so
+  /// existing N == 2 code paths can keep using the single-sibling field.
   StorageEntry *relationPongEntry{nullptr};
+
+  /// Sibling slot entries for multi-buffer (N - 1 entries for slot 1..N-1).
+  /// The primary entry occupies slot 0; siblings own slot 1..N-1. Sibling
+  /// entries have `isMultiBufferSlot == true` and live in `StorageEntryVec`
+  /// independently of their primary -- the planner assigns each one its own
+  /// `bitsOffset` via the same Stage0/Stage2 logic used for normal allocs.
+  SmallVector<StorageEntry *> relationOtherBuffers;
+
+  /// True if this entry is a multi-buffer sibling (slot >= 1) that should
+  /// NOT independently write into `buffer2Offsets` -- the primary entry is
+  /// responsible for emitting all slot offsets in slot order.
+  bool isMultiBufferSlot{false};
 
   /// The number of multibuffer optimization.
   /// note: default 1 which means single buffer and does not do multibuffer

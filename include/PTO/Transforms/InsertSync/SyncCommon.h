@@ -159,6 +159,11 @@ public:
   SmallVector<Value> depRootBuffers;
   bool uselessSync{false};
   int eventIdNum{1};
+  // For multi-buffer dyn-event sync: the slot SSA expression at this access
+  // site. set_flag_dyn / wait_flag_dyn use `slotSSAExpr % slotCount` as the
+  // hardware event-id index. Empty when this sync is single-buffer.
+  Value slotSSAExpr;
+  uint32_t slotCount{1};
   Value lowestCommonAncestorBuffer{nullptr};
   int reuseCntForWiden{0};
   bool reallocatedLoopHeadTailSync{false};

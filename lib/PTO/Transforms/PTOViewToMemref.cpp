@@ -13,6 +13,7 @@
 // metadata through binding ops and SSA backtracking.
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 
@@ -91,9 +92,12 @@ static mlir::pto::TileBufConfigAttr lookupConfig(Value v) {
   if (auto cast = v.getDefiningOp<memref::CastOp>()) {
     return lookupConfig(cast.getSource());
   }
-  
+  if (auto slot = v.getDefiningOp<mlir::pto::SlotMarkerOp>()) {
+    return lookupConfig(slot.getSource());
+  }
+
   // 如果追溯到 BlockArgument (函数参数) 或其他无法穿透的 Op，则返回空
-  return {}; 
+  return {};
 }
 
 // =============================================================================
@@ -120,6 +124,10 @@ static void lookupValidDims(Value v, Value &vRow, Value &vCol) {
   }
   if (auto cast = v.getDefiningOp<memref::CastOp>()) {
     lookupValidDims(cast.getSource(), vRow, vCol);
+    return;
+  }
+  if (auto slot = v.getDefiningOp<mlir::pto::SlotMarkerOp>()) {
+    lookupValidDims(slot.getSource(), vRow, vCol);
     return;
   }
   vRow = Value();
@@ -530,10 +538,16 @@ static Type convertPTOTypeToMemRef(Type t) {
     return MemRefType::get({ShapedType::kDynamic}, pty.getElementType(),
                            MemRefLayoutAttrInterface(), Attribute());
   }
-  
+
   // 2. 处理 !pto.tile_buf<...>
   if (auto tbTy = dyn_cast<mlir::pto::TileBufType>(t))
     return convertTileBufTypeToMemRef(tbTy);
+  // 3. !pto.multi_tile_buf<S, count=N>: collapses to the slot memref shape;
+  //    the N-slot fan-out lives on the `pto.multi_buffer` attr written by
+  //    the alloc lowering, not in the type. This branch is defensive --
+  //    by design multi_tile_buf does not appear on function boundaries.
+  if (auto mtbTy = dyn_cast<mlir::pto::MultiTileBufType>(t))
+    return convertTileBufTypeToMemRef(mtbTy.getSlotType());
   if (auto tvTy = dyn_cast<mlir::pto::TensorViewType>(t))
     return MemRefType::get(tvTy.getShape(), tvTy.getElementType(),
                            MemRefLayoutAttrInterface(), Attribute());
@@ -1299,6 +1313,190 @@ struct PTOViewToMemrefPass
         auto bindOp = rewriter.create<pto::BindTileOp>(
             loc, targetType, alloc, vRow ? vRow : Value(), vCol ? vCol : Value(),
             configAttr);
+        markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
+
+        rewriter.replaceOp(op, bindOp.getResult());
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 0.6: lower pto.alloc_multi_tile / pto.multi_tile_get
+      //
+      // alloc_multi_tile produces a `multi_tile_buf<S, count=N>`. We lower
+      // it into:
+      //   %a = memref.alloc() {pto.multi_buffer = N : i32} : memref<S>
+      //   %m = pto.bind_tile %a, ... : memref<S> -> memref<dyn-offset S>
+      // and replace all uses of the multi_tile_buf SSA with %m. The N-way
+      // physical fan-out lives on the `pto.multi_buffer` attr and is
+      // materialized later by PTOPlanMemory.
+      //
+      // multi_tile_get consumes that memref and wraps it in
+      //   %slot = pto.slot_marker %m[%k] : memref -> memref
+      //   %t    = pto.bind_tile %slot, ... : memref -> memref<dyn-offset>
+      // The slot_marker carries the user-supplied slot SSA forward so that
+      // PlanMemory / sync / EnableBufferSelect can identify which physical
+      // slot this use refers to.
+      //
+      // Ordering: alloc_multi_tile must be lowered before multi_tile_get so
+      // that the get's source SSA has already been rewired to a memref.
+      // ------------------------------------------------------------------
+      SmallVector<mlir::pto::AllocMultiTileOp, 8> allocMultiTiles;
+      func.walk(
+          [&](mlir::pto::AllocMultiTileOp op) { allocMultiTiles.push_back(op); });
+
+      for (auto op : allocMultiTiles) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Location loc = op.getLoc();
+
+        auto mtbTy = op.getResult().getType();
+        if (!mtbTy)
+          continue;
+        auto tbTy = mtbTy.getSlotType();
+        if (!tbTy)
+          continue;
+
+        SmallVector<int64_t, 4> shape(tbTy.getShape().begin(),
+                                      tbTy.getShape().end());
+        Type elemTy = tbTy.getElementType();
+
+        // Stride / layout reuse the same logic as alloc_tile.
+        SmallVector<int64_t> strides;
+        TileLayoutInfo info;
+        if (computeTileLayoutInfo(tbTy.getConfigAttr(), elemTy, shape, info)) {
+          strides = {info.rowStride, info.colStride};
+        } else {
+          strides.resize(shape.size());
+          int64_t s = 1;
+          for (int i = (int)shape.size() - 1; i >= 0; --i) {
+            strides[i] = s;
+            if (shape[i] != ShapedType::kDynamic)
+              s *= shape[i];
+          }
+        }
+
+        auto targetLayout =
+            StridedLayoutAttr::get(ctx, ShapedType::kDynamic, strides);
+        auto targetType =
+            MemRefType::get(shape, elemTy, targetLayout, tbTy.getMemorySpace());
+
+        Value vRow = op.getValidRow();
+        Value vCol = op.getValidCol();
+        ArrayRef<int64_t> validShape = tbTy.getValidShape();
+        if (!tbTy.hasDynamicValid()) {
+          if (validShape.size() >= 1 && validShape[0] >= 0) {
+            vRow = rewriter
+                       .create<arith::ConstantOp>(
+                           loc, rewriter.getIndexType(),
+                           rewriter.getIndexAttr(validShape[0]))
+                       .getResult();
+          }
+          if (validShape.size() >= 2 && validShape[1] >= 0) {
+            vCol = rewriter
+                       .create<arith::ConstantOp>(
+                           loc, rewriter.getIndexType(),
+                           rewriter.getIndexAttr(validShape[1]))
+                       .getResult();
+          }
+        }
+
+        auto configAttr = tbTy.getConfigAttr();
+        if (!configAttr)
+          configAttr = pto::TileBufConfigAttr::getDefault(ctx);
+
+        // memref.alloc with N-slot annotation. The actual N-way address
+        // expansion happens in PlanMemory.
+        auto allocLayout = StridedLayoutAttr::get(ctx, 0, strides);
+        auto allocType =
+            MemRefType::get(shape, elemTy, allocLayout, tbTy.getMemorySpace());
+        auto allocOp = rewriter.create<memref::AllocOp>(loc, allocType);
+        auto i32Ty = IntegerType::get(ctx, 32);
+        allocOp->setAttr(
+            mlir::pto::kPtoMultiBufferAttrName,
+            IntegerAttr::get(i32Ty, static_cast<int64_t>(mtbTy.getCount())));
+
+        auto bindOp = rewriter.create<pto::BindTileOp>(
+            loc, targetType, allocOp.getResult(), vRow ? vRow : Value(),
+            vCol ? vCol : Value(), configAttr);
+        markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
+
+        rewriter.replaceOp(op, bindOp.getResult());
+      }
+
+      SmallVector<mlir::pto::MultiTileGetOp, 8> multiTileGets;
+      func.walk(
+          [&](mlir::pto::MultiTileGetOp op) { multiTileGets.push_back(op); });
+
+      for (auto op : multiTileGets) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Location loc = op.getLoc();
+
+        // After alloc_multi_tile has been replaced, the source SSA value
+        // is a memref (no longer multi_tile_buf). We accept the raw Value.
+        Value srcMem = op.getSource();
+        if (!llvm::isa<MemRefType>(srcMem.getType())) {
+          op.emitError(
+              "multi_tile_get expects its source to have been lowered to "
+              "memref by alloc_multi_tile rewriting; got ")
+              << srcMem.getType();
+          signalPassFailure();
+          return;
+        }
+        auto srcMemTy = llvm::cast<MemRefType>(srcMem.getType());
+
+        // Recover per-slot tile_buf info from the get op's result type
+        // (which still describes the per-slot tile shape, valid dims,
+        // config, etc.).
+        auto tbTy = llvm::dyn_cast<pto::TileBufType>(op.getResult().getType());
+        if (!tbTy) {
+          op.emitError("multi_tile_get result must be `!pto.tile_buf<...>`");
+          signalPassFailure();
+          return;
+        }
+
+        // The slot view aliases the source memref byte-for-byte.
+        auto slotMarker = rewriter.create<pto::SlotMarkerOp>(
+            loc, srcMemTy, srcMem, op.getSlot());
+
+        // Recover valid_row / valid_col from the per-slot tile type so
+        // downstream BindTile carries the same metadata as the alloc.
+        Value vRow;
+        Value vCol;
+        ArrayRef<int64_t> validShape = tbTy.getValidShape();
+        if (!tbTy.hasDynamicValid()) {
+          if (validShape.size() >= 1 && validShape[0] >= 0) {
+            vRow = rewriter
+                       .create<arith::ConstantOp>(
+                           loc, rewriter.getIndexType(),
+                           rewriter.getIndexAttr(validShape[0]))
+                       .getResult();
+          }
+          if (validShape.size() >= 2 && validShape[1] >= 0) {
+            vCol = rewriter
+                       .create<arith::ConstantOp>(
+                           loc, rewriter.getIndexType(),
+                           rewriter.getIndexAttr(validShape[1]))
+                       .getResult();
+          }
+        }
+
+        auto configAttr = tbTy.getConfigAttr();
+        if (!configAttr)
+          configAttr = pto::TileBufConfigAttr::getDefault(ctx);
+
+        // BindTile result type uses the same layout signature as in the
+        // alloc lowering, so subsequent subview / DMA ops see a consistent
+        // memref view.
+        SmallVector<int64_t> strides = buildTileMemRefStrides(tbTy);
+        auto targetLayout =
+            StridedLayoutAttr::get(ctx, ShapedType::kDynamic, strides);
+        auto targetType =
+            MemRefType::get(tbTy.getShape(), tbTy.getElementType(), targetLayout,
+                            tbTy.getMemorySpace());
+
+        auto bindOp = rewriter.create<pto::BindTileOp>(
+            loc, targetType, slotMarker.getResult(), vRow ? vRow : Value(),
+            vCol ? vCol : Value(), configAttr);
         markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
 
         rewriter.replaceOp(op, bindOp.getResult());

@@ -168,7 +168,53 @@ dimension counts FP4 pairs stored per byte, not logical scalar FP4 elements.
 
 ---
 
-### 2.6 `!pto.local_array<D1 x D2 x ... x Dk x T>`
+### 2.6 `!pto.multi_tile_buf<slotType, count=N>`
+
+A **multi-buffer tile** representing N physically-distinct slots that share
+one `tile_buf` shape. Only the underlying physical address differs across
+slots; rank, valid shape, dtype, memory space, and config are identical.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `slotType` | `!pto.tile_buf<...>` | The per-slot tile_buf type |
+| `count` | unsigned `[2, 16]` | Number of physical slots N |
+
+**Constraints (enforced by the type verifier):**
+- `2 <= count <= 16` (`kPtoMultiBufferMaxNum`)
+- `slotType` follows all the same constraints as a single-slot `tile_buf`
+- `multi_tile_buf` does not appear on function arguments or returns in the
+  initial release; the design's multi-buffer ownership stays inside PTOAS
+
+**Two compatible spellings:**
+
+```mlir
+// Compact (preferred): the slot tile_buf is described inline.
+!pto.multi_tile_buf<vec, 16x16xf16, count=2>
+
+// Verbose: spell out the slot tile_buf explicitly.
+!pto.multi_tile_buf<!pto.tile_buf<vec, 16x16xf16>, count=2>
+```
+
+**Associated ops** (see Section 4 -- multi-buffer expression and slot
+selection):
+
+- `pto.alloc_multi_tile` -- allocate an N-slot multi-buffer tile
+- `pto.multi_tile_get`   -- pick one slot of a multi_tile_buf, yielding a
+  regular `tile_buf` that flows through every existing DMA / compute / view
+  op unchanged
+
+The N-way physical fan-out lives on the `pto.multi_buffer = N : i32`
+attribute that PTOViewToMemref writes onto the lowered `memref.alloc`;
+downstream passes (PlanMemory / InsertSync / GraphSyncSolver) consume that
+attribute. The per-use slot index threaded through `pto.multi_tile_get` is
+forwarded to the memref layer via the internal `pto.slot_marker` view op.
+
+See `docs/designs/ptoas-multi-buffer-explicit-design.md` for the full
+design.
+
+---
+
+### 2.7 `!pto.local_array<D1 x D2 x ... x Dk x T>`
 
 A **C++ stack-local statically-shaped array**. Lowers to a plain `T a[D1][D2]...;`
 declaration in the emitted C++ — the array's address is decided by the host C++
@@ -535,6 +581,91 @@ result = alloc_tile(base_addr, valid_row, valid_col)   // operands are optional
 %tb2 = pto.alloc_tile valid_row = %vr valid_col = %vc : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 %tb3 = pto.alloc_tile addr = %ad : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 ```
+
+##### `pto.alloc_multi_tile` - Allocate N-Slot Multi-Buffer Tile
+
+**Summary:** Declares the lifetime of an N-slot multi-buffer tile. Each slot has the same `tile_buf` shape; only the underlying physical address differs. The N physical slots are reserved by `PTOPlanMemory` from the `pto.multi_buffer = N` attribute written onto the lowered `memref.alloc`. An explicit `addr` operand is intentionally NOT supported -- multi-buffer addresses are always compiler-decided.
+
+**Semantics:**
+
+```
+result = alloc_multi_tile(valid_row, valid_col)   // operands are optional
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `valid_row` | `Optional<Index>` | Dynamic valid row count (required when slot `v_row` is `?`) |
+| `valid_col` | `Optional<Index>` | Dynamic valid column count (required when slot `v_col` is `?`) |
+
+**Results:** `!pto.multi_tile_buf<...>`
+
+**Constraints & Verification:**
+
+- The result type must have `count` in `[2, 16]`.
+- The slot tile type (rank, valid shape, dtype, memory space, config) is verified the same way as `pto.alloc_tile` for a single slot.
+- No `addr` operand: the user cannot pin physical addresses on a multi-buffer alloc.
+
+**Hardware Mapping:**
+
+- No hardware pipeline (allocation/metadata op). N-way physical fan-out is realized by PlanMemory.
+
+**Basic Example:**
+
+```mlir
+%mb = pto.alloc_multi_tile : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+%mb2 = pto.alloc_multi_tile : !pto.multi_tile_buf<!pto.tile_buf<vec, 16x16xf16>, count=3>
+```
+
+##### `pto.multi_tile_get` - Select One Slot Of A Multi-Buffer Tile
+
+**Summary:** Returns a single-slot view of a `multi_tile_buf`. The frontend is the source of truth for which slot a given use refers to; the slot index `%k` is an `index` value (constant or any SSA expression) in `[0, count)`. PTOAS does NOT synthesize `iv mod N` for users -- the user expression IS the slot selector. Downstream sync and event-id allocation analyze the slot expressions and emit static `set_flag` / `wait_flag` for constant slots or `set_flag_dyn` / `wait_flag_dyn` for runtime slots.
+
+**Semantics:**
+
+```
+result = multi_tile_get(source, slot)
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `source` | `MultiTileBufType` | The N-slot multi-buffer tile |
+| `slot` | `Index` | Slot index in `[0, count)` |
+
+**Results:** `!pto.tile_buf<...>` (must equal `source.slotType`)
+
+**Constraints & Verification:**
+
+- Result `tile_buf` must equal `source.slotType` (rank, valid shape, dtype, memory space, config all identical).
+- If `slot` is a constant, the verifier checks `0 <= slot < count`.
+- Pure view op -- no data movement, no extra address arithmetic.
+- `multi_tile_buf` is not allowed on function arguments or results in the initial release.
+
+**Hardware Mapping:**
+
+- No hardware pipeline (metadata-only view).
+
+**Basic Example:**
+
+```mlir
+%mb = pto.alloc_multi_tile : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+
+// constant-slot selection
+%c0 = arith.constant 0 : index
+%s0 = pto.multi_tile_get %mb[%c0]
+    : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+   -> !pto.tile_buf<vec, 16x16xf16>
+
+// dynamic-slot selection (e.g. prefetch with %k from the loop body)
+%s_k = pto.multi_tile_get %mb[%k]
+    : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+   -> !pto.tile_buf<vec, 16x16xf16>
+```
+
+See `docs/designs/ptoas-multi-buffer-explicit-design.md` for the full design (sync/event-id derivation, downstream pass interplay, and end-to-end usage examples).
 
 ##### `pto.subview` - Tile SubView
 

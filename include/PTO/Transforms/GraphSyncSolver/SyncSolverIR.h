@@ -429,6 +429,13 @@ public:
   bool allAtOnce{false};
   bool checkFirstIter{false};
   bool checkLastIter{false};
+  // Slot SSA at this access site. Populated when the sync corresponds to a
+  // multi-buffer back-edge dep produced by `pto.multi_tile_get` / lowered
+  // `pto.slot_marker`. When non-null and `eventIds.size() > 1`, codegen
+  // emits `pto.set_flag_dyn` / `pto.wait_flag_dyn` with a runtime event id
+  // selected by `slotSSAExpr % eventIds.size()` instead of fanning out
+  // into N static `set_flag` / `wait_flag` pairs per iteration.
+  mlir::Value slotSSAExpr;
 
   SetWaitOp(const OpType &opType, Operation *op, OperationBase *parentOp,
             const llvm::SmallVector<int64_t> &eventIds, pto::PIPE pipeSrc,

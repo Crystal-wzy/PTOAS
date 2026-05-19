@@ -232,13 +232,102 @@ def AllocTileOp : PTO_Op<"alloc_tile", [AttrSizedOperandSegments]> {
 
   let assemblyFormat = [{
     (`addr` `=` $addr^)?
-    (`valid_row` `=` $valid_row^)? 
+    (`valid_row` `=` $valid_row^)?
     (`valid_col` `=` $valid_col^)?
      attr-dict `:` qualified(type($result))
   }];
 
   let extraClassDeclaration = [{
     ::mlir::LogicalResult verify();
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// Multi-buffer tile allocation and slot selection
+//===----------------------------------------------------------------------===//
+//
+// `pto.alloc_multi_tile` declares an N-slot logical tile buffer. The actual
+// physical allocation of N slots is performed by PTOPlanMemory once the op
+// has been lowered to `memref.alloc {pto.multi_buffer = N : i32}` by
+// PTOViewToMemref.
+//
+// `pto.multi_tile_get` is the *only* way to consume a `multi_tile_buf`: it
+// returns a regular `tile_buf` view onto the chosen slot. The slot index
+// may be a constant or any SSA `index` value; PTOAS does not synthesize
+// `iv mod N` automatically -- the user expression IS the slot selector.
+//
+// `pto.slot_marker` is an internal op materialized by PTOViewToMemref to
+// thread the slot SSA from `multi_tile_get` through the memref layer down
+// to PlanMemory / sync analysis. It is not intended for direct frontend
+// use.
+
+def AllocMultiTileOp : PTO_Op<"alloc_multi_tile", [AttrSizedOperandSegments]> {
+  let summary = "Allocate an N-slot multi-buffer tile";
+  let description = [{
+    Produces a `!pto.multi_tile_buf<S, count=N>` value owning N physical
+    slots of the inner tile shape `S`. The physical addresses of the N
+    slots are decided by PTOPlanMemory; an explicit address operand is
+    intentionally not supported.
+
+    `valid_row` / `valid_col` operands follow the same semantics as
+    `pto.alloc_tile`: required when the inner tile's valid shape is `?`,
+    absent when both valid dims are static.
+  }];
+
+  let arguments = (ins
+    Optional<Index>:$valid_row,
+    Optional<Index>:$valid_col
+  );
+
+  let results = (outs MultiTileBufType:$result);
+
+  let assemblyFormat = [{
+    (`valid_row` `=` $valid_row^)?
+    (`valid_col` `=` $valid_col^)?
+    attr-dict `:` qualified(type($result))
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::LogicalResult verify();
+  }];
+}
+
+def MultiTileGetOp : PTO_Op<"multi_tile_get", [
+    Pure,
+    ViewLikeOpInterface
+  ]> {
+  let summary = "Pick one physical slot of a multi_tile_buf";
+  let description = [{
+    Returns a single-slot view of a `multi_tile_buf`. The result `tile_buf`
+    must equal the source's per-slot type; the only thing this op selects
+    is which of the N physical slots is referred to.
+
+    The slot index is an `index` value in `[0, count)`. If it is a constant,
+    the verifier checks the range. If it is a runtime SSA value, downstream
+    sync analysis treats this use as a slot-indexed dynamic access; ptoas
+    does NOT rewrite the user expression into `iv mod N`.
+
+    This op is metadata-only (no data movement); the lowering merely
+    annotates the underlying memref view with the slot index for PlanMemory
+    / sync / EnableBufferSelect to consume.
+  }];
+
+  let arguments = (ins
+    MultiTileBufType:$source,
+    Index:$slot
+  );
+
+  let results = (outs TileBufType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source `[` $slot `]` attr-dict
+    `:` qualified(type($source)) `->` qualified(type($result))
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::Value getViewSource() { return getSource(); }
   }];
 }
 
@@ -1217,14 +1306,49 @@ def PointerCastOp : PTO_Op<"pointer_cast", [AttrSizedOperandSegments, Pure]> {
       if (vRow) $_state.addOperands(vRow);
       if (vCol) $_state.addOperands(vCol);
       if (config) $_state.addAttribute("config", config);
-      
+
       int32_t addrsSize = addrs.size();
       int32_t vRowSize = vRow ? 1 : 0;
       int32_t vColSize = vCol ? 1 : 0;
-      $_state.addAttribute("operandSegmentSizes", 
+      $_state.addAttribute("operandSegmentSizes",
         $_builder.getDenseI32ArrayAttr({addrsSize, vRowSize, vColSize}));
     }]>
   ];
+}
+
+def SlotMarkerOp : PTO_Op<"slot_marker", [
+    Pure,
+    ViewLikeOpInterface,
+    AllTypesMatch<["source", "result"]>
+  ]> {
+  let summary = "Tag a memref view as referring to one slot of a multi_tile_buf";
+  let description = [{
+    Internal op materialized by `PTOViewToMemref` while lowering
+    `pto.multi_tile_get`. It carries the slot SSA index through the memref
+    layer so that PlanMemory, sync analysis (InsertSync / GraphSyncSolver),
+    and the buffer-select lowering pass can identify which physical slot
+    this memref reference touches.
+
+    The op is metadata-only (no data movement, no extra address arithmetic);
+    its result memref aliases the source memref byte-for-byte. Frontends do
+    not produce this op directly -- use `pto.multi_tile_get` instead.
+  }];
+
+  let arguments = (ins
+    AnyMemRef:$source,
+    Index:$slot
+  );
+
+  let results = (outs AnyMemRef:$result);
+
+  let assemblyFormat = [{
+    $source `[` $slot `]` attr-dict
+    `:` qualified(type($source)) `->` qualified(type($result))
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::Value getViewSource() { return getSource(); }
+  }];
 }
 
 // =============================================================================

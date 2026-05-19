@@ -128,6 +128,11 @@ SyncOperation::GetMatchSync(unsigned index) const {
   res->isCompensation = this->isCompensation;
   res->autoSyncTailBarrier = this->autoSyncTailBarrier;
   res->SetDepSyncIRIndex(this->GetDepSyncIRIndex());
+  // Slot info: propagate as a default; callers that know the matched side's
+  // slot SSA (e.g. wait-side gets the consumer slot rather than the
+  // producer slot) overwrite after GetMatchSync.
+  res->slotSSAExpr = this->slotSSAExpr;
+  res->slotCount = this->slotCount;
   return res;
 }
 

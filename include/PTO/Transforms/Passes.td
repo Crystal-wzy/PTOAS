@@ -316,4 +316,35 @@ def PTOMaterializeTileHandles : Pass<"pto-materialize-tile-handles", "ModuleOp">
   ];
 }
 
+def PTOResolveBufferSelect : Pass<"pto-resolve-buffer-select", "ModuleOp"> {
+  let summary = "Lower pto.slot_marker to single-slot pointer_cast (multi-buffer)";
+  let description = [{
+    Consumes `pto.slot_marker %src[%k]` ops written by PTOViewToMemref to
+    thread multi-buffer slot selection through the memref layer.
+
+    The op is replaced by a fresh single-address `pto.pointer_cast` that
+    refers to the chosen physical slot:
+
+    - constant slot `k`: a single `pto.pointer_cast(addrK)` is emitted at
+      the use site, using slot k from the underlying multi-address
+      pointer_cast created by PTOPlanMemory / AllocToPointerCast.
+    - dynamic slot `%k`: per-slot single-address `pto.pointer_cast`s are
+      created and an N-way `arith.select` chain picks one according to the
+      user-supplied SSA. This pass does NOT rewrite `%k` into `iv mod N`;
+      the frontend expression is the slot selector.
+
+    The original multi-address `pto.pointer_cast` is kept in IR as the
+    "alloc anchor" so future sync passes can recognize the multi-buffer
+    geometry.
+  }];
+
+  let constructor = "mlir::pto::createPTOResolveBufferSelectPass()";
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::arith::ArithDialect"
+  ];
+}
+
 #endif // MLIR_DIALECT_PTO_PASSES

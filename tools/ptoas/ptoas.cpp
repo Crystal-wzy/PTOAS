@@ -1164,7 +1164,9 @@ int main(int argc, char **argv) {
 
   // Conditionally add one automatic synchronization mode. Barrier-all is a
   // conservative standalone pass; InsertSync and GraphSyncSolver are set/wait
-  // solvers.
+  // solvers. Sync runs BEFORE PTOResolveBufferSelect so it sees per-use
+  // `pto.slot_marker` ops and can keep multi-buffer slot identity (const slot
+  // K vs slot K' or dynamic slot) for the alias / event-id analysis.
   if (enableInsertSync)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
   else if (enableInjectBarrierAllSync)
@@ -1176,6 +1178,11 @@ int main(int argc, char **argv) {
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createPTOGraphSyncSolverPass(graphSyncOpts));
   }
+
+  // Materialize per-slot single-address `pto.pointer_cast` (constant slot)
+  // or an `arith.select` chain (dynamic slot). The multi-address cast
+  // produced by PlanMemory survives as the alloc anchor.
+  pm.addPass(pto::createPTOResolveBufferSelectPass());
 
   
 

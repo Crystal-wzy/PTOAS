@@ -12,6 +12,7 @@
 #include "PTO/Transforms/GraphSyncSolver/SyncSolverCodeGen.h"
 
 #include "PTO/IR/PTO.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
 #include "llvm/Support/Casting.h"
 
@@ -116,14 +117,53 @@ void CodeGenerator::emitSyncOp(IRRewriter &rewriter, SyncOp *syncOp) {
   assert(!setWait->checkLastIter &&
          "checkLastIter wrapping not implemented in codegen");
 
-  // One set/wait op per assigned event id. The current solver only assigns
-  // a single id per node, but the codegen handles multi-id assignments so a
-  // future multi-buffer pass can plug in without re-touching this layer.
   auto srcAttr = makePipe(rewriter.getContext(), setWait->pipeSrc);
   auto dstAttr = makePipe(rewriter.getContext(), setWait->pipeDst);
   Location loc = resolveSyncLoc(setWait);
   bool isSet = isa<SetFlagOp>(setWait);
   bool isWait = isa<WaitFlagOp>(setWait);
+
+  // Multi-buffer dyn-event path: when the sync was produced by a
+  // multi-buffer back-edge (eventIds.size() > 1 AND we have a slot SSA),
+  // collapse the per-slot fanout into a single `pto.set_flag_dyn` /
+  // `pto.wait_flag_dyn`. The hardware event id is selected at runtime by
+  // an N-way `arith.select` chain over the allocated event ids keyed off
+  // `slotSSAExpr % N`. The `allAtOnce` scopes (pre-loop prime / post-loop
+  // drain) keep their static fanout so each per-slot event gets primed /
+  // drained exactly once.
+  if (!setWait->allAtOnce && setWait->eventIds.size() > 1 &&
+      setWait->slotSSAExpr) {
+    int64_t n = static_cast<int64_t>(setWait->eventIds.size());
+    Value slot = setWait->slotSSAExpr;
+    if (slot.getType() != rewriter.getIndexType()) {
+      slot = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getIndexType(), slot);
+    }
+    Value nConst = rewriter.create<arith::ConstantIndexOp>(loc, n);
+    Value slotMod = rewriter.create<arith::RemUIOp>(loc, slot, nConst);
+
+    Value selected = rewriter.create<arith::ConstantIndexOp>(
+        loc, setWait->eventIds[0]);
+    for (int64_t i = 1; i < n; ++i) {
+      Value iIdx = rewriter.create<arith::ConstantIndexOp>(loc, i);
+      Value isThis = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::eq, slotMod, iIdx);
+      Value idI = rewriter.create<arith::ConstantIndexOp>(
+          loc, setWait->eventIds[static_cast<size_t>(i)]);
+      selected = rewriter.create<arith::SelectOp>(loc, isThis, idI, selected);
+    }
+
+    if (isSet)
+      rewriter.create<pto::SetFlagDynOp>(loc, srcAttr, dstAttr, selected);
+    else if (isWait)
+      rewriter.create<pto::WaitFlagDynOp>(loc, srcAttr, dstAttr, selected);
+    return;
+  }
+
+  // Fallback / scope-anchored path: one static set/wait per assigned event
+  // id. Always used for `allAtOnce` prime/drain pairs and for syncs that
+  // could not have their slot SSA recovered (in which case we degrade to
+  // the conservative N-static fanout rather than dropping the dep).
   for (int64_t eventId : setWait->eventIds) {
     auto eventAttr = makeEvent(rewriter.getContext(), eventId);
     if (isSet)
