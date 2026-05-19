@@ -117,9 +117,9 @@ static const char *addrSpaceQualifier(pto::AddressSpace as) {
   return "__gm__";
 }
 
-static constexpr llvm::StringLiteral kLoweredSetValidShapeAttrName =
+[[maybe_unused]] static constexpr llvm::StringLiteral kLoweredSetValidShapeAttrName =
     "__pto.lowered_set_validshape";
-static constexpr llvm::StringLiteral kLoweredSetValidShapeConfigAttrName =
+[[maybe_unused]] static constexpr llvm::StringLiteral kLoweredSetValidShapeConfigAttrName =
     "__pto.lowered_set_validshape_config";
 static constexpr llvm::StringLiteral kForceDynamicValidShapeAttrName =
     "__pto.force_dynamic_valid_shape";
@@ -479,8 +479,8 @@ public:
     // ---------------------------------------------------------
     // 2. PTO 特殊类型 (透传或转换)
     // ---------------------------------------------------------
-    addConversion([Ctx](emitc::OpaqueType type) { return type; });
-    addConversion([Ctx](emitc::PointerType type) { return type; });
+    addConversion([](emitc::OpaqueType type) { return type; });
+    addConversion([](emitc::PointerType type) { return type; });
 
     // ---------------------------------------------------------
     // 2.5 PtrType 转换 (指针类型)
@@ -3124,7 +3124,8 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
           }
         }
 
-        auto typedPtrTy = emitc::OpaqueType::get(ctx, qualifier + " " + castElemTypeStr + "*");
+        auto typedPtrTy = emitc::PointerType::get(
+            emitc::OpaqueType::get(ctx, qualifier + " " + castElemTypeStr));
         Value typedSourcePtr = rewriter.create<emitc::CastOp>(loc, typedPtrTy, sourcePtr);
         newPtr = rewriter.create<emitc::AddOp>(loc, typedPtrTy, typedSourcePtr, totalOffset);
       } else {
@@ -3659,7 +3660,8 @@ static Value maybeWrapGlobalMemrefAsGlobalTensor(
 static Value castToGMBytePointer(ConversionPatternRewriter &rewriter,
                                  Location loc, Value value) {
   auto *ctx = rewriter.getContext();
-  auto targetTy = emitc::OpaqueType::get(ctx, "__gm__ uint8_t*");
+  auto targetTy =
+      emitc::PointerType::get(emitc::OpaqueType::get(ctx, "__gm__ uint8_t"));
   if (value.getType() == targetTy)
     return value;
 
@@ -4379,9 +4381,9 @@ static ArrayAttr buildAccPhaseTemplateArgs(ConversionPatternRewriter &rewriter,
   case pto::AccPhase::Final:
     tmpl = "AccPhase::Final";
     break;
-  default:
-    llvm_unreachable("unknown AccPhase");
   }
+  if (tmpl.empty())
+    return ArrayAttr{};
   return rewriter.getArrayAttr(
       {emitc::OpaqueAttr::get(rewriter.getContext(), tmpl)});
 }
@@ -4806,7 +4808,7 @@ static LogicalResult extractSyncTripletTokens(Operation *op,
 static inline std::string pipeTokFromPipeEnum(mlir::pto::PIPE p) {
   return mlir::pto::stringifyPIPE(p).str();
 }
-static inline std::string evtTokFromEventEnum(mlir::pto::EVENT e) {
+[[maybe_unused]] static inline std::string evtTokFromEventEnum(mlir::pto::EVENT e) {
   return mlir::pto::stringifyEVENT(e).str();
 }
 static inline std::string pipeTokFromPipeAttr(mlir::pto::PipeAttr a) {
@@ -5719,7 +5721,8 @@ struct PTOInitializeL2LPipeToEmitC
     auto emitPipeTy =
         cast<Type>(getTypeConverter()->convertType(op.getPipe().getType()));
 
-    auto gmPtrTy = emitc::OpaqueType::get(ctx, "__gm__ void *");
+    auto gmPtrTy =
+        emitc::PointerType::get(emitc::OpaqueType::get(ctx, "__gm__ void"));
     Value nullGm =
         makeEmitCOpaqueConstant(rewriter, op.getLoc(), gmPtrTy, "nullptr");
     auto i32Ty = emitc::OpaqueType::get(ctx, "int32_t");
@@ -11095,7 +11098,6 @@ public:
       case arith::CmpIPredicate::ule: emitcPred = emitc::CmpPredicate::le; break;
       case arith::CmpIPredicate::ugt: emitcPred = emitc::CmpPredicate::gt; break;
       case arith::CmpIPredicate::uge: emitcPred = emitc::CmpPredicate::ge; break;
-      default: return failure();
     }
 
     Type resTy = getTypeConverter()->convertType(op.getType());

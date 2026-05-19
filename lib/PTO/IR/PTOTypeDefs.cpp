@@ -530,6 +530,9 @@ Type TileBufType::parse(AsmParser &parser) {
 static llvm::StringRef stringifyLocFromMemorySpace(mlir::Attribute memorySpace) {
   auto asAttr = llvm::dyn_cast_or_null<AddressSpaceAttr>(memorySpace);
   switch (asAttr.getAddressSpace()) {
+    case AddressSpace::Zero:
+    case AddressSpace::GM:
+      return "illegal";
     case AddressSpace::MAT: return "mat";
     case AddressSpace::LEFT: return "left";
     case AddressSpace::RIGHT: return "right";
@@ -537,8 +540,8 @@ static llvm::StringRef stringifyLocFromMemorySpace(mlir::Attribute memorySpace) 
     case AddressSpace::VEC: return "vec";
     case AddressSpace::BIAS: return "bias";
     case AddressSpace::SCALING: return "scaling";
-    default: return "illegal";
   }
+  return "illegal";
 }
 
 static llvm::StringRef stringifyLocFromPad(mlir::Attribute pad) {
@@ -550,9 +553,8 @@ static llvm::StringRef stringifyLocFromPad(mlir::Attribute pad) {
     case PadValue::Zero: return "1";
     case PadValue::Max: return "2";
     case PadValue::Min: return "3";
-    default:
-      return "9999";
   }
+  return "9999";
 }
 
 static llvm::StringRef stringifyCompactModeInt(mlir::Attribute compactMode) {
@@ -567,9 +569,8 @@ static llvm::StringRef stringifyCompactModeInt(mlir::Attribute compactMode) {
     return "1";
   case CompactMode::RowPlusOne:
     return "2";
-  default:
-    return "9999";
   }
+  return "9999";
 }
 
 static void printTileBufDim(AsmPrinter &printer, int64_t dim) {
