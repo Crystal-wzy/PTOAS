@@ -3850,7 +3850,7 @@ static LogicalResult verifyTColArgReductionOpCommon(Operation *op, Type srcTy,
                                            /*requireNonZeroSrc=*/true)))
     return failure();
   Type srcElemTy = getElemTy(srcTy);
-  unsigned srcElemBits = srcElemTy ? srcElemTy.getIntOrFloatBitWidth() : 0;
+  unsigned srcElemBits = srcElemTy ? getPTOStorageElemBitWidth(srcElemTy) : 0;
   if (!(mlir::isa<IntegerType, FloatType>(srcElemTy) &&
         (srcElemBits == 8 || srcElemBits == 16 || srcElemBits == 32)))
     return op->emitOpError(
@@ -5793,11 +5793,8 @@ static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy, Type ds
   auto dstElem = getElemTy(dstTy);
 
   auto getElemBytes = [](mlir::Type t) -> int64_t {
-    if (auto it = mlir::dyn_cast<mlir::IntegerType>(t))
-      return it.getWidth() / 8;
-    if (auto ft = mlir::dyn_cast<mlir::FloatType>(t))
-      return ft.getWidth() / 8;
-    return -1;
+    unsigned elemBytes = getPTOStorageElemByteSize(t);
+    return elemBytes == 0 ? -1 : static_cast<int64_t>(elemBytes);
   };
 
   int64_t srcB = getElemBytes(srcElem);
@@ -5920,8 +5917,10 @@ llvm::LogicalResult mlir::pto::TGatherOp::verify() {
     if (!srcSpace || !dstSpace || *srcSpace != pto::AddressSpace::VEC ||
         *dstSpace != pto::AddressSpace::VEC)
       return emitOpError("expects src and dst to be in the vec address space");
-    unsigned srcElemBytes = srcElem.getIntOrFloatBitWidth() / 8;
-    unsigned dstElemBytes = dstElem.getIntOrFloatBitWidth() / 8;
+    unsigned srcElemBytes = getPTOStorageElemByteSize(srcElem);
+    unsigned dstElemBytes = getPTOStorageElemByteSize(dstElem);
+    if (srcElemBytes == 0 || dstElemBytes == 0)
+      return emitOpError("failed to get element size for src/dst");
     if (srcElemBytes != dstElemBytes)
       return emitOpError("expects src and dst element sizes to match");
 
@@ -6114,13 +6113,10 @@ mlir::LogicalResult mlir::pto::TGatherBOp::verify() {
   };
 
   auto getElemBytes = [](Type ty) -> std::optional<unsigned> {
-    if (ty.isBF16())
-      return 2;
-    if (auto it = mlir::dyn_cast<IntegerType>(ty))
-      return it.getWidth() / 8;
-    if (auto ft = mlir::dyn_cast<FloatType>(ty))
-      return ft.getWidth() / 8;
-    return std::nullopt;
+    unsigned elemBytes = getPTOStorageElemByteSize(ty);
+    if (elemBytes == 0)
+      return std::nullopt;
+    return elemBytes;
   };
 
   auto verifyA2A3 = [&]() -> LogicalResult {
@@ -9060,8 +9056,8 @@ mlir::LogicalResult mlir::pto::TScatterOp::verify() {
     if (!isAllowedIndexElem(idxElem))
       return emitOpError("expects indexes element type to be i16/i32");
 
-    auto bwData = srcElem.getIntOrFloatBitWidth();
-    auto bwIdx  = idxElem.getIntOrFloatBitWidth();
+    auto bwData = getPTOStorageElemBitWidth(srcElem);
+    auto bwIdx  = getPTOStorageElemBitWidth(idxElem);
     if (bwData != 8 && bwData != 16 && bwData != 32)
       return emitOpError("unexpected src/dst element bitwidth");
 
@@ -9499,7 +9495,9 @@ mlir::LogicalResult mlir::pto::TTransOp::verify() {
       if (srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor))
         return emitOpError() << "expects A2/A3 transpose src to use the row_major blayout";
     }
-    unsigned elemBytes = srcElem.getIntOrFloatBitWidth() / 8;
+    unsigned elemBytes = getPTOStorageElemByteSize(srcElem);
+    if (elemBytes == 0)
+      return emitOpError() << "failed to get transpose element size";
     if (elemBytes != 1 && elemBytes != 2 && elemBytes != 4)
       return emitOpError() << "expects transpose element size to be 1, 2, or 4 bytes";
     auto isAllowedWidthType = [&](Type ty) {
@@ -9526,7 +9524,9 @@ mlir::LogicalResult mlir::pto::TTransOp::verify() {
     Type dstElem = getElemTy(dstTy);
     if (!srcElem || !tmpElem || !dstElem || srcElem != dstElem || srcElem != tmpElem)
       return emitOpError() << "expects src, tmp, and dst to have the same element type";
-    unsigned elemBytes = srcElem.getIntOrFloatBitWidth() / 8;
+    unsigned elemBytes = getPTOStorageElemByteSize(srcElem);
+    if (elemBytes == 0)
+      return emitOpError() << "failed to get transpose element size";
     if (elemBytes != 1 && elemBytes != 2 && elemBytes != 4)
       return emitOpError() << "expects transpose element size to be 1, 2, or 4 bytes";
     auto isAllowedWidthType = [&](Type ty) {
@@ -10403,15 +10403,7 @@ static LogicalResult computeInnerShape(TileBufConfigAttr cfg, Type elemTy,
     return success();
   }
 
-  int64_t elemBytes = -1;
-  if (auto ft = mlir::dyn_cast<FloatType>(elemTy)) {
-    if (ft.isF16() || ft.isBF16()) elemBytes = 2;
-    else if (ft.isF32()) elemBytes = 4;
-    else if (ft.isF64()) elemBytes = 8;
-  } else if (auto it = mlir::dyn_cast<IntegerType>(elemTy)) {
-    int64_t bytes = it.getWidth() / 8;
-    elemBytes = bytes > 0 ? bytes : 1;
-  }
+  int64_t elemBytes = static_cast<int64_t>(getElemByteSize(elemTy));
   if (elemBytes <= 0) return failure();
 
   if (fr == 1024) {

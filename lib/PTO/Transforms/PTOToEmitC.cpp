@@ -3398,29 +3398,7 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
 //===----------------------------------------------------------------------===//
 
 static std::string getElemTypeStringForGT(Type elemTy) {
-  if (elemTy.isF16()) return "half";
-  if (elemTy.isBF16()) return "bfloat16_t";
-  if (elemTy.isF32()) return "float";
-  if (elemTy.isF64()) return "double";
-  if (elemTy.isInteger(8)) {
-    if (elemTy.isSignlessInteger(8) || elemTy.isSignedInteger(8))
-      return "int8_t";
-    return "uint8_t";
-  }
-  if (elemTy.isInteger(16)) {
-    if (elemTy.isSignlessInteger(16) || elemTy.isSignedInteger(16))
-      return "int16_t";
-    return "uint16_t";
-  }
-  if (elemTy.isInteger(32)) {
-    if (elemTy.isSignlessInteger(32) || elemTy.isSignedInteger(32))
-      return "int32_t";
-    return "uint32_t";
-  }
-  if (elemTy.isInteger(64)) {
-    return cast<IntegerType>(elemTy).isUnsigned() ? "uint64_t" : "int64_t";
-  }
-  return "float";
+  return getEmitCScalarTypeToken(elemTy);
 }
 
 static bool hasStaticShape(MemRefType mrTy) {
@@ -3460,12 +3438,8 @@ static Value applyStaticMemrefOffset(ConversionPatternRewriter &rewriter,
   return rewriter.create<emitc::AddOp>(loc, basePtr.getType(), basePtr, offVal);
 }
 
-static int getGlobalTensorElementBytes(StringRef elemTypeStr) {
-  if (elemTypeStr.contains("half") || elemTypeStr.contains("bf16"))
-    return 2;
-  if (elemTypeStr.contains("double"))
-    return 8;
-  return 4;
+static int getGlobalTensorElementBytes(Type elemTy) {
+  return static_cast<int>(getPTOStorageElemByteSize(elemTy));
 }
 
 static int64_t multiplyOrDynamic(int64_t lhs, int64_t rhs) {
@@ -3545,8 +3519,10 @@ static emitc::OpaqueType getGlobalTensorOpaqueTypeFromShape(
 
 static std::string inferFallbackGlobalTensorLayout(ArrayRef<int64_t> shape5D,
                                                    ArrayRef<int64_t> stride5D,
-                                                   StringRef elemTypeStr) {
-  int elemBytes = getGlobalTensorElementBytes(elemTypeStr);
+                                                   Type elemTy) {
+  int elemBytes = getGlobalTensorElementBytes(elemTy);
+  if (elemBytes == 0)
+    return "pto::Layout::ND";
   if (shape5D[2] == 16 && multiplyOrDynamic(shape5D[2], shape5D[3]) * elemBytes == 512 &&
       stride5D[4] == 1 && stride5D[3] == shape5D[4]) {
     return "pto::Layout::NZ";
@@ -3568,10 +3544,10 @@ static std::string inferFallbackGlobalTensorLayout(ArrayRef<int64_t> shape5D,
 static std::string resolveGlobalTensorLayout(Operation *anchor, Value basePtr,
                                              ArrayRef<int64_t> shape5D,
                                              ArrayRef<int64_t> stride5D,
-                                             StringRef elemTypeStr) {
+                                             Type elemTy) {
   if (auto layout = resolveLayoutForGlobalTensor(anchor, basePtr))
     return layoutToEmitCString(*layout);
-  return inferFallbackGlobalTensorLayout(shape5D, stride5D, elemTypeStr);
+  return inferFallbackGlobalTensorLayout(shape5D, stride5D, elemTy);
 }
 
 struct GlobalTensorTypeNames {
@@ -3619,8 +3595,8 @@ static Value buildGlobalTensorFromMemref(ConversionPatternRewriter &rewriter,
       loc, "using " + names.strideTypeName + " = pto::Stride<" +
                joinIntTemplateParams(stride5D) + ">;");
 
-  std::string layoutEnum = resolveGlobalTensorLayout(anchor, basePtr, shape5D,
-                                                     stride5D, elemTypeStr);
+  std::string layoutEnum = resolveGlobalTensorLayout(
+      anchor, basePtr, shape5D, stride5D, mrTy.getElementType());
   rewriter.create<emitc::VerbatimOp>(loc, "constexpr pto::Layout " +
                                               names.layoutConstName + " = " +
                                               layoutEnum + ";");
