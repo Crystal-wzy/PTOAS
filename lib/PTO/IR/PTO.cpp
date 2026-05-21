@@ -1987,6 +1987,78 @@ LogicalResult mlir::pto::AddPtrOp::verify() {
   return success();
 }
 
+static LogicalResult verifyPtrLikeForAddressCast(Operation *op, Type type,
+                                                 StringRef name) {
+  if (isa<mlir::pto::PtrType>(type))
+    return success();
+
+  auto memTy = dyn_cast<MemRefType>(type);
+  if (!memTy)
+    return op->emitOpError()
+           << "expects " << name << " to be !pto.ptr<...> or a GM memref";
+
+  if (memTy.getRank() != 1)
+    return op->emitOpError()
+           << "expects lowered memref " << name << " to be rank-1";
+
+  if (!isGmAddressSpaceAttr(memTy.getMemorySpace()))
+    return op->emitOpError()
+           << "expects lowered memref " << name << " to use GM address space";
+
+  return success();
+}
+
+static Type getPointerLikeElementType(Type type) {
+  if (auto ptrTy = dyn_cast<mlir::pto::PtrType>(type))
+    return ptrTy.getElementType();
+  if (auto memTy = dyn_cast<MemRefType>(type))
+    return memTy.getElementType();
+  return Type();
+}
+
+static bool isEmitCSupportedScalarType(Type type) {
+  if (!type)
+    return false;
+  if (type.isF16() || type.isBF16() || type.isF32() || type.isF64())
+    return true;
+  if (auto intTy = dyn_cast<IntegerType>(type))
+    return intTy.getWidth() == 8 || intTy.getWidth() == 16 ||
+           intTy.getWidth() == 32 || intTy.getWidth() == 64;
+  if (mlir::pto::isPTOFloat8Type(type))
+    return true;
+  if (isa<mlir::pto::HiF8Type, mlir::pto::F4E1M2x2Type,
+          mlir::pto::F4E2M1x2Type>(type))
+    return true;
+  return false;
+}
+
+LogicalResult mlir::pto::PtrToIntOp::verify() {
+  Type resultTy = getResult().getType();
+  auto intTy = dyn_cast<IntegerType>(resultTy);
+  if (!intTy || intTy.getWidth() != 64)
+    return emitOpError("result must be i64");
+
+  return verifyPtrLikeForAddressCast(getOperation(), getPtr().getType(),
+                                     "ptr operand");
+}
+
+LogicalResult mlir::pto::IntToPtrOp::verify() {
+  auto addrTy = dyn_cast<IntegerType>(getAddr().getType());
+  if (!addrTy || addrTy.getWidth() != 64)
+    return emitOpError("address operand must be i64");
+
+  if (failed(verifyPtrLikeForAddressCast(getOperation(), getResult().getType(),
+                                         "result")))
+    return failure();
+
+  Type dstElem = getPointerLikeElementType(getResult().getType());
+  if (!isEmitCSupportedScalarType(dstElem))
+    return emitOpError("result element type is not supported by EmitC: ")
+           << dstElem;
+
+  return success();
+}
+
 LogicalResult mlir::pto::LocalArrayGetOp::verify() {
   auto arrayTy = getArray().getType();
   int64_t rank = arrayTy.getRank();

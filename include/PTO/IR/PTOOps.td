@@ -105,6 +105,54 @@ def AddPtrOp : PTO_Op<"addptr", [
   }];
 }
 
+def PtrToIntOp : PTO_Op<"ptrtoint", [Pure]> {
+  let summary = "Convert a global pointer to a byte address";
+  let description = [{
+    Converts a global pointer value to an i64 byte address. If the source
+    pointer is produced by `pto.addptr`, lowering materializes the addptr
+    offset as an explicit byte offset before converting to EmitC.
+  }];
+
+  let arguments = (ins
+    PtrOrMemRef:$ptr
+  );
+
+  let results = (outs
+    I64:$result
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $ptr attr-dict `:` type($ptr) `->` type($result)
+  }];
+}
+
+def IntToPtrOp : PTO_Op<"inttoptr", [Pure]> {
+  let summary = "Convert an i64 byte address to a global pointer";
+  let description = [{
+    Converts an i64 byte address to a global pointer of the requested element
+    type. This is an escape hatch for explicit byte-address arithmetic and
+    cross-element-type pointer reinterpretation. To keep byte-address-derived
+    pointers from escaping into general pointer IR, the result may only be used
+    directly as the pointer operand of `pto.load_scalar` or `pto.store_scalar`.
+  }];
+
+  let arguments = (ins
+    AnyInteger:$addr
+  );
+
+  let results = (outs
+    PtrOrMemRef:$result
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $addr attr-dict `:` type($addr) `->` type($result)
+  }];
+}
+
 //===----------------------------------------------------------------------===//
 // Scalar pointer load/store
 //===----------------------------------------------------------------------===//

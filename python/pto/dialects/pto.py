@@ -176,6 +176,8 @@ __all__ = [
     "get_buf",
     "rls_buf",
     # Scalar pointer helpers
+    "ptrtoint",
+    "inttoptr",
     "load_scalar",
     "store_scalar",
     # Aliases for SyncOpType enums (for terse calls)
@@ -533,6 +535,34 @@ def rls_buf(op_type, buf_id, mode=0, *, loc=None, ip=None):
 # -----------------------------------------------------------------------------
 # Scalar pointer helpers (manual wrappers until python ops are regenerated)
 # -----------------------------------------------------------------------------
+
+
+def ptrtoint(ptr, *, loc=None, ip=None):
+    operands = [
+        get_op_result_or_value(ptr),
+    ]
+    op = _ods_ir.Operation.create(
+        "pto.ptrtoint",
+        results=[_ods_ir.IntegerType.get_signless(64)],
+        operands=operands,
+        loc=loc,
+        ip=ip,
+    )
+    return op.results[0]
+
+
+def inttoptr(result_type, addr, *, loc=None, ip=None):
+    operands = [
+        get_op_result_or_value(addr),
+    ]
+    op = _ods_ir.Operation.create(
+        "pto.inttoptr",
+        results=[result_type],
+        operands=operands,
+        loc=loc,
+        ip=ip,
+    )
+    return op.results[0]
 
 
 def load_scalar(result_type, ptr, offset, *, loc=None, ip=None):

@@ -337,6 +337,83 @@ NOTE: These third-party ops are supported only to the extent required by PTOAS f
 
 ### 4.1 Pointer & View Operations
 
+##### `pto.ptrtoint` - Convert Pointer to Byte Address
+
+**Summary:** Converts a global pointer to an `i64` byte address.
+
+**Semantics:**
+
+```
+result = reinterpret_cast<i64>(ptr)
+```
+
+If the source is produced by `pto.addptr`, the addptr offset is materialized as an explicit byte offset:
+
+```
+pto.ptrtoint(pto.addptr %p, %idx) == pto.ptrtoint(%p) + idx * sizeof(elementType)
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `ptr` | `!pto.ptr<elementType>` | Source global pointer |
+
+**Results:** `i64`
+
+**Lowering Notes:**
+
+- PTO view lowering accepts either PTO pointer form or the lowered rank-1 GM memref form.
+- `pto.addptr` sources are folded into explicit byte-address arithmetic before EmitC lowering.
+- EmitC lowering emits a C++ `reinterpret_cast<int64_t>`.
+
+##### `pto.inttoptr` - Convert Byte Address to Pointer
+
+**Summary:** Converts an `i64` byte address to a global pointer of the requested element type.
+
+**Semantics:**
+
+```
+result = reinterpret_cast<result-element-type *>(addr)
+```
+
+This op is an escape hatch for explicit byte-address arithmetic and
+cross-element-type pointer reinterpretation.
+
+To limit provenance loss from integer-derived pointers, the result is
+restricted to scalar memory access: every direct use must be the pointer operand
+of `pto.load_scalar` or `pto.store_scalar`. The result cannot feed
+`pto.addptr`, `pto.make_tensor_view`, returns, or other general pointer users.
+Use the offset operand on `pto.load_scalar` / `pto.store_scalar` for element
+offsets from an `inttoptr` pointer.
+
+The result element type must be representable by EmitC scalar pointer lowering:
+floating-point element types (`f16`, `bf16`, `f32`, `f64`), 8/16/32/64-bit
+integer element types, and PTO low-precision floating-point element types are
+accepted. Non-scalar element types such as `index` are rejected by the verifier.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `addr` | `i64` | Source byte address |
+
+**Results:** `!pto.ptr<resultElementType>`
+
+**Lowering Notes:**
+
+- PTO view lowering rewrites the result to an equivalent rank-1 GM memref form.
+- EmitC lowering emits a C++ `reinterpret_cast<__gm__ T*>`.
+
+**Basic Example:**
+
+```mlir
+%p64_off = pto.addptr %p64, %idx : !pto.ptr<ui64> -> !pto.ptr<ui64>
+%addr = pto.ptrtoint %p64_off : !pto.ptr<ui64> -> i64
+%p32 = pto.inttoptr %addr : i64 -> !pto.ptr<ui32>
+%val = pto.load_scalar %p32[%c0] : !pto.ptr<ui32> -> ui32
+```
+
 ##### `pto.addptr` - Add Element Offset to Pointer
 
 **Summary:** Computes a new pointer by adding an element offset to the base pointer.
@@ -400,6 +477,9 @@ This operation defines the physical "base" and stride rules for global memory. I
   - `ptr` must be `!pto.ptr<...>` and its element type must match the result element type
   - `shape` and `strides` operand counts must match the tensor_view rank
   - If `layout` is provided with static shapes/strides, it must be consistent with inferred layout
+- `pto.inttoptr` results cannot feed `pto.make_tensor_view`. Tensor views must
+  be constructed from a source pointer that already carries the desired element
+  type.
 
 **Notes:**
 

@@ -5626,6 +5626,66 @@ struct PTOTAssignToEmitC : public OpConversionPattern<pto::TAssignOp> {
 // pto.load_scalar / pto.store_scalar lowering -> ptr[offset]
 //===----------------------------------------------------------------------===//
 
+static Type getPointerLikeElementType(Type type) {
+  if (auto ptrTy = dyn_cast<pto::PtrType>(type))
+    return ptrTy.getElementType();
+  if (auto memTy = dyn_cast<MemRefType>(type))
+    return memTy.getElementType();
+  return Type();
+}
+
+struct PTOPtrToIntToEmitC : public OpConversionPattern<pto::PtrToIntOp> {
+  using OpConversionPattern<pto::PtrToIntOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::PtrToIntOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Value ptr = peelUnrealized(adaptor.getPtr());
+    Type dstTy = getTypeConverter()->convertType(op.getResult().getType());
+    if (!dstTy)
+      return failure();
+
+    auto dstOpaque = dyn_cast<emitc::OpaqueType>(dstTy);
+    if (!dstOpaque)
+      return failure();
+
+    auto templateArgs =
+        rewriter.getArrayAttr({emitc::OpaqueAttr::get(rewriter.getContext(),
+                                                      dstOpaque.getValue())});
+    auto cast = rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), dstTy, "reinterpret_cast", ArrayAttr{}, templateArgs,
+        ValueRange{ptr});
+    rewriter.replaceOp(op, cast.getResult(0));
+    return success();
+  }
+};
+
+struct PTOIntToPtrToEmitC : public OpConversionPattern<pto::IntToPtrOp> {
+  using OpConversionPattern<pto::IntToPtrOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::IntToPtrOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Value addr = peelUnrealized(adaptor.getAddr());
+    Type dstTy = getTypeConverter()->convertType(op.getResult().getType());
+    if (!dstTy)
+      return failure();
+
+    Type dstElemTy = getPointerLikeElementType(op.getResult().getType());
+    if (!dstElemTy)
+      return failure();
+
+    std::string castType =
+        std::string("__gm__ ") + getEmitCScalarTypeToken(dstElemTy) + "*";
+    auto templateArgs =
+        rewriter.getArrayAttr({emitc::OpaqueAttr::get(rewriter.getContext(),
+                                                      castType)});
+    auto cast = rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), dstTy, "reinterpret_cast", ArrayAttr{}, templateArgs,
+        ValueRange{addr});
+    rewriter.replaceOp(op, cast.getResult(0));
+    return success();
+  }
+};
+
 struct PTOLoadScalarToEmitC : public OpConversionPattern<pto::LoadScalarOp> {
   using OpConversionPattern<pto::LoadScalarOp>::OpConversionPattern;
 
@@ -11933,7 +11993,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<SubviewToEmitCPattern>(typeConverter, ctx);
   patterns.add<PointerCastConversion>(typeConverter, ctx);
   patterns.add<PTOSetValToSETVAL, PTOGetValToGETVAL, PTOSetValidShapeToEmitC,
-               PTOGetValidShapeToEmitC, PTOTAssignToEmitC, PTOLoadScalarToEmitC,
+               PTOGetValidShapeToEmitC, PTOTAssignToEmitC,
+               PTOPtrToIntToEmitC, PTOIntToPtrToEmitC, PTOLoadScalarToEmitC,
                PTOStoreScalarToEmitC>(typeConverter, ctx);
   patterns.add<PTOTAxpyToEmitC, PTOHistogramToEmitC, PTOGetScaleAddrToEmitC>(
       typeConverter, ctx);
