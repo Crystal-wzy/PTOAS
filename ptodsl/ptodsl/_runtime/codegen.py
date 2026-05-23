@@ -9,8 +9,10 @@
 
 from __future__ import annotations
 
-from .._kernel_signature import DeviceParameterSpec, TensorSpecParameterSpec
-from .._types import _PtrDescriptor
+from mlir.ir import BF16Type, F16Type, F32Type, IndexType, IntegerType
+
+from .._kernel_signature import DeviceParameterSpec, RuntimeScalarParameterSpec, TensorSpecParameterSpec
+from .._types import _PtrDescriptor, _resolve
 
 
 def _elem_cpp_type(elem) -> str:
@@ -49,8 +51,44 @@ def _device_param_cpp_type(annotation) -> str:
     return "float"
 
 
+def _runtime_scalar_cpp_type(annotation) -> str:
+    type_obj = _resolve(annotation)
+    if IndexType.isinstance(type_obj):
+        return "int64_t"
+    if IntegerType.isinstance(type_obj):
+        width = IntegerType(type_obj).width
+        if width == 1:
+            return "bool"
+        signedness = str(type_obj)
+        if signedness.startswith("ui"):
+            return {
+                8: "uint8_t",
+                16: "uint16_t",
+                32: "uint32_t",
+                64: "uint64_t",
+            }[width]
+        return {
+            8: "int8_t",
+            16: "int16_t",
+            32: "int32_t",
+            64: "int64_t",
+        }[width]
+    if F32Type.isinstance(type_obj):
+        return "float"
+    if F16Type.isinstance(type_obj):
+        return "__fp16"
+    if BF16Type.isinstance(type_obj):
+        return "__bf16"
+    raise TypeError(f"unsupported @pto.jit runtime scalar codegen type {type_obj}")
+
+
 def launch_symbol_name(ir_function_name: str) -> str:
     return f"ptodsl_launch_{ir_function_name}"
+
+
+def _tensor_metadata_cpp_type() -> str:
+    # Host-visible tensor shape/stride metadata is marshaled as 64-bit integers.
+    return "int64_t"
 
 
 def generate_launch_cpp(*, ir_function_name: str, kernel_signature) -> str:
@@ -66,19 +104,26 @@ def generate_launch_cpp(*, ir_function_name: str, kernel_signature) -> str:
             host_params.append(f"{cpp_type} *{param.name}")
             kernel_args.append(f"(__gm__ {cpp_type} *){param.name}")
             continue
+        if isinstance(param, RuntimeScalarParameterSpec):
+            cpp_type = _runtime_scalar_cpp_type(param.annotation)
+            gm_params.append(f"{cpp_type} {param.name}")
+            host_params.append(f"{cpp_type} {param.name}")
+            kernel_args.append(param.name)
+            continue
         if isinstance(param, TensorSpecParameterSpec):
             cpp_type = _elem_cpp_type(param.tensor_spec.dtype)
+            meta_cpp_type = _tensor_metadata_cpp_type()
             rank = param.tensor_spec.rank
             gm_params.append(f"__gm__ {cpp_type} *{param.name}_ptr")
             host_params.append(f"{cpp_type} *{param.name}_ptr")
             kernel_args.append(f"(__gm__ {cpp_type} *){param.name}_ptr")
             for idx in range(rank):
-                gm_params.append(f"index {param.name}_shape_{idx}")
-                host_params.append(f"int64_t {param.name}_shape_{idx}")
+                gm_params.append(f"{meta_cpp_type} {param.name}_shape_{idx}")
+                host_params.append(f"{meta_cpp_type} {param.name}_shape_{idx}")
                 kernel_args.append(f"{param.name}_shape_{idx}")
             for idx in range(rank):
-                gm_params.append(f"index {param.name}_stride_{idx}")
-                host_params.append(f"int64_t {param.name}_stride_{idx}")
+                gm_params.append(f"{meta_cpp_type} {param.name}_stride_{idx}")
+                host_params.append(f"{meta_cpp_type} {param.name}_stride_{idx}")
                 kernel_args.append(f"{param.name}_stride_{idx}")
             continue
         raise TypeError(f"unsupported launch parameter spec: {param!r}")

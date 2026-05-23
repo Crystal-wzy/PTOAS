@@ -55,6 +55,110 @@ pip install -e .
 
 ---
 
+## JIT examples
+
+`ptodsl/examples/jit/` contains self-contained `@pto.jit` examples that cover
+both compile-only and end-to-end launch flows.
+
+### Prerequisites for launch examples
+
+- `ptoas` + `ptodsl` installed as above
+- CANN 9.0+ with `ASCEND_HOME_PATH` set
+- For end-to-end launch: `torch`, `torch_npu`, `numpy`
+- `bisheng` on `PATH`
+
+Set up the environment in each new shell:
+
+```bash
+cd $PTOAS_REPO_ROOT
+source set_ptoas_env.sh
+source "${ASCEND_HOME_PATH}/bin/setenv.bash"
+```
+
+For CPU simulation with `msprof`, the wrapper script below will set the
+simulator library path and `ulimit` for you. The normal PTOAS + CANN shell
+setup above is still required.
+
+### `tadd_launch.py`
+
+Single script: kernel definition, compile, launch, and accuracy check.
+Equivalent IR to the TileLang ST `tadd.pto` testcase.
+
+Compile-only:
+
+```bash
+python3 ptodsl/examples/jit/tadd_launch.py --emit-mlir
+```
+
+Expected: MLIR containing `@TADD_f32_16x64` and `@TADD_f32_32x32`.
+
+Optional PTOAS frontend smoke:
+
+```bash
+python3 ptodsl/examples/jit/tadd_launch.py --emit-mlir > /tmp/tadd_dsl.mlir
+ptoas --emit-pto-ir /tmp/tadd_dsl.mlir -o - | head
+```
+
+End-to-end under the `msprof` CPU simulator:
+
+```bash
+scripts/sim_dsl.sh ptodsl/examples/jit/tadd_launch.py
+```
+
+Expected output:
+
+```text
+PASS f32_16x64  compile=0.024s launch=35.193s
+PASS f32_32x32  compile=0.022s launch=35.926s
+All cases passed.
+```
+
+Direct run on a real NPU:
+
+```bash
+python3 ptodsl/examples/jit/tadd_launch.py
+```
+
+### `flash_attention_softmax_launch.py`
+
+Launchable flash-attention softmax-stage demo. It intentionally keeps the
+online softmax update stage only, so the runtime path can be validated without
+depending on the still-incomplete SIMT/cube coverage needed for the full
+flash-attention stack.
+
+Compile-only:
+
+```bash
+python3 ptodsl/examples/jit/flash_attention_softmax_launch.py --emit-mlir
+```
+
+End-to-end under the `msprof` CPU simulator:
+
+```bash
+scripts/sim_dsl.sh ptodsl/examples/jit/flash_attention_softmax_launch.py
+```
+
+Expected output:
+
+```text
+PASS rows8_seq128
+PASS rows17_seq96
+All cases passed.
+```
+
+Direct run on a real NPU:
+
+```bash
+python3 ptodsl/examples/jit/flash_attention_softmax_launch.py
+```
+
+### Launch artifacts
+
+- `~/.cache/ptodsl/` — JIT-compiled kernel `.so` cache
+- `build/msprof_res/` — `msprof` simulator trace output
+
+---
+
 ## Running regression checks
 
 ```bash
@@ -147,17 +251,37 @@ it is intentionally not exported as `pto.scalar`.
 def MyKernel():
     ...
 
-@pto.jit(name="Softmax", kernel_kind="vector", target="a5", func_attr="pto.aicore")
-def Softmax(arg0: pto.ptr(pto.float32, "gm"), n: pto.int32):
+@pto.jit(name="Softmax", kernel_kind="vector", target="a5")
+def Softmax(
+    X: pto.tensor_spec(rank=2, dtype=pto.f32),
+    O: pto.tensor_spec(rank=2, dtype=pto.f32),
+    *,
+    BLOCK: pto.constexpr = 128,
+):
     ...
 
-print(MyKernel)          # prints MLIR text
-mod = MyKernel.mlir_module()   # returns mlir.ir.Module
+print(MyKernel)               # prints MLIR text
+mod = MyKernel.mlir_module()  # returns mlir.ir.Module
 ```
 
-`func_attr="pto.aicore"` selects a flat single-module structure with the
-`pto.aicore` function attribute (softmax style).  Without it, a nested
-double-module is emitted (TADD style).
+`@pto.jit` now emits a flat aicore launch-entry module by default. The traced
+entry function carries the `pto.aicore` attribute and lives directly under the
+top-level module, which matches the runtime-launch path and merged-MLIR example
+flow.
+
+PTODSL v1 keeps the public `@pto.jit` entry ABI intentionally narrow:
+
+- positional parameters are Python-native tensors declared with
+  `pto.tensor_spec(...)`
+- positional runtime scalars use PTO scalar annotations such as `pto.i32`,
+  `pto.f32`, and `pto.i1`, while launch-time values remain ordinary Python
+  scalars
+- keyword-only parameters annotated with `pto.constexpr` are compile-time
+  specialization knobs
+
+Typed pointers such as `pto.ptr(...)` remain valid PTODSL surface types inside
+kernel bodies and explicit-mode sub-kernels, but they are not the recommended
+host-visible `@pto.jit` parameter contract.
 
 Additional layered kernel entry modes and shared compute decorators are also
 exported on the public surface: `@pto.jit(mode="auto")`,

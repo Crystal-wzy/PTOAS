@@ -46,7 +46,6 @@ s = scalar  # arith shorthand alias
     name="online_softmax_update_kernel_2d",
     kernel_kind="vector",
     target="a5",
-    func_attr="pto.aicore",
     mode="explicit",
 )
 def online_softmax_update_kernel_2d(
@@ -103,137 +102,138 @@ def online_softmax_update_kernel_2d(
     rows          = s.index_cast(arg8)                              # → index
     rows_x_128    = s.muli(rows, c128)
 
-    with pto.if_(has_rows):
-        # ── Tensor views ─────────────────────────────────────────────────────
-        s1   = [rows, rows, rows, c1, rows]
-        s128 = [rows_x_128, rows_x_128, rows_x_128, c128, c1]
-        sh1  = [c1, c1, c1, rows, c1]
-        sh128= [c1, c1, c1, rows, c128]
+    with pto.if_(has_rows) as has_rows_br:
+        with has_rows_br.then_:
+            # ── Tensor views ─────────────────────────────────────────────────────
+            s1   = [rows, rows, rows, c1, rows]
+            s128 = [rows_x_128, rows_x_128, rows_x_128, c128, c1]
+            sh1  = [c1, c1, c1, rows, c1]
+            sh128= [c1, c1, c1, rows, c128]
 
-        oldmax_view = pto.make_tensor_view(arg0, shape=sh1,   strides=s1)
-        oldsum_view = pto.make_tensor_view(arg1, shape=sh1,   strides=s1)
-        qk_view     = pto.make_tensor_view(arg2, shape=sh128, strides=s128)
-        newmax_view = pto.make_tensor_view(arg3, shape=sh1,   strides=s1)
-        newsum_view = pto.make_tensor_view(arg4, shape=sh1,   strides=s1)
-        expmax_view = pto.make_tensor_view(arg5, shape=sh1,   strides=s1)
-        out_view    = pto.make_tensor_view(arg6, shape=sh128, strides=s128)
+            oldmax_view = pto.make_tensor_view(arg0, shape=sh1,   strides=s1)
+            oldsum_view = pto.make_tensor_view(arg1, shape=sh1,   strides=s1)
+            qk_view     = pto.make_tensor_view(arg2, shape=sh128, strides=s128)
+            newmax_view = pto.make_tensor_view(arg3, shape=sh1,   strides=s1)
+            newsum_view = pto.make_tensor_view(arg4, shape=sh1,   strides=s1)
+            expmax_view = pto.make_tensor_view(arg5, shape=sh1,   strides=s1)
+            out_view    = pto.make_tensor_view(arg6, shape=sh128, strides=s128)
 
-        # ── Partition views ───────────────────────────────────────────────────
-        off = [c0, c0, c0, row_base, c0]
-        z1  = [c1, c1, c1, row_count, c1]
-        zs  = [c1, c1, c1, row_count, seq]
+            # ── Partition views ───────────────────────────────────────────────────
+            off = [c0, c0, c0, row_base, c0]
+            z1  = [c1, c1, c1, row_count, c1]
+            zs  = [c1, c1, c1, row_count, seq]
 
-        oldmax_part = pto.partition_view(oldmax_view, offsets=off, sizes=z1)
-        oldsum_part = pto.partition_view(oldsum_view, offsets=off, sizes=z1)
-        qk_part     = pto.partition_view(qk_view,     offsets=off, sizes=zs)
-        newmax_part = pto.partition_view(newmax_view, offsets=off, sizes=z1)
-        newsum_part = pto.partition_view(newsum_view, offsets=off, sizes=z1)
-        expmax_part = pto.partition_view(expmax_view, offsets=off, sizes=z1)
-        out_part    = pto.partition_view(out_view,    offsets=off, sizes=zs)
+            oldmax_part = pto.partition_view(oldmax_view, offsets=off, sizes=z1)
+            oldsum_part = pto.partition_view(oldsum_view, offsets=off, sizes=z1)
+            qk_part     = pto.partition_view(qk_view,     offsets=off, sizes=zs)
+            newmax_part = pto.partition_view(newmax_view, offsets=off, sizes=z1)
+            newsum_part = pto.partition_view(newsum_view, offsets=off, sizes=z1)
+            expmax_part = pto.partition_view(expmax_view, offsets=off, sizes=z1)
+            out_part    = pto.partition_view(out_view,    offsets=off, sizes=zs)
 
-        # ── UB tile allocation ────────────────────────────────────────────────
-        tile_col = pto.tile_buf_type([8,  1], pto.float32, [-1,  1], blayout="ColMajor")
-        tile_w   = pto.tile_buf_type([8, 128], pto.float32, [-1, -1])
+            # ── UB tile allocation ────────────────────────────────────────────────
+            tile_col = pto.tile_buf_type([8,  1], pto.float32, [-1,  1], blayout="ColMajor")
+            tile_w   = pto.tile_buf_type([8, 128], pto.float32, [-1, -1])
 
-        oldmax_tile = pto.alloc_tile(tile_col, addr=c0_i64,     valid_row=row_count)
-        oldsum_tile = pto.alloc_tile(tile_col, addr=c128_i64,   valid_row=row_count)
-        qk_tile     = pto.alloc_tile(tile_w,   addr=c256_i64,   valid_row=row_count, valid_col=seq)
-        out_tile    = pto.alloc_tile(tile_w,   addr=c8448_i64,  valid_row=row_count, valid_col=seq)
-        newmax_tile = pto.alloc_tile(tile_col, addr=c16640_i64, valid_row=row_count)
-        newsum_tile = pto.alloc_tile(tile_col, addr=c16768_i64, valid_row=row_count)
-        expmax_tile = pto.alloc_tile(tile_col, addr=c16896_i64, valid_row=row_count)
+            oldmax_tile = pto.alloc_tile(tile_col, addr=c0_i64,     valid_row=row_count)
+            oldsum_tile = pto.alloc_tile(tile_col, addr=c128_i64,   valid_row=row_count)
+            qk_tile     = pto.alloc_tile(tile_w,   addr=c256_i64,   valid_row=row_count, valid_col=seq)
+            out_tile    = pto.alloc_tile(tile_w,   addr=c8448_i64,  valid_row=row_count, valid_col=seq)
+            newmax_tile = pto.alloc_tile(tile_col, addr=c16640_i64, valid_row=row_count)
+            newsum_tile = pto.alloc_tile(tile_col, addr=c16768_i64, valid_row=row_count)
+            expmax_tile = pto.alloc_tile(tile_col, addr=c16896_i64, valid_row=row_count)
 
-        # ── Tile loads from GM ────────────────────────────────────────────────
-        pto.tile.load(oldmax_part, oldmax_tile)
-        pto.tile.load(oldsum_part, oldsum_tile)
-        pto.tile.load(qk_part,     qk_tile)
+            # ── Tile loads from GM ────────────────────────────────────────────────
+            pto.tile.load(oldmax_part, oldmax_tile)
+            pto.tile.load(oldsum_part, oldsum_tile)
+            pto.tile.load(qk_part,     qk_tile)
 
-        pto.set_flag("MTE2", "V", event_id=0)
-        pto.wait_flag("MTE2", "V", event_id=0)
+            pto.set_flag("MTE2", "V", event_id=0)
+            pto.wait_flag("MTE2", "V", event_id=0)
 
-        with pto.vecscope():
-            # Materialise typed UB pointers from tile handles
-            ptr_ub = pto.ptr(pto.float32, "ub")
-            vf32   = pto.vreg_type(64, pto.float32)
+            with pto.vecscope():
+                # Materialise typed UB pointers from tile handles
+                ptr_ub = pto.ptr(pto.float32, "ub")
+                vf32   = pto.vreg_type(64, pto.float32)
 
-            ub_om  = pto.as_ptr(oldmax_tile, ptr_ub)
-            ub_os  = pto.as_ptr(oldsum_tile, ptr_ub)
-            ub_qk  = pto.as_ptr(qk_tile,     ptr_ub)
-            ub_out = pto.as_ptr(out_tile,     ptr_ub)
-            ub_nm  = pto.as_ptr(newmax_tile,  ptr_ub)
-            ub_ns  = pto.as_ptr(newsum_tile,  ptr_ub)
-            ub_em  = pto.as_ptr(expmax_tile,  ptr_ub)
+                ub_om  = pto.as_ptr(oldmax_tile, ptr_ub)
+                ub_os  = pto.as_ptr(oldsum_tile, ptr_ub)
+                ub_qk  = pto.as_ptr(qk_tile,     ptr_ub)
+                ub_out = pto.as_ptr(out_tile,     ptr_ub)
+                ub_nm  = pto.as_ptr(newmax_tile,  ptr_ub)
+                ub_ns  = pto.as_ptr(newsum_tile,  ptr_ub)
+                ub_em  = pto.as_ptr(expmax_tile,  ptr_ub)
 
-            active      = pto.pset_b32("PAT_ALL")
-            one_mask, _ = pto.plt_b32(c1_i32)
+                active      = pto.pset_b32("PAT_ALL")
+                one_mask, _ = pto.plt_b32(c1_i32)
 
-            with pto.for_(c0, row_count, step=c1) as row:
-                row_qk    = s.muli(row, c128)
-                oldmax_bc = pto.vbrc_load(ub_om, row, vf32)
-                oldsum_bc = pto.vbrc_load(ub_os, row, vf32)
+                with pto.for_(c0, row_count, step=c1) as row:
+                    row_qk    = s.muli(row, c128)
+                    oldmax_bc = pto.vbrc_load(ub_om, row, vf32)
+                    oldsum_bc = pto.vbrc_load(ub_os, row, vf32)
 
-                # scf.for with iter_args: accumulate (running_max, running_sum)
-                with pto.for_(c0, c128, step=c64, iter_args=(oldmax_bc, oldsum_bc)) as loop:
-                    chunk                    = loop.iv
-                    running_max, running_sum = loop.iter_args
+                    # scf.for with iter_args: accumulate (running_max, running_sum)
+                    with pto.for_(c0, c128, step=c64, iter_args=(oldmax_bc, oldsum_bc)) as loop:
+                        chunk                    = loop.iv
+                        running_max, running_sum = loop.iter_args
 
-                    chunk_i32      = s.index_cast(pto.int32, chunk)
-                    remaining_cols = s.subi(arg7, chunk_i32)
-                    has_chunk      = remaining_cols > c0_i32
+                        chunk_i32      = s.index_cast(pto.int32, chunk)
+                        remaining_cols = s.subi(arg7, chunk_i32)
+                        has_chunk      = remaining_cols > c0_i32
 
-                    # scf.if with results – produce (next_max, next_sum)
-                    with pto.if_(has_chunk, results=(vf32, vf32)) as br:
-                        with br.then_:
-                            chunk_mask, _      = pto.plt_b32(remaining_cols)
-                            chunk_base         = s.addi(row_qk, chunk)
-                            vec                = pto.vlds(ub_qk, chunk_base, vf32)
-                            chunk_max          = pto.vcmax(vec, chunk_mask)
-                            chunk_max_bc       = pto.vdup(chunk_max, active, position="LOWEST")
-                            merged_max         = pto.vmax(running_max, chunk_max_bc, active)
-                            scaled_running     = pto.vexpdif(running_max, merged_max, active)
-                            running_sum_scaled = pto.vmul(scaled_running, running_sum, active)
-                            chunk_exp          = pto.vexpdif(vec, merged_max, chunk_mask)
-                            chunk_sum          = pto.vcadd(chunk_exp, chunk_mask)
-                            chunk_sum_bc       = pto.vdup(chunk_sum, active, position="LOWEST")
-                            merged_sum         = pto.vadd(running_sum_scaled, chunk_sum_bc, active)
-                            pto.yield_(merged_max, merged_sum)
-                        with br.else_:
-                            pto.yield_(running_max, running_sum)
+                        # scf.if with merged branch values – produce (next_max, next_sum)
+                        with pto.if_(has_chunk) as br:
+                            with br.then_:
+                                chunk_mask, _      = pto.plt_b32(remaining_cols)
+                                chunk_base         = s.addi(row_qk, chunk)
+                                vec                = pto.vlds(ub_qk, chunk_base, vf32)
+                                chunk_max          = pto.vcmax(vec, chunk_mask)
+                                chunk_max_bc       = pto.vdup(chunk_max, active, position="LOWEST")
+                                merged_max         = pto.vmax(running_max, chunk_max_bc, active)
+                                scaled_running     = pto.vexpdif(running_max, merged_max, active)
+                                running_sum_scaled = pto.vmul(scaled_running, running_sum, active)
+                                chunk_exp          = pto.vexpdif(vec, merged_max, chunk_mask)
+                                chunk_sum          = pto.vcadd(chunk_exp, chunk_mask)
+                                chunk_sum_bc       = pto.vdup(chunk_sum, active, position="LOWEST")
+                                merged_sum         = pto.vadd(running_sum_scaled, chunk_sum_bc, active)
+                                br.assign(next_max=merged_max, next_sum=merged_sum)
+                            with br.else_:
+                                br.assign(next_max=running_max, next_sum=running_sum)
 
-                    next_max, next_sum = br.results
-                    pto.yield_(next_max, next_sum)
+                        pto.yield_(br.next_max, br.next_sum)
 
-                final_max, final_sum = loop.results
+                    final_max, final_sum = loop.results
 
-                # Compute per-row expmax scalar
-                raw_em  = pto.vexpdif(oldmax_bc, final_max, active)
-                sc_os   = pto.vmul(raw_em, oldsum_bc, active)
-                expmax  = pto.vdiv(sc_os, final_sum, active)
+                    # Compute per-row expmax scalar
+                    raw_em  = pto.vexpdif(oldmax_bc, final_max, active)
+                    sc_os   = pto.vmul(raw_em, oldsum_bc, active)
+                    expmax  = pto.vdiv(sc_os, final_sum, active)
 
-                pto.vsts_1pt(final_max, ub_nm, row, one_mask)
-                pto.vsts_1pt(final_sum, ub_ns, row, one_mask)
-                pto.vsts_1pt(expmax,    ub_em, row, one_mask)
+                    pto.vsts_1pt(final_max, ub_nm, row, one_mask)
+                    pto.vsts_1pt(final_sum, ub_ns, row, one_mask)
+                    pto.vsts_1pt(expmax,    ub_em, row, one_mask)
 
-                # Output normalisation loop
-                with pto.for_(c0, c128, step=c64) as chunk2:
-                    rem2      = s.subi(arg7, s.index_cast(pto.int32, chunk2))
-                    has_chunk2= rem2 > c0_i32
-                    with pto.if_(has_chunk2):
-                        cmask2, _ = pto.plt_b32(rem2)
-                        cbase2    = s.addi(row_qk, chunk2)
-                        vec2      = pto.vlds(ub_qk, cbase2, vf32)
-                        exp2      = pto.vexpdif(vec2, final_max, cmask2)
-                        out2      = pto.vdiv(exp2, final_sum, cmask2)
-                        pto.vsts(out2, ub_out, cbase2, cmask2)
+                    # Output normalisation loop
+                    with pto.for_(c0, c128, step=c64) as chunk2:
+                        rem2      = s.subi(arg7, s.index_cast(pto.int32, chunk2))
+                        has_chunk2= rem2 > c0_i32
+                        with pto.if_(has_chunk2) as br2:
+                            with br2.then_:
+                                cmask2, _ = pto.plt_b32(rem2)
+                                cbase2    = s.addi(row_qk, chunk2)
+                                vec2      = pto.vlds(ub_qk, cbase2, vf32)
+                                exp2      = pto.vexpdif(vec2, final_max, cmask2)
+                                out2      = pto.vdiv(exp2, final_sum, cmask2)
+                                pto.vsts(out2, ub_out, cbase2, cmask2)
 
-        pto.set_flag("V", "MTE3", event_id=0)
-        pto.wait_flag("V", "MTE3", event_id=0)
+            pto.set_flag("V", "MTE3", event_id=0)
+            pto.wait_flag("V", "MTE3", event_id=0)
 
-        # Tile stores to GM
-        pto.tile.store(newmax_tile, newmax_part)
-        pto.tile.store(newsum_tile, newsum_part)
-        pto.tile.store(expmax_tile, expmax_part)
-        pto.tile.store(out_tile,    out_part)
+            # Tile stores to GM
+            pto.tile.store(newmax_tile, newmax_part)
+            pto.tile.store(newsum_tile, newsum_part)
+            pto.tile.store(expmax_tile, expmax_part)
+            pto.tile.store(out_tile,    out_part)
 
     pto.pipe_barrier(pto.Pipe.ALL)
 

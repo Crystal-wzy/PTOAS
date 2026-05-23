@@ -15,10 +15,21 @@ End-to-end: @pto.jit → MLIR → binary → launch → accuracy check.
 
 import argparse
 import time
+from pathlib import Path
+import sys
 
 import numpy as np
-import torch
-import torch_npu  # noqa: F401
+
+if __package__ in {None, ""}:
+    here = Path(__file__).resolve()
+    for candidate in here.parents:
+        if (candidate / "ptodsl" / "__init__.py").exists():
+            sys.path.insert(0, str(candidate))
+            break
+    else:
+        raise RuntimeError(
+            "Unable to locate the PTODSL Python package root from tadd_launch.py"
+        )
 
 from ptodsl import pto
 
@@ -29,7 +40,7 @@ _DEVICE = "npu:0"
 # Kernel
 # ---------------------------------------------------------------------------
 
-def _tadd_tile(a_ptr, b_ptr, c_ptr, rows: int, cols: int) -> None:
+def _tadd_tile(A, B, C, rows: int, cols: int) -> None:
     c0 = pto.const(0)
     c1 = pto.const(1)
     c_rows = pto.const(rows)
@@ -40,9 +51,9 @@ def _tadd_tile(a_ptr, b_ptr, c_ptr, rows: int, cols: int) -> None:
     strides = [c_elems, c_elems, c_elems, c_cols, c1]
     off = [c0, c0, c0, c0, c0]
 
-    a_view = pto.make_tensor_view(a_ptr, shape=shape, strides=strides)
-    b_view = pto.make_tensor_view(b_ptr, shape=shape, strides=strides)
-    c_view = pto.make_tensor_view(c_ptr, shape=shape, strides=strides)
+    a_view = pto.make_tensor_view(A, shape=shape, strides=strides)
+    b_view = pto.make_tensor_view(B, shape=shape, strides=strides)
+    c_view = pto.make_tensor_view(C, shape=shape, strides=strides)
 
     a_part = pto.partition_view(a_view, offsets=off, sizes=shape)
     b_part = pto.partition_view(b_view, offsets=off, sizes=shape)
@@ -62,28 +73,26 @@ def _tadd_tile(a_ptr, b_ptr, c_ptr, rows: int, cols: int) -> None:
     name="TADD_f32_16x64",
     kernel_kind="vector",
     target="a5",
-    func_attr="pto.aicore",
 )
 def TADD_f32_16x64(
-    a_ptr: pto.ptr(pto.float32, "gm"),
-    b_ptr: pto.ptr(pto.float32, "gm"),
-    c_ptr: pto.ptr(pto.float32, "gm"),
+    A: pto.tensor_spec(rank=2, dtype=pto.f32),
+    B: pto.tensor_spec(rank=2, dtype=pto.f32),
+    C: pto.tensor_spec(rank=2, dtype=pto.f32),
 ):
-    _tadd_tile(a_ptr, b_ptr, c_ptr, 16, 64)
+    _tadd_tile(A, B, C, 16, 64)
 
 
 @pto.jit(
     name="TADD_f32_32x32",
     kernel_kind="vector",
     target="a5",
-    func_attr="pto.aicore",
 )
 def TADD_f32_32x32(
-    a_ptr: pto.ptr(pto.float32, "gm"),
-    b_ptr: pto.ptr(pto.float32, "gm"),
-    c_ptr: pto.ptr(pto.float32, "gm"),
+    A: pto.tensor_spec(rank=2, dtype=pto.f32),
+    B: pto.tensor_spec(rank=2, dtype=pto.f32),
+    C: pto.tensor_spec(rank=2, dtype=pto.f32),
 ):
-    _tadd_tile(a_ptr, b_ptr, c_ptr, 32, 32)
+    _tadd_tile(A, B, C, 32, 32)
 
 
 KERNELS = (TADD_f32_16x64, TADD_f32_32x32)
@@ -104,16 +113,20 @@ CASES = [
 
 
 def init_torch_npu() -> None:
+    import torch
+    import torch_npu  # noqa: F401
+
     torch.npu.config.allow_internal_format = False
     torch_npu.npu.set_compile_mode(jit_compile=False)
     torch.npu.set_device(_DEVICE)
+    return torch
 
 
-def npu_stream():
+def npu_stream(torch):
     return torch.npu.current_stream()._as_parameter_  # noqa: SLF001
 
 
-def run_case(case: dict) -> None:
+def run_case(case: dict, torch) -> None:
     shape = case["shape"]
     rng = np.random.RandomState(hash(case["name"]) & 0xFFFFFFFF)
     x = rng.randint(1, 10, size=shape).astype(np.float32)
@@ -123,7 +136,7 @@ def run_case(case: dict) -> None:
     a = torch.from_numpy(x).to(_DEVICE)
     b = torch.from_numpy(y).to(_DEVICE)
     c = torch.empty(shape, dtype=torch.float32, device=_DEVICE)
-    stream = npu_stream()
+    stream = npu_stream(torch)
 
     t0 = time.perf_counter()
     compiled = case["kernel"].compile()
@@ -142,9 +155,9 @@ def run_case(case: dict) -> None:
 
 
 def test_tadd() -> None:
-    init_torch_npu()
+    torch = init_torch_npu()
     for case in CASES:
-        run_case(case)
+        run_case(case, torch)
     print("All cases passed.")
 
 

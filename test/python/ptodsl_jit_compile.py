@@ -91,6 +91,36 @@ def host_vec_copy_explicit(
     pto.tile.store(o_tile, out)
 
 
+@pto.jit(target="a5", insert_sync=False)
+def host_vec_copy_no_insert_sync(
+    A: pto.tensor_spec(rank=2, dtype=pto.f32),
+    O: pto.tensor_spec(rank=2, dtype=pto.f32),
+):
+    a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
+    o_view = pto.make_tensor_view(O, shape=O.shape, strides=O.strides)
+    a_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+    o_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+    part = pto.partition_view(a_view, offsets=[0, 0], sizes=[A.shape[0], A.shape[1]])
+    out = pto.partition_view(o_view, offsets=[0, 0], sizes=[O.shape[0], O.shape[1]])
+    pto.tile.load(part, a_tile)
+    pto.tile.store(o_tile, out)
+
+
+@pto.jit(target="a5", mode="explicit", insert_sync=True)
+def host_vec_copy_explicit_insert_sync(
+    A: pto.tensor_spec(rank=2, dtype=pto.f32),
+    O: pto.tensor_spec(rank=2, dtype=pto.f32),
+):
+    a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
+    o_view = pto.make_tensor_view(O, shape=O.shape, strides=O.strides)
+    a_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+    o_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+    part = pto.partition_view(a_view, offsets=[0, 0], sizes=[A.shape[0], A.shape[1]])
+    out = pto.partition_view(o_view, offsets=[0, 0], sizes=[O.shape[0], O.shape[1]])
+    pto.tile.load(part, a_tile)
+    pto.tile.store(o_tile, out)
+
+
 @pto.jit(target="a5")
 def runtime_metadata_kernel(
     A: pto.tensor_spec(rank=2, dtype=pto.f32),
@@ -294,6 +324,29 @@ def runtime_scalar_operator_probe(
     _ = gt_zero
     _ = eq_self
     _ = in_range
+
+
+@pto.jit(target="a5")
+def host_runtime_scalar_entry_probe(
+    A: pto.tensor_spec(rank=2, dtype=pto.f32),
+    O: pto.tensor_spec(rank=2, dtype=pto.f32),
+    limit: pto.i32,
+    alpha: pto.f32,
+):
+    rows = A.shape[0]
+    cols = A.shape[1]
+    a_view = pto.make_tensor_view(A)
+    o_view = pto.make_tensor_view(O)
+    a_part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
+    o_part = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
+    a_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.f32, valid_shape=[1, cols])
+    o_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.f32, valid_shape=[1, cols])
+    pto.tile.load(a_part, a_tile)
+    row_limit = limit // pto.const(2, dtype=pto.i32)
+    scaled = alpha + 1.0
+    _ = row_limit
+    _ = scaled
+    pto.tile.store(o_tile, o_part)
 
 
 @pto.simd
@@ -1116,8 +1169,27 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(explicit_text, "explicit host_vec_copy specialization")
     expect("!pto.tile_buf<vec, 1x128xf32>" in default_text, "default specialization MLIR missing BLOCK=128 tile")
     expect("!pto.tile_buf<vec, 1x64xf32>" in block64_text, "BLOCK=64 specialization MLIR missing specialized tile")
+    expect("attributes {pto.aicore}" in default_text, "default @pto.jit should emit a flat aicore entry by default")
+    expect("attributes {pto.aicore}" in explicit_text, "explicit @pto.jit should emit a flat aicore entry by default")
+    expect("builtin.module" not in default_text, "default @pto.jit should no longer emit a nested builtin.module container")
     expect('pto.mode = "auto"' in default_text, "default specialization should carry auto mode module metadata")
     expect('pto.mode = "explicit"' in explicit_text, "explicit specialization should carry explicit mode module metadata")
+    expect(
+        host_vec_copy.compile()._module_spec.insert_sync is None,
+        "default @pto.jit insert_sync should stay unset and follow mode defaults",
+    )
+    expect(
+        host_vec_copy_explicit.compile()._module_spec.insert_sync is None,
+        "explicit @pto.jit insert_sync should stay unset and follow mode defaults",
+    )
+    expect(
+        host_vec_copy_no_insert_sync.compile()._module_spec.insert_sync is False,
+        "@pto.jit(insert_sync=False) should preserve the explicit override",
+    )
+    expect(
+        host_vec_copy_explicit_insert_sync.compile()._module_spec.insert_sync is True,
+        "@pto.jit(insert_sync=True) should preserve the explicit override",
+    )
     expect("valid=?" not in default_text, "default alloc_tile() should keep full static valid-shape when valid_shape= is omitted")
     auto_mode_violation = expect_raises(
         RuntimeError,
@@ -1295,6 +1367,20 @@ def main() -> None:
     expect("arith.cmpf oge" in runtime_scalar_text, "float runtime '>=' should lower to arith.cmpf oge")
     expect("arith.cmpf ole" in runtime_scalar_text, "float runtime '<=' should lower to arith.cmpf ole")
     expect("arith.andi" in runtime_scalar_text, "i1 conjunction from native '&' should lower to arith.andi")
+
+    host_runtime_scalar_entry_text = host_runtime_scalar_entry_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        host_runtime_scalar_entry_text,
+        "host runtime scalar entry specialization",
+    )
+    expect(
+        "func.func @host_runtime_scalar_entry_probe" in host_runtime_scalar_entry_text,
+        "host runtime scalar entry probe should compile into a launchable kernel",
+    )
+    expect(
+        "i32" in host_runtime_scalar_entry_text and "f32" in host_runtime_scalar_entry_text,
+        "host runtime scalar entry probe should preserve scalar ABI argument types in MLIR",
+    )
 
     signed_integer_scalar_text = signed_integer_scalar_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(signed_integer_scalar_text, "signed integer scalar specialization")

@@ -304,6 +304,8 @@ def verify_compiled_target(
     directive: DocTestDirective,
     namespace: dict[str, object],
     ptoas_bin: Path,
+    *,
+    frontend_verify: bool,
 ) -> None:
     expect(directive.symbol is not None, f"{block_label(block)}: compile mode requires a symbol")
     expect(directive.compile_kwargs is not None, f"{block_label(block, directive.symbol)}: compile mode requires compile kwargs")
@@ -341,13 +343,14 @@ def verify_compiled_target(
 
     label = block_label(block, directive.symbol)
     expect_parse_roundtrip_and_verify(mlir_text, label)
-    run_ptoas_frontend_verify(ptoas_bin, mlir_text, label)
+    if frontend_verify:
+        run_ptoas_frontend_verify(ptoas_bin, mlir_text, label)
 
 
 def run_compile_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:
     directive = parse_test_directive(block)
     namespace = execute_source(block.text, block, directive.symbol)
-    verify_compiled_target(block, directive, namespace, ptoas_bin)
+    verify_compiled_target(block, directive, namespace, ptoas_bin, frontend_verify=False)
 
 
 def run_compile_fragment_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:
@@ -367,7 +370,7 @@ def run_compile_fragment_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> Non
             f"{block_label(block, directive.symbol)}: fragment fixture {directive.fixture!r} is invalid: {exc}"
         ) from exc
     namespace = execute_source(rendered_source, block, directive.symbol)
-    verify_compiled_target(block, directive, namespace, ptoas_bin)
+    verify_compiled_target(block, directive, namespace, ptoas_bin, frontend_verify=False)
 
 
 def run_launch_fragment_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:

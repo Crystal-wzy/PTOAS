@@ -41,14 +41,116 @@ def kernel_name(
     return
 ```
 
-**Positional parameters** are Python-native tensors — they arrive from NumPy,
-torch-npu, or any framework with `.shape` and `.strides`. Inside the body, wrap
-them with `make_tensor_view` to create GM descriptors.
+### How to declare and pass parameters
 
-**Keyword-only parameters** annotated with `pto.constexpr` are compile-time
-constants. They must be provided at `.compile()` time and cannot change between
-launches of the same compiled kernel. Use them for tile sizes, algorithmic knobs
-(e.g., `CAUSAL`), and other values that the compiler can specialize against.
+A `@pto.jit` kernel accepts three kinds of parameters. Each has a distinct role,
+position in the signature, and way to supply the value:
+
+| Parameter kind | Position | Annotation | Pass the value at |
+|---|---|---|---|
+| **Tensor** | positional (before `*`) | `pto.tensor_spec(rank=N, dtype=...)` | launch time |
+| **Runtime scalar** | positional (before `*`) | `pto.i32`, `pto.f32`, `pto.i1`, etc. | launch time |
+| **Compile-time constant** | keyword-only (after `*`) | `pto.constexpr = <default>` | compile time |
+
+#### 1. Tensor parameters
+
+Declare a positional parameter with `pto.tensor_spec(rank=..., dtype=...)`.
+At launch time, pass a **Python-native tensor** — a NumPy array, a torch-npu
+tensor, or any object with `.shape`, `.dtype`, `.strides` (or `.stride()`), and
+a data pointer (`.data_ptr()` or `.ptr`):
+
+```python
+@pto.jit(target="a5")
+def my_kernel(
+    X: pto.tensor_spec(rank=2, dtype=pto.f32),
+    O: pto.tensor_spec(rank=2, dtype=pto.f32),
+):
+    # Inside the body, access shape/strides/dtype directly:
+    rows, cols = X.shape[0], X.shape[1]
+    # Then wrap with make_tensor_view(...) to build a GM descriptor:
+    x_view = pto.make_tensor_view(X, shape=X.shape, strides=X.strides)
+```
+
+#### 2. Runtime scalar parameters
+
+Declare a positional parameter with a PTO scalar annotation (`pto.i32`,
+`pto.f32`, `pto.i1`, etc.). At launch time, pass an ordinary Python
+`int`, `float`, or `bool`:
+
+```python
+@pto.jit(target="a5")
+def my_kernel(
+    X: pto.tensor_spec(rank=2, dtype=pto.f32),
+    n: pto.i32,          # pass an int at launch
+    alpha: pto.f32,      # pass a float at launch
+):
+    # Scalars arrive as PTO values and can be used directly in
+    # index math, loop bounds, comparisons, and sub-kernel calls:
+    limit = n // 2
+```
+
+#### 3. Compile-time constants
+
+Declare after `*` with `pto.constexpr` and a default value.
+Pass the value to `.compile(...)` — **not** at launch time:
+
+```python
+@pto.jit(target="a5")
+def my_kernel(
+    X: pto.tensor_spec(rank=2, dtype=pto.f32),
+    *,
+    BLOCK: pto.constexpr = 128,
+):
+    # BLOCK is a Python value at trace time — use it for tile shapes,
+    # unrolled loops, or dtype arguments:
+    tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+```
+
+The compiler specializes the kernel for each combination of constexpr values.
+Once compiled, the values are baked in — they cannot change between launches of
+the same compiled instance. To use a different value, call `.compile(...)` again.
+
+### Full example: declare and launch
+
+Bringing all three kinds together:
+
+```python
+@pto.jit(target="a5", mode="auto")
+def scaled_bias_add(
+    X: pto.tensor_spec(rank=2, dtype=pto.f32),   # tensor
+    O: pto.tensor_spec(rank=2, dtype=pto.f32),   # tensor
+    alpha: pto.f32,                               # runtime scalar
+    bias: pto.f32,                                # runtime scalar
+    *,
+    BLOCK: pto.constexpr = 128,                   # compile-time constant
+):
+    rows, cols = X.shape[0], X.shape[1]
+    # ... use alpha, bias, BLOCK inside the kernel body ...
+    return
+```
+
+```python
+# Step 1 — compile: constexpr values go to .compile()
+compiled = scaled_bias_add.compile(BLOCK=64)
+
+# Step 2 — launch: tensors and runtime scalars go to compiled[grid, stream](...)
+import numpy as np
+X = np.random.randn(4, 128).astype(np.float32)
+O = np.empty_like(X)
+compiled[1, None](X, O, 2.0, 1.0)   # alpha=2.0, bias=1.0
+```
+
+### What is NOT accepted at the entry
+
+The following types are intentionally **not** accepted as `@pto.jit` parameters:
+
+- `pto.ptr(...)` — typed pointers are available inside the kernel body and
+  across sub-kernel boundaries, but not at the host/kernel entry.
+- `Tile`, `PartitionTensorView`, `VReg` — these are created inside the kernel
+  body, not passed from the host.
+
+They are valid **inside** the kernel and across sub-kernel calls, just not at
+the public host/kernel boundary.
 
 ### `mode`: auto vs explicit
 
@@ -61,6 +163,11 @@ programming model:
 - `mode="explicit"` adds the full **micro-instruction** surface — MTE ops,
   explicit synchronization, and direct pointer manipulation — on top of
   everything available in `auto`.
+
+`mode` changes what you can write **inside the kernel body**. It does **not**
+change the recommended host-visible entry ABI: both modes use the same
+`tensor_spec(...)` + runtime scalar + `constexpr` contract at the `@pto.jit`
+boundary.
 
 Section 3.2 covers the two models in detail.
 
@@ -203,6 +310,8 @@ direct access to the hardware unit. In auto mode, a sub-kernel's parameters
 are restricted to `Tile` and PTO scalar types — the compiler owns staging and
 sync. In explicit mode, sub-kernels may also accept `PartitionTensorView` and
 `pto.ptr` parameters, matching the richer type surface available there.
+This richer pointer surface belongs to the **in-kernel orchestration and
+sub-kernel boundary**, not to the public `@pto.jit` host entry ABI.
 Section 3.3 covers each sub-kernel decorator in detail.
 
 ## 3.2 Programming models: auto vs explicit

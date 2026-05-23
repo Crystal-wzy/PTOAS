@@ -12,10 +12,14 @@ from __future__ import annotations
 import inspect
 from dataclasses import dataclass
 
+from ._diagnostics import (
+    jit_illegal_formal_annotation_error,
+    jit_missing_annotation_error,
+)
 from ._host_tensors import bind_host_tensor_argument, infer_jit_host_tensor_spec
 from ._surface_values import wrap_surface_value
 from ._surface_types import constexpr as _constexpr_marker
-from ._types import _resolve
+from ._types import _DType, _MaskDescriptor, _PtrDescriptor, _VRegDescriptor, _resolve
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,23 @@ class DeviceParameterSpec:
 
     def abi_signature(self):
         return ("device", self.name, _hashable_signature_atom(self.annotation))
+
+
+@dataclass(frozen=True)
+class RuntimeScalarParameterSpec:
+    name: str
+    annotation: object
+
+    def entry_arg_types(self):
+        return (_resolve(self.annotation),)
+
+    def bind_entry_arguments(self, entry_arguments):
+        if not entry_arguments:
+            raise RuntimeError(f"entry ABI for runtime scalar parameter '{self.name}' is incomplete")
+        return wrap_surface_value(entry_arguments[0]), entry_arguments[1:]
+
+    def abi_signature(self):
+        return ("scalar", self.name, _hashable_signature_atom(self.annotation))
 
 
 @dataclass(frozen=True)
@@ -80,6 +101,13 @@ def _hashable_signature_atom(value):
     except TypeError:
         return repr(value)
     return value
+
+
+def _is_supported_runtime_scalar_annotation(annotation) -> bool:
+    return (
+        isinstance(annotation, _DType)
+        and not isinstance(annotation, (_PtrDescriptor, _VRegDescriptor, _MaskDescriptor))
+    )
 
 
 @dataclass(frozen=True)
@@ -145,15 +173,19 @@ def parse_jit_kernel_signature(py_fn) -> KernelSignature:
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
         }:
+            if param.annotation is inspect.Parameter.empty:
+                raise jit_missing_annotation_error(param.name)
             host_tensor_spec = infer_jit_host_tensor_spec(param)
             if host_tensor_spec is not None:
                 positional_parameters.append(
                     TensorSpecParameterSpec(param.name, host_tensor_spec)
                 )
-            else:
+            elif _is_supported_runtime_scalar_annotation(param.annotation):
                 positional_parameters.append(
-                    DeviceParameterSpec(param.name, param.annotation)
+                    RuntimeScalarParameterSpec(param.name, param.annotation)
                 )
+            else:
+                raise jit_illegal_formal_annotation_error(param.name, param.annotation)
             continue
 
         if param.kind is inspect.Parameter.KEYWORD_ONLY:
@@ -186,6 +218,7 @@ __all__ = [
     "DeviceParameterSpec",
     "KernelSpecializationKey",
     "KernelSignature",
+    "RuntimeScalarParameterSpec",
     "TensorSpecParameterSpec",
     "parse_jit_kernel_signature",
 ]

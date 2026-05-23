@@ -54,7 +54,7 @@ def _module_attr_map(module):
 
 def merge_jit_modules(*kernels: KernelHandle):
     """
-    Merge multiple ``@pto.jit`` flat-module kernels into one MLIR module.
+    Merge multiple ``@pto.jit`` kernels into one MLIR module.
 
     Each handle must have been compiled with the same ``target``,
     ``kernel_kind``, and ``mode`` module attributes. Function order follows
@@ -88,7 +88,7 @@ def jit(
     target: str = "a5",
     kernel_kind: str = "vector",
     mode: str = "auto",
-    func_attr: str = None,
+    insert_sync: bool | None = None,
 ):
     """
     Decorator that wraps a Python function as a PTODSL JIT kernel template.
@@ -99,8 +99,9 @@ def jit(
     target:      Target architecture string, e.g. ``"a5"``.
     kernel_kind: ``"vector"`` or ``"cube"`` – sets ``pto.kernel_kind``.
     mode:        ``"auto"`` or ``"explicit"`` – sets ``pto.mode``.
-    func_attr:   Optional function attribute.  Pass ``"pto.aicore"`` to
-                 select the flat-module structure with the aicore attribute.
+    insert_sync: ``True``/``False`` to explicitly control PTOAS sync insertion
+                 for launch builds. ``None`` keeps the mode-based default
+                 behavior.
 
     The decorated function is replaced by a :class:`KernelHandle` that:
 
@@ -108,6 +109,7 @@ def jit(
     - prints as the default-specialization MLIR text,
     - exposes ``my_kernel.mlir_module()`` / ``verify()`` / ``emit()`` on the
       default specialization for convenience.
+    - emits a flat aicore launch-entry module by default.
     """
 
     def decorator(fn):
@@ -119,11 +121,6 @@ def jit(
             source_file = inspect.getsourcefile(fn) or inspect.getfile(fn)
         except (OSError, TypeError):
             source_file = None
-        module_style = (
-            ModuleStyle.FLAT_AICORE
-            if func_attr == "pto.aicore"
-            else ModuleStyle.NESTED
-        )
         compiler = KernelCompiler(
             fn.__name__,
             KernelModuleSpec(
@@ -131,7 +128,8 @@ def jit(
                 target_arch=target,
                 kernel_kind=kernel_kind,
                 mode=normalized_mode,
-                module_style=module_style,
+                insert_sync=insert_sync,
+                module_style=ModuleStyle.FLAT_AICORE,
                 source_file=source_file,
                 source_line=getattr(fn.__code__, "co_firstlineno", None),
             ),

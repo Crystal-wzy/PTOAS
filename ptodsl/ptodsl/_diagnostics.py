@@ -46,6 +46,28 @@ def host_tensor_metadata_error(message: str, *, param_name: str | None = None) -
     return TypeError(f"{prefix}: {message}")
 
 
+def jit_missing_annotation_error(name: str) -> TypeError:
+    """Return one diagnostic for missing ``@pto.jit`` positional ABI annotations."""
+    return TypeError(
+        f"@pto.jit positional parameter '{name}' does not declare an entry ABI annotation. "
+        "Use pto.tensor_spec(...) for runtime tensors, a PTO scalar type such as "
+        "pto.i32/pto.f32/pto.i1 for runtime scalars, or move compile-time values "
+        "to keyword-only pto.constexpr parameters."
+    )
+
+
+def jit_illegal_formal_annotation_error(name: str, annotation: object) -> TypeError:
+    """Return one diagnostic for unsupported ``@pto.jit`` positional annotations."""
+    return TypeError(
+        f"@pto.jit positional parameter '{name}' uses unsupported entry annotation {annotation!r}. "
+        "The public @pto.jit entry ABI accepts pto.tensor_spec(...) runtime tensors, "
+        "PTO scalar annotations such as pto.i32/pto.f32/pto.i1 for runtime scalars, "
+        "and keyword-only pto.constexpr compile-time parameters. "
+        "Low-level PTODSL types such as pto.ptr(...), Tile, PartitionTensorView, and VReg "
+        "belong inside the kernel body or across sub-kernel boundaries, not at the host/kernel entry."
+    )
+
+
 def subkernel_host_tensor_boundary_error(role: str, name: str) -> TypeError:
     """Return one diagnostic for host-tensor usage outside the JIT boundary."""
     return TypeError(
@@ -158,6 +180,8 @@ __all__ = [
     "explicit_mode_required_error",
     "explicit_mode_required_with_context_error",
     "host_tensor_metadata_error",
+    "jit_illegal_formal_annotation_error",
+    "jit_missing_annotation_error",
     "illegal_inline_subkernel_placement_error",
     "illegal_subkernel_placement_error",
     "invalid_jit_mode_error",

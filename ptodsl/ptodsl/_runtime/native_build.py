@@ -36,19 +36,33 @@ def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
         )
 
 
-def _run_ptoas(mlir_path: Path, kernel_object: Path, *, target_arch: str) -> None:
+def _run_ptoas(
+    mlir_path: Path,
+    kernel_object: Path,
+    *,
+    target_arch: str,
+    mode: str,
+    insert_sync: bool | None,
+) -> None:
     ptoas = resolve_ptoas_binary()
+    cmd = [
+        str(ptoas),
+        f"--pto-arch={target_arch}",
+        "--pto-backend=vpto",
+    ]
+    effective_insert_sync = (mode != "explicit") if insert_sync is None else insert_sync
+    if mode == "explicit":
+        cmd.append("--pto-level=level3")
+    if effective_insert_sync:
+        cmd.append("--enable-insert-sync")
+    cmd.extend([
+        "--enable-tile-op-expand",
+        str(mlir_path),
+        "-o",
+        str(kernel_object),
+    ])
     _run(
-        [
-            str(ptoas),
-            f"--pto-arch={target_arch}",
-            "--pto-backend=vpto",
-            "--enable-insert-sync",
-            "--enable-tile-op-expand",
-            str(mlir_path),
-            "-o",
-            str(kernel_object),
-        ]
+        cmd
     )
 
 
@@ -169,6 +183,8 @@ def build_native_library(
         artifacts.mlir_path,
         artifacts.kernel_object,
         target_arch=module_spec.target_arch,
+        mode=module_spec.mode,
+        insert_sync=module_spec.insert_sync,
     )
 
     launch_object = artifacts.cache_dir / "launch.o"

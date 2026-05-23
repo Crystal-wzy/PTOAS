@@ -16,8 +16,11 @@ from .._host_tensors import (
     inspect_host_tensor_metadata,
     looks_like_host_tensor,
 )
-from .._kernel_signature import DeviceParameterSpec, TensorSpecParameterSpec
+from .._kernel_signature import DeviceParameterSpec, RuntimeScalarParameterSpec, TensorSpecParameterSpec
+from .._types import _resolve
 from .native_build import build_native_library
+
+from mlir.ir import BF16Type, F16Type, F32Type, IndexType, IntegerType
 
 if TYPE_CHECKING:
     from .._kernel_compilation import CompiledKernelHandle
@@ -52,6 +55,39 @@ def _as_void_ptr(value):
     raise TypeError(f"expected a pointer-like launch argument, got {type(value)!r}")
 
 
+def _ctype_for_runtime_scalar(annotation):
+    type_obj = _resolve(annotation)
+    if IndexType.isinstance(type_obj):
+        return ctypes.c_int64
+    if IntegerType.isinstance(type_obj):
+        width = IntegerType(type_obj).width
+        if width == 1:
+            return ctypes.c_bool
+        if width == 8:
+            return ctypes.c_int8
+        if width == 16:
+            return ctypes.c_int16
+        if width == 32:
+            return ctypes.c_int32
+        if width == 64:
+            return ctypes.c_int64
+    if F32Type.isinstance(type_obj):
+        return ctypes.c_float
+    if F16Type.isinstance(type_obj) or BF16Type.isinstance(type_obj):
+        raise TypeError(
+            f"runtime launch does not yet support host scalar marshaling for {type_obj}; "
+            "use pto.f32 / integer scalar parameters or tensorize this value for now"
+        )
+    raise TypeError(f"unsupported @pto.jit runtime scalar launch type {type_obj}")
+
+
+def _marshal_runtime_scalar(annotation, value):
+    ctype = _ctype_for_runtime_scalar(annotation)
+    if ctype is ctypes.c_bool:
+        return ctype(bool(value))
+    return ctype(value)
+
+
 def _marshal_launch_args(kernel_signature, args):
     if len(args) != len(kernel_signature.positional_parameters):
         raise TypeError(
@@ -63,6 +99,9 @@ def _marshal_launch_args(kernel_signature, args):
     for param, value in zip(kernel_signature.positional_parameters, args):
         if isinstance(param, DeviceParameterSpec):
             marshaled.append(_as_void_ptr(value))
+            continue
+        if isinstance(param, RuntimeScalarParameterSpec):
+            marshaled.append(_marshal_runtime_scalar(param.annotation, value))
             continue
         if isinstance(param, TensorSpecParameterSpec):
             if not looks_like_host_tensor(value):
@@ -125,6 +164,9 @@ def _launch_argtypes(kernel_signature):
     for param in kernel_signature.positional_parameters:
         if isinstance(param, DeviceParameterSpec):
             argtypes.append(ctypes.c_void_p)
+            continue
+        if isinstance(param, RuntimeScalarParameterSpec):
+            argtypes.append(_ctype_for_runtime_scalar(param.annotation))
             continue
         if isinstance(param, TensorSpecParameterSpec):
             argtypes.append(ctypes.c_void_p)

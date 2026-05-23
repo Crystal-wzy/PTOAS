@@ -31,6 +31,7 @@ class KernelModuleSpec:
     target_arch: str
     kernel_kind: str
     mode: str = "auto"
+    insert_sync: bool | None = None
     module_style: ModuleStyle = ModuleStyle.NESTED
     source_file: str | None = None
     source_line: int | None = None

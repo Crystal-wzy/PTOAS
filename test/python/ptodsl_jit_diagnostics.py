@@ -104,6 +104,22 @@ def define_missing_constexpr_default_probe():
     return bad_probe
 
 
+def define_missing_entry_annotation_probe():
+    @pto.jit(target="a5")
+    def bad_probe(A):
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+    return bad_probe
+
+
+def define_ptr_entry_annotation_probe():
+    @pto.jit(target="a5")
+    def bad_probe(A: pto.ptr(pto.f32, "gm")):
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+    return bad_probe
+
+
 @pto.jit(target="a5")
 def missing_if_branch_probe():
     with pto.if_(pto.const(1, dtype=pto.i1)) as br:
@@ -237,6 +253,20 @@ def main() -> None:
         define_missing_constexpr_default_probe,
         TypeError,
         "@pto.jit constexpr parameter 'BLOCK' must declare a default value",
+    )
+    expect_raises(
+        define_missing_entry_annotation_probe,
+        TypeError,
+        "@pto.jit positional parameter 'A' does not declare an entry ABI annotation",
+        "pto.tensor_spec(...)",
+        "pto.i32/pto.f32/pto.i1",
+    )
+    expect_raises(
+        define_ptr_entry_annotation_probe,
+        TypeError,
+        "@pto.jit positional parameter 'A' uses unsupported entry annotation",
+        "pto.ptr(",
+        "not at the host/kernel entry",
     )
     expect_raises(
         missing_if_branch_probe.compile,
