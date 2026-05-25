@@ -78,7 +78,6 @@ def _tilelang_generated_body(
         pto.wait_flag("MTE3", "V", event_id=iter % 2)
         with pto.simd():
             mask_cnt = 8192
-            _ = mask_cnt
             with pto.for_(0, 128, step=1) as i:
                 mask = pto.pset_b32("PAT_ALL")
                 r0 = pto.vlds(

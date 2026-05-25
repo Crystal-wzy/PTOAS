@@ -313,7 +313,7 @@ The compiler automatically computes the byte offset from the tile's shape, eleme
 | `tile[row, col:]` | Tile index | 2D tile row with starting column (vector-width range) |
 | `tile[start:]` | Tile index | 1D tile with starting element (vector-width range) |
 | `buf` | `PtrType` (UB) | Pointer to buffer in UB (pointer form) |
-| `offset` | `Index` | Byte offset (pointer form) |
+| `offset` | `Index` | Element offset (pointer form) |
 | `dist` | `VLoadDist` or `None` | Optional load distribution: `NORM` (default), `UNPK_B8`/`UNPK_B16`/`UNPK_B32`, `BRC_B8`/`BRC_B16`/`BRC_B32` |
 
 **Returns**:
@@ -341,7 +341,7 @@ the canonical form.
 | `tile[row, col:]` | Tile index | 2D tile row with starting column (vector-width range) |
 | `tile[start:]` | Tile index | 1D tile with starting element (vector-width range) |
 | `buf` | `PtrType` (UB) | Pointer to buffer in UB (pointer form) |
-| `offset` | `Index` | Byte offset (pointer form) |
+| `offset` | `Index` | Element offset (pointer form) |
 | `dist` | `DeinterleaveDist` | `DINTLV_B8` / `DINTLV_B16` / `DINTLV_B32` (alternating elements) or `BDINTLV` (block deinterleave) |
 
 **Returns**:
@@ -543,7 +543,7 @@ distributions that use predicate masking.
 | `tile[row, col:]` | Tile index | 2D destination (vector-width range) |
 | `tile[start:]` | Tile index | 1D destination (vector-width range) |
 | `buf` | `PtrType` (UB) | Destination buffer (pointer form) |
-| `offset` | `Index` | Byte offset (pointer form) |
+| `offset` | `Index` | Element offset (pointer form) |
 | `mask` | `MaskType` | Predicate mask gating writes |
 | `dist` | `VStoreDist` or `None` | Store distribution token. When omitted, PTODSL defaults to `NORM_B32` on the current surface. |
 
@@ -596,7 +596,7 @@ into one destination.
 | `tile[row, col:]` | Tile index | 2D destination (vector-width range) |
 | `tile[start:]` | Tile index | 1D destination (vector-width range) |
 | `buf` | `PtrType` (UB) | Destination buffer (pointer form) |
-| `offset` | `Index` | Byte offset (pointer form) |
+| `offset` | `Index` | Element offset (pointer form) |
 | `dist` | `InterleaveDist` | `INTLV_B8` / `INTLV_B16` / `INTLV_B32` |
 | `mask` | `MaskType` | Parameter retained for call-shape regularity; for the `INTLV_B*` family it does not affect the stored result |
 
@@ -659,7 +659,7 @@ block-strided UB destination. Masked-off blocks do not write memory.
 | `tile[row, col:]` | Tile index | 2D destination (vector-width range) |
 | `tile[start:]` | Tile index | 1D destination (vector-width range) |
 | `buf` | `PtrType` (UB) | Destination buffer (pointer form) |
-| `offset` | `Index` | Byte offset (all forms) |
+| `offset` | `Index` | Element offset (all forms) |
 
 **Returns**: None (side-effect operation).
 

@@ -734,7 +734,7 @@ These combine an arithmetic operation with a math function or activation in a si
 | Unary | `vexp`, `vln`, `vsqrt`, `vabs`, `vneg`, `vrec`, `vrsqrt`, `vrelu`, `vnot` |
 | Binary | `vadd`, `vsub`, `vmul`, `vdiv`, `vmax`, `vmin`, `vand`, `vor`, `vxor`, `vshl`, `vshr` |
 | Vector-scalar | `vadds`, `vsubs`, `vmuls`, `vmaxs`, `vmins`, `vlrelu` |
-| Broadcast | `vdup` |
+| Broadcast | `vbr`, `vdup` |
 | Full reduction | `vcadd`, `vcmax`, `vcmin` |
 | Group reduction | `vcgadd`, `vcgmax`, `vcgmin` |
 | Scan | `vcpadd` |

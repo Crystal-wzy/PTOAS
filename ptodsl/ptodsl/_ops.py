@@ -195,25 +195,50 @@ def addptr(base_ptr, index_offset):
 
 # ── Vector load / store ───────────────────────────────────────────────────────
 
-def vlds(src_ptr, offset=None, result_vreg_type=None):
+_VLOAD_DIST_TOKENS = {
+    "NORM",
+    "UNPK_B8", "UNPK_B16", "UNPK_B32",
+    "BRC_B8", "BRC_B16", "BRC_B32",
+    "US_B8", "US_B16",
+    "DS_B8", "DS_B16",
+}
+
+
+def vlds(src_ptr, offset=None, result_vreg_type=None, *, dist=None):
     """``pto.vlds`` – vector load from a tile slice or from *src_ptr* at *offset*."""
     if isinstance(src_ptr, TileSliceValue):
         if offset is not None or result_vreg_type is not None:
             raise TypeError("vlds(tile[row, col:]) infers its memref slice and vreg type; do not pass offset/result_vreg_type")
+        kwargs = {}
+        if dist is not None:
+            kwargs["dist"] = _normalize_dist_token(
+                dist,
+                allowed=_VLOAD_DIST_TOKENS,
+                context="vlds(..., dist)",
+            )
         return wrap_surface_value(_pto.VldsOp(
             _infer_vreg_type_from_tile_slice(src_ptr),
             unwrap_surface_value(src_ptr),
             _index_zero(),
+            **kwargs,
         ).result)
 
     if offset is None:
         raise TypeError("vlds(ptr, offset, result_vreg_type=None) requires an explicit offset")
     if result_vreg_type is None:
         result_vreg_type = _infer_vreg_type_from_address_source(src_ptr)
+    kwargs = {}
+    if dist is not None:
+        kwargs["dist"] = _normalize_dist_token(
+            dist,
+            allowed=_VLOAD_DIST_TOKENS,
+            context="vlds(..., dist)",
+        )
     return wrap_surface_value(_pto.VldsOp(
         _resolve(result_vreg_type),
         unwrap_surface_value(src_ptr),
         unwrap_surface_value(offset),
+        **kwargs,
     ).result)
 
 
@@ -308,18 +333,6 @@ def vldsx2(source, offset_or_dist, dist=None):
     return wrap_surface_value(op.low), wrap_surface_value(op.high)
 
 
-def vbrc_load(src_ptr, offset, result_vreg_type):
-    """``pto.vlds {dist="BRC_B32"}`` – broadcast a scalar into all lanes."""
-    return wrap_surface_value(
-        _pto.VldsOp(
-            _resolve(result_vreg_type),
-            unwrap_surface_value(src_ptr),
-            unwrap_surface_value(offset),
-            dist="BRC_B32",
-        ).result
-    )
-
-
 def vbitcast(vector_value, to_dtype):
     """``pto.vbitcast`` – reinterpret one vector register as a different element type."""
     target_elem = _resolve(to_dtype)
@@ -342,37 +355,42 @@ def pbitcast(mask_value, to_type):
     )
 
 
-def vsts(val, dst_ptr, offset, mask=None):
+def vsts(val, dst_ptr, offset, mask=None, *, dist=None):
     """``pto.vsts`` – vector store to a tile slice or to *dst_ptr* at *offset*."""
     if isinstance(dst_ptr, TileSliceValue):
         if mask is not None:
             raise TypeError("vsts(vec, tile[row, col:], mask) does not accept a separate offset argument")
+        kwargs = {}
+        if dist is not None:
+            kwargs["dist"] = _normalize_dist_token(
+                dist,
+                allowed=_VSTORE_DIST_TOKENS,
+                context="vsts(..., dist)",
+            )
         _pto.VstsOp(
             unwrap_surface_value(val),
             unwrap_surface_value(dst_ptr),
             _index_zero(),
             unwrap_surface_value(offset),
+            **kwargs,
         )
         return
 
     if mask is None:
         raise TypeError("vsts(vec, ptr, offset, mask) requires an explicit mask")
+    kwargs = {}
+    if dist is not None:
+        kwargs["dist"] = _normalize_dist_token(
+            dist,
+            allowed=_VSTORE_DIST_TOKENS,
+            context="vsts(..., dist)",
+        )
     _pto.VstsOp(
         unwrap_surface_value(val),
         unwrap_surface_value(dst_ptr),
         unwrap_surface_value(offset),
         unwrap_surface_value(mask),
-    )
-
-
-def vsts_1pt(val, dst_ptr, offset, mask):
-    """``pto.vsts {dist="1PT_B32"}`` – store only the lowest lane."""
-    _pto.VstsOp(
-        unwrap_surface_value(val),
-        unwrap_surface_value(dst_ptr),
-        unwrap_surface_value(offset),
-        unwrap_surface_value(mask),
-        dist="1PT_B32",
+        **kwargs,
     )
 
 
@@ -1076,6 +1094,35 @@ def vstus(align_in, offset, value, base):
 
 # ── Vector math (result type inferred from first operand) ─────────────────────
 
+def vbr(value):
+    """``pto.vbr`` – broadcast one scalar value to all vector lanes."""
+    raw_value = unwrap_surface_value(value)
+    if isinstance(raw_value, bool):
+        raise TypeError("vbr(value) does not accept bool values")
+
+    if hasattr(raw_value, "type"):
+        scalar_kind = classify_runtime_scalar_type(raw_value.type)
+        if scalar_kind == "index":
+            raise TypeError("vbr(value) does not support index scalars")
+        scalar_value = raw_value
+        elem_type = raw_value.type
+    else:
+        if isinstance(raw_value, float):
+            elem_type = F32Type.get()
+        elif isinstance(raw_value, int):
+            elem_type = IntegerType.get_signless(32)
+        else:
+            raise TypeError("vbr(value) expects a runtime scalar or one Python int/float literal")
+        scalar_value = materialize_scalar_literal(raw_value, elem_type, context="vbr(value)")
+
+    try:
+        result_type = _resolve(vreg_type(_elements_per_vreg(elem_type), elem_type))
+    except TypeError as exc:
+        raise TypeError(f"vbr(value) does not support scalar type {elem_type}") from exc
+
+    return wrap_surface_value(_pto.VbrOp(result_type, scalar_value).result)
+
+
 def _emit_unary_vec_op(op_ctor, inp, mask):
     return wrap_surface_value(
         op_ctor(
@@ -1549,7 +1596,7 @@ def alloc_tile(
 
     Accepts either the authored surface form:
 
-    ``alloc_tile(shape=[...], dtype=..., memory_space=...)``
+    ``alloc_tile(shape=[...], dtype=..., memory_space=..., valid_shape=..., addr=...)``
 
     or the low-level explicit-type form:
 
@@ -1561,10 +1608,10 @@ def alloc_tile(
     if tile_type is None:
         if shape is None or dtype is None:
             raise TypeError("alloc_tile() requires either tile_type or both shape= and dtype=")
-        if addr is not None or valid_row is not None or valid_col is not None:
+        if valid_row is not None or valid_col is not None:
             raise TypeError(
                 "alloc_tile(shape=..., dtype=...) uses the authored surface form; "
-                "addr=/valid_row=/valid_col= are only supported with an explicit tile_type"
+                "use valid_shape=... instead of valid_row=/valid_col="
             )
         logical_shape = _normalize_static_tile_shape(shape)
         physical_shape = _authored_tile_physical_shape(logical_shape)
@@ -1588,7 +1635,7 @@ def alloc_tile(
 
     value = _pto.AllocTileOp(
         _resolve(tile_type),
-        addr=unwrap_surface_value(addr) if addr is not None else None,
+        addr=_coerce_i64(addr, context="alloc_tile(addr)") if addr is not None else None,
         valid_row=_coerce_index(valid_row, context="alloc_tile(valid_row)") if valid_row is not None else None,
         valid_col=_coerce_index(valid_col, context="alloc_tile(valid_col)") if valid_col is not None else None,
     ).result
@@ -2351,10 +2398,10 @@ def tfillpad_inplace(src, dst):
     )
 
 
-def as_ptr(value, result_ptr_type=None):
+def as_ptr(value):
     """Materialize a typed pointer from a tile or tensor-view descriptor."""
     wrapped = wrap_surface_value(value)
-    return emit_as_ptr(wrapped, result_ptr_type)
+    return emit_as_ptr(wrapped)
 
 
 def _constant_like(value, mlir_type):
@@ -2451,7 +2498,7 @@ def _infer_vreg_metadata(vector_value):
 def _extract_lowest_lane_scalar(vector_value, mask):
     lanes, elem_type = _infer_vreg_metadata(vector_value)
     tmp_tile = alloc_tile(shape=[1, lanes], dtype=elem_type, valid_shape=[1, 1])
-    vsts_1pt(vector_value, tmp_tile.as_ptr(), _index_zero(), mask)
+    vsts(vector_value, tmp_tile.as_ptr(), _index_zero(), mask, dist="1PT_B32")
     from . import scalar as _scalar
     return _scalar.load(tmp_tile[0, 0])
 
@@ -2677,9 +2724,15 @@ def make_mask(dtype, value):
         )
 
     raw_value = unwrap_surface_value(value)
+    authored_scalar_type = raw_value.type if hasattr(raw_value, "type") else IntegerType.get_signless(32)
     raw_value = _coerce_i32(raw_value, context="make_mask(..., value)")
     plt_op = _plt_op_for_mask_bits(mask_bits)(result_type, IntegerType.get_signless(32), raw_value)
-    return MaskResultValue(plt_op.mask, plt_op.scalar_out)
+    next_value = coerce_scalar_to_type(
+        plt_op.scalar_out,
+        authored_scalar_type,
+        context="make_mask(..., value) result",
+    )
+    return MaskResultValue(plt_op.mask, next_value)
 
 
 # ── Hardware / sync ───────────────────────────────────────────────────────────
@@ -3164,7 +3217,7 @@ def wait_flag(src: str, dst: str, *, event_id: int = 0):
 __all__ = [
     "const",
     "castptr", "addptr",
-    "vlds", "vldas", "vldus", "vldsx2", "vbrc_load", "vsts", "vsts_1pt", "vstsx2",
+    "vlds", "vldas", "vldus", "vldsx2", "vsts", "vstsx2",
     "init_align",
     "plt_b8", "plt_b16", "plt_b32",
     "pset_b8", "pset_b16", "pset_b32",
@@ -3178,6 +3231,7 @@ __all__ = [
     "vcmp", "vcmps",
     "plds", "psts", "pstu", "vstar", "vstas", "vstur", "vstus",
     "vbitcast",
+    "vbr",
     "vadd", "vsub", "vmul", "vdiv", "vmax", "vmin",
     "vand", "vor", "vxor", "vshl", "vshr",
     "vcmax", "vcadd", "vcmin", "vdup", "vexpdif",

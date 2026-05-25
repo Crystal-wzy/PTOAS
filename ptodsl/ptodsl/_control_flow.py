@@ -13,8 +13,8 @@ All CMs work with the current MLIR insertion point; no context threading needed.
 Public API
 ──────────
 ``vecscope()``            – ``pto.vecscope { … }``
-``for_(lo, hi, step, *, iter_args)``
-                          – ``scf.for`` with optional iter_args or named carry state
+``for_(lo, hi, step)``
+                          – ``scf.for`` with optional named carry state via ``.carry(...)``
 ``if_(cond)``             – ``scf.if`` via explicit branch handle + automatic named merge
 ``yield_(*vals)``         – ``scf.yield``
 """
@@ -53,9 +53,9 @@ def vecscope() -> _VecScopeCM:
 
 class LoopHandle:
     """
-    Handle for a ``scf.for`` loop with iter_args.
+    Internal handle for a lowered ``scf.for`` loop.
 
-    Attributes available *after* the ``with pto.for_(…) as loop:`` block::
+    Attributes used by the control-flow implementation::
 
         loop.iv         – induction variable
         loop.iter_args  – tuple of inner (mutable) SSA values
@@ -114,24 +114,14 @@ class _ForCM:
         self._ip.__exit__(*exc)
 
 
-def for_(start, stop, *, step, iter_args=None):
+def for_(start, stop, *, step):
     """
     ``scf.for`` context manager.
 
-    Without ``iter_args`` – yields the induction variable; ``scf.yield`` is
-    inserted automatically::
+    Yields the induction variable; ``scf.yield`` is inserted automatically::
 
         with pto.for_(c0, c16, step=c1) as i:
             ...
-
-    With ``iter_args`` – yields a :class:`LoopHandle`; the caller must emit
-    ``pto.yield_(…)`` before the block closes::
-
-        with pto.for_(c0, c128, step=c64, iter_args=(a, b)) as loop:
-            x, y = loop.iter_args
-            ...
-            pto.yield_(nx, ny)
-        fa, fb = loop.results
 
     Named carry state is expressed with ``.carry(...)``::
 
@@ -141,7 +131,7 @@ def for_(start, stop, *, step, iter_args=None):
             loop.update(acc=cur)
         out = loop.final("acc")
     """
-    return _ForBuilder(start, stop, step, iter_args)
+    return _ForBuilder(start, stop, step)
 
 
 class _CarryLoopStateView:
@@ -252,22 +242,19 @@ class _CarryForCM(_ForCM):
 
 
 class _ForBuilder:
-    def __init__(self, start, stop, step, iter_args=None):
+    def __init__(self, start, stop, step):
         self._start = start
         self._stop = stop
         self._step = step
-        self._iter_args = iter_args
 
     def __enter__(self):
-        self._cm = _ForCM(self._start, self._stop, self._step, self._iter_args)
+        self._cm = _ForCM(self._start, self._stop, self._step, None)
         return self._cm.__enter__()
 
     def __exit__(self, *exc):
         return self._cm.__exit__(*exc)
 
     def carry(self, **kwargs):
-        if self._iter_args is not None:
-            raise RuntimeError("for_(..., iter_args=...) cannot be combined with .carry(...)")
         if not kwargs:
             raise ValueError("carry(...) requires at least one named loop-carried value")
         for name in kwargs:

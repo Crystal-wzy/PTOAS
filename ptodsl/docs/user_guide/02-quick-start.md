@@ -188,9 +188,8 @@ switch that kernel to `mode="explicit"`:
 def add_rows(a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,
              rows: pto.index, cols: pto.index):
     VEC = pto.elements_per_vreg(pto.f32)
-    initial_remained = scalar.index_cast(pto.i32, cols)
     with pto.for_(0, rows, step=1) as r:
-        col_loop = pto.for_(0, cols, step=VEC).carry(remained=initial_remained)
+        col_loop = pto.for_(0, cols, step=VEC).carry(remained=cols)
         with col_loop:
             c = col_loop.iv
             remained = col_loop.remained

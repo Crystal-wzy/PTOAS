@@ -166,12 +166,34 @@ def invalid_jit_mode_error(
     )
 
 
-def removed_ukernel_surface_error() -> AttributeError:
-    """Return one diagnostic for the removed ``pto.ukernel`` public surface."""
+def unsupported_public_surface_error(name: str) -> AttributeError:
+    """Return one diagnostic for unsupported names on the public ``pto`` surface."""
+    hints = {
+        "ukernel": (
+            'Use @pto.jit(mode="explicit") for explicit DMA orchestration, and call or inline '
+            "@pto.simd/@pto.simt/@pto.cube directly from that kernel."
+        ),
+        "tile_buf_type": (
+            "Use pto.alloc_tile(shape=..., dtype=..., memory_space=..., valid_shape=..., addr=...) "
+            "to author tiles, and keep explicit tile-type construction inside internal implementation code only."
+        ),
+        "vecscope": (
+            "Use @pto.simd for named SIMD helpers, or inline SIMD code with `with pto.simd():`."
+        ),
+        "as_ptr": (
+            "Use tile.as_ptr(), view.as_ptr(), or partition.as_ptr() on the authored object itself "
+            "instead of the removed pto.as_ptr(...) helper."
+        ),
+        "vbrc_load": (
+            'Use pto.vlds(ptr, offset, dist="BRC_B32") instead of the removed pto.vbrc_load(...) helper.'
+        ),
+        "vsts_1pt": (
+            'Use pto.vsts(vec, ptr, offset, mask, dist="1PT_B32") instead of the removed pto.vsts_1pt(...) helper.'
+        ),
+    }
+    suffix = hints.get(name, "Use the documented PTODSL public surface instead.")
     return AttributeError(
-        'pto.ukernel has been removed from the PTODSL public surface. '
-        'Use @pto.jit(mode="explicit") for explicit DMA orchestration, and call or inline '
-        "@pto.simd/@pto.simt/@pto.cube directly from that kernel."
+        f"pto.{name} is not a supported PTODSL public interface. {suffix}"
     )
 
 
@@ -186,9 +208,9 @@ __all__ = [
     "illegal_subkernel_placement_error",
     "invalid_jit_mode_error",
     "native_python_control_flow_error",
-    "removed_ukernel_surface_error",
     "simd_value_escape_error",
     "subkernel_host_tensor_boundary_error",
     "subkernel_signature_boundary_error",
     "tile_row_alignment_error",
+    "unsupported_public_surface_error",
 ]

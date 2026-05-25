@@ -53,6 +53,13 @@ def expect_parse_roundtrip_and_verify(text: str, label: str) -> None:
     )
 
 
+expect_raises(
+    TypeError,
+    lambda: pto.for_(0, 1, step=1, iter_args=(0,)),
+    "iter_args",
+)
+
+
 @pto.jit(target="a5")
 def host_vec_copy(
     A: pto.tensor_spec(rank=2, dtype=pto.f32),
@@ -138,6 +145,31 @@ def runtime_metadata_kernel(
     out = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
     pto.tile.load(part, a_tile)
     pto.tile.store(o_tile, out)
+
+
+@pto.jit(target="a5", mode="explicit")
+def authored_addr_tile_surface_probe(
+    A: pto.tensor_spec(rank=2, dtype=pto.f32),
+):
+    rows = A.shape[0]
+    cols = A.shape[1]
+    tile = pto.alloc_tile(shape=[1, 128], dtype=pto.f32, addr=0, valid_shape=[rows, cols])
+    _ = tile
+
+
+@pto.jit(target="a5", mode="explicit")
+def dynamic_addr_tile_surface_probe(
+    A: pto.tensor_spec(rank=2, dtype=pto.f32),
+):
+    rows = A.shape[0]
+    cols = A.shape[1]
+    tile = pto.alloc_tile(
+        shape=[1, 128],
+        dtype=pto.f32,
+        addr=scalar.index_cast(pto.i64, rows),
+        valid_shape=[rows, cols],
+    )
+    _ = tile
 
 
 @pto.jit(target="a5")
@@ -407,6 +439,19 @@ def tile_valid_shape_update_1d_probe(
     tile.valid_shape = [length]
 
 
+@pto.jit(target="a5", mode="explicit")
+def make_mask_index_roundtrip_probe(
+    A: pto.tensor_spec(rank=1, dtype=pto.f32),
+):
+    cols = A.shape[0]
+    col_loop = pto.for_(0, cols, step=64).carry(remained=cols)
+    with col_loop:
+        remained = col_loop.remained
+        mask, remained_after_pack = pto.make_mask(pto.f32, remained)
+        _ = mask
+        col_loop.update(remained=remained_after_pack)
+
+
 @pto.jit(target="a5")
 def integer_loop_bound_probe(*, BLOCK: pto.constexpr = 8):
     row_start = pto.const(0, dtype=pto.i32)
@@ -653,7 +698,7 @@ def signed_integer_scalar_probe():
 def low_precision_storage_probe():
     lp_tile = pto.alloc_tile(shape=[128, 64], dtype=pto.f8e4m3)
     lp_tile_hif8 = pto.alloc_tile(shape=[64, 64], dtype=pto.hif8)
-    lp_tile_ty = pto.tile_buf_type([16, 16], pto.f4e2m1x2, [16, 16])
+    lp_tile_ty = pto_types.tile_buf_type([16, 16], pto.f4e2m1x2, [16, 16])
     _ = lp_tile
     _ = lp_tile_hif8
     _ = lp_tile_ty
@@ -663,9 +708,11 @@ def low_precision_storage_probe():
 def pointer_vlds_inference_probe(*, BLOCK: pto.constexpr = 128):
     tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
     vec = pto.vlds(tile.as_ptr(), pto.const(0))
+    vec_brc = pto.vlds(tile.as_ptr(), pto.const(0), dist="BRC_B32")
     ivec = pto.vbitcast(vec, pto.i32)
     f16_vec = pto.vbitcast(vec, pto.f16)
     _ = vec
+    _ = vec_brc
     _ = ivec
     _ = f16_vec
 
@@ -960,14 +1007,44 @@ def main() -> None:
     expect(not hasattr(pto, "tload"), "legacy pto.tload should not remain on the public pto namespace")
     expect(not hasattr(pto, "tstore"), "legacy pto.tstore should not remain on the public pto namespace")
     expect(not hasattr(pto, "tadd"), "legacy pto.tadd should not remain on the public pto namespace")
+    expect(not hasattr(pto, "tile_buf_type"), "pto.tile_buf_type should not remain on the public pto namespace")
+    expect(not hasattr(pto, "vecscope"), "pto.vecscope should not remain on the public pto namespace")
+    expect(not hasattr(pto, "as_ptr"), "pto.as_ptr should not remain on the public pto namespace")
+    expect(not hasattr(pto, "vbrc_load"), "pto.vbrc_load should not remain on the public pto namespace")
+    expect(not hasattr(pto, "vsts_1pt"), "pto.vsts_1pt should not remain on the public pto namespace")
     expect(not hasattr(scalar, "sts"), "scalar.sts should not remain in the public scalar namespace")
     expect(not hasattr(scalar, "cmpi"), "scalar.cmpi should not remain in the public scalar namespace")
     expect(not hasattr(scalar, "cmpi_sgt"), "scalar.cmpi_sgt should not remain in the public scalar namespace")
+    removed_tile_buf_type = expect_raises(AttributeError, lambda: getattr(pto, "tile_buf_type"))
+    expect(
+        "pto.tile_buf_type is not a supported PTODSL public interface" in str(removed_tile_buf_type),
+        "removed pto.tile_buf_type should diagnose the authored alloc_tile replacement",
+    )
+    removed_vecscope = expect_raises(AttributeError, lambda: getattr(pto, "vecscope"))
+    expect(
+        "pto.vecscope is not a supported PTODSL public interface" in str(removed_vecscope),
+        "removed pto.vecscope should diagnose the public SIMD replacements",
+    )
+    removed_as_ptr = expect_raises(AttributeError, lambda: getattr(pto, "as_ptr"))
+    expect(
+        "pto.as_ptr is not a supported PTODSL public interface" in str(removed_as_ptr),
+        "removed pto.as_ptr should diagnose the authored object-method replacements",
+    )
+    removed_vbrc_load = expect_raises(AttributeError, lambda: getattr(pto, "vbrc_load"))
+    expect(
+        "pto.vbrc_load is not a supported PTODSL public interface" in str(removed_vbrc_load),
+        "removed pto.vbrc_load should diagnose the public vlds(dist=...) replacement",
+    )
+    removed_vsts_1pt = expect_raises(AttributeError, lambda: getattr(pto, "vsts_1pt"))
+    expect(
+        "pto.vsts_1pt is not a supported PTODSL public interface" in str(removed_vsts_1pt),
+        "removed pto.vsts_1pt should diagnose the public vsts(dist=...) replacement",
+    )
     for name in ("max", "min", "exp", "log", "sqrt", "abs"):
         expect(hasattr(scalar, name), f"scalar.{name} should be exported from the public scalar namespace")
 
     with make_context() as ctx, Location.unknown(ctx):
-        tile_buf_ty = pto.tile_buf_type(
+        tile_buf_ty = pto_types.tile_buf_type(
             [16, 32],
             pto.f32,
             [16, 8],
@@ -986,6 +1063,8 @@ def main() -> None:
 
     host_vec_copy.verify()
     runtime_metadata_kernel.verify()
+    authored_addr_tile_surface_probe.verify()
+    dynamic_addr_tile_surface_probe.verify()
     tile_surface_compute_probe.verify()
     shared_subkernel_lowering_probe.verify()
     simt_helper_lowering_probe.verify()
@@ -998,6 +1077,7 @@ def main() -> None:
     tile_slice_1d_surface_probe.verify()
     tile_valid_shape_update_probe.verify()
     tile_valid_shape_update_1d_probe.verify()
+    make_mask_index_roundtrip_probe.verify()
     integer_loop_bound_probe.verify()
     scalar_pointer_offset_probe.verify()
     addptr_surface_probe.verify()
@@ -1086,7 +1166,7 @@ def main() -> None:
             "pto.mask_b32 should resolve to the public 32-bit mask type",
         )
 
-        lp_tile_ty = pto.tile_buf_type([16, 16], pto.hif8, [16, 16])
+        lp_tile_ty = pto_types.tile_buf_type([16, 16], pto.hif8, [16, 16])
         lp_tv_ty = pto_types.tensor_view_type(2, pto.f8e4m3)
         lp_part_ty = pto_types.part_tensor_view_type(2, pto.f4e2m1x2)
         expect(
@@ -1236,6 +1316,27 @@ def main() -> None:
         "partition_view sizes derived from tensor metadata should remain runtime MLIR values",
     )
 
+    authored_addr_tile_text = authored_addr_tile_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(authored_addr_tile_text, "authored alloc_tile addr specialization")
+    expect(
+        "pto.alloc_tile addr = %c0_i64 valid_row = %arg1 valid_col = %arg2 : !pto.tile_buf<vec, 1x128xf32, valid=?x?>" in authored_addr_tile_text,
+        "alloc_tile(shape=..., dtype=..., addr=int, valid_shape=...) should coerce Python ints to i64 operands",
+    )
+
+    dynamic_addr_tile_text = dynamic_addr_tile_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(dynamic_addr_tile_text, "dynamic alloc_tile addr specialization")
+    expect(
+        "arith.index_cast %arg1 : index to i64" in dynamic_addr_tile_text,
+        "alloc_tile(addr=runtime index) should cast dynamic index metadata to i64 before lowering",
+    )
+    expect(
+        re.search(
+            r"pto\.alloc_tile addr = %[0-9]+ valid_row = %arg1 valid_col = %arg2 : !pto\.tile_buf<vec, 1x128xf32, valid=\?x\?>",
+            dynamic_addr_tile_text,
+        ) is not None,
+        "alloc_tile(shape=..., dtype=..., addr=runtime value, valid_shape=...) should accept dynamic i64-like operands",
+    )
+
     tile_valid_shape_text = tile_valid_shape_update_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(tile_valid_shape_text, "tile valid-shape update specialization")
     expect(
@@ -1254,6 +1355,30 @@ def main() -> None:
             tile_valid_shape_1d_text,
         ) is not None,
         "tile.valid_shape = [length] should lower to pto.set_validshape on a rank-1 dynamic-valid tile",
+    )
+
+    make_mask_index_roundtrip_text = make_mask_index_roundtrip_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(make_mask_index_roundtrip_text, "make_mask index round-trip specialization")
+    expect(
+        re.search(
+            r"arith\.index_cast %[a-zA-Z0-9_]+ : index to i32",
+            make_mask_index_roundtrip_text,
+        ) is not None,
+        "make_mask(...) should still cast index counts to the hardware i32 tail-mask operand type",
+    )
+    expect(
+        re.search(
+            r"arith\.index_cast %[a-zA-Z0-9_]+ : i32 to index",
+            make_mask_index_roundtrip_text,
+        ) is not None,
+        "make_mask(...) should restore index counts after tail-mask generation so loop-carried state stays in authored index form",
+    )
+    expect(
+        re.search(
+            r"scf\.yield %[a-zA-Z0-9_]+ : index",
+            make_mask_index_roundtrip_text,
+        ) is not None,
+        "make_mask(...) should allow loop-carried index remainders without manual i32 casts",
     )
 
     SUBKERNEL_OBSERVATIONS.clear()
@@ -1560,6 +1685,7 @@ def main() -> None:
     expect("!pto.tile_buf<vec, 64x64x!pto.hif8>" in low_precision_storage_text, "low-precision tile allocation should preserve HiF8 element types in MLIR")
     expect("pto.vlds" in pointer_vlds_text, "vlds(ptr, offset) should still lower to pto.vlds")
     expect("!pto.vreg<64xf32>" in pointer_vlds_text, "vlds(ptr, offset) should infer the result vreg type from the pointer element type")
+    expect('dist = "BRC_B32"' in pointer_vlds_text, 'vlds(ptr, offset, dist="BRC_B32") should lower the authored load distribution')
     expect("pto.vbitcast" in pointer_vlds_text, "vbitcast(...) should lower to pto.vbitcast")
     expect("!pto.vreg<128xf16>" in pointer_vlds_text, "vbitcast(vec, pto.f16) should preserve the 256-byte payload while adjusting the lane count")
     expect(mask_bitcast_text.count("pto.pbitcast") == 2, "pbitcast(...) should lower to pto.pbitcast for each authored mask reinterpretation")

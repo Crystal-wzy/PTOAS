@@ -22,23 +22,23 @@ A mask and the vector it gates must share the same granularity: a `mask_b32` gat
 
 The recommended front door for creating masks is `pto.make_mask`. It dispatches to the right underlying op based on its arguments.
 
-#### `pto.make_mask(dtype: Type, value: int | MaskPattern) -> MaskType | (MaskType, int)`
+#### `pto.make_mask(dtype: Type, value: int-like | MaskPattern) -> MaskType | (MaskType, int-like)`
 
-**Description**: Creates a predicate mask of the granularity matching `dtype`. When `value` is an `int` (typically a remaining-element count in a chunked loop), returns a tuple `(mask, remaining)`. When `value` is a `MaskPattern`, returns just the mask.
+**Description**: Creates a predicate mask of the granularity matching `dtype`. When `value` is an integer-like scalar (typically a remaining-element count in a chunked loop), returns a tuple `(mask, remaining)`. When `value` is a `MaskPattern`, returns just the mask.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `dtype` | `Type` | Element type to infer mask granularity from (e.g., `pto.f32` → `mask_b32`, `pto.f16` → `mask_b16`) |
-| `value` | `int` or `MaskPattern` | Either a remaining-element count or a pattern token |
+| `value` | `int-like` or `MaskPattern` | Either a remaining-element count or a pattern token |
 
 **Returns**:
 
 | Return Value | Type | Description |
 |--------------|------|-------------|
 | `mask` | `MaskType` | The created mask |
-| `remained` | `int` | Updated remaining count (only when `value` is `int`) |
+| `remained` | `int-like` | Updated remaining count (only when `value` is an integer-like scalar); its scalar kind is preserved, so an `index` remainder stays an `index` |
 
 **Example** — chunked SIMD loop with tail handling:
 
@@ -56,7 +56,7 @@ with col_loop:
     col_loop.update(remained=remained)
 ```
 
-`make_mask` generates a tail mask from the remaining count: the first `min(remained, VL)` lanes are active, and `remained` is decremented by `VL` for the next iteration. On the final partial chunk, fewer than `VL` lanes are active.
+`make_mask` generates a tail mask from the remaining count: the first `min(remained, VL)` lanes are active, and `remained` is decremented by `VL` for the next iteration. On the final partial chunk, fewer than `VL` lanes are active. PTODSL handles the hardware `i32` tail-mask operand internally, so loop-carried `index` metadata can flow through `make_mask` without manual casts.
 
 ---
 

@@ -347,9 +347,9 @@ class TensorViewValue(_SurfaceValue, TensorView):
             "strides": self.strides,
         }
 
-    def as_ptr(self, result_ptr_type=None):
+    def as_ptr(self):
         from ._ops import as_ptr
-        return as_ptr(self, result_ptr_type)
+        return as_ptr(self)
 
 
 class PartitionTensorViewValue(_SurfaceValue, PartitionTensorView):
@@ -363,9 +363,9 @@ class PartitionTensorViewValue(_SurfaceValue, PartitionTensorView):
         self.shape = self.sizes
         self.strides = getattr(root_tensor_view, "strides", None)
 
-    def as_ptr(self, result_ptr_type=None):
+    def as_ptr(self):
         from ._ops import as_ptr
-        return as_ptr(self, result_ptr_type)
+        return as_ptr(self)
 
 
 class _TileValidShapeView:
@@ -468,9 +468,9 @@ class TileValue(_SurfaceValue, Tile):
             "valid_shape": self.static_valid_shape,
         }
 
-    def as_ptr(self, result_ptr_type=None):
+    def as_ptr(self):
         from ._ops import as_ptr
-        return as_ptr(self, result_ptr_type)
+        return as_ptr(self)
 
     def fill(self, value):
         from ._ops import fill_tile
@@ -563,11 +563,8 @@ def compose_partition_spec(source, *, offsets, sizes) -> PartitionSpec | None:
     )
 
 
-def infer_ptr_type_from_surface_value(surface_value, result_ptr_type=None):
-    """Infer a PTO pointer type for `as_ptr()` when the caller omits one."""
-    if result_ptr_type is not None:
-        return _resolve(result_ptr_type)
-
+def infer_ptr_type_from_surface_value(surface_value):
+    """Infer a PTO pointer type for `as_ptr()` from the authored source value."""
     value_type = surface_value.type
 
     tv_type = _maybe_cast_tensor_view_type(value_type)
@@ -601,10 +598,10 @@ def infer_ptr_type_from_surface_value(surface_value, result_ptr_type=None):
     return _resolve(ptr(tile_type.element_type, space_enum))
 
 
-def emit_as_ptr(surface_value, result_ptr_type=None):
+def emit_as_ptr(surface_value):
     """Lower `as_ptr()` on a surface value to the appropriate PTO op."""
     value = unwrap_surface_value(surface_value)
-    result_type = infer_address_type_from_surface_value(surface_value, result_ptr_type)
+    result_type = infer_address_type_from_surface_value(surface_value)
 
     if isinstance(surface_value, (TensorViewValue, PartitionTensorViewValue)):
         return AddressValue(_pto.TensorViewAddrOp(result_type, value).result)
@@ -703,9 +700,9 @@ def infer_tile_element_type(tile):
     return parsed["element_type"]
 
 
-def infer_address_type_from_surface_value(surface_value, result_ptr_type=None):
+def infer_address_type_from_surface_value(surface_value):
     """Infer the concrete result type emitted by `as_ptr()`."""
-    return infer_ptr_type_from_surface_value(surface_value, result_ptr_type)
+    return infer_ptr_type_from_surface_value(surface_value)
 
 
 def infer_memref_type_from_surface_value(surface_value):

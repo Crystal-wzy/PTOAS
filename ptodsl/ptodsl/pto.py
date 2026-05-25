@@ -20,7 +20,7 @@ All user-facing symbols live here.  Low-level MLIR bindings are accessed
 internally as ``_pto`` (``from mlir.dialects import pto as _pto``).
 """
 
-from ._diagnostics import removed_ukernel_surface_error
+from ._diagnostics import unsupported_public_surface_error
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 from ._types import (           # noqa: F401
@@ -31,7 +31,6 @@ from ._types import (           # noqa: F401
     ui8, ui16, ui32, ui64,
     index,
     ptr, vreg_type, mask_type,
-    tile_buf_type,
     _resolve,
 )
 from ._surface_types import (   # noqa: F401
@@ -67,7 +66,7 @@ from ._tile_namespace import tile  # noqa: F401
 from ._ops import (             # noqa: F401
     const,
     castptr, addptr,
-    vlds, vldas, vldus, vldsx2, vbrc_load, vsts, vsts_1pt, vstsx2,
+    vlds, vldas, vldus, vldsx2, vsts, vstsx2,
     init_align,
     plt_b8, plt_b16, plt_b32,
     pset_b8, pset_b16, pset_b32,
@@ -82,6 +81,7 @@ from ._ops import (             # noqa: F401
     vcmp, vcmps,
     plds, psts, pstu, vstar, vstas, vstur, vstus,
     vbitcast,
+    vbr,
     vadd, vsub, vmul, vdiv, vmax, vmin,
     vand, vor, vxor, vshl, vshr,
     vcmax, vcadd, vcmin, vdup, vexpdif,
@@ -91,7 +91,7 @@ from ._ops import (             # noqa: F401
     vaxpy, vaddrelu, vsubrelu,
     vsel,
     make_tensor_view, partition_view,
-    alloc_tile, as_ptr,
+    alloc_tile,
     mte_load, mte_store, mte_gm_ub, mte_ub_gm, mte_ub_ub, mte_ub_l1, mem_bar,
     mte_l1_l0a, mte_l1_l0b, mte_l0c_ub,
     mad, mad_acc, mad_bias, mad_mx, mad_mx_acc, mad_mx_bias,
@@ -105,7 +105,6 @@ from ._ops import (             # noqa: F401
 
 # ── Control flow ──────────────────────────────────────────────────────────────
 from ._control_flow import (    # noqa: F401
-    vecscope,
     for_, if_, yield_,
     LoopHandle, BranchHandle,
 )
@@ -128,6 +127,6 @@ mask_b32 = mask_type("b32")
 
 
 def __getattr__(name):
-    if name == "ukernel":
-        raise removed_ukernel_surface_error()
+    if name in {"ukernel", "tile_buf_type", "vecscope", "as_ptr", "vbrc_load", "vsts_1pt"}:
+        raise unsupported_public_surface_error(name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

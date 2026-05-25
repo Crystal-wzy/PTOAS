@@ -18,7 +18,7 @@ ptodsl/
 │   ├── _bootstrap.py    # MLIR path setup + context factory
 │   ├── _types.py        # lazy dtype descriptors and type constructors
 │   ├── _ops.py          # PTO operation wrappers
-│   ├── _control_flow.py # vecscope, for_, if_, yield_ context managers
+│   ├── _control_flow.py # for_, if_, yield_ context managers
 │   ├── _jit.py          # @pto.jit decorator
 │   ├── _tracing/        # shared tracing runtime building blocks
 │   └── _tile_template_tracing.py # internal tile-template tracing implementation
@@ -121,10 +121,10 @@ python3 ptodsl/examples/jit/tadd_launch.py
 
 ### `flash_attention_softmax_launch.py`
 
-Launchable flash-attention softmax-stage demo. It intentionally keeps the
-online softmax update stage only, so the runtime path can be validated without
-depending on the still-incomplete SIMT/cube coverage needed for the full
-flash-attention stack.
+Launchable row-wise softmax demo. The kernel surface is the ordinary
+`scores -> out` contract, while the implementation preloads the score matrix to
+UB and then uses a packed online-softmax recurrence so one NPU can stream
+64-row packs sequentially from UB.
 
 Compile-only:
 
@@ -141,8 +141,8 @@ scripts/sim_dsl.sh ptodsl/examples/jit/flash_attention_softmax_launch.py
 Expected output:
 
 ```text
-PASS rows8_seq128
-PASS rows17_seq96
+PASS rows64_seq128
+PASS rows81_seq96
 All cases passed.
 ```
 
@@ -301,9 +301,9 @@ exported on the public surface: `@pto.jit(mode="auto")`,
 ### Type constructors (eager – require active context)
 
 ```python
-vf32     = pto.vreg_type(64, pto.float32)   # !pto.vreg<64xf32>
-tile_col = pto.tile_buf_type([8,1], pto.float32, [-1,1], blayout="ColMajor")
-tile_w   = pto.tile_buf_type([8,128], pto.float32, [-1,-1])
+vf32     = pto.vreg_type(64, pto.float32)                       # !pto.vreg<64xf32>
+tile_col = pto.alloc_tile(shape=[8, 1], dtype=pto.float32, blayout="ColMajor")
+tile_w   = pto.alloc_tile(shape=[8, 128], dtype=pto.float32)
 ```
 
 ### Constants
@@ -317,17 +317,20 @@ c64_i64= pto.const(64, dtype=pto.int64)
 ### Control flow
 
 ```python
-with pto.vecscope():                # pto.vecscope { … }
+with pto.simd():                    # pto.simd { … }
     ...
 
 with pto.for_(c0, c16, step=c1) as i:     # simple scf.for
     ...                                    # scf.yield inserted automatically
 
-with pto.for_(c0, c128, step=c64, iter_args=(a, b)) as loop:
-    x, y = loop.iter_args
+loop = pto.for_(c0, c128, step=c64).carry(lhs=a, rhs=b)
+with loop:
+    x = loop.lhs
+    y = loop.rhs
     ...
-    pto.yield_(nx, ny)             # scf.yield with values
-fx, fy = loop.results
+    loop.update(lhs=nx, rhs=ny)
+fx = loop.final("lhs")
+fy = loop.final("rhs")
 
 with pto.if_(has_rows) as br:      # simple scf.if
     with br.then_:
@@ -361,9 +364,8 @@ s.select(cond, t, f)         # arith.select
 pto.castptr(addr, ptr_type)              # pto.castptr
 pto.addptr(ptr, offset)                  # pto.addptr
 pto.vlds(ptr, offset)                    # pto.vlds, result vreg inferred from ptr element type
-pto.vbrc_load(ptr, offset, vreg_type)    # pto.vlds {dist="BRC_B32"}
+pto.vbr(scalar)                          # pto.vbr, scalar broadcast -> vreg
 pto.vsts(v, ptr, offset, mask)           # pto.vsts
-pto.vsts_1pt(v, ptr, offset, mask)       # pto.vsts {dist="1PT_B32"}
 pto.plt_b32(scalar)                      # → (mask, scalar_out)
 pto.pset_b32("PAT_ALL")                  # pto.pset_b32 → mask
 pto.vbitcast(v, dtype)                   # pto.vbitcast
@@ -372,7 +374,7 @@ pto.vadd(a, b, mask)   # infers result type from a.type
 pto.vmul / vmax / vdiv / vcmax / vcadd / vdup / vexpdif  # similarly
 pto.make_tensor_view(ptr, shape=…, strides=…)    # type inferred
 pto.partition_view(tv, offsets=…, sizes=…)        # type inferred
-pto.alloc_tile(shape=…, dtype=…, memory_space=…)  # authored surface
+pto.alloc_tile(shape=…, dtype=…, memory_space=…, valid_shape=…, addr=…)  # authored surface
 pto.tile.load(part, tile)
 pto.tile.store(tile, part)
 tile.as_ptr() / view.as_ptr()
