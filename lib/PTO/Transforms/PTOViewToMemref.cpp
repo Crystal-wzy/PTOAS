@@ -1940,7 +1940,7 @@ struct PTOViewToMemrefPass
           op, TypeRange{}, 
           op->getOperand(0), op->getOperand(1),
           op->getOperand(kThirdOperandIndex),
-          op->getOperand(kFourthOperandIndex));
+          op->getOperand(kFourthOperandIndex), op.getAccPhaseAttr());
       }
 
       // --- TMatmulMxOp---
@@ -1954,7 +1954,7 @@ struct PTOViewToMemrefPass
           op->getOperand(0), op->getOperand(1),
           op->getOperand(kThirdOperandIndex),
           op->getOperand(kFourthOperandIndex),
-          op->getOperand(kFifthOperandIndex));
+          op->getOperand(kFifthOperandIndex), op.getAccPhaseAttr());
       }
 
       // --- TMatmulMxAccOp  ---
@@ -1999,7 +1999,7 @@ struct PTOViewToMemrefPass
         Value dst = op->getOperand(kThirdOperandIndex);
 
         rewriter.replaceOpWithNewOp<pto::TGemvOp>(
-          op, TypeRange{}, lhs, rhs, dst);
+          op, TypeRange{}, lhs, rhs, dst, op.getAccPhaseAttr());
       }
 
       // --- TGemvAccOp [Acc, Lhs, Rhs, Dst] ---
@@ -2012,7 +2012,7 @@ struct PTOViewToMemrefPass
           op, TypeRange{}, 
           op->getOperand(0), op->getOperand(1),
           op->getOperand(kThirdOperandIndex),
-          op->getOperand(kFourthOperandIndex));
+          op->getOperand(kFourthOperandIndex), op.getAccPhaseAttr());
       }
 
       // --- TGemvBiasOp [Acc, Lhs, Rhs, Bias, Dst] ---
@@ -2025,7 +2025,7 @@ struct PTOViewToMemrefPass
           op, TypeRange{}, 
           op->getOperand(0), op->getOperand(1),
           op->getOperand(kThirdOperandIndex),
-          op->getOperand(kFourthOperandIndex));
+          op->getOperand(kFourthOperandIndex), op.getAccPhaseAttr());
       }
 
       // --- TGemvMxOp [A, AScale, B, BScale, Dst] ---
@@ -2039,7 +2039,7 @@ struct PTOViewToMemrefPass
           op->getOperand(0), op->getOperand(1),
           op->getOperand(kThirdOperandIndex),
           op->getOperand(kFourthOperandIndex),
-          op->getOperand(kFifthOperandIndex));
+          op->getOperand(kFifthOperandIndex), op.getAccPhaseAttr());
       }
 
       // --- TGemvMxAccOp [CIn, A, AScale, B, BScale, Dst] ---

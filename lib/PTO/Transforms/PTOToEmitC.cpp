@@ -4520,8 +4520,8 @@ struct PTOTStoreToTSTORE : public OpConversionPattern<pto::TStoreOp> {
 // Render `pto.tmatmul` as one of three forms depending on the optional
 // `acc_phase` attribute:
 //   * absent / Unspecified  -> `TMATMUL(dst, lhs, rhs)`
-//   * Partial               -> `TMATMUL<AccPhase::Partial>(dst, lhs, rhs)`
-//   * Final                 -> `TMATMUL<AccPhase::Final>(dst, lhs, rhs)`
+//   * Partial               -> `TMATMUL<pto::AccPhase::Partial>(dst, lhs, rhs)`
+//   * Final                 -> `TMATMUL<pto::AccPhase::Final>(dst, lhs, rhs)`
 // The Unspecified default keeps backward compatibility with all upstream IR
 // that does not yet emit an explicit phase attribute.
 static ArrayAttr buildAccPhaseTemplateArgs(ConversionPatternRewriter &rewriter,
@@ -4531,10 +4531,10 @@ static ArrayAttr buildAccPhaseTemplateArgs(ConversionPatternRewriter &rewriter,
   case pto::AccPhase::Unspecified:
     return ArrayAttr{};
   case pto::AccPhase::Partial:
-    tmpl = "AccPhase::Partial";
+    tmpl = "pto::AccPhase::Partial";
     break;
   case pto::AccPhase::Final:
-    tmpl = "AccPhase::Final";
+    tmpl = "pto::AccPhase::Final";
     break;
   }
   if (tmpl.empty())
@@ -4585,10 +4585,12 @@ struct PTOTGemvToTGEMV : public OpConversionPattern<pto::TGemvOp> {
     Value rhs = peelUnrealized(adaptor.getRhs()); // B (Vector)
     Value dst = peelUnrealized(adaptor.getDst()); // C (Result)
 
-    // 2. 直接生成函数调用 TGEMV(dst, lhs, rhs)
+    ArrayAttr templateArgs =
+        buildAccPhaseTemplateArgs(rewriter, op.getAccPhase());
+
     rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{}, "TGEMV",
-        ArrayAttr{}, ArrayAttr{},
+        /*args=*/ArrayAttr{}, /*template_args=*/templateArgs,
         ValueRange{dst, lhs, rhs});
 
     // 3. 处理 Op 替换/删除
@@ -4618,10 +4620,12 @@ struct PTOTGemvAccToTGEMVACC : public OpConversionPattern<pto::TGemvAccOp> {
     Value rhs   = peelUnrealized(adaptor.getRhs());   // B (Vector)
     Value dst   = peelUnrealized(adaptor.getDst());   // AccNew
 
-    // 2. 直接生成函数调用 TGEMV_ACC(dst, accIn, lhs, rhs)
+    ArrayAttr templateArgs =
+        buildAccPhaseTemplateArgs(rewriter, op.getAccPhase());
+
     rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{}, "TGEMV_ACC",
-        ArrayAttr{}, ArrayAttr{},
+        /*args=*/ArrayAttr{}, /*template_args=*/templateArgs,
         ValueRange{dst, accIn, lhs, rhs});
 
     // 3. 处理 Op 替换/删除
@@ -9694,25 +9698,13 @@ struct PTORowExpandExpdifToEmitC
 // PTOConvert.cpp  (add lowering + patterns.add for TROWEXPANDDIV DPS/memref op)
 //===----------------------------------------------------------------------===//
 // Helper: replace or erase based on whether op has results.
-static void replaceOrEraseWithOpaqueCall(Operation *op,
-                                        StringRef callee,
-                                        ArrayRef<Value> args,
-                                        ConversionPatternRewriter &rewriter) {
-  auto call = rewriter.create<emitc::CallOpaqueOp>(
-      op->getLoc(), TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
-      ValueRange(args));
-  if (op->getNumResults() == 0)
-    rewriter.eraseOp(op);
-  else
-    rewriter.replaceOp(op, call.getResults());
-}
-
 static void replaceOrEraseWithOpaqueCallAndReturnDst(Operation *op, Value dst,
                                                      StringRef callee,
                                                      ArrayRef<Value> args,
+                                                     ArrayAttr templateArgs,
                                                      ConversionPatternRewriter &rewriter) {
   rewriter.create<emitc::CallOpaqueOp>(
-      op->getLoc(), TypeRange{}, callee, ArrayAttr{}, ArrayAttr{}, ValueRange(args));
+      op->getLoc(), TypeRange{}, callee, ArrayAttr{}, templateArgs, ValueRange(args));
   if (op->getNumResults() == 1)
     rewriter.replaceOp(op, dst);
   else
@@ -9731,8 +9723,10 @@ struct PTOTGemvBiasToTGEMV_BIAS
     Value bias = peelUnrealized(adaptor.getBias());
     Value dst  = peelUnrealized(adaptor.getDst());
 
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TGEMV_BIAS",
-                                {dst, a, b, bias}, rewriter);
+    ArrayAttr templateArgs =
+        buildAccPhaseTemplateArgs(rewriter, op.getAccPhase());
+    replaceOrEraseWithOpaqueCallAndReturnDst(op.getOperation(), dst, "TGEMV_BIAS",
+                                             {dst, a, b, bias}, templateArgs, rewriter);
     return success();
   }
 };
@@ -9749,8 +9743,11 @@ struct PTOTGemvMXToTGEMV_MX
     Value bScale  = peelUnrealized(adaptor.getBScale());
     Value dst     = peelUnrealized(adaptor.getDst());
 
+    ArrayAttr templateArgs =
+        buildAccPhaseTemplateArgs(rewriter, op.getAccPhase());
     replaceOrEraseWithOpaqueCallAndReturnDst(op.getOperation(), dst, "TGEMV_MX",
-                                             {dst, a, aScale, b, bScale}, rewriter);
+                                             {dst, a, aScale, b, bScale}, templateArgs,
+                                             rewriter);
     return success();
   }
 };
@@ -9769,7 +9766,8 @@ struct PTOTGemvMXAccToTGEMV_MX
     Value dst     = peelUnrealized(adaptor.getDst());
 
     replaceOrEraseWithOpaqueCallAndReturnDst(op.getOperation(), dst, "TGEMV_MX",
-                                             {dst, cIn, a, aScale, b, bScale}, rewriter);
+                                             {dst, cIn, a, aScale, b, bScale}, ArrayAttr{},
+                                             rewriter);
     return success();
   }
 };
@@ -9788,7 +9786,8 @@ struct PTOTGemvMXBiasToTGEMV_MX
     Value dst     = peelUnrealized(adaptor.getDst());
 
     replaceOrEraseWithOpaqueCallAndReturnDst(op.getOperation(), dst, "TGEMV_MX",
-                                             {dst, a, aScale, b, bScale, bias}, rewriter);
+                                             {dst, a, aScale, b, bScale, bias}, ArrayAttr{},
+                                             rewriter);
     return success();
   }
 };
@@ -9804,8 +9803,10 @@ struct PTOTMatmulBiasToTMATMUL_BIAS
     Value bias = peelUnrealized(adaptor.getBias());
     Value dst  = peelUnrealized(adaptor.getDst());
 
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TMATMUL_BIAS",
-                                {dst, a, b, bias}, rewriter);
+    ArrayAttr templateArgs =
+        buildAccPhaseTemplateArgs(rewriter, op.getAccPhase());
+    replaceOrEraseWithOpaqueCallAndReturnDst(op.getOperation(), dst, "TMATMUL_BIAS",
+                                             {dst, a, b, bias}, templateArgs, rewriter);
     return success();
   }
 };
@@ -9822,8 +9823,11 @@ struct PTOTMatmulMXToTMATMUL_MX
     Value bScale  = peelUnrealized(adaptor.getBScale());
     Value dst     = peelUnrealized(adaptor.getDst());
 
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TMATMUL_MX",
-                                {dst, a, aScale, b, bScale}, rewriter);
+    ArrayAttr templateArgs =
+        buildAccPhaseTemplateArgs(rewriter, op.getAccPhase());
+    replaceOrEraseWithOpaqueCallAndReturnDst(op.getOperation(), dst, "TMATMUL_MX",
+                                             {dst, a, aScale, b, bScale}, templateArgs,
+                                             rewriter);
     return success();
   }
 };
@@ -9841,8 +9845,9 @@ struct PTOTMatmulMXAccToTMATMUL_MX_ACC
     Value bScale  = peelUnrealized(adaptor.getBScale());
     Value dst     = peelUnrealized(adaptor.getDst());
 
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TMATMUL_MX",
-                                {dst, cIn, a, aScale, b, bScale}, rewriter);
+    replaceOrEraseWithOpaqueCallAndReturnDst(op.getOperation(), dst, "TMATMUL_MX",
+                                             {dst, cIn, a, aScale, b, bScale}, ArrayAttr{},
+                                             rewriter);
     return success();
   }
 };
@@ -9860,8 +9865,9 @@ struct PTOTMatmulMXBiasToTMATMUL_MX_BIAS
     Value bias    = peelUnrealized(adaptor.getBias());
     Value dst     = peelUnrealized(adaptor.getDst());
 
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TMATMUL_MX",
-                                {dst, a, aScale, b, bScale, bias}, rewriter);
+    replaceOrEraseWithOpaqueCallAndReturnDst(op.getOperation(), dst, "TMATMUL_MX",
+                                             {dst, a, aScale, b, bScale, bias}, ArrayAttr{},
+                                             rewriter);
     return success();
   }
 };
