@@ -4616,9 +4616,11 @@ pto.thistogram ins(<src>, <idx> : <src_type>, <idx_type>)
     - `idx` rows and valid rows must match `src`.
     - `idx` must have exactly one column.
   - When `src` is `ui32`:
-    - `idx` must use `row_major + none_box` layout.
-    - `idx` cols and valid cols must match `src`.
-    - `idx` rows / valid rows must be `1` for `byte = 3` or `2`, `2` for `byte = 1`, and `3` for `byte = 0`.
+    - When `byte = 3`, `idx` is accepted but not semantically used by the A5 backend intrinsic; no additional layout or shape constraints are imposed beyond the generic `tile_buf`, `loc=vec`, `dtype=ui8`, and rank-2 requirements.
+    - When `byte = 2`, `1`, or `0`, `idx` must use `row_major + none_box` layout. `idx` cols and valid cols must match `src`.
+    - When `byte = 2`, `idx` rows / valid rows must be `1`.
+    - When `byte = 1`, `idx` rows / valid rows must be `2`.
+    - When `byte = 0`, `idx` rows / valid rows must be `3`.
 
 **Hardware Mapping:**
 

@@ -6887,22 +6887,26 @@ LogicalResult THistogramOp::verify() {
       if (!isKnownUnitExtent(idxShape[1]) || !isKnownUnitExtent(idxValid[1]))
         return emitOpError("expects idx to have exactly one column when src element type is ui16");
     } else {
-      if (idxTB.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
-          idxTB.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::NoneBox))
-        return emitOpError(
-            "expects idx to use row_major + none_box layout when src element type is ui32");
-      if (!hasCompatibleKnownExtent(srcShape[1], idxShape[1]) ||
-          !hasCompatibleKnownExtent(srcValid[1], idxValid[1]))
-        return emitOpError("expects idx cols and valid cols to match src when src element type is ui32");
+      if (byte != 3) {
+        if (idxTB.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+            idxTB.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::NoneBox))
+          return emitOpError(
+              "expects idx to use row_major + none_box layout when src element type is ui32 and byte is 0, 1, or 2");
+        if (!hasCompatibleKnownExtent(srcShape[1], idxShape[1]) ||
+            !hasCompatibleKnownExtent(srcValid[1], idxValid[1]))
+          return emitOpError(
+              "expects idx cols and valid cols to match src when src element type is ui32 and byte is 0, 1, or 2");
 
-      int64_t expectedIdxRows = 1;
-      if (byte == 1)
-        expectedIdxRows = 2;
-      else if (byte == 0)
-        expectedIdxRows = 3;
-      if (!hasCompatibleKnownExtent(idxShape[0], expectedIdxRows) ||
-          !hasCompatibleKnownExtent(idxValid[0], expectedIdxRows))
-        return emitOpError("expects idx rows/valid rows to match the byte-selected filter depth when src element type is ui32");
+        int64_t expectedIdxRows = 1;
+        if (byte == 1)
+          expectedIdxRows = 2;
+        else if (byte == 0)
+          expectedIdxRows = 3;
+        if (!hasCompatibleKnownExtent(idxShape[0], expectedIdxRows) ||
+            !hasCompatibleKnownExtent(idxValid[0], expectedIdxRows))
+          return emitOpError(
+              "expects idx rows/valid rows to match the byte-selected filter depth when src element type is ui32 and byte is 0, 1, or 2");
+      }
     }
     if (dstShape[1] != ShapedType::kDynamic && dstShape[1] < 256)
       return emitOpError("expects dst shape[1] to be at least 256");
