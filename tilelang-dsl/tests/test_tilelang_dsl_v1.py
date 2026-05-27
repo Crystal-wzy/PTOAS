@@ -2934,15 +2934,38 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         self.assertIn("cube v1 only supports MemorySpace.MAT/LEFT/RIGHT/ACC/BIAS/SCALING/UB", str(ctx.exception))
 
-    def test_vkernel_specialize_still_rejects_non_ub_bare_tile_profile(self) -> None:
-        @pto.vkernel(op="vector_tile_reject_cube_space_unique", dtypes=[(pto.f16,)])
+    def test_vkernel_specialize_accepts_non_ub_bare_tile_profiles(self) -> None:
+        @pto.vkernel(
+            op="vector_tile_accept_non_ub_spaces_unique",
+            dtypes=[(pto.f16, pto.f32, pto.f16)],
+        )
+        def kernel(mat: pto.Tile, acc: pto.Tile, scaling: pto.Tile):
+            return None
+
+        specialized = kernel.specialize(
+            mat=pto.TileSpecialization(shape=(16, 32), memory_space=pto.MemorySpace.MAT),
+            acc=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.ACC),
+            scaling=pto.TileSpecialization(shape=(1, 16), memory_space=pto.MemorySpace.SCALING),
+        )
+
+        self.assertEqual(specialized.specializations_by_name["mat"].memory_space, pto.MemorySpace.MAT)
+        self.assertEqual(specialized.specializations_by_name["acc"].memory_space, pto.MemorySpace.ACC)
+        self.assertEqual(specialized.specializations_by_name["scaling"].memory_space, pto.MemorySpace.SCALING)
+
+        text = specialized.mlir_text()
+        self.assertIn("!pto.tile_buf<loc=l1, dtype=f16, rows=16, cols=32", text)
+        self.assertIn("!pto.tile_buf<loc=l0c, dtype=f32, rows=16, cols=16", text)
+        self.assertIn("!pto.tile_buf<loc=fb, dtype=f16, rows=1, cols=16", text)
+
+    def test_vkernel_specialize_still_rejects_gm_bare_tile_profile(self) -> None:
+        @pto.vkernel(op="vector_tile_reject_gm_space_unique", dtypes=[(pto.f16,)])
         def kernel(tile: pto.Tile):
             return None
 
         with self.assertRaises(pto.TileLangFrontendError) as ctx:
-            kernel.specialize(tile=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.LEFT))
+            kernel.specialize(tile=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.GM))
 
-        self.assertIn("vector v1 only supports MemorySpace.UB", str(ctx.exception))
+        self.assertIn("vector v1 only supports MemorySpace.MAT/LEFT/RIGHT/ACC/BIAS/SCALING/UB", str(ctx.exception))
 
     def test_multi_op_descriptor_requires_select_kernel_before_materialization_apis(self) -> None:
         @pto.vkernel(
@@ -10788,7 +10811,7 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
 
         with self.assertRaises(pto.TileLangFrontendError) as space_ctx:
             kernel.specialize(tile={"shape": (4, 4), "memory_space": "gm"})
-        self.assertIn("v1 only supports MemorySpace.UB", str(space_ctx.exception))
+        self.assertIn("v1 only supports MemorySpace.MAT/LEFT/RIGHT/ACC/BIAS/SCALING/UB", str(space_ctx.exception))
         self.assertIn(f"{__file__}:", str(space_ctx.exception))
 
         with self.assertRaises(pto.TileLangFrontendError) as valid_shape_ctx:

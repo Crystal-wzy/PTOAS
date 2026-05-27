@@ -1835,24 +1835,17 @@ def _coerce_tile_specialization(
             param_name,
             f"illegal Tile profile for '{param_name}': v1 only supports rank-1 or rank-2 Tile shapes",
         )
-    allowed_memory_spaces = (
-        {MemorySpace.UB}
-        if kernel_family != "cube"
-        else {
-            MemorySpace.MAT,
-            MemorySpace.LEFT,
-            MemorySpace.RIGHT,
-            MemorySpace.ACC,
-            MemorySpace.BIAS,
-            MemorySpace.SCALING,
-            MemorySpace.UB,
-        }
-    )
+    allowed_memory_spaces = {
+        MemorySpace.MAT,
+        MemorySpace.LEFT,
+        MemorySpace.RIGHT,
+        MemorySpace.ACC,
+        MemorySpace.BIAS,
+        MemorySpace.SCALING,
+        MemorySpace.UB,
+    }
     if spec.memory_space not in allowed_memory_spaces:
-        if kernel_family == "cube":
-            allowed_text = "MemorySpace.MAT/LEFT/RIGHT/ACC/BIAS/SCALING/UB"
-        else:
-            allowed_text = "MemorySpace.UB"
+        allowed_text = "MemorySpace.MAT/LEFT/RIGHT/ACC/BIAS/SCALING/UB"
         _raise_tile_param_error(
             source_info,
             param_name,
