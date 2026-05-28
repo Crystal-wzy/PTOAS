@@ -128,6 +128,21 @@ std::optional<SyncMacroModel> getCollectiveCommSyncMacroModel(Operation *op) {
   return model;
 }
 
+std::optional<SyncMacroModel> getTScatterSyncMacroModel(pto::TScatterOp op) {
+  if (!op.hasIndexForm() || getTargetArch(op.getOperation()) == PTOArch::A5)
+    return std::nullopt;
+
+  SyncMacroModel model;
+  // A2/A3 indexed TSCATTER first initializes dst with vector_dup, then runs a
+  // scalar UB scatter loop over src/indexes.
+  addPhase(model, PipelineType::PIPE_V, ValueRange{op.getDst()}, ValueRange{});
+  addPhase(model, PipelineType::PIPE_S, ValueRange{op.getDst()},
+           ValueRange{op.getSrc(), op.getIndexes()});
+  addHiddenEvent(model, PipelineType::PIPE_V, PipelineType::PIPE_S,
+                 ArrayRef<unsigned>{0});
+  return model;
+}
+
 } // namespace
 
 std::optional<SyncMacroModel> mlir::pto::getSyncMacroModel(Operation *op) {
@@ -135,5 +150,7 @@ std::optional<SyncMacroModel> mlir::pto::getSyncMacroModel(Operation *op) {
     return model;
   if (auto model = getCollectiveCommSyncMacroModel(op))
     return model;
+  if (auto tscatter = dyn_cast<pto::TScatterOp>(op))
+    return getTScatterSyncMacroModel(tscatter);
   return std::nullopt;
 }

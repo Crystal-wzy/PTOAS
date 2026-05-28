@@ -1,0 +1,32 @@
+// RUN: ptoas --pto-arch=a3 --enable-insert-sync --pto-insert-sync-debug=2 %s -o - 2>&1 | FileCheck %s
+
+module {
+  func.func @tscatter_indexed_macro_model(%src_gm: memref<1x32xf16, #pto.address_space<gm>>,
+                                          %idx_gm: memref<1x32xi16, #pto.address_space<gm>>) {
+    %src = memref.alloc() : memref<1x32xf16, #pto.address_space<vec>>
+    %idx = memref.alloc() : memref<1x32xi16, #pto.address_space<vec>>
+    %dst = memref.alloc() : memref<1x32xf16, #pto.address_space<vec>>
+    %out = memref.alloc() : memref<1x32xf16, #pto.address_space<vec>>
+
+    pto.tload ins(%src_gm : memref<1x32xf16, #pto.address_space<gm>>)
+              outs(%src : memref<1x32xf16, #pto.address_space<vec>>) {layout = #pto.layout<nd>}
+    pto.tload ins(%idx_gm : memref<1x32xi16, #pto.address_space<gm>>)
+              outs(%idx : memref<1x32xi16, #pto.address_space<vec>>) {layout = #pto.layout<nd>}
+    pto.tscatter ins(%src, %idx : memref<1x32xf16, #pto.address_space<vec>>, memref<1x32xi16, #pto.address_space<vec>>)
+                 outs(%dst : memref<1x32xf16, #pto.address_space<vec>>)
+    pto.tmov ins(%dst : memref<1x32xf16, #pto.address_space<vec>>)
+             outs(%out : memref<1x32xf16, #pto.address_space<vec>>)
+    return
+  }
+}
+
+// CHECK-LABEL: After Sync Motion
+// CHECK:      COMPOUND pto.tload [PIPE_MTE2]
+// CHECK:      COMPOUND pto.tload [PIPE_MTE2]
+// CHECK:      COMPOUND pto.tscatter [PIPE_V]
+// CHECK-NEXT: COMPOUND pto.tscatter [PIPE_S]
+// CHECK:      COMPOUND pto.tmov [PIPE_V]
+// CHECK:      set_flag <PIPE_MTE2 -> PIPE_S>
+// CHECK:      wait_flag <PIPE_MTE2 -> PIPE_S>
+// CHECK:      set_flag <PIPE_S -> PIPE_V>
+// CHECK:      wait_flag <PIPE_S -> PIPE_V>
