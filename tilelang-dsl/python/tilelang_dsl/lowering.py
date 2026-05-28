@@ -2730,6 +2730,15 @@ class _AuthoringRenderer:
         atomic_type = self._extract_optional_static_string(expr.args[cursor + 10], context=f"pto.{expr.name} atomic type")
         atomic_op = self._extract_optional_static_string(expr.args[cursor + 11], context=f"pto.{expr.name} atomic op")
 
+        if pre_quant_mode is not None:
+            source = self._bridge_rendered_ptr_element_to_signless_integer(
+                source,
+                indent=indent,
+                into=into,
+            )
+            operands[0] = source
+            type_parts[0] = self._render_type(source.type)
+
         if unit_flag is not None:
             clause_parts.append(f"unit_flag({unit_flag})")
 
@@ -3117,6 +3126,40 @@ class _AuthoringRenderer:
             f"{self._render_type(value.type)} to {self._render_type(raw_type)}"
         )
         return _RenderedValue(name=cast_name, type=raw_type)
+
+    def _bridge_rendered_ptr_element_to_signless_integer(
+        self,
+        value: _RenderedValue,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        if not isinstance(value.type, SemanticPtrType) or not is_integer_dtype(value.type.element_dtype):
+            return value
+        signless_element_type = self._signless_integer_scalar_type(
+            SemanticScalarType(dtype=value.type.element_dtype)
+        )
+        if signless_element_type is None:
+            return value
+        target_type = SemanticPtrType(
+            element_dtype=signless_element_type.dtype,
+            memory_space=value.type.memory_space,
+        )
+        if value.type == target_type:
+            return value
+        rendered_target_type = self._render_type(target_type)
+        cache_key = (value.name, rendered_target_type)
+        existing = self._castptr_cache.get(cache_key)
+        if existing is not None:
+            return _RenderedValue(name=existing, type=target_type)
+        cast_name = self._new_temp()
+        into.append(
+            self._indent(indent)
+            + f"{cast_name} = pto.castptr {value.name} : "
+            f"{self._render_type(value.type)} -> {rendered_target_type}"
+        )
+        self._castptr_cache[cache_key] = cast_name
+        return _RenderedValue(name=cast_name, type=target_type)
 
     def _bridge_rendered_integer_to_target(
         self,

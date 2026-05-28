@@ -4410,8 +4410,8 @@ class _SemanticAnalyzer:
                     "qf322bf16_pre_scalar", "qs322bf16_pre_vec", "qs322bf16_pre_scalar",
                 },
             )
-            if src.type.element_dtype.name not in {"f32", "i32"}:
-                raise TypeError(f"pto.{name} pre_quant requires f32 or i32 source elements in TileLang DSL v1")
+            if src.type.element_dtype.name not in {"f32", "i32", "si32"}:
+                raise TypeError(f"pto.{name} pre_quant requires f32, i32, or si32 source elements in TileLang DSL v1")
             self._validate_fixpipe_payload(
                 pre_quant_payload,
                 pre_quant_mode,
@@ -4641,6 +4641,15 @@ class _SemanticAnalyzer:
             return ("i32", "bf16")
         return (None, None)
 
+    def _fixpipe_pre_quant_src_family_matches(self, src_dtype: ScalarType, src_family: str | None) -> bool:
+        if src_family is None:
+            return True
+        if src_family == "f32":
+            return src_dtype.name == "f32"
+        if src_family == "i32":
+            return src_dtype.name in {"i32", "si32"}
+        return src_dtype.name == src_family
+
     def _fixpipe_pre_quant_dst_family_matches(self, dst_dtype: ScalarType, dst_family: str | None) -> bool:
         if dst_family is None:
             return True
@@ -4666,7 +4675,7 @@ class _SemanticAnalyzer:
     ) -> None:
         mode_value = self._require_string_expr(mode, f"{context} mode")
         expected_src_family, expected_dst_family = self._fixpipe_pre_quant_mode_families(mode_value)
-        if expected_src_family is not None and src_dtype.name != expected_src_family:
+        if not self._fixpipe_pre_quant_src_family_matches(src_dtype, expected_src_family):
             raise TypeError(
                 f"{context} mode {mode_value} requires {expected_src_family} source elements in TileLang DSL v1"
             )

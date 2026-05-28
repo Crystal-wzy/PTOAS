@@ -10655,6 +10655,31 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
             str(pre_quant_src_family_ctx.exception),
         )
 
+        @pto.ckernel(op="pto.mad", dtypes=[(pto.f16,)], name="cube_si32_pre_quant_bridge_unique")
+        def si32_pre_quant_kernel(inp: pto.TensorView):
+            acc = pto.Tile((16, 16), pto.si32, pto.MemorySpace.ACC)
+            l1 = pto.Tile((16, 16), pto.f16, pto.MemorySpace.MAT)
+            pto.mte_l0c_l1(
+                acc.as_ptr(),
+                l1.as_ptr(),
+                16,
+                16,
+                16,
+                16,
+                pre_quant=(pto.f32(1.0), "deqf16_scalar"),
+            )
+
+        text = pto.select_kernel(
+            "a5",
+            "pto.mad",
+            (pto.f16,),
+            registry=pto.KernelRegistry((si32_pre_quant_kernel,)),
+        ).specialize().mlir_text()
+
+        self.assertIn("pre_quant(", text)
+        self.assertRegex(text, r"= pto\.castptr %[^:]+ : !pto\.ptr<si32, l0c> -> !pto\.ptr<i32, l0c>")
+        self.assertRegex(text, r"pto\.mte_l0c_l1 %[^,]+, %[^,]+, .* : !pto\.ptr<i32, l0c>, !pto\.ptr<f16, l1>,")
+
         @pto.ckernel(op="pto.mad", dtypes=[(pto.f16,)], name="cube_bad_pre_quant_dst_family_unique")
         def pre_quant_dst_family_kernel(inp: pto.TensorView):
             acc = pto.Tile((16, 16), pto.f32, pto.MemorySpace.ACC)
