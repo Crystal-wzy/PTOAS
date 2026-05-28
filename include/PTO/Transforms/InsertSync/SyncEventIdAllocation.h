@@ -57,6 +57,7 @@ private:
  
   SmallVector<bool> GetEventPool(const SyncOperation *sync, size_t eventIdNum);
   int ScopePair(const SyncOperation *s);
+  int ScopePair(PipelineType srcPipe, PipelineType dstPipe) const;
   void FindUseEventID(unsigned int begin, unsigned int end,
                       const SyncOperation *s, SmallVector<bool> &eventId);
  
@@ -75,6 +76,8 @@ private:
  
   void SetUseEventID(unsigned int begin, unsigned int end,
                      const SyncOperation *setFlag, unsigned int eventId);
+  void SetUseEventID(unsigned int begin, unsigned int end, int scopePair,
+                     unsigned int eventId, size_t poolSize);
  
   bool ExtendLifecycle(SmallVector<unsigned int> &syncLifeCycle,
                        unsigned int beginNew, unsigned int endNew) const;
@@ -107,6 +110,9 @@ private:
   void SetBlockSyncAllEventID(SyncOperation *sync);
   void IgnoreBackHeadAndTailSync();
   void reserveBlockAllEventIds();
+  void SeedHiddenMacroEventIds(
+      const llvm::SmallSet<int, kReallocatedPipePairInlineCapacity>
+          *scopeFilter = nullptr);
  
 private:
   SyncIRs &syncIR_;

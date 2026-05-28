@@ -13,6 +13,7 @@
 
 #include "PTO/Transforms/InsertSync/SyncEventIdAllocation.h"
 #include "PTO/Transforms/InsertSync/SyncCommon.h"
+#include "PTO/Transforms/InsertSync/SyncMacroModel.h"
 #include <algorithm>
 
 #define DEBUG_TYPE "pto-inject-sync"
@@ -30,6 +31,7 @@ static size_t getEventIdPoolSize(const SyncOperation *sync,
 }
 
 void SyncEventIdAllocation::Allocate(uint32_t runNum) {
+  SeedHiddenMacroEventIds();
   // 1. 正常分配
   for (auto &element : syncIR_) {
     AllocateEventId(element.get());
@@ -256,6 +258,11 @@ int SyncEventIdAllocation::ScopePair(const SyncOperation *s) {
       s->GetType() == SyncOperation::TYPE::SYNC_BLOCK_WAIT) {
     return 0;
   }
+  return ScopePair(s->GetActualSrcPipe(), s->GetActualDstPipe());
+}
+
+int SyncEventIdAllocation::ScopePair(PipelineType srcPipe,
+                                     PipelineType dstPipe) const {
   // Event IDs are a limited shared resource and must not be reused across
   // overlapping lifetimes within the same (src,dst) pipe pair.
   //
@@ -264,8 +271,8 @@ int SyncEventIdAllocation::ScopePair(const SyncOperation *s) {
   // pressure where a single source pipe syncs to multiple destinations (e.g.
   // PIPE_M -> PIPE_MTE1 and PIPE_M -> PIPE_FIX), which can otherwise push some
   // pairs into high event IDs and trigger device-side failures.
-  auto srcT = static_cast<unsigned int>(s->GetActualSrcPipe());
-  auto dstT = static_cast<unsigned int>(s->GetActualDstPipe());
+  auto srcT = static_cast<unsigned int>(srcPipe);
+  auto dstT = static_cast<unsigned int>(dstPipe);
   // Offset by 1 so non-block scopes never collide with block-sync scope 0.
   return static_cast<int>(((dstT << 8U) | srcT) + 1U);
 }
@@ -420,6 +427,14 @@ void SyncEventIdAllocation::SetUseEventID(unsigned int begin, unsigned int end,
   int scopePair = ScopePair(setFlag);
   const size_t poolSize =
       getEventIdPoolSize(setFlag, reservedBlockSyncEventIdNum);
+  SetUseEventID(begin, end, scopePair, eventId, poolSize);
+}
+
+void SyncEventIdAllocation::SetUseEventID(unsigned int begin, unsigned int end,
+                                          int scopePair, unsigned int eventId,
+                                          size_t poolSize) {
+  assert(begin < end);
+  assert(eventId < poolSize);
   eventCyclePool.try_emplace(scopePair, EventCyclePool(poolSize));
 
   EventCyclePool &seqPool = eventCyclePool[scopePair];
@@ -446,6 +461,47 @@ void SyncEventIdAllocation::SetUseEventID(unsigned int begin, unsigned int end,
     }
   }
   if (!isInsert) llvm_unreachable("Can't insert this sync cycle!");
+}
+
+void SyncEventIdAllocation::SeedHiddenMacroEventIds(
+    const llvm::SmallSet<int, kReallocatedPipePairInlineCapacity>
+        *scopeFilter) {
+  // Some macro-like PTO ops lower to PTO-ISA library calls that use fixed
+  // internal event ids. They are invisible to PTO IR, so seed only the local
+  // call lifetime into the allocator instead of reserving those ids globally
+  // for every kernel.
+  for (size_t i = 0; i < syncIR_.size(); ++i) {
+    auto *firstPhase = dyn_cast<CompoundInstanceElement>(syncIR_[i].get());
+    if (!firstPhase || firstPhase->macroOpInstanceId != 0) continue;
+    Operation *op = firstPhase->elementOp;
+    auto model = getSyncMacroModel(op);
+    if (!model || model->hiddenEvents.empty())
+      continue;
+
+    unsigned end = firstPhase->GetIndex() + 1;
+    for (size_t j = i + 1; j < syncIR_.size(); ++j) {
+      auto *otherPhase = dyn_cast<CompoundInstanceElement>(syncIR_[j].get());
+      if (!otherPhase || otherPhase->elementOp != op) continue;
+      end = otherPhase->GetIndex();
+    }
+    unsigned begin = firstPhase->GetIndex();
+    if (begin > 0) {
+      --begin;
+    }
+    if (end + 1 < syncIR_.size()) {
+      ++end;
+    }
+    if (begin >= end) continue;
+
+    for (const auto &hiddenEvent : model->hiddenEvents) {
+      int scopePair = ScopePair(hiddenEvent.srcPipe, hiddenEvent.dstPipe);
+      if (scopeFilter && !scopeFilter->contains(scopePair))
+        continue;
+      for (unsigned eventId : hiddenEvent.eventIds) {
+        SetUseEventID(begin, end, scopePair, eventId, kTotalEventIdNum);
+      }
+    }
+  }
 }
 
 bool SyncEventIdAllocation::ExtendLifecycle(
@@ -517,6 +573,7 @@ void SyncEventIdAllocation::ReallocatedEventId() {
   for (auto pipePair : reallocatedPipePair) {
     eventCyclePool.erase(pipePair);
   }
+  SeedHiddenMacroEventIds(&reallocatedPipePair);
   ClearReallocatedBackwardMatchSync();
   for (auto &e : syncIR_) {
     for (auto &sync : e->pipeBefore) {

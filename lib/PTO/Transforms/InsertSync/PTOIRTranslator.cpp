@@ -13,6 +13,7 @@
 
 #include "PTO/Transforms/InsertSync/PTOIRTranslator.h"
 #include "PTO/IR/PTOTypeUtils.h"
+#include "PTO/Transforms/InsertSync/SyncMacroModel.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -360,6 +361,8 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       return WalkResult::skip();
     } else if (auto yieldOp = dyn_cast<scf::YieldOp>(op)) {
       UpdateYieldOpInfo(yieldOp);
+    } else if (getSyncMacroModel(op)) {
+      UpdateMacroOpInfo(op);
     } else if (isa<pto::OpPipeInterface>(op)) {
       // --- Case D: 带有 OpPipeInterface 的计算/搬运指令 ---
       UpdatePTOOpInfo(op);
@@ -571,6 +574,36 @@ void PTOIRTranslator::UpdatePTOOpInfo(Operation *op) {
 
   syncIR_.emplace_back(std::move(compoundElement));
   index++;
+}
+
+void PTOIRTranslator::MakeMacroCompound(Operation *op, PipelineType pipe,
+                                        ValueRange defValues,
+                                        ValueRange useValues,
+                                        int macroPhaseId) {
+  SmallVector<const BaseMemInfo *> defVec;
+  SmallVector<const BaseMemInfo *> useVec;
+  UpdateDefUseVec(defValues, defVec);
+  UpdateDefUseVec(useValues, useVec);
+
+  auto compoundElement = std::make_unique<CompoundInstanceElement>(
+      index, std::move(defVec), std::move(useVec), pipe, op->getName());
+  compoundElement->elementOp = op;
+  compoundElement->macroOpInstanceId = macroPhaseId;
+  compoundElement->compoundCoreType =
+      pipe == PipelineType::PIPE_M ? pto::TCoreType::CUBE
+                                   : pto::TCoreType::VECTOR;
+  syncIR_.emplace_back(std::move(compoundElement));
+  index++;
+}
+
+void PTOIRTranslator::UpdateMacroOpInfo(Operation *op) {
+  auto model = getSyncMacroModel(op);
+  if (!model)
+    return;
+  for (const auto &phase : model->phases) {
+    MakeMacroCompound(op, phase.pipe, ValueRange(phase.defValues),
+                      ValueRange(phase.useValues), phase.phaseId);
+  }
 }
 
 // ============================================================================

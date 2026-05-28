@@ -348,6 +348,9 @@ public:
   UNIT_FLAG unitFlagModeAsWait{UNIT_FLAG::DISABLED};
   CompoundInstanceElement *linkedUnitFlagCompAsSet{nullptr};
   CompoundInstanceElement *linkedUnitFlagCompAsWait{nullptr};
+  // Macro-like operations may be represented by multiple SyncIR compounds that
+  // point at the same source operation. The phase id distinguishes those
+  // synthetic compounds without changing the source IR.
   int macroOpInstanceId{-1};
  
 public:
