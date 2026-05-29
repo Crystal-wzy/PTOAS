@@ -124,12 +124,17 @@ std::optional<SyncMacroModel> getCollectiveCommSyncMacroModel(Operation *op) {
   } else if (auto treduce = dyn_cast<pto::TReduceOp>(op)) {
     laneCount = treduce.getRecvPong() ? 3U : 2U;
     // TREDUCE_IMPL reads group sources through MTE2, reduces into acc on the
-    // vector pipe, and stores the final result into dst through MTE3.
-    addPhase(model, PipelineType::PIPE_MTE2, ValueRange{}, treduce.getGroup());
+    // vector pipe, and stores the final result into dst through MTE3, using
+    // recvPing/recvPong as receive staging tiles.
+    SmallVector<Value> recvStaging =
+        getPingPongValues(treduce.getRecvPing(), treduce.getRecvPong());
+    SmallVector<Value> reduceUses{treduce.getAcc()};
+    reduceUses.append(recvStaging.begin(), recvStaging.end());
+    addPhase(model, PipelineType::PIPE_MTE2, recvStaging, treduce.getGroup());
     addPhase(model, PipelineType::PIPE_V, ValueRange{treduce.getAcc()},
-             ValueRange{treduce.getAcc(), treduce.getRecvPing()});
+             reduceUses);
     addPhase(model, PipelineType::PIPE_MTE3, ValueRange{treduce.getDst()},
-             ValueRange{});
+             ValueRange{treduce.getAcc()});
   } else {
     return std::nullopt;
   }

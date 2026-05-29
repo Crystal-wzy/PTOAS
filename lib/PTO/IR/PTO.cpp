@@ -12965,7 +12965,17 @@ void TReduceOp::getEffects(
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
   addEffect(effects, &getAccMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getAccMutable(), MemoryEffects::Write::get());
+  addEffect(effects, &getRecvPingMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getRecvPingMutable(), MemoryEffects::Write::get());
+  if (getRecvPong()) {
+    auto recvPongRange = getRecvPongMutable();
+    if (auto it = recvPongRange.begin(); it != recvPongRange.end()) {
+      addEffect(effects, &*it, MemoryEffects::Read::get());
+      addEffect(effects, &*it, MemoryEffects::Write::get());
+    }
+  }
+  for (OpOperand &operand : getGroupMutable())
+    addEffect(effects, &operand, MemoryEffects::Read::get());
 }
 
 void WaitAsyncEventOp::getEffects(
