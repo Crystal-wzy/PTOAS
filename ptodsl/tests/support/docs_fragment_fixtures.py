@@ -75,13 +75,14 @@ FRAGMENT_FIXTURES = {
         f"""
         @pto.jit(target="a5")
         def type_system_tensor_view_probe(
-            A: pto.tensor_spec(rank=2, dtype=pto.f32),
+            A_ptr: pto.ptr(pto.f32, "gm"),
+            rows: pto.i32,
+            cols: pto.i32,
             *,
             BLOCK: pto.const_expr = 128,
         ):
-            rows = A.shape[0]
-            cols = A.shape[1]
             N = rows
+            A = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
             {SNIPPET_PLACEHOLDER}
         """
     ),
@@ -190,7 +191,9 @@ FRAGMENT_FIXTURES = {
         f"""
         @pto.jit(target="a5")
         def quick_start_make_tensor_view_probe(
-            A: pto.tensor_spec(rank=2, dtype=pto.f32),
+            A_ptr: pto.ptr(pto.f32, "gm"),
+            rows: pto.i32,
+            cols: pto.i32,
         ):
             {SNIPPET_PLACEHOLDER}
         """
@@ -209,11 +212,11 @@ FRAGMENT_FIXTURES = {
         f"""
         @pto.jit(target="a5")
         def quick_start_partition_view_probe(
-            A: pto.tensor_spec(rank=2, dtype=pto.f32),
+            A_ptr: pto.ptr(pto.f32, "gm"),
+            rows: pto.i32,
+            cols: pto.i32,
         ):
-            rows = A.shape[0]
-            cols = A.shape[1]
-            a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
+            a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
             {SNIPPET_PLACEHOLDER}
         """
     ),
@@ -621,13 +624,13 @@ FRAGMENT_FIXTURES = {
         f"""
         @pto.jit(target="a5", mode="explicit")
         def kernel_entry_inline_explicit_scope_probe(
-            A: pto.tensor_spec(rank=2, dtype=pto.f32),
-            O: pto.tensor_spec(rank=2, dtype=pto.f32),
+            A_ptr: pto.ptr(pto.f32, "gm"),
+            O_ptr: pto.ptr(pto.f32, "gm"),
             *,
             BLOCK: pto.const_expr = 16,
         ):
-            a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
-            o_view = pto.make_tensor_view(O, shape=O.shape, strides=O.strides)
+            a_view = pto.make_tensor_view(A_ptr, shape=[1, BLOCK], strides=[BLOCK, 1])
+            o_view = pto.make_tensor_view(O_ptr, shape=[1, BLOCK], strides=[BLOCK, 1])
             part = pto.partition_view(a_view, offsets=[0, 0], sizes=[1, BLOCK])
             out_part = pto.partition_view(o_view, offsets=[0, 0], sizes=[1, BLOCK])
             tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32, valid_shape=[1, BLOCK])
@@ -1518,7 +1521,11 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.simt
-        def materialize_tile_bounds(meta_ptr, valid_rows: pto.i32, valid_cols: pto.i32):
+        def materialize_tile_bounds(
+            meta_ptr: pto.ptr(pto.i32, pto.MemorySpace.UB),
+            valid_rows: pto.i32,
+            valid_cols: pto.i32,
+        ):
             scalar.store(0, meta_ptr + 0)
             scalar.store(valid_rows, meta_ptr + 1)
             scalar.store(valid_cols, meta_ptr + 2)

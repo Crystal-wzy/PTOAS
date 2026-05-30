@@ -69,6 +69,48 @@ def common_include_flags() -> list[str]:
     ]
 
 
+def _append_unique_dir(dirs: list[Path], path: Path) -> None:
+    if not path.is_dir():
+        return
+    if path in dirs:
+        return
+    dirs.append(path)
+
+
+def simulator_library_dirs() -> list[Path]:
+    ascend = ascend_home_path()
+    dirs: list[Path] = []
+
+    _append_unique_dir(
+        dirs, ascend / "tools" / "simulator" / "Ascend950PR_9599" / "lib"
+    )
+
+    sim_lib_dir = os.environ.get("SIM_LIB_DIR")
+    if sim_lib_dir:
+        _append_unique_dir(dirs, Path(sim_lib_dir))
+        return dirs
+
+    _append_unique_dir(dirs, ascend / "x86_64-linux" / "simulator" / "dav_3510" / "lib")
+    for candidate in sorted(ascend.rglob("simulator/dav_3510/lib")):
+        _append_unique_dir(dirs, candidate)
+    return dirs
+
+
+def runtime_library_flags(*, sim_mode: bool = False) -> list[str]:
+    ascend = ascend_home_path()
+    lib_dirs = [ascend / "lib64"]
+    if sim_mode:
+        lib_dirs.extend(simulator_library_dirs())
+
+    flags: list[str] = []
+    for lib_dir in lib_dirs:
+        flags.extend([f"-L{lib_dir}", f"-Wl,-rpath,{lib_dir}"])
+
+    flags.append("-Wl,--no-as-needed")
+    flags.append("-lruntime_camodel" if sim_mode else "-lruntime")
+    return flags
+
+
 def aicore_arch_for_kernel_kind(kernel_kind: str) -> str:
     if kernel_kind == "vector":
         return "dav-c310-vec"
@@ -82,6 +124,8 @@ __all__ = [
     "ascend_driver_path",
     "ascend_home_path",
     "common_include_flags",
+    "runtime_library_flags",
+    "simulator_library_dirs",
     "resolve_bisheng",
     "resolve_ptoas_binary",
 ]

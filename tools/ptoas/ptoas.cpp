@@ -580,17 +580,6 @@ static bool hasUnexpandedTileOps(ModuleOp module) {
   return found;
 }
 
-static bool hasTilelangInlineHelpers(ModuleOp module) {
-  bool found = false;
-  module.walk([&](func::FuncOp func) {
-    if (found)
-      return;
-    if (func->hasAttr("pto.tilelang.inline_proc"))
-      found = true;
-  });
-  return found;
-}
-
 // --------------------------------------------------------------------------
 // Post-process C++ output: rewrite marker calls into Tile member calls.
 // We emit marker calls in EmitC IR because EmitC currently does not provide a
@@ -1517,13 +1506,6 @@ static void lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module, int argc,
   kernelModulePM.addPass(mlir::createCanonicalizerPass());
 }
 
-static void inlineTilelangHelpersOnVPTOInput(PassManager &pm) {
-  auto &kernelModulePM = pm.nest<ModuleOp>();
-  kernelModulePM.addPass(pto::createPTOInlineLibCallPass());
-  kernelModulePM.addPass(mlir::createSCCPPass());
-  kernelModulePM.addPass(mlir::createCanonicalizerPass());
-}
-
 static pto::VPTOEmissionOptions
 buildVPTOEmissionOptions(const pto::CANNVersion &cannVersion) {
   pto::VPTOEmissionOptions options;
@@ -1570,14 +1552,11 @@ static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
 
 static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
                                             int argc, char **argv,
-                                            bool hasTileOpsToExpand,
-                                            bool hasTilelangHelpers) {
+                                            bool hasTileOpsToExpand) {
   PassManager pm(module->getContext());
   pm.enableVerifier();
   pm.addPass(pto::createVPTOSplitCVModulePass());
   pm.addPass(pto::createVPTONormalizeContainerPass());
-  if (!hasTileOpsToExpand && hasTilelangHelpers)
-    inlineTilelangHelpersOnVPTOInput(pm);
   if (hasTileOpsToExpand)
     lowerPTOToVPTOBackend(pm, module.get(), argc, argv);
   prepareVPTOForEmission(pm);
@@ -1721,8 +1700,17 @@ int mlir::pto::compilePTOASModule(
       return 1;
   }
 
+  {
+    PassManager preBackendPM(module->getContext());
+    preBackendPM.enableVerifier();
+    preBackendPM.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
+    if (failed(preBackendPM.run(module.get()))) {
+      llvm::errs() << "Error: failed to normalize uncovered PTO tile sections.\n";
+      return 1;
+    }
+  }
+
   const bool hasTileOpsToExpand = hasUnexpandedTileOps(*module);
-  const bool hasTilelangHelpers = hasTilelangInlineHelpers(*module);
 
   if (effectiveBackend == PTOBackend::VPTO && !hasTileOpsToExpand) {
     if (ptoPrintSeamIR || !ptoSeamIRFile.empty()) {
@@ -1730,8 +1718,7 @@ int mlir::pto::compilePTOASModule(
                       "skipping the shared PTO-to-VPTO lowering pipeline.\n";
       return 1;
     }
-    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand,
-                                      hasTilelangHelpers)))
+    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand)))
       return 1;
     return emitVPTOBackendResult(*module, result, emitVPTOHostStub,
                                  context.getCANNVersionOrDefault());
@@ -1823,6 +1810,12 @@ int mlir::pto::compilePTOASModule(
   // backends consume the same post-planning seam IR.
   pm.addPass(pto::createPTOMaterializeTileHandlesPass());
   pm.addPass(createCSEPass());
+  // Inline PTODSL backend helpers only after the shared mainline has
+  // materialized tile-native handles, so helper arguments are restored to the
+  // tile_buf ABI before qk.as_ptr()-style bridges are cloned into callers.
+  pm.addPass(pto::createPTOInlineBackendHelpersPass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
   if (failed(applyConfiguredPassManagerCLOptions(pm, "main PTOAS pipeline")))
     return 1;
 
@@ -1842,8 +1835,7 @@ int mlir::pto::compilePTOASModule(
     if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
       return 1;
 
-    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand,
-                                      hasTilelangHelpers)))
+    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand)))
       return 1;
     return emitVPTOBackendResult(*module, result, emitVPTOHostStub,
                                  context.getCANNVersionOrDefault());

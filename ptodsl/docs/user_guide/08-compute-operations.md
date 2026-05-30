@@ -1300,7 +1300,14 @@ A full cube matmul follows a three-stage pattern: stage operands into L0A/L0B, c
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"data_movement.cube_helper","symbol":"data_movement_cube_helper_probe","compile":{"BLOCK_M":16,"BLOCK_K":16,"BLOCK_N":16}} -->
 ```python
 @pto.cube
-def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):
+def qk_matmul(
+    q_tile: pto.Tile,
+    k_tile: pto.Tile,
+    q_l0a: pto.Tile,
+    k_l0b: pto.Tile,
+    s_acc: pto.Tile,
+    s_tile: pto.Tile,
+):
     m = q_tile.valid_shape[0]
     k = q_tile.valid_shape[1]
     n = k_tile.valid_shape[1]

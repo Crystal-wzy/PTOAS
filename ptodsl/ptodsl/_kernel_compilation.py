@@ -12,6 +12,7 @@ from __future__ import annotations
 import inspect
 
 from ._ast_rewrite import rewrite_jit_function
+from ._diagnostics import kernel_module_compile_error, kernel_module_launch_error
 from ._runtime.launch import LaunchHandle, parse_launch_spec
 from ._tracing import ModuleArtifact, SignatureTracingRuntime
 
@@ -47,7 +48,14 @@ class CompiledKernelHandle(ModuleArtifact):
     def ir_function_name(self):
         return self._module_spec.function_name
 
+    @property
+    def kernel_module_graph(self):
+        """Return traced kernel-module import/dependency metadata for this build."""
+        return self.build_metadata().get("kernel_module_graph")
+
     def __getitem__(self, launch_spec):
+        if self._module_spec.entry is False:
+            raise kernel_module_launch_error(self._py_name)
         grid, stream = parse_launch_spec(launch_spec)
         return LaunchHandle(self, grid, stream)
 
@@ -73,6 +81,8 @@ class KernelCompiler:
         self._compiled_cache = {}
 
     def compile(self, **constexpr_bindings):
+        if self._module_spec.entry is False:
+            raise kernel_module_compile_error(self._py_name)
         normalized_bindings = self._kernel_signature.bind_constexpr_bindings(constexpr_bindings)
         kernel_identity = self._kernel_identity
         if self._ast_rewrite:
@@ -124,6 +134,9 @@ def _closure_cache_signature(fn):
 
 
 def _cache_signature_atom(value):
+    cache_signature = getattr(value, "__ptodsl_cache_signature__", None)
+    if callable(cache_signature):
+        return ("ptodsl-cache-signature", _cache_signature_atom(cache_signature()))
     try:
         hash(value)
     except TypeError:

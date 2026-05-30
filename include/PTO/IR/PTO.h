@@ -187,6 +187,19 @@ inline constexpr llvm::StringLiteral kPTOSimtMaxThreadsAttrName =
     "pto.simt_max_threads";
 inline constexpr llvm::StringLiteral kPTOSimtMaxRegistersAttrName =
     "pto.simt_max_regs";
+inline constexpr llvm::StringLiteral kPTODSLLogicalNameAttrName =
+    "pto.ptodsl.logical_name";
+
+/// Return the PTODSL logical function name when present, otherwise fall back to
+/// the current symbol name. PTODSL uses this to mark ABI-specialized helper and
+/// kernel-module symbols without relying on symbol-name parsing.
+inline StringRef getPTODSLLogicalNameOrSymbolName(func::FuncOp func) {
+  if (!func)
+    return {};
+  if (auto attr = func->getAttrOfType<StringAttr>(kPTODSLLogicalNameAttrName))
+    return attr.getValue();
+  return func.getSymName();
+}
 
 /// Return true if the function carries an explicit entry marker. PTO accepts
 /// both the EmitC naming (`pto.entry`) and VPTO naming (`pto.kernel`) as entry
@@ -199,8 +212,20 @@ bool isPTOEntryFunction(func::FuncOp func);
 /// Validate module-level PTO entry configuration before EmitC lowering.
 LogicalResult validatePTOEntryFunctions(ModuleOp module);
 
-/// Clear internal PTO entry selection markers from function attributes.
+/// Compatibility hook kept for existing pass pipelines. This is now a no-op
+/// because PTO entry state is expressed directly through explicit entry attrs
+/// such as ``pto.entry``.
 void annotatePTOEntryFunctions(ModuleOp module);
+
+/// Look up a peer function for import_reserved_buffer-style cross-kernel links.
+/// This first honors ordinary nearest symbol lookup, then falls back to the
+/// outer backend-partitioned container and PTODSL ABI-specialized public
+/// helper symbols when needed.
+func::FuncOp lookupPeerFuncAcrossContainer(Operation *op,
+                                           FlatSymbolRefAttr peerAttr);
+
+/// Find one reserve_buffer by logical name inside a function.
+ReserveBufferOp findReserveBufferByName(func::FuncOp funcOp, StringRef name);
 
 } // namespace pto
 } // namespace mlir

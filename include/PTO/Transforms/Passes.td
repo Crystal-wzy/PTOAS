@@ -282,6 +282,26 @@ def PTOWrapFunctionsInSections : Pass<"pto-wrap-functions-in-sections", "func::F
   ];
 }
 
+def PTONormalizeUncoveredTileSections
+    : Pass<"pto-normalize-uncovered-tile-sections", "ModuleOp"> {
+  let summary = "Collect uncovered top-level PTO tile segments before section normalization";
+  let description = [{
+    Scans function top-level blocks for contiguous operation segments that are
+    not already covered by `pto.section.cube` / `pto.section.vector`.
+
+    This pass is the shared entry point for inferred-section normalization:
+    explicit sections remain in place, while uncovered top-level segments that
+    contain tile operations are identified for later wrapping.
+  }];
+
+  let constructor = "mlir::pto::createPTONormalizeUncoveredTileSectionsPass()";
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
 def VPTOSplitCVModule : Pass<"vpto-split-cv-module", "ModuleOp"> {
   let summary = "Split a VPTO module with cube/vector sections into kernel modules";
   let description = [{
@@ -520,6 +540,28 @@ def PTOInlineLibCall : Pass<"pto-inline-libcall", "ModuleOp"> {
       "debug", "debug", "bool",
       /*default=*/"false",
       "Enable verbose debug logging for OP-Lib instantiation/inlining">];
+}
+
+def PTOInlineBackendHelpers
+    : Pass<"pto-inline-backend-helpers", "ModuleOp"> {
+  let summary = "Inline backend helper functions shared by VPTO and EmitC";
+  let description = [{
+    Force-inlines backend helper functions that should not survive to backend-
+    specific lowering:
+    - PTODSL subkernel helpers marked with `pto.ptodsl.subkernel_helper`
+
+    This pass runs on the shared mainline before backend-specific pipelines so
+    both VPTO and EmitC consume the same helper-inlined IR.
+  }];
+  let constructor = "mlir::pto::createPTOInlineBackendHelpersPass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect"];
+  let options = [Option<
+      "debug", "debug", "bool",
+      /*default=*/"false",
+      "Enable verbose debug logging for backend helper inlining">];
 }
 
 def PTOVerifyTFree : Pass<"pto-verify-tfree", "func::FuncOp"> {
