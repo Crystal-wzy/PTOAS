@@ -1909,19 +1909,6 @@ int main(int argc, char **argv) {
   // produced by PlanMemory survives as the alloc anchor.
   pm.addPass(pto::createPTOResolveBufferSelectPass());
 
-  std::unique_ptr<llvm::ToolOutputFile> outputFile;
-  llvm::raw_ostream *outputOS = &llvm::outs();
-  if (outputFilename != "-") {
-    std::error_code ec;
-    outputFile = std::make_unique<llvm::ToolOutputFile>(
-        outputFilename, ec, llvm::sys::fs::OF_None);
-    if (ec) {
-      llvm::errs() << ec.message() << "\n";
-      return 1;
-    }
-    outputOS = &outputFile->os();
-  }
-
   if (emitMlirIR) {
     if (failed(pm.run(*module))) {
       llvm::errs() << "Error: Pass execution failed.\n";
