@@ -14201,6 +14201,8 @@ static ParseResult parseL1Cache(OpAsmParser &parser, L1CacheAttr &l1cache) {
 
 static void printL1Cache(OpAsmPrinter &printer, Operation *op,
                          L1CacheAttr l1cache) {
+  if (!l1cache)
+    return;
   printer << "l1cache(" << stringifyL1Cache(l1cache.getValue()) << ")";
 }
 
@@ -14226,6 +14228,8 @@ static ParseResult parseLdL2Cache(OpAsmParser &parser,
 
 static void printLdL2Cache(OpAsmPrinter &printer, Operation *op,
                            LdL2CacheAttr l2cache) {
+  if (!l2cache)
+    return;
   printer << "l2cache(" << stringifyLdL2Cache(l2cache.getValue()) << ")";
 }
 
@@ -14251,6 +14255,8 @@ static ParseResult parseStL2Cache(OpAsmParser &parser,
 
 static void printStL2Cache(OpAsmPrinter &printer, Operation *op,
                            StL2CacheAttr l2cache) {
+  if (!l2cache)
+    return;
   printer << "l2cache(" << stringifyStL2Cache(l2cache.getValue()) << ")";
 }
 
