@@ -239,12 +239,97 @@ def tile_surface_compute_probe():
     rhs = pto.alloc_tile(shape=[2, 16], dtype=pto.f32)
     out = pto.alloc_tile(shape=[2, 16], dtype=pto.f32)
     cmp_out = pto.alloc_tile(shape=[2, 32], dtype=pto.i8, valid_shape=[2, 16])
+    reshape_src = pto.alloc_tile(shape=[8, 64], dtype=pto.f32, valid_shape=[8, 64])
 
     pto.tile.expands(1.0, lhs)
     pto.tile.expands(2.0, rhs)
     pto.tile.add(lhs, rhs, out)
     pto.tile.adds(out, 3.0, out)
     pto.tile.cmps(out, 0.0, cmp_out, cmp_mode=pto.CmpMode.GT)
+    reshape_1d = pto.tile.reshape(reshape_src, shape=[512])
+    reshape_col = pto.tile.reshape(reshape_src, shape=[8, 64], blayout="ColMajor")
+    expect(reshape_1d.shape == (512,), "pto.tile.reshape(..., shape=[...]) should expose the authored logical result shape")
+    expect(reshape_1d.physical_shape == (1, 512), "rank-1 pto.tile.reshape(...) should materialize the authored 1D physical shape")
+    expect(str(reshape_1d.dtype) == str(reshape_src.dtype), "pto.tile.reshape(..., dtype omitted) should preserve the source element type")
+    expect(reshape_1d.memory_space == reshape_src.memory_space, "pto.tile.reshape(...) should preserve the source memory space")
+    expect(
+        reshape_1d.static_valid_shape is None,
+        "pto.tile.reshape(...) should not preserve or infer reshaped valid_shape metadata on the current public surface",
+    )
+    expect(reshape_col.shape == (8, 64), "same-rank pto.tile.reshape(...) should preserve the authored logical result rank")
+    expect(
+        reshape_col.static_valid_shape is None,
+        "same-rank pto.tile.reshape(...) should also leave valid_shape metadata unset on the current public surface",
+    )
+    expect(
+        "valid_shape" in reshape_col.surface_metadata and reshape_col.surface_metadata["valid_shape"] is None,
+        "tile.reshape result should still expose valid_shape surface metadata even when it is unset",
+    )
+    _ = reshape_1d
+    _ = reshape_col
+
+
+@pto.jit(target="a5")
+def tile_surface_window_matmul_probe():
+    src_mat = pto.alloc_tile(
+        shape=[64, 64],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.MAT,
+        valid_shape=[64, 64],
+    )
+    dst_mat = pto.alloc_tile(
+        shape=[64, 64],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.MAT,
+        blayout="ColMajor",
+        slayout="RowMajor",
+        valid_shape=[64, 64],
+    )
+    lhs_l0a = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.LEFT,
+        blayout="ColMajor",
+        slayout="RowMajor",
+        valid_shape=[16, 16],
+    )
+    rhs_l0b = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.RIGHT,
+        blayout="RowMajor",
+        slayout="ColMajor",
+        valid_shape=[16, 16],
+    )
+    acc_prev = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        blayout="ColMajor",
+        slayout="RowMajor",
+        valid_shape=[16, 16],
+    )
+    acc_insert = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        blayout="ColMajor",
+        slayout="RowMajor",
+        valid_shape=[16, 16],
+    )
+    acc_out = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        blayout="ColMajor",
+        slayout="RowMajor",
+        valid_shape=[16, 16],
+    )
+
+    pto.tile.extract(src_mat, lhs_l0a, 8, 16)
+    pto.tile.insert(acc_insert, dst_mat, 0, 32)
+    pto.tile.matmul(lhs_l0a, rhs_l0b, acc_out)
+    pto.tile.matmul_acc(acc_prev, lhs_l0a, rhs_l0b, acc_out)
 
 
 SUBKERNEL_OBSERVATIONS = []
@@ -503,6 +588,16 @@ def make_mask_index_roundtrip_probe(
     cols: pto.i32,
 ):
     col_loop = pto.for_(0, cols, step=64).carry(remained=cols)
+    with col_loop:
+        remained = col_loop.remained
+        mask, remained_after_pack = pto.make_mask(pto.f32, remained)
+        _ = mask
+        col_loop.update(remained=remained_after_pack)
+
+
+@pto.jit(target="a5", mode="explicit")
+def carry_static_pyint_init_probe():
+    col_loop = pto.for_(0, 64, step=64).carry(remained=64)
     with col_loop:
         remained = col_loop.remained
         mask, remained_after_pack = pto.make_mask(pto.f32, remained)
@@ -1092,27 +1187,144 @@ def public_data_movement_surface_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
-def vector_post_update_surface_probe():
+def public_vector_conversion_surface_probe():
     zero_u64 = pto.const(0, dtype=pto.ui64)
-    ub_src = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
-    ub_dst = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
-    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    ub_i32 = pto.castptr(zero_u64, pto.ptr(pto.i32, "ub"))
+    ub_f16 = pto.castptr(zero_u64, pto.ptr(pto.f16, "ub"))
 
-    vec, load_base = pto.vlds(ub_src, pto.const(0), return_updated_base=True)
-    store_base = pto.vsts(vec, ub_dst, pto.const(0), mask32_full, return_updated_base=True)
-    block_base = pto.vsstb(
-        vec,
-        ub_dst,
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32, ub_f32_next = pto.vlds(ub_f32, pto.const(0), post_update=pto.PostUpdate.ON)
+    vec_i32 = pto.vlds(ub_i32, pto.const(0))
+    converted = pto.vcvt(
+        vec_f32,
+        pto.f16,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.R,
+        sat=pto.VcvtSatMode.SAT,
+        part=pto.VcvtPartMode.EVEN,
+    )
+    ub_f16_next = pto.vsts(
+        converted,
+        ub_f16,
+        pto.const(0),
+        mask32_full,
+        dist=pto.VStoreDist.PK_B32,
+        post_update=pto.PostUpdate.ON,
+    )
+    packed = pto.vpack(vec_i32, pto.VPackPart.LOWER)
+
+    _ = ub_f32_next
+    _ = ub_f16_next
+    _ = packed
+
+
+@pto.jit(target="a5", mode="explicit")
+def vdup_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    scalar_dup = pto.vdup(0.0, mask32_full)
+    lowest_dup = pto.vdup(vec_f32, mask32_full)
+    highest_dup = pto.vdup(vec_f32, mask32_full, pto.PositionMode.HIGHEST)
+    _ = scalar_dup
+    _ = lowest_dup
+    _ = highest_dup
+
+
+@pto.jit(target="a5", mode="explicit")
+def vdup_surface_invalid_scalar_position_probe():
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    _ = pto.vdup(pto.f32(0), mask32_full, pto.PositionMode.HIGHEST)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vmulscvt_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    packed = pto.vmulscvt(
+        vec_f32,
+        1.0,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.A,
+        part=pto.PartMode.EVEN,
+    )
+    _ = packed
+
+
+@pto.jit(target="a5", mode="explicit")
+def vcvt_surface_invalid_dtype_pair_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vcvt(vec_f32, pto.ui16, mask32_full)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vmulscvt_surface_invalid_dtype_pair_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_i32 = pto.castptr(zero_u64, pto.ptr(pto.i32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_i32 = pto.vlds(ub_i32, pto.const(0))
+    _ = pto.vmulscvt(
+        vec_i32,
+        1.0,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.A,
+        part=pto.PartMode.EVEN,
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def vpack_surface_invalid_shape_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_i64 = pto.castptr(zero_u64, pto.ptr(pto.i64, "ub"))
+    vec_i64 = pto.vlds(ub_i64, pto.const(0))
+    _ = pto.vpack(vec_i64, pto.VPackPart.LOWER)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vpack_surface_invalid_part_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_i32 = pto.castptr(zero_u64, pto.ptr(pto.i32, "ub"))
+    vec_i32 = pto.vlds(ub_i32, pto.const(0))
+    _ = pto.vpack(vec_i32, "MIDDLE")
+
+
+@pto.jit(target="a5", mode="explicit")
+def vmulscvt_surface_invalid_attr_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vmulscvt(
+        vec_f32,
+        1.0,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.R,
+        part=pto.PartMode.EVEN,
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def vsstb_post_update_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    ub_f32_next = pto.vsstb(
+        vec_f32,
+        ub_f32,
         pto.i16(32),
         pto.i16(0),
         mask32_full,
-        return_updated_base=True,
+        post_update=pto.PostUpdate.ON,
     )
-
-    _ = load_base
-    _ = store_base
-    _ = block_base
-
+    _ = ub_f32_next
 
 @pto.jit(target="a5")
 def auto_mode_explicit_surface_violation_probe():
@@ -1162,6 +1374,12 @@ def main() -> None:
         "DeinterleaveDist",
         "InterleaveDist",
         "PostUpdate",
+        "PartMode",
+        "PositionMode",
+        "VPackPart",
+        "VcvtRoundMode",
+        "VcvtSatMode",
+        "VcvtPartMode",
         "AlignType",
         "init_align",
         "plt_b8",
@@ -1177,6 +1395,9 @@ def main() -> None:
         "pnot",
         "psel",
         "pbitcast",
+        "vcvt",
+        "vpack",
+        "vmulscvt",
         "ppack",
         "punpack",
         "pintlv_b8",
@@ -1259,6 +1480,8 @@ def main() -> None:
     expect(hasattr(pto.tile, "cmps"), "pto.tile.cmps should be exported from the public tile namespace")
     expect(not hasattr(pto, "load_tile"), "pto.load_tile should not remain on the public pto namespace")
     expect(not hasattr(pto, "store_tile"), "pto.store_tile should not remain on the public pto namespace")
+    expect(hasattr(pto.tile, "matmul"), "pto.tile.matmul should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "matmul_acc"), "pto.tile.matmul_acc should be exported from the public tile namespace")
     expect(not hasattr(pto, "tload"), "legacy pto.tload should not remain on the public pto namespace")
     expect(not hasattr(pto, "tstore"), "legacy pto.tstore should not remain on the public pto namespace")
     expect(not hasattr(pto, "tadd"), "legacy pto.tadd should not remain on the public pto namespace")
@@ -1348,6 +1571,10 @@ def main() -> None:
     public_mask_surface_probe.verify()
     public_sync_surface_probe.verify()
     public_data_movement_surface_probe.verify()
+    public_vector_conversion_surface_probe.verify()
+    vdup_surface_probe.verify()
+    vmulscvt_surface_probe.verify()
+    vsstb_post_update_surface_probe.verify()
 
     with make_context() as ctx, Location.unknown(ctx):
         expect(
@@ -1633,6 +1860,7 @@ def main() -> None:
     tile_surface_text = tile_surface_compute_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(tile_surface_text, "tile surface compute specialization")
     expect("pto.texpands" in tile_surface_text, "pto.tile.expands should lower to pto.texpands")
+    expect("pto.treshape" in tile_surface_text, "pto.tile.reshape should lower to pto.treshape")
     expect("pto.tadd " in tile_surface_text, "pto.tile.add should lower to pto.tadd")
     expect("pto.tadds" in tile_surface_text, "pto.tile.adds should lower to pto.tadds")
     expect("pto.tcmps" in tile_surface_text, "pto.tile.cmps should lower to pto.tcmps")
@@ -1649,6 +1877,24 @@ def main() -> None:
             runtime_metadata_text,
         ) is not None,
         "partition_view sizes derived from tensor metadata should remain runtime MLIR values",
+    )
+
+    tile_window_matmul_text = tile_surface_window_matmul_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(tile_window_matmul_text, "tile extract/insert/matmul specialization")
+    expect("pto.textract" in tile_window_matmul_text, "pto.tile.extract should lower to pto.textract")
+    expect("pto.tinsert" in tile_window_matmul_text, "pto.tile.insert should lower to pto.tinsert")
+    expect("pto.tmatmul ins(" in tile_window_matmul_text, "pto.tile.matmul should lower to pto.tmatmul")
+    expect("pto.tmatmul.acc ins(" in tile_window_matmul_text, "pto.tile.matmul_acc should lower to pto.tmatmul.acc")
+    expect("!pto.tile_buf<left, 16x16xf16" in tile_window_matmul_text, "pto.tile.matmul lhs should preserve LEFT scratch tile typing")
+    expect("!pto.tile_buf<right, 16x16xf16" in tile_window_matmul_text, "pto.tile.matmul rhs should preserve RIGHT scratch tile typing")
+    expect("!pto.tile_buf<acc, 16x16xf32" in tile_window_matmul_text, "pto.tile.matmul/matmul_acc should preserve ACC destination typing")
+    expect(
+        "pto.tinsert ins(" in tile_window_matmul_text and ", %c0, %c32 :" in tile_window_matmul_text,
+        "pto.tile.insert should preserve the authored insertion offsets in MLIR",
+    )
+    expect(
+        "pto.tmatmul.acc ins(" in tile_window_matmul_text and tile_window_matmul_text.count("%") >= 3,
+        "pto.tile.matmul_acc should materialize acc_in/lhs/rhs operands in MLIR",
     )
 
     tile_transfer_text = tile_transfer_surface_probe.compile().mlir_text()
@@ -1733,6 +1979,20 @@ def main() -> None:
             make_mask_index_roundtrip_text,
         ) is not None,
         "make_mask(...) should keep the carried remainder in public i32 form after tail-mask generation",
+    )
+
+    carry_static_pyint_init_text = carry_static_pyint_init_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(carry_static_pyint_init_text, "carry static pyint init specialization")
+    expect(
+        re.search(
+            r"iter_args\(%[a-zA-Z0-9_]+ = %c64_i32\) -> \(i32\)",
+            carry_static_pyint_init_text,
+        ) is not None,
+        "pto.for_(...).carry(remained=64) should materialize Python int carry init values as public i32 constants",
+    )
+    expect(
+        "pto.plt_b32" in carry_static_pyint_init_text,
+        "a carried Python int should remain compatible with make_mask(...) without manual pto.const(...) wrapping",
     )
 
     SUBKERNEL_OBSERVATIONS.clear()
@@ -2009,8 +2269,14 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(sync_surface_text, "public sync surface specialization")
     data_movement_surface_text = public_data_movement_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(data_movement_surface_text, "public data movement surface specialization")
-    vector_post_update_surface_text = vector_post_update_surface_probe.compile().mlir_text()
-    expect_parse_roundtrip_and_verify(vector_post_update_surface_text, "vector post-update surface specialization")
+    vector_conversion_surface_text = public_vector_conversion_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vector_conversion_surface_text, "public vector conversion surface specialization")
+    vdup_surface_text = vdup_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vdup_surface_text, "public vdup surface specialization")
+    vmulscvt_surface_text = vmulscvt_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vmulscvt_surface_text, "public vmulscvt surface specialization")
+    vsstb_post_update_surface_text = vsstb_post_update_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vsstb_post_update_surface_text, "vsstb post-update surface specialization")
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")
@@ -2052,16 +2318,29 @@ def main() -> None:
     expect("pto.vscatter" in data_movement_surface_text, "vscatter(...) should lower to pto.vscatter")
     expect("pto.vsldb" in data_movement_surface_text, "vsldb(...) should lower to pto.vsldb")
     expect("pto.vsstb" in data_movement_surface_text, "vsstb(...) should lower to pto.vsstb")
-    expect(
-        "-> !pto.vreg<64xf32>, !pto.ptr<f32, ub>" in vector_post_update_surface_text,
-        "vlds(..., return_updated_base=True) should request the updated base result",
-    )
-    expect(
-        vector_post_update_surface_text.count("-> !pto.ptr<f32, ub>") >= 2,
-        "vsts/vsstb(..., return_updated_base=True) should request updated base results",
-    )
     expect("pto.vstar" in data_movement_surface_text, "vstar(...) should lower to pto.vstar")
     expect("pto.vstas" in data_movement_surface_text, "vstas(...) should lower to pto.vstas")
+    expect("pto.vlds" in vector_conversion_surface_text, "vlds(..., post_update=ON) should lower through pto.vlds on the current VPTO Python surface")
+    expect("-> !pto.vreg<64xf32>, !pto.ptr<f32, ub>" in vector_conversion_surface_text, "vlds(..., post_update=ON) should request the updated source pointer result")
+    expect("pto.vcvt" in vector_conversion_surface_text, "vcvt(...) should lower to pto.vcvt")
+    expect('rnd = "R"' in vector_conversion_surface_text, "vcvt(..., rnd=VcvtRoundMode.R) should preserve the authored rounding attr")
+    expect('sat = "SAT"' in vector_conversion_surface_text, "vcvt(..., sat=VcvtSatMode.SAT) should preserve the authored saturation attr")
+    expect('part = "EVEN"' in vector_conversion_surface_text, "vcvt(..., part=VcvtPartMode.EVEN) should preserve the authored part attr")
+    expect("pto.vsts" in vector_conversion_surface_text, "vsts(..., post_update=ON) should lower through pto.vsts on the current VPTO Python surface")
+    expect(vector_conversion_surface_text.count("-> !pto.ptr<f16, ub>") >= 1, "vsts(..., post_update=ON) should request the updated destination pointer result")
+    expect('dist = "PK_B32"' in vector_conversion_surface_text, "vsts(..., dist=VStoreDist.PK_B32) should preserve the authored store distribution")
+    expect("pto.vpack" in vector_conversion_surface_text, "vpack(...) should lower to pto.vpack")
+    expect("!pto.vreg<128xui16>" in vector_conversion_surface_text, "vpack(i32/u32 -> u16) should infer the unsigned packed result type")
+    expect(vdup_surface_text.count("pto.vdup") == 3, "vdup(...) should lower once per authored scalar/vector duplication")
+    expect("f32, !pto.mask<b32> -> !pto.vreg<64xf32>" in vdup_surface_text, "vdup(scalar_f32, mask_b32) should infer an f32 vector result type")
+    expect(vdup_surface_text.count('position = "LOWEST"') >= 1, "vdup(vec, mask) should default position to LOWEST")
+    expect('position = "HIGHEST"' in vdup_surface_text, "vdup(vec, mask, PositionMode.HIGHEST) should preserve the authored position")
+    expect("pto.vmulscvt" in vmulscvt_surface_text, "vmulscvt(...) should lower to pto.vmulscvt")
+    expect('\"A\"' in vmulscvt_surface_text, "vmulscvt(..., rnd=VcvtRoundMode.A) should preserve the authored round token")
+    expect('\"EVEN\"' in vmulscvt_surface_text, "vmulscvt(..., part=PartMode.EVEN) should preserve the authored part token")
+    expect("!pto.vreg<128xf16>" in vmulscvt_surface_text, "vmulscvt(f32 -> f16) should infer the packed f16 result type")
+    expect("pto.vsstb" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should still lower through pto.vsstb on the current VPTO IR")
+    expect("-> !pto.ptr<f32, ub>" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should request the updated destination pointer result")
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
     expect("pto.mte_l1_l0a_mx" in public_surface_text, "mte_l1_l0a_mx(...) should lower to pto.mte_l1_l0a_mx")
     expect("pto.mte_l1_l0b_mx" in public_surface_text, "mte_l1_l0b_mx(...) should lower to pto.mte_l1_l0b_mx")
@@ -2088,6 +2367,41 @@ def main() -> None:
     expect(mask_bitcast_text.count("pto.pbitcast") == 2, "pbitcast(...) should lower to pto.pbitcast for each authored mask reinterpretation")
     expect("!pto.mask<b16>" in mask_bitcast_text, "pbitcast(mask, pto.mask_b16) should materialize the requested result mask type")
     expect("!pto.mask<b32>" in mask_bitcast_text, "pbitcast(mask, pto.mask_b32) should materialize the requested result mask type")
+    expect_raises(
+        ValueError,
+        lambda: vmulscvt_surface_invalid_attr_probe.compile(),
+        "vmulscvt(..., rnd=...) currently only supports A",
+    )
+    expect_raises(
+        TypeError,
+        lambda: pto.vmulscvt(None, None, None, rnd=pto.VcvtRoundMode.A, part=pto.PartMode.EVEN, sat=pto.VcvtSatMode.SAT),
+        "got an unexpected keyword argument 'sat'",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vcvt_surface_invalid_dtype_pair_probe.compile(),
+        "vcvt(src, to_dtype, mask) currently does not support the dtype pair f32 -> u16",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vmulscvt_surface_invalid_dtype_pair_probe.compile(),
+        "vmulscvt(src, scalar, mask) currently only supports the dtype pair f32 -> f16",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vpack_surface_invalid_shape_probe.compile(),
+        "vpack(src, part) currently supports only the source/result shape pairs s32/u32 -> u16 and s16/u16 -> u8",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vdup_surface_invalid_scalar_position_probe.compile(),
+        "position is only valid for vector input",
+    )
+    expect_raises(
+        ValueError,
+        lambda: vpack_surface_invalid_part_probe.compile(),
+        "vpack(src, part) does not support part",
+    )
     expect("pto.pset_b8" in mask_surface_text, "pset_b8(...) should lower to pto.pset_b8")
     expect("pto.pset_b16" in mask_surface_text, "pset_b16(...) should lower to pto.pset_b16")
     expect("pto.pset_b32" in mask_surface_text, "pset_b32(...) should lower to pto.pset_b32")

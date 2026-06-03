@@ -210,6 +210,57 @@ class SplitMode(str, Enum):
     M = "M"
     N = "N"
 
+class PartMode:
+    """Public PTODSL EVEN/ODD part selectors."""
+
+    EVEN = "EVEN"
+    ODD = "ODD"
+
+
+class PositionMode:
+    """Public PTODSL source-lane selectors for vdup vector input."""
+
+    LOWEST = "LOWEST"
+    HIGHEST = "HIGHEST"
+
+
+class VPackPart:
+    """Public PTODSL pack-half selectors."""
+
+    LOWER = "LOWER"
+    HIGHER = "HIGHER"
+
+
+class VcvtRoundMode:
+    """Public PTODSL vcvt/vtrc rounding-mode tokens."""
+
+    R = "R"
+    A = "A"
+    F = "F"
+    C = "C"
+    Z = "Z"
+    O = "O"
+
+
+class VcvtSatMode:
+    """Public PTODSL vcvt saturation-mode tokens."""
+
+    SAT = "SAT"
+    NOSAT = "NOSAT"
+    RS_ENABLE = "SAT"
+    RS_DISABLE = "NOSAT"
+
+
+class VcvtPartMode:
+    """Public PTODSL vcvt part selectors."""
+
+    EVEN = "EVEN"
+    ODD = "ODD"
+    P0 = "P0"
+    P1 = "P1"
+    P2 = "P2"
+    P3 = "P3"
+
 
 AlignType = _pto.AlignType
 DivPrecision = _pto.DivPrecision
@@ -252,6 +303,12 @@ __all__ = [
     "SatMode",
     "Tf32Mode",
     "SplitMode",
+    "PartMode",
+    "PositionMode",
+    "VPackPart",
+    "VcvtRoundMode",
+    "VcvtSatMode",
+    "VcvtPartMode",
     "AlignType",
     "DivPrecision",
     "ExpPrecision",

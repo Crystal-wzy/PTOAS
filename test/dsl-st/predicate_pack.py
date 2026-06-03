@@ -73,18 +73,20 @@ def predicate_pack_part_kernel(
     src_tile = pto.alloc_tile(
         shape=[1, 32],
         dtype=pto.ui8,
-        addr=pto.const(0, dtype=pto.i64),
+        addr=0,
         valid_shape=[rows, cols],
     )
     dst_tile = pto.alloc_tile(
         shape=[ROWS, ROW_BYTES],
         dtype=pto.ui8,
-        addr=pto.const(1024, dtype=pto.i64),
+        addr=1024,
         valid_shape=[ROWS, ROW_BYTES],
     )
 
     pto.tile.load(inp_part, src_tile)
     pto.tile.load(out_part, dst_tile)
+    pto.set_flag("MTE2", "V", event_id=0)
+    pto.wait_flag("MTE2", "V", event_id=0)
 
     with pto.simd():
         seed = pto.pset_b8(pto.MaskPattern.ALL)
@@ -112,6 +114,8 @@ def predicate_pack_part_kernel(
         pto.psts(packed_hi_b16, dst_tile.as_ptr(), ROW_BYTES * 7, dist="NORM")
         pto.psts(unpacked_hi_b32, dst_tile.as_ptr(), ROW_BYTES * 8, dist="NORM")
 
+    pto.set_flag("V", "MTE3", event_id=0)
+    pto.wait_flag("V", "MTE3", event_id=0)
     pto.tile.store(dst_tile, out_part)
 
 
@@ -172,6 +176,8 @@ CASES = [
         predicate_pack_part_kernel,
         inputs=make_inputs,
         expected=make_expected,
+        launch_args=lambda inp: [inp.shape[0], inp.shape[1]],
+        output_index=1,
         rtol=0.0,
         atol=0.0,
     ),

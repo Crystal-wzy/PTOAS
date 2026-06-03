@@ -17,7 +17,7 @@ usage() {
 Run a PTODSL JIT example under `msprof op simulator`.
 
 Usage:
-  scripts/sim_dsl.sh [options] <example.py> [-- <example args...>]
+  scripts/sim_dsl.sh [options] <example.py|dsl-st-dir> [-- <example args...>]
 
 Options:
   --output <dir>        Final directory to sync results into after the run.
@@ -38,6 +38,7 @@ Environment:
 
 Examples:
   scripts/sim_dsl.sh ptodsl/examples/jit/tadd_launch.py
+  scripts/sim_dsl.sh test/dsl-st
   scripts/sim_dsl.sh \
     --output "$PWD/build/msprof_res/flash_softmax" \
     ptodsl/examples/jit/flash_attention_softmax_launch.py
@@ -147,10 +148,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "${EXAMPLE_PATH}" ]] || die "missing <example.py>"
+[[ -n "${EXAMPLE_PATH}" ]] || die "missing <example.py|dsl-st-dir>"
 
 if [[ "${EXAMPLE_PATH}" != /* ]]; then
   EXAMPLE_PATH="${REPO_ROOT}/${EXAMPLE_PATH}"
+fi
+if [[ -d "${EXAMPLE_PATH}" ]]; then
+  EXAMPLE_PATH="${EXAMPLE_PATH}/__main__.py"
 fi
 [[ -f "${EXAMPLE_PATH}" ]] || die "example script not found: ${EXAMPLE_PATH}"
 

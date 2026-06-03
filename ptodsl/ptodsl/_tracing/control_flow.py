@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from .._runtime_index_ops import coerce_runtime_index
 from .._surface_values import unwrap_surface_value
 
+from mlir.dialects import arith
 from mlir.dialects import scf
-from mlir.ir import InsertionPoint
+from mlir.ir import InsertionPoint, IntegerType
 
 
 @dataclass
@@ -34,7 +35,7 @@ def build_carry_loop_frame(start, stop, step, state_items) -> CarryLoopFrame:
     state_items = tuple(state_items)
     state_names = tuple(name for name, _ in state_items)
     state_templates = tuple(value for _, value in state_items)
-    iter_args = [unwrap_surface_value(value) for value in state_templates]
+    iter_args = [_materialize_carry_init(value) for value in state_templates]
     for_op = scf.ForOp(
         _coerce_index(start),
         _coerce_index(stop),
@@ -82,6 +83,15 @@ def finish_carry_loop_frame(frame: CarryLoopFrame, exc_type, exc, tb) -> None:
 def _coerce_index(value):
     raw_value = unwrap_surface_value(value)
     return coerce_runtime_index(raw_value, context="pto.for_(...).carry(...) loop bound")
+
+
+def _materialize_carry_init(value):
+    raw_value = unwrap_surface_value(value)
+    if isinstance(raw_value, bool):
+        raise TypeError("pto.for_(...).carry(...) does not accept bool loop-carried values")
+    if isinstance(raw_value, int):
+        return arith.ConstantOp(IntegerType.get_signless(32), raw_value).result
+    return raw_value
 
 
 __all__ = [

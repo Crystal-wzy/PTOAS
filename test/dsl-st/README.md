@@ -17,6 +17,11 @@
 - `golden_output_case(...)`
 - `auto_main(globals())`
 
+目录级运行时，还可以直接使用：
+
+- `python3 test/dsl-st`
+- `scripts/sim_dsl.sh test/dsl-st`
+
 对大多数单输出测试，开发者只需要写：
 
 1. kernel
@@ -119,7 +124,7 @@ auto_main(globals())
 
 可以直接参考：
 
-- [predicate_pack_launch.py](/home/zhangzhendong/ptoas-workspace/PTOAS/test/dsl-st/predicate_pack_launch.py)
+- [predicate_pack.py](/home/zhangzhendong/ptoas-workspace/PTOAS/test/dsl-st/predicate_pack.py)
 - [cube_matrix_pipeline.py](/home/zhangzhendong/ptoas-workspace/PTOAS/test/dsl-st/cube_matrix_pipeline.py)
 
 它演示了：
@@ -131,16 +136,34 @@ auto_main(globals())
 
 ## 运行方式
 
-打印生成的 MLIR：
+单文件打印生成的 MLIR：
 
 ```bash
-python3 test/dsl-st/predicate_pack_launch.py --emit-mlir
+python3 test/dsl-st/predicate_pack.py --emit-mlir
 ```
 
-走 simulator ST：
+单文件走 simulator ST：
 
 ```bash
-scripts/sim_dsl.sh test/dsl-st/predicate_pack_launch.py
+scripts/sim_dsl.sh test/dsl-st/predicate_pack.py
+```
+
+自动发现整个目录下的测例并列出 case name：
+
+```bash
+python3 test/dsl-st --list
+```
+
+自动发现整个目录下的测例并打印合并 MLIR：
+
+```bash
+python3 test/dsl-st --emit-mlir
+```
+
+自动发现整个目录下的测例并走 simulator ST：
+
+```bash
+scripts/sim_dsl.sh test/dsl-st
 ```
 
 如果只是先做编译链检查，也可以先跑：
@@ -152,7 +175,17 @@ python3 ptodsl/tests/test_jit_compile.py
 ## 编写建议
 
 - 优先让 golden 直接表达语义，不要把 expected 写成难懂的魔数堆。
-- 尽量让一个测试只保护一个回归点；如果要覆盖一组紧密相关的形态，可以像 `predicate_pack_launch.py` 一样在同一个 kernel 里并排 materialize。
+- 尽量让一个测试只保护一个回归点；如果要覆盖一组紧密相关的形态，可以像 `predicate_pack.py` 一样在同一个 kernel 里并排 materialize。
 - 对 predicate / bit-level 结果，优先用 `psts` 这类“直接 materialize raw state”的方式观测，不要绕远路通过别的算子副作用来猜结果。
 - 能用 Python 原生字面量的地方就直接用，减少不必要的 `pto.const(...)` 噪音。
 - 如果某个写法依赖当前 backend / raw image 约定，最好在 golden 附近留一小段注释，解释为什么 expected 长这样。
+
+## 自动发现约定
+
+`test/dsl-st/` 目录级 runner 会自动加载当前目录下所有顶层 `.py` 用例文件，但会跳过：
+
+- `common.py`
+- `__main__.py`
+- 以下划线开头的辅助模块
+
+每个被发现的模块都需要定义非空 `CASES` 列表，且所有 case name 在目录内必须唯一。

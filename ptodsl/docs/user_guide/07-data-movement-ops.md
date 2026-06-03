@@ -316,9 +316,9 @@ The compiler automatically computes the byte offset from the tile's shape, eleme
 
 ---
 
-#### `pto.vlds(tile[row, col:], dist: VLoadDist | None = None, return_updated_base: bool = False) -> VRegType | (VRegType, PtrType)`
-#### `pto.vlds(tile[start:], dist: VLoadDist | None = None, return_updated_base: bool = False) -> VRegType | (VRegType, PtrType)`
-#### `pto.vlds(buf: PtrType, offset: Index, dist: VLoadDist | None = None, return_updated_base: bool = False) -> VRegType | (VRegType, PtrType)`
+#### `pto.vlds(tile[row, col:], *, dist: VLoadDist | None = None) -> VRegType`
+#### `pto.vlds(tile[start:], *, dist: VLoadDist | None = None) -> VRegType`
+#### `pto.vlds(buf: PtrType, offset: Index, *, dist: VLoadDist | None = None, post_update: PostUpdate = PostUpdate.OFF) -> VRegType | (VRegType, PtrType)`
 
 **Description**: Stateless vector load from UB. Reads one vector-width slice.
 
@@ -331,16 +331,15 @@ The compiler automatically computes the byte offset from the tile's shape, eleme
 | `buf` | `PtrType` (UB) | Pointer to buffer in UB (pointer form) |
 | `offset` | `Index` | Element offset (pointer form) |
 | `dist` | `VLoadDist` or `None` | Optional load distribution: `NORM` (default), `UNPK_B8`/`UNPK_B16`/`UNPK_B32`, `BRC_B8`/`BRC_B16`/`BRC_B32` |
-| `return_updated_base` | `bool` | When `True`, also returns the post-update base address |
+| `post_update` | `PostUpdate` | Pointer form only. `OFF` (default) — stateless load. `ON` — returns `(vec, updated_buf)` where `updated_buf` is the buffer pointer advanced past the loaded elements |
 
 **Returns**:
 
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `vec` | `VRegType` | Loaded vector register |
-| `updated_base` | `PtrType` | Returned with `vec` when `return_updated_base=True` |
+| `vec` | `VRegType` | Loaded vector register (when `post_update=OFF`) |
+| `(vec, updated_buf)` | `(VRegType, PtrType)` | Loaded vector and advanced pointer (when `post_update=ON`, pointer form only) |
 
----
 
 #### `pto.vldsx2(tile[row, col:], dist: DeinterleaveDist) -> (VRegType, VRegType)`
 #### `pto.vldsx2(tile[start:], dist: DeinterleaveDist) -> (VRegType, VRegType)`
@@ -546,12 +545,14 @@ blocks are zero-filled.
 
 Vector stores write `vreg` contents back to UB tiles. Like loads, they support tile-index syntax.
 
-#### `pto.vsts(vec: VRegType, tile[row, col:], mask: MaskType, dist: VStoreDist | None = None, return_updated_base: bool = False) -> PtrType | None`
-#### `pto.vsts(vec: VRegType, tile[start:], mask: MaskType, dist: VStoreDist | None = None, return_updated_base: bool = False) -> PtrType | None`
-#### `pto.vsts(vec: VRegType, buf: PtrType, offset: Index, mask: MaskType, dist: VStoreDist | None = None, return_updated_base: bool = False) -> PtrType | None`
+#### `pto.vsts(vec: VRegType, tile[row, col:], mask: MaskType, dist: VStoreDist | None = None, *, post_update: PostUpdate = PostUpdate.OFF) -> None`
+#### `pto.vsts(vec: VRegType, tile[start:], mask: MaskType, dist: VStoreDist | None = None, *, post_update: PostUpdate = PostUpdate.OFF) -> None`
+#### `pto.vsts(vec: VRegType, buf: PtrType, offset: Index, mask: MaskType, dist: VStoreDist | None = None, *, post_update: PostUpdate = PostUpdate.OFF) -> None | PtrType`
 
-**Description**: Stateless vector store to UB. The mask gates writes for the
-distributions that use predicate masking.
+**Description**: Vector store to UB. The mask gates writes for the distributions
+that use predicate masking. When `post_update=PostUpdate.ON`, the pointer form
+returns the updated destination pointer. Tile-index forms remain side-effect
+only and currently support `post_update=PostUpdate.OFF` only.
 
 **Parameters**:
 
@@ -562,11 +563,11 @@ distributions that use predicate masking.
 | `tile[start:]` | Tile index | 1D destination (vector-width range) |
 | `buf` | `PtrType` (UB) | Destination buffer (pointer form) |
 | `offset` | `Index` | Element offset (pointer form) |
-| `return_updated_base` | `bool` | When `True`, returns the post-update base address |
+| `post_update` | `PostUpdate` | Pointer-form stateful store mode. `ON` returns the updated destination pointer. |
 | `mask` | `MaskType` | Predicate mask gating writes |
 | `dist` | `VStoreDist` or `None` | Store distribution token. When omitted, PTODSL defaults to `NORM_B32` on the current surface. |
 
-**Returns**: None (side-effect operation).
+**Returns**: `None` for tile-index forms and pointer-form stores with `post_update=PostUpdate.OFF`; the updated destination `PtrType` for pointer-form stores with `post_update=PostUpdate.ON`.
 
 **Distribution families**:
 
@@ -623,13 +624,15 @@ into one destination.
 
 ---
 
-#### `pto.vsstb(tile[row, col], block_stride: Index, repeat_stride: Index, mask: MaskType, return_updated_base: bool = False) -> PtrType | None`
-#### `pto.vsstb(tile[pos], block_stride: Index, repeat_stride: Index, mask: MaskType, return_updated_base: bool = False) -> PtrType | None`
-#### `pto.vsstb(buf: PtrType, block_stride: Index, repeat_stride: Index, mask: MaskType, return_updated_base: bool = False) -> PtrType | None`
+#### `pto.vsstb(tile[row, col], block_stride: Index, repeat_stride: Index, mask: MaskType, *, post_update: PostUpdate = PostUpdate.OFF) -> None | PtrType`
+#### `pto.vsstb(tile[pos], block_stride: Index, repeat_stride: Index, mask: MaskType, *, post_update: PostUpdate = PostUpdate.OFF) -> None | PtrType`
+#### `pto.vsstb(buf: PtrType, block_stride: Index, repeat_stride: Index, mask: MaskType, *, post_update: PostUpdate = PostUpdate.OFF) -> None | PtrType`
 
 **Description**: Block-strided store. Stores 32-byte source blocks to a
 block-strided UB destination. Masked-off blocks do not write memory.
-When `return_updated_base=True`, returns the post-update base address.
+When `post_update=PostUpdate.ON`, the pointer form (and the pointer underlying
+tile-index forms) returns the updated destination pointer advanced by the
+repeat-stride distance, enabling stateful store streams.
 
 **Parameters**:
 
@@ -641,8 +644,14 @@ When `return_updated_base=True`, returns the post-update base address.
 | `block_stride` | `Index` | 16-bit block stride field |
 | `repeat_stride` | `Index` | 16-bit repeat stride field |
 | `mask` | `MaskType` | Mask controlling which blocks participate |
+| `post_update` | `PostUpdate` | `OFF` (default) — stateless store. `ON` — returns the destination pointer advanced by the repeat stride |
 
-**Returns**: None (side-effect operation).
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| *(none)* | — | When `post_update=OFF` (default) |
+| `updated_buf` | `PtrType` | Post-update destination pointer (when `post_update=ON`)
 
 ---
 
@@ -789,7 +798,7 @@ pto.vstas(align, ub_dst_f32, pto.const(64))
 | `DeinterleaveDist` | `DINTLV_B8`, `DINTLV_B16`, `DINTLV_B32`, `BDINTLV` | `vldsx2` |
 | `InterleaveDist` | `INTLV_B8`, `INTLV_B16`, `INTLV_B32` | `vstsx2` |
 | `StrideMode` | `S3_B16`, `S4_B64`, `S8_B32`, `S2_B64` | `vsld` |
-| `PostUpdate` | `OFF`, `ON` | `vstur` |
+| `PostUpdate` | `OFF`, `ON` | `vstur`, `vsstb`, `vlds` (pointer form) |
 
 ## 7.5 Cube data movement (cube)
 

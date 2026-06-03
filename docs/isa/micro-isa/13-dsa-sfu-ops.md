@@ -102,6 +102,47 @@ for (int i = 0; i < N; i++)
 
 ---
 
+### `pto.vmulscvt`
+
+- **syntax:** `%result = pto.vmulscvt %input, %scalar, %mask, %rnd, %part : !pto.vreg<NxT0>, T0, !pto.mask<G> -> !pto.vreg<MxT1>`
+- **A5 types:** input `f32`, output `f16` (primary documented pair)
+- **semantics:** Fused multiply-by-scalar and type conversion. Each active lane
+  is multiplied by `%scalar` and then converted from the source element type to
+  the destination element type in a single hardware step using the authored
+  round mode.
+
+```c
+for (int i = 0; i < N; i++)
+    if (mask[i])
+        dst[i] = convert_type<T1>(src[i] * scalar, rnd);
+```
+
+**Use case:** Softmax scale-and-downcast: apply the reciprocal scale factor and
+narrow from `f32` (accumulator precision) to `f16` (storage precision) before a
+block-strided store.
+
+- **inputs:** `%input` is the source vector (wider type), `%scalar` is the
+  uniform scale factor, `%mask` selects active lanes, `%rnd` selects the cast
+  round mode, and `%part` selects `EVEN` or `ODD` for half-width output
+  placement.
+- **outputs:** `%result` is the scaled and converted vector with the narrower
+  destination element type.
+- **constraints and limitations:** The source/destination type pair must be a
+  legal hardware narrowing conversion (e.g., `f32 -> f16`). Illegal pairs are
+  rejected. `%scalar` must match the source element type. The mask granularity
+  must match the source vector element width.
+
+**Example** — softmax scale and downcast:
+```mlir
+// Apply scale=1.0 and narrow f32 -> f16, writing into even half of the
+// destination packing layout
+%f16_even = pto.vmulscvt %f32_exp, %one, %mask, "A", "EVEN"
+    : !pto.vreg<64xf32>, f32, !pto.mask<b32> -> !pto.vreg<128xf16>
+%f16_odd  = pto.vmulscvt %f32_exp2, %one, %mask, "A", "ODD"
+    : !pto.vreg<64xf32>, f32, !pto.mask<b32> -> !pto.vreg<128xf16>
+```
+
+---
 
 ## Extended Arithmetic
 
@@ -223,6 +264,7 @@ for (int i = 0; i < N; i++)
 
 - `pto.vmull %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>, !pto.vreg<NxT>`
 - `pto.vmula %acc, %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- `pto.vmulscvt %input, %scalar, %mask, %rnd, %part : !pto.vreg<NxT0>, T0, !pto.mask<G> -> !pto.vreg<MxT1>`
 - `pto.vci %index {order = "ASC|DESC"} : T -> !pto.vreg<NxT>`
 - `pto.vbitsort %dest, %src, %indices, %repeat_times : !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, index`
 - `pto.vmrgsort4 %dest, %src0, %src1, %src2, %src3, %count, %config : !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, i64, i64`

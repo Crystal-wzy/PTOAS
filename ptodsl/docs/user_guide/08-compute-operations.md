@@ -454,7 +454,211 @@ pto.tile.fillpad(partial_tile, padded_tile)
 
 ---
 
-### 8.1.12 Tile compute quick reference
+### 8.1.12 Tile windowing and tile-level matmul
+
+Tile windowing and tile-level matmul cover two common patterns in tiled matrix algorithms:
+
+- **Windowing** — `extract` and `insert` copy rectangular tile windows between buffers at explicit row/column offsets, typically used to move data between carrier tiles (MAT/VEC) and compute scratch tiles (LEFT/RIGHT/ACC).
+- **Tile matmul** — `matmul` and `matmul_acc` dispatch matrix multiplication directly on LEFT, RIGHT, and ACC scratch tiles. These are the high-level counterparts to the cube-level `mad*` micro-ops in Section 8.3 — use them when you want the compiler to handle cube staging and instruction selection.
+
+#### `pto.tile.extract(src: Tile, dst: Tile, index_row: IndexLike, index_col: IndexLike) -> None`
+
+**Description**: Copies a tile-sized rectangular window from `src` into `dst`, starting at the logical tile offset `(index_row, index_col)` inside `src`. The window size is determined by `dst`'s shape — every element of `dst` receives the value from the corresponding position in the addressed region of `src`.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `Tile` | Source tile buffer |
+| `dst` | `Tile` | Destination tile buffer that receives the extracted window |
+| `index_row` | `IndexLike` | Row offset of the extracted window in `src` |
+| `index_col` | `IndexLike` | Column offset of the extracted window in `src` |
+
+**Returns**: None.
+
+**Constraints**:
+- `index_row` and `index_col` must be non-negative.
+- `src` and `dst` must have compatible element types (checked by the PTO verifier).
+- Supported source/destination memory-space and layout pairs depend on the target architecture. Common cases include MAT → LEFT/RIGHT extraction.
+
+**Example** — extract a MAT tile window into LEFT scratch:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.tile_window_matmul","symbol":"compute_ops_tile_window_matmul_probe","compile":{"BLOCK_M":16,"BLOCK_K":16,"BLOCK_N":16,"CARRIER_M":64,"CARRIER_N":64}} -->
+```python
+src_mat = pto.alloc_tile(shape=[64, 64], dtype=pto.f32, memory_space=pto.MemorySpace.MAT)
+lhs_l0a = pto.alloc_tile(
+    shape=[16, 16],
+    dtype=pto.f32,
+    memory_space=pto.MemorySpace.LEFT,
+    blayout="ColMajor",
+    slayout="RowMajor",
+)
+pto.tile.extract(src_mat, lhs_l0a, 16, 0)
+```
+
+---
+
+#### `pto.tile.insert(src: Tile, dst: Tile, index_row: IndexLike, index_col: IndexLike) -> None`
+
+**Description**: Writes `src` into a tile-sized rectangular window of `dst`, starting at the logical tile offset `(index_row, index_col)` inside `dst`. The window size is determined by `src`'s shape — every element of `src` is written to the corresponding position in the addressed region of `dst`.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `Tile` | Source tile buffer to insert |
+| `dst` | `Tile` | Destination tile buffer that receives the inserted window |
+| `index_row` | `IndexLike` | Row offset of the insertion point in `dst` |
+| `index_col` | `IndexLike` | Column offset of the insertion point in `dst` |
+
+**Returns**: None.
+
+**Constraints**:
+- `index_row` and `index_col` must be non-negative.
+- `src` must fit within the addressed destination window: `index_row + src.rows <= dst.rows` and `index_col + src.cols <= dst.cols`.
+- Supported source/destination memory-space, layout, and dtype combinations depend on the target architecture. Common cases include ACC → MAT, VEC → MAT, and VEC → VEC.
+
+**Example** — insert an ACC tile back into a MAT carrier tile:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.tile_window_matmul","symbol":"compute_ops_tile_window_matmul_probe","compile":{"BLOCK_M":16,"BLOCK_K":16,"BLOCK_N":16,"CARRIER_M":64,"CARRIER_N":64}} -->
+```python
+acc_tile = pto.alloc_tile(
+    shape=[16, 16],
+    dtype=pto.f32,
+    memory_space=pto.MemorySpace.ACC,
+    blayout="ColMajor",
+    slayout="RowMajor",
+)
+dst_mat = pto.alloc_tile(
+    shape=[64, 64],
+    dtype=pto.f32,
+    memory_space=pto.MemorySpace.MAT,
+    blayout="ColMajor",
+    slayout="RowMajor",
+)
+pto.tile.insert(acc_tile, dst_mat, 0, 32)
+```
+
+---
+
+#### `pto.tile.matmul(lhs: Tile, rhs: Tile, dst: Tile) -> None`
+
+**Description**: Tile-level matrix multiplication. Computes the product `lhs @ rhs` on the matrix pipeline and writes the result into `dst`.
+
+Conceptually:
+
+```text
+dst[m, n] = sum_k lhs[m, k] * rhs[k, n]
+```
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `lhs` | `Tile` | Left operand tile, typically in `MemorySpace.LEFT` |
+| `rhs` | `Tile` | Right operand tile, typically in `MemorySpace.RIGHT` |
+| `dst` | `Tile` | Destination accumulator tile, typically in `MemorySpace.ACC` |
+
+**Returns**: None.
+
+**Constraints**:
+- Shapes must satisfy the standard matrix multiply relationship: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
+- Supported dtype triples depend on the target architecture. Common cases include `f16`/`bf16`/`f32` inputs with `f32` accumulation and `i8` inputs with `i32` accumulation.
+- Operands should be scratch tiles allocated in LEFT, RIGHT, and ACC memory spaces respectively. Use `extract` beforehand to stage data into these scratch tiles from carrier buffers.
+
+**Example** — compute one cube tile product:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.tile_window_matmul","symbol":"compute_ops_tile_window_matmul_probe","compile":{"BLOCK_M":16,"BLOCK_K":16,"BLOCK_N":16,"CARRIER_M":64,"CARRIER_N":64}} -->
+```python
+lhs_l0a = pto.alloc_tile(
+    shape=[16, 16],
+    dtype=pto.f16,
+    memory_space=pto.MemorySpace.LEFT,
+    blayout="ColMajor",
+    slayout="RowMajor",
+)
+rhs_l0b = pto.alloc_tile(
+    shape=[16, 16],
+    dtype=pto.f16,
+    memory_space=pto.MemorySpace.RIGHT,
+    blayout="RowMajor",
+    slayout="ColMajor",
+)
+acc_l0c = pto.alloc_tile(
+    shape=[16, 16],
+    dtype=pto.f32,
+    memory_space=pto.MemorySpace.ACC,
+    blayout="ColMajor",
+    slayout="RowMajor",
+)
+pto.tile.matmul(lhs_l0a, rhs_l0b, acc_l0c)
+```
+
+---
+
+#### `pto.tile.matmul_acc(acc_in: Tile, lhs: Tile, rhs: Tile, dst: Tile) -> None`
+
+**Description**: Accumulating tile-level matrix multiplication. Adds the product `lhs @ rhs` to `acc_in` and writes the accumulated result into `dst`. This is the accumulating variant of `matmul` — use it for split-K accumulation or multi-stage matmul where each K-slice product is added onto a running accumulator.
+
+Conceptually:
+
+```text
+dst[m, n] = acc_in[m, n] + sum_k lhs[m, k] * rhs[k, n]
+```
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `acc_in` | `Tile` | Existing accumulator tile used as the accumulation input |
+| `lhs` | `Tile` | Left operand tile, typically in `MemorySpace.LEFT` |
+| `rhs` | `Tile` | Right operand tile, typically in `MemorySpace.RIGHT` |
+| `dst` | `Tile` | Destination accumulator tile |
+
+**Returns**: None.
+
+**Constraints**:
+- `lhs`, `rhs`, and `dst` must satisfy the same shape and memory-space relationship as `pto.tile.matmul`.
+- `acc_in` must be an ACC tile, typically with the same shape and dtype as `dst`.
+
+**Example** — accumulate a second K-slice into an ACC tile:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.tile_window_matmul","symbol":"compute_ops_tile_window_matmul_probe","compile":{"BLOCK_M":16,"BLOCK_K":16,"BLOCK_N":16,"CARRIER_M":64,"CARRIER_N":64}} -->
+```python
+acc_prev = pto.alloc_tile(
+    shape=[16, 16],
+    dtype=pto.f32,
+    memory_space=pto.MemorySpace.ACC,
+    blayout="ColMajor",
+    slayout="RowMajor",
+)
+lhs_l0a = pto.alloc_tile(
+    shape=[16, 16],
+    dtype=pto.f16,
+    memory_space=pto.MemorySpace.LEFT,
+    blayout="ColMajor",
+    slayout="RowMajor",
+)
+rhs_l0b = pto.alloc_tile(
+    shape=[16, 16],
+    dtype=pto.f16,
+    memory_space=pto.MemorySpace.RIGHT,
+    blayout="RowMajor",
+    slayout="ColMajor",
+)
+acc_next = pto.alloc_tile(
+    shape=[16, 16],
+    dtype=pto.f32,
+    memory_space=pto.MemorySpace.ACC,
+    blayout="ColMajor",
+    slayout="RowMajor",
+)
+pto.tile.matmul_acc(acc_prev, lhs_l0a, rhs_l0b, acc_next)
+```
+
+---
+
+### 8.1.13 Tile compute quick reference
 
 | Category | Operations |
 |----------|------------|
@@ -472,6 +676,8 @@ pto.tile.fillpad(partial_tile, padded_tile)
 | Bitwise | `tile.bit_not`, `tile.bit_and`, `tile.bit_or`, `tile.bit_xor`, `tile.bit_shl`, `tile.bit_shr`, `tile.bit_ands`, `tile.bit_ors`, `tile.bit_xors`, `tile.bit_shls`, `tile.bit_shrs` |
 | Partial elementwise | `tile.partadd`, `tile.partmul`, `tile.partmax`, `tile.partmin` |
 | Fill/padding | `tile.fillpad`, `tile.fillpad_expand`, `tile.fillpad_inplace` |
+| Windowing | `tile.extract`, `tile.insert` |
+| Tile matmul | `tile.matmul`, `tile.matmul_acc` |
 
 ---
 
@@ -595,6 +801,65 @@ s_shifted = pto.vsubs(s_row, m_next, col_mask)
 
 ---
 
+### 8.2.3.1 Vector duplication: `pto.vdup`
+
+#### `pto.vdup(input: ScalarType, mask: MaskType) -> VRegType`
+#### `pto.vdup(input: VRegType, mask: MaskType, position: PositionMode = PositionMode.LOWEST) -> VRegType`
+
+**Description**: Duplicate a scalar value or one selected vector element into
+the active lanes of a destination vector.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `input` | `ScalarType` or `VRegType` | Input scalar or source vector |
+| `mask` | `MaskType` | Predicate mask controlling which lanes are written |
+| `position` | `PositionMode` | Optional enum for the vector-input overload, selecting the source vector element to duplicate (default: `PositionMode.LOWEST`) |
+
+**Position Mode Enum**:
+
+| Enum Value | Meaning |
+|------------|---------|
+| `pto.PositionMode.LOWEST` | Duplicate the lowest-index source lane |
+| `pto.PositionMode.HIGHEST` | Duplicate the highest-index source lane |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Vector whose active lanes receive the duplicated value |
+
+**Constraints**:
+
+- `mask` granularity must match the destination vector element type. For example, `f32`/`i32`/`si32`/`ui32` vectors require `mask_b32`.
+- When `input` is a scalar, the scalar value is duplicated to every active lane.
+- When `input` is a vector, `position` selects one source element and that value is duplicated to every active lane.
+- The scalar overload does not accept `position`.
+- Supported scalar types are the 8/16/32-bit integer families (`i*`, `si*`, `ui*`) plus `f16`, `bf16`, and `f32`.
+- Inactive lanes follow VPTO predicate semantics and are not guaranteed to carry meaningful values for subsequent masked-off use.
+
+**Example**:
+
+```python
+mask32 = pto.make_mask(pto.f32, pto.MaskPattern.ALL)
+
+# Duplicate a scalar into all active lanes.
+broadcast = pto.vdup(3.14, mask32)
+seed = pto.vdup(pto.f32("-inf"), mask32)
+
+# Assume `vec` is an existing f32 vector register value.
+vec = pto.vlds(src, 0)
+
+# Duplicate the lowest source lane to all active lanes.
+dup_lowest = pto.vdup(vec, mask32)
+
+# Duplicate the highest source lane to all active lanes.
+dup_highest = pto.vdup(vec, mask32, pto.PositionMode.HIGHEST)
+```
+
+---
+
 ### 8.2.4 Full-vector and group reductions
 
 #### Full-vector reductions
@@ -678,6 +943,42 @@ These combine an arithmetic operation with a math function or activation in a si
 
 ---
 
+#### `pto.vmulscvt(src: VRegType, scalar: ScalarType, mask: MaskType, *, rnd: VcvtRoundMode, part: PartMode) -> VRegType`
+
+**Description**: Fused multiply-by-scalar and type conversion. Computes `cvt_rnd(src[i] * scalar)` for active lanes. The destination vector's element type is the conversion target; it must be a legal narrower type than the source. This is a core micro-op in hand-written softmax/attention kernels for fusing the scale step into the downcast.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `VRegType` | Input vector (wider element type) |
+| `scalar` | `ScalarType` | Scale factor (multiplied element-wise before conversion) |
+| `mask` | `MaskType` | Predicate mask gating which lanes participate |
+| `rnd` | `VcvtRoundMode` | Rounding mode used by the cast stage |
+| `part` | `PartMode` | `EVEN` or `ODD` — selects which half of the vector is processed |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Converted vector (narrower element type) |
+
+**Example** — softmax scale-and-downcast:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.vector_compute","symbol":"compute_ops_vector_probe","compile":{"BLOCK":128}} -->
+```python
+# f32 -> f16 with scale factor 1.0
+exp_f16_even = pto.vmulscvt(exp_f32_even, 1.0, mask, rnd=pto.VcvtRoundMode.A, part=pto.PartMode.EVEN)
+exp_f16_odd  = pto.vmulscvt(exp_f32_odd, 1.0, mask, rnd=pto.VcvtRoundMode.A, part=pto.PartMode.ODD)
+```
+
+**Constraints**:
+- The source and result vector types must form a legal dtype pair. Current PTOAS support for this fused op is the A5 `f32 -> f16` packed form.
+- `rnd` and `part` must be provided explicitly — there is no default to prevent accidental authoring of the packed half-width form.
+- Current PTOAS lowering accepts `rnd=VcvtRoundMode.A` for `vmulscvt`.
+
+---
+
 ### 8.2.6 Comparison and selection
 
 #### `pto.vcmp(v0: VRegType, v1: VRegType, seed_mask: MaskType, cmp_mode: CmpMode) -> MaskType`
@@ -727,7 +1028,86 @@ These combine an arithmetic operation with a math function or activation in a si
 
 ---
 
-### 8.2.7 Vector compute quick reference
+### 8.2.7 Vector type conversion and packing
+
+These ops change the element type or layout of vector registers. They are distinct from the tile-level `tile.cvt` — they operate on `VRegType` values inside `@pto.simd` and are the explicit micro-op counterparts to higher-level conversion helpers.
+
+#### `pto.vcvt(src: VRegType, to_dtype: DType, mask: MaskType, *, rnd: VcvtRoundMode | None = None, sat: VcvtSatMode | None = None, part: VcvtPartMode | None = None) -> VRegType`
+
+**Description**: Generic vector type conversion. Converts the element type of `src` to the target element type requested by `to_dtype`, and PTODSL infers the result `VRegType` from that dtype. Supports narrowing conversions (e.g., `f32 -> f16`), widening conversions, and same-width re-interpretations (subject to hardware legality). This is the explicit micro-op form of vector convert — use it when authoring conversion steps directly rather than relying on fused ops like `vmulscvt`.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `VRegType` | Input vector (source element type) |
+| `to_dtype` | `DType` | Target element type. PTODSL infers the destination `VRegType` lane count from the fixed 256-byte vector width |
+| `mask` | `MaskType` | Predicate mask gating which lanes participate |
+| `rnd` | `VcvtRoundMode` or `None` | Optional rounding mode token |
+| `sat` | `VcvtSatMode` or `None` | Optional saturation mode token |
+| `part` | `VcvtPartMode` or `None` | Optional part selector for width-changing conversions and packed placement forms |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Converted vector with element type `to_dtype` and the lane count implied by that dtype |
+
+**Constraints**:
+- Source and result dtype pair must be a legal hardware conversion. Illegal pairs (e.g., unsupported narrowing/widening combinations) are rejected at frontend time.
+
+**Example**:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.vector_compute","symbol":"compute_ops_vector_probe","compile":{"BLOCK":128}} -->
+```python
+vec_f16 = pto.vcvt(
+    vec_f32,
+    pto.f16,
+    mask32_full,
+    rnd=pto.VcvtRoundMode.R,
+    sat=pto.VcvtSatMode.SAT,
+    part=pto.VcvtPartMode.EVEN,
+)
+```
+
+---
+
+#### `pto.vpack(src: VRegType, part: VPackPart) -> VRegType`
+
+**Description**: Pack (narrow) an integer vector register into an unsigned result register with half the element width. The `part` selector determines which half of the source lanes are kept: `LOWER` packs the lower half, `HIGHER` packs the upper half. The result vector has the same total bit width but twice as many lanes at half the element width. This is the primary micro-op for collapsing intermediate wider-type integer results into compact narrower-type storage.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `VRegType` | Input vector (wider element type) |
+| `part` | `VPackPart` | `LOWER` or `HIGHER` — which half of source lanes to pack |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Packed vector (narrower element type, twice as many lanes) |
+
+**Constraints**:
+- `part` must be a valid `VPackPart` value. Only `LOWER` and `HIGHER` are accepted.
+- Source shape must be compatible with the pack operation (typically a vector with
+  fewer lanes of a wider integer type, e.g. 64×i32/u32 → 128×u16).
+- The source and result vector element types must form a legal widen/narrow pair.
+  Illegal combinations are rejected at frontend time.
+
+**Example** — pack i32 vector halves into u16 vectors for strided store:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.vector_compute","symbol":"compute_ops_vector_probe","compile":{"BLOCK":128}} -->
+```python
+# vec_i32: 64×i32 = 256 bytes
+packed_low  = pto.vpack(vec_i32, pto.VPackPart.LOWER)   # lower 64 lanes -> 128×u16
+packed_high = pto.vpack(vec_i32, pto.VPackPart.HIGHER)  # upper 64 lanes -> 128×u16
+```
+
+---
+
+### 8.2.8 Vector compute quick reference
 
 | Category | Operations |
 |----------|------------|
@@ -738,9 +1118,9 @@ These combine an arithmetic operation with a math function or activation in a si
 | Full reduction | `vcadd`, `vcmax`, `vcmin` |
 | Group reduction | `vcgadd`, `vcgmax`, `vcgmin` |
 | Scan | `vcpadd` |
-| Fused | `vexpdif`, `vaxpy`, `vaddrelu`, `vsubrelu` |
+| Fused | `vexpdif`, `vaxpy`, `vaddrelu`, `vsubrelu`, `vmulscvt` |
 | Compare/select | `vcmp`, `vcmps`, `vsel` |
-| Conversion | `vbitcast`, `pbitcast` |
+| Conversion | `vcvt`, `vpack`, `vbitcast`, `pbitcast` |
 
 ---
 

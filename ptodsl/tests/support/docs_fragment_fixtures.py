@@ -132,6 +132,17 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "type_system.tile_reshape": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def type_system_tile_reshape_probe(
+            *,
+            BR: pto.constexpr = 8,
+            BC: pto.constexpr = 64,
+        ):
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "type_system.vreg_bitcast": _fixture(
         f"""
         @pto.jit(target="a5")
@@ -1112,6 +1123,13 @@ FRAGMENT_FIXTURES = {
             s_row = pto.vlds(inp_tile[row, 0:])
             p_row = pto.vexp(s_row, col_mask)
             m_next = pto.vcgmax(s_row, col_mask)
+            mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+            int_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.i32, valid_shape=[1, 64])
+            vec_f32 = pto.vlds(inp_tile[row, 0:])
+            vec_i32 = pto.vlds(int_tile.as_ptr(), pto.const(0))
+            exp_f32_even = vec_f32
+            exp_f32_odd = vec_f32
+            mask = mask32_full
             {SNIPPET_PLACEHOLDER}
 
 
@@ -1121,6 +1139,56 @@ FRAGMENT_FIXTURES = {
             out_tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
             with pto.for_(0, 1, step=1) as row:
                 compute_ops_vector_helper(inp_tile, out_tile, row)
+        """
+    ),
+    "compute_ops.tile_window_matmul": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def compute_ops_tile_window_matmul_probe(
+            *,
+            BLOCK_M: pto.constexpr = 16,
+            BLOCK_K: pto.constexpr = 16,
+            BLOCK_N: pto.constexpr = 16,
+            CARRIER_M: pto.constexpr = 64,
+            CARRIER_N: pto.constexpr = 64,
+        ):
+            src_mat = pto.alloc_tile(shape=[CARRIER_M, CARRIER_N], dtype=pto.f32, memory_space=pto.MemorySpace.MAT)
+            dst_mat = pto.alloc_tile(
+                shape=[CARRIER_M, CARRIER_N],
+                dtype=pto.f32,
+                memory_space=pto.MemorySpace.MAT,
+                blayout="ColMajor",
+                slayout="RowMajor",
+            )
+            lhs_l0a = pto.alloc_tile(
+                shape=[BLOCK_M, BLOCK_K],
+                dtype=pto.f16,
+                memory_space=pto.MemorySpace.LEFT,
+                blayout="ColMajor",
+                slayout="RowMajor",
+            )
+            rhs_l0b = pto.alloc_tile(
+                shape=[BLOCK_K, BLOCK_N],
+                dtype=pto.f16,
+                memory_space=pto.MemorySpace.RIGHT,
+                blayout="RowMajor",
+                slayout="ColMajor",
+            )
+            acc_prev = pto.alloc_tile(
+                shape=[BLOCK_M, BLOCK_N],
+                dtype=pto.f32,
+                memory_space=pto.MemorySpace.ACC,
+                blayout="ColMajor",
+                slayout="RowMajor",
+            )
+            acc_out = pto.alloc_tile(
+                shape=[BLOCK_M, BLOCK_N],
+                dtype=pto.f32,
+                memory_space=pto.MemorySpace.ACC,
+                blayout="ColMajor",
+                slayout="RowMajor",
+            )
+            {SNIPPET_PLACEHOLDER}
         """
     ),
     "mask_ops.creation": _fixture(

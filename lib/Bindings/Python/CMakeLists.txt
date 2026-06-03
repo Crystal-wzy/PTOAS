@@ -102,6 +102,27 @@ install(FILES
   DESTINATION mlir/dialects
 )
 
+# Keep the MLIR build-tree Python package self-consistent as well. When users
+# import `mlir.dialects.pto` directly from MLIR_PYTHON_PACKAGE_DIR, the wrapper
+# modules must be updated alongside the native `_pto` extension during normal
+# builds, not just during `cmake --install`.
+add_custom_command(TARGET _pto POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "${MLIR_PYTHON_PACKAGE_DIR}/mlir/dialects"
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "${MLIR_PYTHON_PACKAGE_DIR}/mlir/_mlir_libs"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${PTO_PY_SRC}"
+          "${MLIR_PYTHON_PACKAGE_DIR}/mlir/dialects/pto.py"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_BINARY_DIR}/_pto_ops_gen.py"
+          "${MLIR_PYTHON_PACKAGE_DIR}/mlir/dialects/_pto_ops_gen.py"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "$<TARGET_FILE:_pto>"
+          "${MLIR_PYTHON_PACKAGE_DIR}/mlir/_mlir_libs/$<TARGET_FILE_NAME:_pto>"
+  VERBATIM
+)
+
 add_custom_command(TARGET _pto POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory
           "${CMAKE_BINARY_DIR}/python/mlir/_mlir_libs"

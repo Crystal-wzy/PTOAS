@@ -5417,6 +5417,45 @@ LogicalResult VtrcOp::verify() {
   return success();
 }
 
+LogicalResult VmulscvtOp::verify() {
+  if (failed(verifyVRegTypeLike(*this, getInput().getType(), "input type")) ||
+      failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")) ||
+      failed(verifyVRegTypeLike(*this, getResult().getType(), "result type")))
+    return failure();
+
+  auto inputType = cast<VRegType>(getInput().getType());
+  auto resultType = cast<VRegType>(getResult().getType());
+  if (!inputType.getElementType().isF32())
+    return emitOpError("requires f32 input vector element type");
+  if (!resultType.getElementType().isF16())
+    return emitOpError("requires f16 result vector element type");
+
+  auto scalarType = getScalar().getType();
+  if (!scalarType.isF32())
+    return emitOpError("requires f32 scalar operand");
+
+  if (failed(verifyMaskTypeWithGranularityLike(*this, getMask().getType(),
+                                               "mask type", "b32")))
+    return failure();
+
+  auto inputBits = getVRegStorageBitWidth(inputType);
+  auto resultBits = getVRegStorageBitWidth(resultType);
+  if (!inputBits || !resultBits || *inputBits != *resultBits)
+    return emitOpError(
+        "requires source and result to preserve total vector storage width");
+
+  auto normalizedRnd = normalizeRoundModeToken(getRnd());
+  if (!normalizedRnd)
+    return emitOpError("rnd must be one of R/A/F/C/Z/O");
+  if (*normalizedRnd != "A")
+    return emitOpError("currently only supports rnd A");
+
+  auto normalizedPart = normalizeEvenOddPartToken(getPart());
+  if (!normalizedPart)
+    return emitOpError("part must be EVEN or ODD");
+  return success();
+}
+
 ParseResult VcvtOp::parse(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand input;
   OpAsmParser::UnresolvedOperand mask;

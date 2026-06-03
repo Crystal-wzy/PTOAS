@@ -2237,6 +2237,23 @@ def PTO_VcvtOp : PTO_Op<"vcvt", [Pure]> {
   let hasCustomAssemblyFormat = 1;
 }
 
+def PTO_VmulscvtOp : PTO_Op<"vmulscvt", [Pure]> {
+  let arguments = (ins
+    PTO_VectorType:$input,
+    AnyType:$scalar,
+    PTO_MaskTypeConstraint:$mask,
+    StrAttr:$rnd,
+    StrAttr:$part
+  );
+  let results = (outs PTO_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $input `,` $scalar `,` $mask `,` $rnd `,` $part attr-dict `:` type($input) `,` type($scalar) `,` type($mask) `->` type($result)
+  }];
+}
+
 def PTO_VbitcastOp : PTO_Op<"vbitcast", [Pure]> {
   let arguments = (ins
     PTO_VectorType:$input

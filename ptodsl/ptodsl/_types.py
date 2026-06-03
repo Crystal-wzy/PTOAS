@@ -401,7 +401,7 @@ def mask_type(bits: str = "b32") -> _MaskDescriptor:
     return _MaskDescriptor(bits)
 
 
-def tile_buf_type(shape, dtype, valid_shape, *,
+def tile_buf_type(shape, dtype, valid_shape=None, *,
                   blayout: str = "RowMajor",
                   address_space: str = "ub",
                   slayout: str = "NoneBox",
@@ -411,6 +411,8 @@ def tile_buf_type(shape, dtype, valid_shape, *,
     Construct a ``!pto.tile_buf<…>`` type via the Python bindings.
 
     ``valid_shape`` entries may be ``-1`` for dynamic (``?``) dimensions.
+    When ``valid_shape`` is omitted, construct a tile type without a ``valid=``
+    suffix and let the type's logical shape stand on its own.
     ``blayout="ColMajor"`` prints as ``blayout=col_major``.
 
     Requires an active MLIR context.
@@ -428,7 +430,13 @@ def tile_buf_type(shape, dtype, valid_shape, *,
         fractal_size,
         _pto.PadValueAttr.get(getattr(_pto.PadValue, pad)),
     )
-    return _pto.TileBufType.get(shape, elem, space_attr, valid_shape, cfg)
+    if valid_shape is None and cfg is None:
+        return _pto.TileBufType.get(shape, elem, space_attr)
+    if valid_shape is None:
+        return _pto.TileBufType.get(shape, elem, space_attr, config=cfg)
+    if cfg is None:
+        return _pto.TileBufType.get(shape, elem, space_attr, valid_shape=valid_shape)
+    return _pto.TileBufType.get(shape, elem, space_attr, valid_shape=valid_shape, config=cfg)
 
 
 def tensor_view_type(rank: int, elem) -> Type:

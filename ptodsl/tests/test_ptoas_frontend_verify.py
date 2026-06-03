@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from importlib.util import module_from_spec, spec_from_file_location
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -63,7 +64,6 @@ def run_ptoas_frontend_verify(ptoas_bin: Path, mlir_text: str, label: str) -> st
     expect(result.stdout.strip(), f"{label} should emit non-empty PTO IR after PTOAS frontend passes")
     return result.stdout
 
-
 @pto.jit(target="a5")
 def host_vec_copy(
     A_ptr: pto.ptr(pto.f32, "gm"),
@@ -100,7 +100,6 @@ def main() -> None:
         "pto.tload" in simple_frontend_text and "pto.tstore" in simple_frontend_text,
         "host_vec_copy frontend verification output should keep the tile IO contract visible",
     )
-
     print("ptodsl_ptoas_frontend_verify: PASS")
 
 

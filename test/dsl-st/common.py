@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import time
 from pathlib import Path
 import sys
@@ -79,6 +80,7 @@ def golden_output_case(
     output_shape=None,
     output_dtype=None,
     output_index: int = -1,
+    launch_args=None,
     rtol: float = 1e-5,
     atol: float = 1e-5,
 ):
@@ -99,7 +101,10 @@ def golden_output_case(
             output_shape or golden.shape,
             dtype=output_dtype or golden.dtype,
         )
-        return [*host_inputs, out], golden
+        if launch_args is None:
+            return [*host_inputs, out], golden
+        extra_launch_args = launch_args(*host_inputs) if callable(launch_args) else list(launch_args)
+        return [*host_inputs, out], golden, extra_launch_args
 
     def check_case(device_inputs, golden):
         actual = device_inputs[output_index].cpu().numpy()
@@ -113,14 +118,70 @@ def golden_output_case(
     }
 
 
+def _list_cases(cases: list[dict]) -> None:
+    for case in cases:
+        print(case["name"])
+
+
+def _load_module_from_path(path: Path):
+    module_name = f"_dsl_st_{path.stem.replace('-', '_')}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load DSL ST module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def discover_case_modules(root: Path | None = None) -> list:
+    case_root = Path(root) if root is not None else Path(__file__).resolve().parent
+    modules = []
+    for path in sorted(case_root.glob("*.py")):
+        if path.name in {"common.py", "__main__.py"}:
+            continue
+        if path.name.startswith("_"):
+            continue
+        module = _load_module_from_path(path)
+        if getattr(module, "CASES", None):
+            modules.append(module)
+    return modules
+
+
+def discover_cases(root: Path | None = None) -> list[dict]:
+    discovered = []
+    seen_names = {}
+    for module in discover_case_modules(root):
+        module_path = Path(getattr(module, "__file__", "<unknown>"))
+        for case in module.CASES:
+            name = case["name"]
+            previous = seen_names.get(name)
+            if previous is not None:
+                raise RuntimeError(
+                    f"Duplicate DSL ST case name {name!r} discovered in {module_path} and {previous}"
+                )
+            seen_names[name] = module_path
+            discovered.append(case)
+    return discovered
+
+
 def run_cases(cases: list[dict], *, emit_mlir_fn=None, argv=None) -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="list discovered case names and exit",
+    )
     parser.add_argument(
         "--emit-mlir",
         action="store_true",
         help="print merged MLIR module and exit",
     )
     args = parser.parse_args(argv)
+
+    if args.list:
+        _list_cases(cases)
+        return 0
 
     if args.emit_mlir:
         if emit_mlir_fn is None:
@@ -132,7 +193,16 @@ def run_cases(cases: list[dict], *, emit_mlir_fn=None, argv=None) -> int:
     for case in cases:
         name = case["name"]
         kernel = case["kernel"]
-        inputs, expected = case["make_case"]()
+        made_case = case["make_case"]()
+        if len(made_case) == 2:
+            inputs, expected = made_case
+            launch_args = []
+        elif len(made_case) == 3:
+            inputs, expected, launch_args = made_case
+        else:
+            raise RuntimeError(
+                f"DSL ST case {name!r} make_case() must return 2 or 3 values, got {len(made_case)}"
+            )
 
         device_inputs = [torch.from_numpy(array).to(_DEVICE) for array in inputs]
         stream = npu_stream(torch)
@@ -142,7 +212,7 @@ def run_cases(cases: list[dict], *, emit_mlir_fn=None, argv=None) -> int:
         compile_s = time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        compiled[1, stream](*device_inputs)
+        compiled[1, stream](*device_inputs, *launch_args)
         torch.npu.synchronize()
         launch_s = time.perf_counter() - t0
 
@@ -166,6 +236,17 @@ def run_module_cases(module_globals: dict, argv=None) -> int:
         emit_mlir_fn = lambda: emit_mlir(*kernels)
 
     return run_cases(cases, emit_mlir_fn=emit_mlir_fn, argv=argv)
+
+
+def run_discovered_cases(root: Path | None = None, argv=None) -> int:
+    cases = discover_cases(root)
+    if not cases:
+        raise RuntimeError("No DSL ST cases discovered")
+    return run_cases(
+        cases,
+        emit_mlir_fn=lambda: emit_mlir(*_collect_case_kernels(cases)),
+        argv=argv,
+    )
 
 
 def auto_main(module_globals: dict, argv=None) -> None:

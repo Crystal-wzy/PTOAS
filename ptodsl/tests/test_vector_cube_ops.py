@@ -427,6 +427,33 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                     getattr(pto.tile, name)(src, dst, tmp=tmp)
                 low_level_op.assert_called_once_with(src, tmp, dst)
 
+    def test_tile_mov_accepts_acc_to_vec_mode(self):
+        src = object()
+        dst = object()
+        parsed_mode = object()
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops.Attribute, "parse", return_value=parsed_mode) as parse_attr, \
+             patch.object(_ops._pto, "TMovOp") as tmov_op:
+            pto.tile.mov(src, dst, mode="split_n")
+
+        parse_attr.assert_called_once_with("#pto<acc_to_vec_mode dual_mode_split_n>")
+        self.assertEqual(tmov_op.call_args.args, (None, src, dst))
+        self.assertEqual(tmov_op.call_args.kwargs, {"accToVecMode": parsed_mode})
+    def test_tile_extract_dispatches_row_and_col_indices(self):
+        src = object()
+        dst = object()
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_index", side_effect=lambda value, *, context: f"idx:{context}:{value}") as coerce_index, \
+             patch.object(_ops._pto, "TExtractOp") as textract_op:
+            pto.tile.extract(src, dst, 7, 11)
+
+        self.assertEqual(
+            textract_op.call_args.args,
+            (src, "idx:textract(index_row):7", "idx:textract(index_col):11", dst),
+        )
+        self.assertEqual(coerce_index.call_count, 2)
     def test_sync_event_id_rejects_out_of_range_static_values(self):
         cases = [
             (_ops.set_flag, ("MTE2", "V"), {"event_id": 8}, "set_flag(..., event_id=...)"),

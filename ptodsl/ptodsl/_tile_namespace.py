@@ -17,6 +17,10 @@ def _resolve_row_reduction_tmp(src, tmp):
 
 class _TileNamespace:
     mov = staticmethod(_ops.tmov)
+    extract = staticmethod(_ops.textract)
+    insert = staticmethod(_ops.tinsert)
+    matmul = staticmethod(_ops.tmatmul)
+    matmul_acc = staticmethod(_ops.tmatmul_acc)
 
     @staticmethod
     def load(src, tile, *, offsets=None, sizes=None):
@@ -104,6 +108,7 @@ class _TileNamespace:
     cmps = staticmethod(_ops.tcmps)
 
     expands = staticmethod(_ops.texpands)
+    reshape = staticmethod(_ops.treshape)
     rowexpand = staticmethod(_ops.trowexpand)
     colexpand = staticmethod(_ops.tcolexpand)
 

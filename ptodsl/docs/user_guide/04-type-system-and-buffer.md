@@ -1,6 +1,6 @@
 # 4. Type System and Buffer Management
 
-This chapter covers every type you can use in a PTODSL kernel, plus the operations for managing buffers in global memory (GM) and on-chip Unified Buffer (UB).
+This chapter covers every type you can use in a PTODSL kernel, plus the operations for allocating, managing, and reinterpreting buffers in global memory (GM) and on-chip Unified Buffer (UB).
 
 ## 4.1 Scalar types
 
@@ -263,4 +263,57 @@ meta_tile.valid_shape = [pto.const(1), pto.const(2)]
 tail_tile.valid_shape = [rows]
 
 meta_ptr = meta_tile.as_ptr()
+```
+
+## 4.8 Tile Reinterpretation
+
+`pto.tile.reshape` reinterprets a tile buffer with a new shape or layout without any data movement. It is a zero-cost buffer reinterpretation on the Unified Buffer: the underlying bytes are unchanged and PTODSL returns a new tile handle with the requested result type metadata. No destination tile allocation is needed; the result is returned directly.
+
+#### `pto.tile.reshape(src: Tile, *, shape: tuple[int, ...], dtype: DType | None = None, blayout: str | None = None) -> Tile`
+
+**Description**: Returns a reinterpreted tile handle for `src` with the given `shape`, element type, and buffer layout. The total byte size of the new shape must equal the total byte size of `src`. This is a buffer reinterpretation only — no data is copied or moved.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `Tile` | Source tile to reinterpret |
+| `shape` | `tuple[int, ...]` | Target shape. `numel(shape) × elem_size` must equal the total bytes of `src` |
+| `dtype` | `DType` or `None` | Target element type (default: `None` — keep the source dtype) |
+| `blayout` | `str` or `None` | Target buffer layout, e.g. `"RowMajor"` or `"ColMajor"` (default: `None` — PTODSL authors a row-major result layout) |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `dst` | `Tile` | A tile that reinterprets `src`'s buffer with the new shape, dtype, and layout |
+
+**Constraints**:
+
+- **Total byte size must match**: `numel(shape) × sizeof(dst_elem) == numel(src.shape) × sizeof(src_elem)`.
+- **No boxed/non-boxed conversion**: cannot reshape between non-boxed layouts and boxed layouts. The layout family must stay the same.
+- **Memory space is preserved**: the returned tile shares the same memory space as `src` (typically UB).
+- **Result valid-shape metadata is not remapped from `src`**: the current PTODSL surface does not preserve or infer a reshaped logical `valid_shape`. If later code depends on `tile.valid_shape`, treat the reshape result as carrying only the result type's own valid-dim metadata.
+- **Hardware mapping**: executes on the **Vector pipeline** (`PIPE_V`).
+
+**Example** — reshape a 2D tile into 1D to avoid layout constraints during element-wise processing:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.tile_reshape","symbol":"type_system_tile_reshape_probe","compile":{"BR":8,"BC":64}} -->
+```python
+# Allocate source tile (2D, row-major)
+tile_2d = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32)
+
+# Reinterpret 2D → 1D (zero-cost, no data movement)
+tile_1d = pto.tile.reshape(tile_2d, shape=[BR * BC])
+```
+
+**Example** — reinterpret a row-reduced tile `[BR, 1]` as a column-major tile for broadcast loads:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.tile_reshape","symbol":"type_system_tile_reshape_probe","compile":{"BR":8,"BC":64}} -->
+```python
+# Source: row-reduced tile authored with a column-major physical layout
+reduce_tile = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], blayout="ColMajor")
+
+# Reinterpret as ColMajor layout (same shape, different layout)
+reduce_col = pto.tile.reshape(reduce_tile, shape=[BR, 1], blayout="ColMajor")
 ```

@@ -209,11 +209,14 @@ _VLOAD_DIST_TOKENS = {
 }
 
 
-def vlds(src_ptr, offset=None, result_vreg_type=None, *, dist=None, return_updated_base=False):
+def vlds(src_ptr, offset=None, result_vreg_type=None, *, dist=None, post_update="OFF"):
     """``pto.vlds`` – vector load from a tile slice or from *src_ptr* at *offset*."""
+    post_mode = _normalize_post_update_mode(post_update, context="vlds(..., post_update=...)")
     if isinstance(src_ptr, TileSliceValue):
         if offset is not None or result_vreg_type is not None:
             raise TypeError("vlds(tile[row, col:]) infers its memref slice and vreg type; do not pass offset/result_vreg_type")
+        if post_mode != "NO_POST_UPDATE":
+            raise TypeError("vlds(tile[...], post_update=...) only supports post_update=PostUpdate.OFF; use the pointer form for stateful loads")
         kwargs = {}
         if dist is not None:
             kwargs["dist"] = _normalize_dist_token(
@@ -222,17 +225,15 @@ def vlds(src_ptr, offset=None, result_vreg_type=None, *, dist=None, return_updat
                 context="vlds(..., dist)",
             )
         raw_source = unwrap_surface_value(src_ptr)
-        op = _pto.VldsOp(
-            _infer_vreg_type_from_tile_slice(src_ptr),
-            raw_source.type if return_updated_base else None,
-            raw_source,
-            _index_zero(),
-            **kwargs,
+        return wrap_surface_value(
+            _pto.VldsOp(
+                _infer_vreg_type_from_tile_slice(src_ptr),
+                None,
+                raw_source,
+                _index_zero(),
+                **kwargs,
+            ).result
         )
-        result = wrap_surface_value(op.result)
-        if return_updated_base:
-            return result, wrap_surface_value(op.updated_base)
-        return result
 
     if offset is None:
         raise TypeError("vlds(ptr, offset, result_vreg_type=None) requires an explicit offset")
@@ -246,17 +247,34 @@ def vlds(src_ptr, offset=None, result_vreg_type=None, *, dist=None, return_updat
             context="vlds(..., dist)",
         )
     raw_source = unwrap_surface_value(src_ptr)
-    op = _pto.VldsOp(
-        _resolve(result_vreg_type),
-        raw_source.type if return_updated_base else None,
-        raw_source,
-        unwrap_surface_value(offset),
-        **kwargs,
+    if post_mode == "POST_UPDATE":
+        post_ctor = getattr(_pto, "VldsPostOp", None)
+        if post_ctor is not None:
+            op = post_ctor(
+                _resolve(result_vreg_type),
+                raw_source.type,
+                raw_source,
+                _coerce_index(offset, context="vlds(ptr, offset)"),
+                **kwargs,
+            )
+            return wrap_surface_value(op.result), wrap_surface_value(op.updated_source)
+        op = _pto.VldsOp(
+            _resolve(result_vreg_type),
+            raw_source.type,
+            raw_source,
+            _coerce_index(offset, context="vlds(ptr, offset)"),
+            **kwargs,
+        )
+        return wrap_surface_value(op.result), wrap_surface_value(op.updated_base)
+    return wrap_surface_value(
+        _pto.VldsOp(
+            _resolve(result_vreg_type),
+            None,
+            raw_source,
+            _coerce_index(offset, context="vlds(ptr, offset)"),
+            **kwargs,
+        ).result
     )
-    result = wrap_surface_value(op.result)
-    if return_updated_base:
-        return result, wrap_surface_value(op.updated_base)
-    return result
 
 
 def vldas(source):
@@ -372,11 +390,265 @@ def pbitcast(mask_value, to_type):
     )
 
 
-def vsts(val, dst_ptr, offset, mask=None, *, dist=None, return_updated_base=False):
+def _normalize_vcvt_round_mode(mode, *, context: str):
+    token = mode
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    normalized = token.strip().upper()
+    allowed = {"R", "A", "F", "C", "Z", "O"}
+    if normalized not in allowed:
+        expected = ", ".join(sorted(allowed))
+        raise ValueError(f"{context} does not support rnd {mode!r}; expected one of {expected}")
+    return normalized
+
+
+def _normalize_vcvt_sat_mode(mode, *, context: str):
+    token = mode
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    normalized = token.strip().upper()
+    if normalized in {"SAT", "RS_ENABLE"}:
+        return "SAT"
+    if normalized in {"NOSAT", "RS_DISABLE"}:
+        return "NOSAT"
+    raise ValueError(f"{context} does not support sat {mode!r}; expected SAT/NOSAT")
+
+
+def _normalize_vcvt_part_mode(mode, *, context: str):
+    token = mode
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    normalized = token.strip().upper()
+    allowed = {"EVEN", "ODD", "P0", "P1", "P2", "P3"}
+    if normalized not in allowed:
+        expected = ", ".join(sorted(allowed))
+        raise ValueError(f"{context} does not support part {mode!r}; expected one of {expected}")
+    return normalized
+
+
+def _normalize_vpack_part(part, *, context: str):
+    token = part
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    normalized = token.strip().upper()
+    allowed = {"LOWER", "HIGHER"}
+    if normalized not in allowed:
+        expected = ", ".join(sorted(allowed))
+        raise ValueError(f"{context} does not support part {part!r}; expected one of {expected}")
+    return normalized
+
+
+def _classify_vcvt_elem_kind(elem_type):
+    if F16Type.isinstance(elem_type):
+        return "f16"
+    if BF16Type.isinstance(elem_type):
+        return "bf16"
+    if F32Type.isinstance(elem_type):
+        return "f32"
+    if IntegerType.isinstance(elem_type):
+        int_type = IntegerType(elem_type)
+        width = int_type.width
+        if width == 8:
+            return "u8" if int_type.is_unsigned else "s8"
+        if width == 16:
+            return "u16" if int_type.is_unsigned else "s16"
+        if width == 32:
+            return "u32" if int_type.is_unsigned else "s32"
+        if width == 64 and not int_type.is_unsigned:
+            return "s64"
+    return None
+
+
+_VCVT_CONTRACTS = {
+    ("f32", "f16"): (True, True, True),
+    ("f32", "bf16"): (True, True, True),
+    ("f32", "s16"): (True, True, True),
+    ("f32", "s64"): (True, True, True),
+    ("f32", "s32"): (True, True, False),
+    ("f16", "f32"): (False, False, True),
+    ("f16", "s32"): (True, False, True),
+    ("f16", "s16"): (True, True, False),
+    ("f16", "s8"): (True, True, True),
+    ("f16", "u8"): (True, True, True),
+    ("bf16", "f16"): (True, True, False),
+    ("bf16", "f32"): (False, False, True),
+    ("bf16", "s32"): (True, True, True),
+    ("u8", "f16"): (False, False, True),
+    ("u8", "u16"): (False, False, True),
+    ("u8", "u32"): (False, False, True),
+    ("s8", "f16"): (False, False, True),
+    ("s8", "s16"): (False, False, True),
+    ("s8", "s32"): (False, False, True),
+    ("u16", "u8"): (False, True, True),
+    ("u16", "u32"): (False, False, True),
+    ("s16", "f16"): (True, False, False),
+    ("s16", "f32"): (False, False, True),
+    ("s16", "u32"): (False, False, True),
+    ("s16", "s32"): (False, False, True),
+    ("s16", "u8"): (False, True, True),
+    ("u32", "u8"): (False, True, True),
+    ("u32", "u16"): (False, True, True),
+    ("u32", "s16"): (False, True, True),
+    ("s32", "f32"): (True, False, False),
+    ("s32", "u8"): (False, True, True),
+    ("s32", "u16"): (False, True, True),
+    ("s32", "s16"): (False, True, True),
+    ("s32", "s64"): (False, False, True),
+    ("s64", "f32"): (True, False, True),
+    ("s64", "s32"): (False, True, True),
+}
+
+
+def _validate_vcvt_dtype_pair(src, result_dtype, *, context: str):
+    _, src_elem_type = _infer_vreg_metadata(src)
+    resolved_result_dtype = _resolve(result_dtype)
+    src_kind = _classify_vcvt_elem_kind(src_elem_type)
+    result_kind = _classify_vcvt_elem_kind(resolved_result_dtype)
+    if src_kind is None or result_kind is None:
+        raise TypeError(
+            f"{context} does not support source/result element types "
+            f"{src_elem_type} -> {resolved_result_dtype}"
+        )
+    if (src_kind, result_kind) not in _VCVT_CONTRACTS:
+        raise TypeError(
+            f"{context} currently does not support the dtype pair "
+            f"{src_kind} -> {result_kind}"
+        )
+    return resolved_result_dtype
+
+
+def _infer_result_vreg_type_for_element_dtype(src, result_dtype, *, context: str):
+    resolved_type = _validate_vcvt_dtype_pair(src, result_dtype, context=context)
+    try:
+        _pto.VRegType(resolved_type)
+        return resolved_type
+    except Exception:
+        pass
+    lanes, src_elem_type = _infer_vreg_metadata(src)
+    total_bytes = lanes * _element_bytewidth(src_elem_type)
+    result_elem_bytes = _element_bytewidth(resolved_type)
+    if total_bytes % result_elem_bytes != 0:
+        raise TypeError(
+            f"{context} cannot infer a result vreg type from {unwrap_surface_value(src).type} -> {resolved_type}; "
+            "the total vector payload is not evenly divisible by the target element width"
+        )
+    return _resolve(vreg_type(total_bytes // result_elem_bytes, resolved_type))
+
+
+def _infer_vpack_result_type(src):
+    lanes, elem_type = _infer_vreg_metadata(src)
+    if not IntegerType.isinstance(elem_type):
+        raise TypeError(f"vpack(src, part) expects an integer source vreg, got {elem_type}")
+    src_int_type = IntegerType(elem_type)
+    src_width = src_int_type.width
+    if src_width not in {16, 32}:
+        raise TypeError(
+            "vpack(src, part) currently supports only the source/result shape pairs "
+            "s32/u32 -> u16 and s16/u16 -> u8"
+        )
+    result_elem_type = IntegerType.get_unsigned(src_width // 2)
+    result_type = _resolve(vreg_type(lanes * 2, result_elem_type))
+    result_vreg_type = _pto.VRegType(result_type)
+    if result_vreg_type.element_count != lanes * 2:
+        raise TypeError(
+            "vpack(src, part) requires the packed result lane count to be twice "
+            "the source lane count"
+        )
+    result_int_type = IntegerType(result_vreg_type.element_type)
+    if result_int_type.width * 2 != src_width:
+        raise TypeError(
+            "vpack(src, part) requires the packed result element width to be half "
+            "the source element width"
+        )
+    if not result_int_type.is_unsigned:
+        raise TypeError("vpack(src, part) requires an unsigned packed result element type")
+    if not ((src_width == 32 and result_int_type.width == 16) or
+            (src_width == 16 and result_int_type.width == 8)):
+        raise TypeError(
+            "vpack(src, part) currently supports only the source/result shape pairs "
+            "s32/u32 -> u16 and s16/u16 -> u8"
+        )
+    return result_type
+
+
+def vcvt(src, to_dtype, mask, *, rnd=None, sat=None, part=None):
+    """``pto.vcvt`` – explicit vector type conversion."""
+    kwargs = {}
+    if rnd is not None:
+        kwargs["rnd"] = _normalize_vcvt_round_mode(rnd, context="vcvt(..., rnd=...)")
+    if sat is not None:
+        kwargs["sat"] = _normalize_vcvt_sat_mode(sat, context="vcvt(..., sat=...)")
+    if part is not None:
+        kwargs["part"] = _normalize_vcvt_part_mode(part, context="vcvt(..., part=...)")
+    return wrap_surface_value(
+        _pto.VcvtOp(
+            _infer_result_vreg_type_for_element_dtype(src, to_dtype, context="vcvt(src, to_dtype, mask)"),
+            unwrap_surface_value(src),
+            unwrap_surface_value(mask),
+            **kwargs,
+        ).result
+    )
+
+
+def vpack(src, part):
+    """``pto.vpack`` – narrow-pack one vector half into an unsigned result vector."""
+    return wrap_surface_value(
+        _pto.VpackOp(
+            _infer_vpack_result_type(src),
+            unwrap_surface_value(src),
+            _normalize_vpack_part(part, context="vpack(src, part)"),
+        ).result
+    )
+
+
+def vmulscvt(src, scalar, mask, *, rnd, part):
+    """``pto.vmulscvt`` – explicit fused mul+convert micro-op."""
+    op_ctor = getattr(_pto, "VmulscvtOp", None)
+    if op_ctor is None:
+        pto_module_path = getattr(_pto, "__file__", "<unknown>")
+        raise NotImplementedError(
+            "pto.vmulscvt(...) is not available in the current PTO build: "
+            f"the loaded Python bindings at {pto_module_path} do not expose a VPTO vmulscvt op yet"
+        )
+    round_mode = _normalize_vcvt_round_mode(rnd, context="vmulscvt(..., rnd=...)")
+    if round_mode != "A":
+        raise ValueError("vmulscvt(..., rnd=...) currently only supports A on the current PTO backend")
+    lanes, elem_type = _infer_vreg_metadata(src)
+    if not F32Type.isinstance(elem_type):
+        raise TypeError(
+            "vmulscvt(src, scalar, mask) currently only supports the dtype pair "
+            f"f32 -> f16; got source element type {elem_type}"
+        )
+    result_type = _resolve(vreg_type(lanes * 2, F16Type.get()))
+    scalar_value = _coerce_scalar_like_vector_element(src, scalar, context="vmulscvt")
+    return wrap_surface_value(
+        op_ctor(
+            result_type,
+            unwrap_surface_value(src),
+            unwrap_surface_value(scalar_value),
+            unwrap_surface_value(mask),
+            round_mode,
+            _normalize_vcvt_part_mode(part, context="vmulscvt(..., part=...)"),
+        ).result
+    )
+
+
+def vsts(val, dst_ptr, offset, mask=None, *, dist=None, post_update="OFF"):
     """``pto.vsts`` – vector store to a tile slice or to *dst_ptr* at *offset*."""
+    post_mode = _normalize_post_update_mode(post_update, context="vsts(..., post_update=...)")
     if isinstance(dst_ptr, TileSliceValue):
         if mask is not None:
             raise TypeError("vsts(vec, tile[row, col:], mask) does not accept a separate offset argument")
+        if post_mode != "NO_POST_UPDATE":
+            raise TypeError("vsts(vec, tile[...], post_update=...) only supports post_update=PostUpdate.OFF; use the pointer form for stateful stores")
         kwargs = {}
         if dist is not None:
             kwargs["dist"] = _normalize_dist_token(
@@ -385,16 +657,14 @@ def vsts(val, dst_ptr, offset, mask=None, *, dist=None, return_updated_base=Fals
                 context="vsts(..., dist)",
             )
         raw_destination = unwrap_surface_value(dst_ptr)
-        op = _pto.VstsOp(
-            raw_destination.type if return_updated_base else None,
+        _pto.VstsOp(
+            None,
             unwrap_surface_value(val),
             raw_destination,
             _index_zero(),
             unwrap_surface_value(offset),
             **kwargs,
         )
-        if return_updated_base:
-            return wrap_surface_value(op.updated_base)
         return
 
     if mask is None:
@@ -406,17 +676,36 @@ def vsts(val, dst_ptr, offset, mask=None, *, dist=None, return_updated_base=Fals
             allowed=_VSTORE_DIST_TOKENS,
             context="vsts(..., dist)",
         )
-    raw_destination = unwrap_surface_value(dst_ptr)
-    op = _pto.VstsOp(
-        raw_destination.type if return_updated_base else None,
+    if post_mode == "POST_UPDATE":
+        raw_destination = unwrap_surface_value(dst_ptr)
+        post_ctor = getattr(_pto, "VstsPostOp", None)
+        if post_ctor is not None:
+            op = post_ctor(
+                raw_destination.type,
+                unwrap_surface_value(val),
+                raw_destination,
+                _coerce_index(offset, context="vsts(ptr, offset, mask)"),
+                unwrap_surface_value(mask),
+                **kwargs,
+            )
+            return wrap_surface_value(op.updated_destination)
+        op = _pto.VstsOp(
+            raw_destination.type,
+            unwrap_surface_value(val),
+            raw_destination,
+            _coerce_index(offset, context="vsts(ptr, offset, mask)"),
+            unwrap_surface_value(mask),
+            **kwargs,
+        )
+        return wrap_surface_value(op.updated_base)
+    _pto.VstsOp(
+        None,
         unwrap_surface_value(val),
-        raw_destination,
-        unwrap_surface_value(offset),
+        unwrap_surface_value(dst_ptr),
+        _coerce_index(offset, context="vsts(ptr, offset, mask)"),
         unwrap_surface_value(mask),
         **kwargs,
     )
-    if return_updated_base:
-        return wrap_surface_value(op.updated_base)
 
 
 def vstsx2(low, high, dst_ptr, offset_or_dist, dist_or_mask=None, mask=None):
@@ -546,19 +835,28 @@ def vsldb(source, block_stride, repeat_stride, mask):
     )
 
 
-def vsstb(value, destination, block_stride, repeat_stride, mask, *, return_updated_base=False):
+def vsstb(value, destination, block_stride, repeat_stride, mask, *, post_update="OFF"):
     """``pto.vsstb`` – block-strided store."""
-    raw_destination = unwrap_surface_value(destination)
-    op = _pto.VsstbOp(
-        raw_destination.type if return_updated_base else None,
+    post_mode = _normalize_post_update_mode(post_update, context="vsstb(..., post_update=...)")
+    if post_mode == "POST_UPDATE":
+        raw_destination = unwrap_surface_value(destination)
+        op = _pto.VsstbOp(
+            raw_destination.type,
+            unwrap_surface_value(value),
+            raw_destination,
+            _coerce_i16(block_stride, context="vsstb(..., block_stride, repeat_stride, mask)"),
+            _coerce_i16(repeat_stride, context="vsstb(..., block_stride, repeat_stride, mask)"),
+            unwrap_surface_value(mask),
+        )
+        return wrap_surface_value(op.updated_base)
+    _pto.VsstbOp(
+        None,
         unwrap_surface_value(value),
-        raw_destination,
+        unwrap_surface_value(destination),
         _coerce_i16(block_stride, context="vsstb(..., block_stride, repeat_stride, mask)"),
         _coerce_i16(repeat_stride, context="vsstb(..., block_stride, repeat_stride, mask)"),
         unwrap_surface_value(mask),
     )
-    if return_updated_base:
-        return wrap_surface_value(op.updated_base)
 
 
 # ── Mask / predicate ops ──────────────────────────────────────────────────────
@@ -1280,17 +1578,117 @@ def vcmin(v, mask):
     return _emit_unary_vec_op(_pto.VcminOp, v, mask)
 
 
-def vdup(v, mask, *, position=None):
-    """``pto.vdup`` – duplicate a lane value into all lanes.
+def _normalize_vdup_position_mode(position, *, context: str):
+    token = position
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    normalized = token.strip().upper()
+    allowed = {"LOWEST", "HIGHEST"}
+    if normalized not in allowed:
+        expected = ", ".join(sorted(allowed))
+        raise ValueError(f"{context} does not support position {position!r}; expected one of {expected}")
+    return normalized
 
-    Pass ``position="LOWEST"`` to broadcast the lowest (lane-0) element.
-    """
+
+def _normalize_acc_to_vec_mode(mode, *, context: str):
+    if mode is None:
+        return None
+    if isinstance(mode, str):
+        token = mode.strip().lower()
+        aliases = {
+            "vec0": "single_mode_vec0",
+            "vec1": "single_mode_vec1",
+            "split_m": "dual_mode_split_m",
+            "split_n": "dual_mode_split_n",
+            "single_mode_vec0": "single_mode_vec0",
+            "single_mode_vec1": "single_mode_vec1",
+            "dual_mode_split_m": "dual_mode_split_m",
+            "dual_mode_split_n": "dual_mode_split_n",
+        }
+        normalized = aliases.get(token)
+        if normalized is None:
+            expected = ", ".join(sorted(aliases))
+            raise ValueError(f"{context} expects mode to be one of {expected}, got {mode!r}")
+        return Attribute.parse(f"#pto<acc_to_vec_mode {normalized}>")
+    return mode
+
+
+def _mask_granularity_bits(mask_value, *, context: str) -> int:
+    mask_bits, _ = _infer_mask_metadata(mask_value, context=context)
+    return mask_bits
+
+
+def _infer_vdup_scalar_result_type(input_value, mask_value, *, context: str):
+    scalar_raw = unwrap_surface_value(input_value)
+    scalar_type = scalar_raw.type
+    mask_bits = _mask_granularity_bits(mask_value, context=context)
+    if IntegerType.isinstance(scalar_type):
+        scalar_type = _strip_integer_signedness(scalar_raw)
+        scalar_width = IntegerType(scalar_type.type).width
+        if scalar_width != mask_bits:
+            raise TypeError(
+                f"{context} expects scalar input width {scalar_width} to match mask granularity b{mask_bits}"
+            )
+        element_type = scalar_type.type
+    elif F16Type.isinstance(scalar_type) or BF16Type.isinstance(scalar_type):
+        if mask_bits != 16:
+            raise TypeError(f"{context} expects f16/bf16 scalar input to pair with mask_b16, got mask_b{mask_bits}")
+        element_type = scalar_type
+    elif F32Type.isinstance(scalar_type):
+        if mask_bits != 32:
+            raise TypeError(f"{context} expects f32 scalar input to pair with mask_b32, got mask_b{mask_bits}")
+        element_type = scalar_type
+    else:
+        raise TypeError(
+            f"{context} only supports scalar input types i8/i16/i32, si8/si16/si32, ui8/ui16/ui32, f16, bf16, and f32; got {scalar_type}"
+        )
+    return _resolve(vreg_type(_elements_per_vreg(element_type), element_type))
+
+
+def _coerce_vdup_scalar_input(input_value, mask_value, *, context: str):
+    raw_input = unwrap_surface_value(input_value)
+    if hasattr(raw_input, "type"):
+        return raw_input
+
+    mask_bits = _mask_granularity_bits(mask_value, context=context)
+    if isinstance(raw_input, bool):
+        raise TypeError(f"{context} does not accept bool literals")
+    if isinstance(raw_input, float):
+        if mask_bits == 16:
+            target_type = F16Type.get()
+        elif mask_bits == 32:
+            target_type = F32Type.get()
+        else:
+            raise TypeError(f"{context} cannot materialize a float literal for mask_b{mask_bits}")
+        return coerce_scalar_to_type(raw_input, target_type, context=context)
+    return coerce_scalar_to_type(raw_input, IntegerType.get_signless(mask_bits), context=context)
+
+
+def vdup(input_value, mask, position=None):
+    """``pto.vdup`` – duplicate a scalar or selected vector lane into active lanes."""
+    raw_input = unwrap_surface_value(input_value)
+    try:
+        _pto.VRegType(raw_input.type)
+        result_type = raw_input.type
+        normalized_position = (
+            _normalize_vdup_position_mode(position, context="vdup(vec, mask, position=...)")
+            if position is not None
+            else "LOWEST"
+        )
+    except Exception:
+        if position is not None:
+            raise TypeError("vdup(scalar, mask, position=...) does not support position; position is only valid for vector input")
+        raw_input = _coerce_vdup_scalar_input(input_value, mask, context="vdup(scalar, mask)")
+        result_type = _infer_vdup_scalar_result_type(raw_input, mask, context="vdup(scalar, mask)")
+        normalized_position = None
     return wrap_surface_value(
         _pto.VdupOp(
-            unwrap_surface_value(v).type,
-            unwrap_surface_value(v),
+            result_type,
+            raw_input,
             unwrap_surface_value(mask),
-            position=position,
+            position=normalized_position,
         ).result
     )
 
@@ -1858,9 +2256,53 @@ def tstore(tile, part):
     _pto.TStoreOp(None, unwrap_surface_value(tile), unwrap_surface_value(part))
 
 
-def tmov(src, dst):
+def tmov(src, dst, *, mode=None):
     """``pto.tmov ins(src) outs(dst)`` – move data between tile domains."""
-    _pto.TMovOp(None, unwrap_surface_value(src), unwrap_surface_value(dst))
+    kwargs = {}
+    if mode is not None:
+        kwargs["accToVecMode"] = _normalize_acc_to_vec_mode(mode, context="tmov(..., mode=...)")
+    _pto.TMovOp(None, unwrap_surface_value(src), unwrap_surface_value(dst), **kwargs)
+
+
+def textract(src, dst, index_row, index_col):
+    """``pto.textract ins(src, index_row, index_col) outs(dst)``."""
+    _pto.TExtractOp(
+        unwrap_surface_value(src),
+        _coerce_index(index_row, context="textract(index_row)"),
+        _coerce_index(index_col, context="textract(index_col)"),
+        unwrap_surface_value(dst),
+    )
+
+
+def tinsert(src, dst, index_row, index_col):
+    """``pto.tinsert ins(src, index_row, index_col) outs(dst)``."""
+    _pto.TInsertOp(
+        unwrap_surface_value(src),
+        _coerce_index(index_row, context="tinsert(index_row)"),
+        _coerce_index(index_col, context="tinsert(index_col)"),
+        unwrap_surface_value(dst),
+    )
+
+
+def tmatmul(lhs, rhs, dst):
+    """``pto.tmatmul ins(lhs, rhs) outs(dst)``."""
+    _pto.TMatmulOp(
+        None,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(dst),
+    )
+
+
+def tmatmul_acc(acc_in, lhs, rhs, dst):
+    """``pto.tmatmul.acc ins(acc_in, lhs, rhs) outs(dst)``."""
+    _pto.TMatmulAccOp(
+        None,
+        unwrap_surface_value(acc_in),
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(dst),
+    )
 
 
 def _coerce_tile_scalar_operand(tile, scalar, *, context: str):
@@ -2187,6 +2629,68 @@ def texpands(scalar, dst):
     _pto.texpands(
         _coerce_tile_scalar_operand(dst, scalar, context="texpands"),
         unwrap_surface_value(dst),
+    )
+
+
+def _tile_numel(shape, *, context: str):
+    numel = 1
+    for dim in shape:
+        if isinstance(dim, bool) or not isinstance(dim, int):
+            raise TypeError(f"{context} currently requires a static shape")
+        numel *= dim
+    return numel
+
+
+def treshape(src, *, shape, dtype=None, blayout=None):
+    """``pto.treshape ins(src) -> result``."""
+    src_value = unwrap_surface_value(src)
+    src_shape = getattr(src, "shape", None)
+    src_dtype = getattr(src, "dtype", None)
+    src_memory_space = getattr(src, "memory_space", None)
+    src_metadata = parse_tile_type_metadata(src_value.type)
+    if src_shape is None and src_metadata is not None:
+        src_shape = tuple(src_metadata["shape_dims"])
+    if src_dtype is None and src_metadata is not None:
+        src_dtype = src_metadata["element_type"]
+    if src_memory_space is None and src_metadata is not None:
+        src_memory_space = src_metadata["memory_space"]
+    if src_shape is None or src_dtype is None or src_memory_space is None:
+        raise TypeError("treshape(...) expects a tile_buf-backed Tile value")
+
+    result_shape = _normalize_static_tile_shape(shape)
+    result_dtype = dtype if dtype is not None else src_dtype
+    result_blayout = blayout if blayout is not None else "RowMajor"
+
+    src_numel = _tile_numel(src_shape, context="treshape(src, shape=...) source")
+    dst_numel = _tile_numel(result_shape, context="treshape(src, shape=...) result")
+    src_bytes = src_numel * _element_bytewidth(_resolve(src_dtype))
+    dst_bytes = dst_numel * _element_bytewidth(_resolve(result_dtype))
+    if src_bytes != dst_bytes:
+        raise ValueError(
+            "treshape(src, shape=..., dtype=...) requires source and result to have the same total byte size"
+        )
+
+    result_memory_space = src_memory_space
+    result_physical_shape = _authored_tile_physical_shape(result_shape)
+    _validate_authored_tile_row_alignment(result_physical_shape, result_dtype, blayout=result_blayout, slayout="NoneBox")
+
+    from ._types import tile_buf_type
+
+    result_type = tile_buf_type(
+        result_physical_shape,
+        result_dtype,
+        blayout=result_blayout,
+        address_space=result_memory_space,
+    )
+    value = _pto.treshape(result_type, src_value)
+    return wrap_surface_value(
+        value,
+        tile_metadata={
+            "shape": result_shape,
+            "physical_shape": result_physical_shape,
+            "dtype": result_dtype,
+            "memory_space": result_memory_space,
+        },
     )
 
 
@@ -4046,7 +4550,7 @@ __all__ = [
     "pge_b8", "pge_b16", "pge_b32",
     "make_mask",
     "pand", "por", "pxor", "pnot", "psel",
-    "pbitcast", "ppack", "punpack",
+    "pbitcast", "vcvt", "vpack", "vmulscvt", "ppack", "punpack",
     "pintlv_b8", "pintlv_b16", "pintlv_b32",
     "pdintlv_b8", "pdintlv_b16", "pdintlv_b32",
     "vgather2", "vgather2_bc", "vgatherb", "vscatter", "vsldb", "vsstb",
@@ -4064,7 +4568,7 @@ __all__ = [
     "vsel",
     "make_tensor_view", "partition_view",
     "alloc_tile",
-    "tload", "tstore", "tmov",
+    "tload", "tstore", "tmov", "tinsert",
     "tadd", "tsub", "tmul", "tdiv", "tmax", "tmin",
     "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
     "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg",
@@ -4072,7 +4576,7 @@ __all__ = [
     "trowsum", "trowmax", "trowmin", "trowprod", "trowargmax", "trowargmin",
     "tcolsum", "tcolmax", "tcolmin", "tcolprod", "tcolargmax", "tcolargmin",
     "tcmp", "tcmps",
-    "texpands", "trowexpand", "tcolexpand",
+    "texpands", "treshape", "trowexpand", "tcolexpand",
     "trowexpandadd", "trowexpandsub", "trowexpandmul", "trowexpanddiv", "trowexpandmax", "trowexpandmin", "trowexpandexpdif",
     "tcolexpandadd", "tcolexpandsub", "tcolexpandmul", "tcolexpanddiv", "tcolexpandmax", "tcolexpandmin", "tcolexpandexpdif",
     "tsel", "tsels", "tcvt",
