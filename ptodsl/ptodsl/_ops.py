@@ -1656,17 +1656,22 @@ def _source_view_rank(tv, *, context: str) -> int:
             raise TypeError(f"{context} expects a tensor view or partition tensor view, got {raw_type}") from exc
 
 
-def _normalize_transfer_offsets(tv, *, offset, offsets, context: str):
-    if offset is not None and offsets is not None:
-        raise TypeError(f"{context} accepts only one of offset= or offsets=")
-    authored_offsets = offsets if offsets is not None else offset
-    if authored_offsets is None:
+def _is_partition_tensor_view(value) -> bool:
+    try:
+        _pto.PartitionTensorViewType(unwrap_surface_value(value).type)
+        return True
+    except Exception:
+        return False
+
+
+def _normalize_transfer_offsets(tv, *, offsets, context: str):
+    if offsets is None:
         return [0] * _source_view_rank(tv, context=context)
-    if isinstance(authored_offsets, tuple):
-        return list(authored_offsets)
-    if isinstance(authored_offsets, list):
-        return authored_offsets
-    return [authored_offsets]
+    if isinstance(offsets, tuple):
+        return list(offsets)
+    if isinstance(offsets, list):
+        return offsets
+    return [offsets]
 
 
 def _normalize_transfer_sizes(sizes):
@@ -1699,10 +1704,9 @@ def _infer_tile_transfer_sizes(tile, *, context: str):
     return sizes
 
 
-def _tile_transfer_partition(tv, tile, *, offset=None, offsets=None, sizes=None, context: str):
+def _tile_transfer_partition(tv, tile, *, offsets=None, sizes=None, context: str):
     normalized_offsets = _normalize_transfer_offsets(
         tv,
-        offset=offset,
         offsets=offsets,
         context=context,
     )

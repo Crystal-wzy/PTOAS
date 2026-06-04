@@ -75,12 +75,12 @@ class _FakeTileWithPartialValidShape:
 
 expect_raises(
     TypeError,
-    lambda: pto.tile.load(object(), _FakeTileWithoutValidShape(), offset=[0, 0]),
+    lambda: pto.tile.load(object(), _FakeTileWithoutValidShape(), offsets=[0, 0]),
     "requires tile valid_shape metadata",
 )
 expect_raises(
     ValueError,
-    lambda: pto.tile.load(object(), _FakeTileWithPartialValidShape(), offset=[0, 0]),
+    lambda: pto.tile.load(object(), _FakeTileWithPartialValidShape(), offsets=[0, 0]),
     "tile.valid_shape[1] is None",
 )
 
@@ -151,8 +151,8 @@ def tile_transfer_surface_probe(
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
     a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32, valid_shape=[rows, cols])
     o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32, valid_shape=[rows, cols])
-    pto.tile.load(a_view, a_tile, offset=[0, 0])
-    pto.tile.store(o_tile, o_view, offsets=[0, 0])
+    pto.tile.load(a_view, a_tile)
+    pto.tile.store(o_tile, o_view)
 
 
 @pto.jit(target="a5", insert_sync=False)
@@ -1636,8 +1636,8 @@ def main() -> None:
 
     tile_transfer_text = tile_transfer_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(tile_transfer_text, "tile transfer surface specialization")
-    expect("pto.tload" in tile_transfer_text, "pto.tile.load(..., offset=...) should lower to pto.tload")
-    expect("pto.tstore" in tile_transfer_text, "pto.tile.store(..., offset=...) should lower to pto.tstore")
+    expect("pto.tload" in tile_transfer_text, "pto.tile.load(tensor, tile) should lower to pto.tload")
+    expect("pto.tstore" in tile_transfer_text, "pto.tile.store(tile, tensor) should lower to pto.tstore")
     expect(
         re.search(
             r"sizes = \[%[a-zA-Z0-9_]+, %[a-zA-Z0-9_]+\]",

@@ -389,8 +389,8 @@ pto.partition_view(tv, offsets=…, sizes=…)        # type inferred
 pto.alloc_tile(shape=…, dtype=…, memory_space=…, valid_shape=…, addr=…)  # authored surface
 pto.tile.load(part, tile)
 pto.tile.store(tile, part)
-pto.tile.load(tv, tile, offset=…)                 # partition + tile.load, sizes inferred from tile
-pto.tile.store(tile, tv, offset=…)                # partition + tile.store, sizes inferred from tile
+pto.tile.load(tv, tile)                           # partition + tile.load, zero offsets, sizes inferred from tile
+pto.tile.store(tile, tv)                          # partition + tile.store, zero offsets, sizes inferred from tile
 tile.as_ptr() / view.as_ptr()
 pto.get_block_idx()           # → i64
 pto.set_flag("MTE2", "V", event_id=0)

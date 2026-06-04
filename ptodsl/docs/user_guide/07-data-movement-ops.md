@@ -6,26 +6,23 @@ This chapter covers every operation that moves data between memory spaces in PTO
 
 Tile ops move entire blocks between Global Memory and the Unified Buffer in a single call. They are the primary data movement interface inside `@pto.jit`.
 
-Use `pto.tile.load(view, tile, offset=[...])` and `pto.tile.store(tile, view, offset=[...])` when the GM partition is only needed for that transfer. These overloads build the `partition_view` internally and infer `sizes` from `tile.valid_shape` when the tensor-view rank matches the tile rank:
-
-```python
-a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32, valid_shape=[1, cols])
-pto.tile.load(a_view, a_tile, offset=[row, 0])
-pto.tile.store(a_tile, o_view, offset=[row, 0])
-```
-
-For rank-changing layouts, pass `sizes=` explicitly or keep using `partition_view(...)` plus `pto.tile.load/store`.
-
 #### `pto.tile.load(partition: PartitionTensorView, tile: Tile) -> None`
 
+#### `pto.tile.load(tensor: TensorView, tile: Tile, *, offsets: tuple[IndexLike, ...] | None = None, sizes: tuple[IndexLike, ...] | None = None) -> None`
+
 **Description**: Copies data from a GM partition into a UB tile. The transfer size is determined by the partition's `sizes` and the tile's shape — they must be compatible.
+
+The `TensorView` overload builds the `partition_view` internally. When `offsets` is omitted, it defaults to zero offsets for every tensor dimension. When `sizes` is omitted, it is inferred from `tile.valid_shape`; for rank-changing layouts, pass `sizes=` explicitly or build a `PartitionTensorView` yourself.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `partition` | `PartitionTensorView` | Source region in GM |
+| `tensor` | `TensorView` | Source GM tensor view; used by the overload that builds a partition internally |
 | `tile` | `Tile` | Destination buffer in UB |
+| `offsets` | `tuple[IndexLike, ...]` or `None` | Optional tensor offsets for the internal partition; defaults to all zeros |
+| `sizes` | `tuple[IndexLike, ...]` or `None` | Optional partition sizes; defaults to `tile.valid_shape` when ranks match |
 
 **Returns**: None (side-effect operation).
 
@@ -36,13 +33,18 @@ For rank-changing layouts, pass `sizes=` explicitly or keep using `partition_vie
 a_part = pto.partition_view(a_view, offsets=[offset, 0], sizes=[1, cols])
 a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 pto.tile.load(a_part, a_tile)
+pto.tile.load(a_view, a_tile, offsets=[offset, 0], sizes=[1, cols])
 ```
 
 ---
 
 #### `pto.tile.store(tile: Tile, partition: PartitionTensorView) -> None`
 
+#### `pto.tile.store(tile: Tile, tensor: TensorView, *, offsets: tuple[IndexLike, ...] | None = None, sizes: tuple[IndexLike, ...] | None = None) -> None`
+
 **Description**: Copies data from a UB tile back to a GM partition. The tile's `valid_shape` determines how many elements are written; elements outside `valid_shape` are not stored.
+
+The `TensorView` overload builds the `partition_view` internally. When `offsets` is omitted, it defaults to zero offsets for every tensor dimension. When `sizes` is omitted, it is inferred from `tile.valid_shape`; for rank-changing layouts, pass `sizes=` explicitly or build a `PartitionTensorView` yourself.
 
 **Parameters**:
 
@@ -50,6 +52,9 @@ pto.tile.load(a_part, a_tile)
 |-----------|------|-------------|
 | `tile` | `Tile` | Source buffer in UB |
 | `partition` | `PartitionTensorView` | Destination region in GM |
+| `tensor` | `TensorView` | Destination GM tensor view; used by the overload that builds a partition internally |
+| `offsets` | `tuple[IndexLike, ...]` or `None` | Optional tensor offsets for the internal partition; defaults to all zeros |
+| `sizes` | `tuple[IndexLike, ...]` or `None` | Optional partition sizes; defaults to `tile.valid_shape` when ranks match |
 
 **Returns**: None (side-effect operation).
 
@@ -58,6 +63,7 @@ pto.tile.load(a_part, a_tile)
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.tile_io","symbol":"quick_start_tile_io_probe","compile":{"BLOCK":128}} -->
 ```python
 pto.tile.store(o_tile, o_part)
+pto.tile.store(o_tile, o_view, offsets=[0, 0], sizes=[rows, cols])
 ```
 
 ---
