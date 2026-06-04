@@ -4303,10 +4303,13 @@ class _SemanticAnalyzer:
         if len(args) != 4:
             raise TypeError(f"pto.{name} expects exactly 4 positional arguments in TileLang DSL v1")
         allowed_keywords = {"transpose"}
+        supports_start_position = name in {"mte_l1_l0a", "mte_l1_l0b"}
+        if supports_start_position:
+            allowed_keywords |= {"start_row", "start_col"}
         unsupported = sorted(set(keywords) - allowed_keywords)
         if unsupported:
             raise TypeError(
-                f"pto.{name} only accepts keyword(s) transpose in TileLang DSL v1; "
+                f"pto.{name} only accepts keyword(s) {', '.join(sorted(allowed_keywords))} in TileLang DSL v1; "
                 f"got unsupported keyword(s): {', '.join(unsupported)}"
             )
         src = self._require_pointer_expr(args[0], f"pto.{name} source", memory_space="mat")
@@ -4315,6 +4318,18 @@ class _SemanticAnalyzer:
         self._require_matching_cube_pointer_element_dtypes(src, dst, f"pto.{name}")
         self._require_i64_like_expr(args[2], f"pto.{name} first dimension")
         self._require_i64_like_expr(args[3], f"pto.{name} second dimension")
+        start_row = self._cube_keyword_or_default(
+            keywords,
+            "start_row",
+            SemanticLiteralExpr(value=0, type=SemanticIndexType()),
+        )
+        start_col = self._cube_keyword_or_default(
+            keywords,
+            "start_col",
+            SemanticLiteralExpr(value=0, type=SemanticIndexType()),
+        )
+        self._require_i64_like_expr(start_row, f"pto.{name} start_row")
+        self._require_i64_like_expr(start_col, f"pto.{name} start_col")
         transpose = self._cube_keyword_or_default(
             keywords,
             "transpose",
@@ -4322,6 +4337,8 @@ class _SemanticAnalyzer:
         )
         if not isinstance(transpose.type, SemanticScalarType) or transpose.type.dtype != i1:
             raise TypeError(f"pto.{name} transpose must be an i1/bool value in TileLang DSL v1")
+        if supports_start_position:
+            return SemanticCallExpr(namespace="pto", name=name, args=args + (start_row, start_col, transpose), type=None)
         return SemanticCallExpr(namespace="pto", name=name, args=args + (transpose,), type=None)
 
     def _analyze_mte_l0c_store(

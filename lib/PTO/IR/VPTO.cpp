@@ -7078,6 +7078,21 @@ void MteL0cL1Op::print(OpAsmPrinter &printer) {
       getLoop3DstStride());
 }
 
+template <typename OpTy>
+static LogicalResult verifyCubeBridgeLoadStart(OpTy op) {
+  auto checkNonNegativeConst = [&](Value value, StringRef name) -> LogicalResult {
+    APInt intValue;
+    if (matchPattern(value, m_ConstantInt(&intValue)) && intValue.isNegative())
+      return op.emitOpError() << name << " must be non-negative";
+    return success();
+  };
+
+  if (failed(checkNonNegativeConst(op.getStartRow(), "start_row")) ||
+      failed(checkNonNegativeConst(op.getStartCol(), "start_col")))
+    return failure();
+  return success();
+}
+
 LogicalResult MteL0cL1Op::verify() {
   if (!isBufferLike(getSource().getType()) ||
       !isBufferLike(getDestination().getType()))
@@ -7098,11 +7113,15 @@ LogicalResult MteL0cL1Op::verify() {
 }
 
 LogicalResult MteL1L0aOp::verify() {
-  return verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT");
+  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT")))
+    return failure();
+  return verifyCubeBridgeLoadStart(*this);
 }
 
 LogicalResult MteL1L0bOp::verify() {
-  return verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT");
+  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT")))
+    return failure();
+  return verifyCubeBridgeLoadStart(*this);
 }
 
 LogicalResult MteL1L0aMxOp::verify() {

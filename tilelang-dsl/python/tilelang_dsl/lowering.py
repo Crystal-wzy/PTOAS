@@ -2665,14 +2665,30 @@ class _AuthoringRenderer:
         destination = self._lower_expr(expr.args[1], env, indent=indent, into=into)
         first = self._lower_to_i64(expr.args[2], env, indent=indent, into=into)
         second = self._lower_to_i64(expr.args[3], env, indent=indent, into=into)
-        attr_suffix = ""
-        if len(expr.args) > 4 and self._extract_static_bool(expr.args[4], context=f"pto.{expr.name} transpose"):
-            attr_suffix = " {transpose = true}"
+        cursor = 4
+        start_suffix = ""
+        start_type_suffix = ""
+        attr_entries: list[str] = []
+        if expr.name in {"mte_l1_l0a", "mte_l1_l0b"}:
+            if len(expr.args) < 7:
+                raise ValueError(f"pto.{expr.name} requires normalized start_row and start_col operands")
+            start_row_expr = expr.args[cursor]
+            start_col_expr = expr.args[cursor + 1]
+            cursor += 2
+            start_row = self._lower_to_i64(start_row_expr, env, indent=indent, into=into)
+            start_col = self._lower_to_i64(start_col_expr, env, indent=indent, into=into)
+            start_suffix = f", {start_row.name}, {start_col.name}"
+            start_type_suffix = f", {self._render_type(start_row.type)}, {self._render_type(start_col.type)}"
+        if len(expr.args) > cursor and self._extract_static_bool(
+            expr.args[cursor], context=f"pto.{expr.name} transpose"
+        ):
+            attr_entries.append("transpose = true")
+        attr_suffix = f" {{{', '.join(attr_entries)}}}" if attr_entries else ""
         into.append(
             self._indent(indent)
-            + f"pto.{expr.name} {source.name}, {destination.name}, {first.name}, {second.name}{attr_suffix} : "
+            + f"pto.{expr.name} {source.name}, {destination.name}, {first.name}, {second.name}{start_suffix}{attr_suffix} : "
             + f"{self._render_type(source.type)}, {self._render_type(destination.type)}, "
-            + f"{self._render_type(first.type)}, {self._render_type(second.type)}"
+            + f"{self._render_type(first.type)}, {self._render_type(second.type)}{start_type_suffix}"
         )
 
     def _render_mte_l0c_store(

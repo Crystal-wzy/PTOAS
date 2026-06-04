@@ -336,15 +336,23 @@ pto.mte_l1_bt(src: pto.ptr<T, mat>, dst: pto.ptr<U, bias>,
 
 ```python
 pto.mte_l1_l0a(src: pto.ptr<T, mat>, dst: pto.ptr<T, left>,
-              m: int, k: int)
+              m: int, k: int,
+              start_row: int, start_col: int)
 ```
+
+DSL frontends may let users omit `start_row` and `start_col`; omitted start
+positions are materialized as `0` before emitting PTO IR.
 
 #### `pto.mte_l1_l0b` — L1 (cbuf) → L0B
 
 ```python
 pto.mte_l1_l0b(src: pto.ptr<T, mat>, dst: pto.ptr<T, right>,
-               k: int, n: int)
+               k: int, n: int,
+               start_row: int, start_col: int)
 ```
+
+DSL frontends may let users omit `start_row` and `start_col`; omitted start
+positions are materialized as `0` before emitting PTO IR.
 
 #### `pto.mte_l1_l0a_mx` / `pto.mte_l1_l0b_mx`
 

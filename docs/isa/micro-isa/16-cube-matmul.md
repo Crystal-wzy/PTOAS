@@ -593,12 +593,16 @@ If `transpose = true`, the selected logical source tile is transposed before it
 is placed in the destination operand domain. Omitting the attribute means
 `transpose = false`.
 
+The `%start_row` and `%start_col` operands select the row and column offset of
+the source tile extraction start position. Frontends that expose these as
+optional user arguments must materialize `0` for both operands when omitted.
+
 ### `pto.mte_l1_l0a`
 
 - **syntax:**
 ```mlir
-pto.mte_l1_l0a %src, %dst, %m, %k
-  : !pto.ptr<T, l1>, !pto.ptr<T, l0a>, i64, i64
+pto.mte_l1_l0a %src, %dst, %m, %k, %start_row, %start_col
+  : !pto.ptr<T, l1>, !pto.ptr<T, l0a>, i64, i64, i64, i64
 ```
 - **semantics:** Load a logical `%m x %k` left tile from L1 `l1` into `l0a`.
 
@@ -610,6 +614,8 @@ pto.mte_l1_l0a %src, %dst, %m, %k
 | `%dst` | ptr | Left operand destination in `l0a` |
 | `%m` | i64 | Logical M extent |
 | `%k` | i64 | Logical K extent |
+| `%start_row` | i64 | Source row offset |
+| `%start_col` | i64 | Source column offset |
 | `transpose` | attr | Optional boolean source-tile transpose before destination placement |
 
 **Constraints:**
@@ -622,8 +628,8 @@ pto.mte_l1_l0a %src, %dst, %m, %k
 **Example:**
 
 ```mlir
-pto.mte_l1_l0a %l1_a, %l0a, %c16_i64, %c32_i64
-  : !pto.ptr<f16, l1>, !pto.ptr<f16, l0a>, i64, i64
+pto.mte_l1_l0a %l1_a, %l0a, %c16_i64, %c32_i64, %c0_i64, %c0_i64
+  : !pto.ptr<f16, l1>, !pto.ptr<f16, l0a>, i64, i64, i64, i64
 ```
 
 ---
@@ -632,8 +638,8 @@ pto.mte_l1_l0a %l1_a, %l0a, %c16_i64, %c32_i64
 
 - **syntax:**
 ```mlir
-pto.mte_l1_l0b %src, %dst, %k, %n
-  : !pto.ptr<T, l1>, !pto.ptr<T, l0b>, i64, i64
+pto.mte_l1_l0b %src, %dst, %k, %n, %start_row, %start_col
+  : !pto.ptr<T, l1>, !pto.ptr<T, l0b>, i64, i64, i64, i64
 ```
 - **semantics:** Load a logical `%k x %n` right tile from L1 `l1` into
   `l0b`.
@@ -646,6 +652,8 @@ pto.mte_l1_l0b %src, %dst, %k, %n
 | `%dst` | ptr | Right operand destination in `l0b` |
 | `%k` | i64 | Logical K extent |
 | `%n` | i64 | Logical N extent |
+| `%start_row` | i64 | Source row offset |
+| `%start_col` | i64 | Source column offset |
 | `transpose` | attr | Optional boolean source-tile transpose before destination placement |
 
 **Constraints:**
@@ -658,8 +666,8 @@ pto.mte_l1_l0b %src, %dst, %k, %n
 **Example:**
 
 ```mlir
-pto.mte_l1_l0b %l1_b, %l0b, %c32_i64, %c16_i64
-  : !pto.ptr<f16, l1>, !pto.ptr<f16, l0b>, i64, i64
+pto.mte_l1_l0b %l1_b, %l0b, %c32_i64, %c16_i64, %c0_i64, %c0_i64
+  : !pto.ptr<f16, l1>, !pto.ptr<f16, l0b>, i64, i64, i64, i64
 ```
 
 ---

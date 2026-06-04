@@ -574,8 +574,25 @@ def public_cube_surface_probe(
     m = pto.const(16)
     k = pto.const(16)
     n = pto.const(16)
-    pto.mte_l1_l0a(lhs_tile.as_ptr(), lhs_l0a.as_ptr(), m, k)
-    pto.mte_l1_l0b(rhs_tile.as_ptr(), rhs_l0b.as_ptr(), k, n, transpose=True)
+    start_row = pto.const(2)
+    start_col = pto.const(4)
+    pto.mte_l1_l0a(
+        lhs_tile.as_ptr(),
+        lhs_l0a.as_ptr(),
+        m,
+        k,
+        start_row=start_row,
+        start_col=start_col,
+    )
+    pto.mte_l1_l0b(
+        rhs_tile.as_ptr(),
+        rhs_l0b.as_ptr(),
+        k,
+        n,
+        start_row=start_col,
+        start_col=start_row,
+        transpose=True,
+    )
     pto.mte_l1_l0a_mx(lhs_tile_mx.as_ptr(), lhs_l0a_mx.as_ptr(), m, k, transpose=True)
     pto.mte_l1_l0b_mx(rhs_tile_mx.as_ptr(), rhs_l0b_mx.as_ptr(), k, n, transpose=True)
     pto.mad(
@@ -1950,6 +1967,7 @@ def main() -> None:
     expect("pto.vcgadd" in public_surface_text, "vcgadd(...) should lower to pto.vcgadd")
     expect("pto.vadds" in public_surface_text, "vsubs(...) should lower via scalar negation plus pto.vadds")
     expect("pto.mte_l1_l0a" in public_surface_text, "mte_l1_l0a(...) should lower to pto.mte_l1_l0a")
+    expect("start(" not in public_surface_text, "mte_l1_l0a/l0b start_row/start_col should lower as operands")
     expect('pto.get_buf "PIPE_V", 0, 0' in sync_surface_text, 'get_buf(Pipe.V, 0) should lower to pto.get_buf with PIPE_V')
     expect('pto.rls_buf "PIPE_MTE2", 1, 2' in sync_surface_text, 'rls_buf(Pipe.MTE2, 1, 2) should lower to pto.rls_buf with PIPE_MTE2')
     expect("pto.set_flag[<PIPE_MTE2>, <PIPE_V>, <EVENT_ID0>]" in sync_surface_text, "set_flag(..., event_id=0) should lower static event ids to pto.set_flag")

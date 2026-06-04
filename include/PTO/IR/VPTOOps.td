@@ -2674,6 +2674,8 @@ def PTO_MteL1L0aOp : PTO_Op<"mte_l1_l0a", [
     PTO_BufferLikeType:$destination,
     I64:$m,
     I64:$k,
+    I64:$start_row,
+    I64:$start_col,
     DefaultValuedAttr<BoolAttr, "false">:$transpose
   );
 
@@ -2682,8 +2684,9 @@ def PTO_MteL1L0aOp : PTO_Op<"mte_l1_l0a", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $source `,` $destination `,` $m `,` $k attr-dict `:` type($source) `,`
-    type($destination) `,` type($m) `,` type($k)
+    $source `,` $destination `,` $m `,` $k `,` $start_row `,` $start_col
+    attr-dict `:` type($source) `,` type($destination) `,` type($m) `,`
+    type($k) `,` type($start_row) `,` type($start_col)
   }];
 }
 
@@ -2695,6 +2698,8 @@ def PTO_MteL1L0bOp : PTO_Op<"mte_l1_l0b", [
     PTO_BufferLikeType:$destination,
     I64:$k,
     I64:$n,
+    I64:$start_row,
+    I64:$start_col,
     DefaultValuedAttr<BoolAttr, "false">:$transpose
   );
 
@@ -2703,8 +2708,9 @@ def PTO_MteL1L0bOp : PTO_Op<"mte_l1_l0b", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $source `,` $destination `,` $k `,` $n attr-dict `:` type($source) `,`
-    type($destination) `,` type($k) `,` type($n)
+    $source `,` $destination `,` $k `,` $n `,` $start_row `,` $start_col
+    attr-dict `:` type($source) `,` type($destination) `,` type($k) `,`
+    type($n) `,` type($start_row) `,` type($start_col)
   }];
 }
 

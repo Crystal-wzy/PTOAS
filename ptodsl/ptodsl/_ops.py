@@ -3463,25 +3463,47 @@ def mem_bar(barrier_type):
 
 
 @_explicit_mode_only("pto.mte_l1_l0a(...)")
-def mte_l1_l0a(source, destination, m, k, *, transpose=False):
+def mte_l1_l0a(
+    source,
+    destination,
+    m,
+    k,
+    *,
+    start_row=0,
+    start_col=0,
+    transpose=False,
+):
     """``pto.mte_l1_l0a`` – cube-side LEFT staging."""
     _pto.MteL1L0aOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
         _coerce_i64(m, context="mte_l1_l0a m"),
         _coerce_i64(k, context="mte_l1_l0a k"),
+        _coerce_i64(start_row, context="mte_l1_l0a start_row"),
+        _coerce_i64(start_col, context="mte_l1_l0a start_col"),
         transpose=transpose,
     )
 
 
 @_explicit_mode_only("pto.mte_l1_l0b(...)")
-def mte_l1_l0b(source, destination, k, n, *, transpose=False):
+def mte_l1_l0b(
+    source,
+    destination,
+    k,
+    n,
+    *,
+    start_row=0,
+    start_col=0,
+    transpose=False,
+):
     """``pto.mte_l1_l0b`` – cube-side RIGHT staging."""
     _pto.MteL1L0bOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
         _coerce_i64(k, context="mte_l1_l0b k"),
         _coerce_i64(n, context="mte_l1_l0b n"),
+        _coerce_i64(start_row, context="mte_l1_l0b start_row"),
+        _coerce_i64(start_col, context="mte_l1_l0b start_col"),
         transpose=transpose,
     )
 

@@ -393,7 +393,7 @@ pto.mte_l1_fb(l1_fp.as_ptr(), fb_fp.as_ptr(), 2, nburst=(4, 0, 0))
 
 ### `pto.mte_l1_l0a` — L1 (cbuf) → L0A
 
-#### `pto.mte_l1_l0a(src: PtrType, dst: PtrType, m: int, k: int, *, transpose: bool = False) -> None`
+#### `pto.mte_l1_l0a(src: PtrType, dst: PtrType, m: int, k: int, *, start_row: int, start_col: int, transpose: bool = False) -> None`
 
 **Description**: Load a logical `m x k` left tile from L1 into `l0a`. `src`
 must already point to an L1 cube-fractal tile; this op does not convert an
@@ -407,6 +407,8 @@ original data is plain ND/DN layout.
 | `dst` | `pto.ptr<T, l0a>` | L0A destination pointer |
 | `m` | `int` | M dimension size |
 | `k` | `int` | K dimension size |
+| `start_row` | `int` | Source tile row offset for the extraction start position; the DSL materializes `0` when omitted |
+| `start_col` | `int` | Source tile column offset for the extraction start position; the DSL materializes `0` when omitted |
 | `transpose` | `bool` | Whether to transpose the selected logical source tile before destination placement |
 
 **Constraints**:
@@ -416,14 +418,14 @@ original data is plain ND/DN layout.
 
 **Example**:
 ```python
-pto.mte_l1_l0a(l1_a.as_ptr(), l0a.as_ptr(), 16, 64, transpose=False)
+pto.mte_l1_l0a(l1_a.as_ptr(), l0a.as_ptr(), 16, 64)
 ```
 
 ---
 
 ### `pto.mte_l1_l0b` — L1 (cbuf) → L0B
 
-#### `pto.mte_l1_l0b(src: PtrType, dst: PtrType, k: int, n: int, *, transpose: bool = False) -> None`
+#### `pto.mte_l1_l0b(src: PtrType, dst: PtrType, k: int, n: int, *, start_row: int, start_col: int, transpose: bool = False) -> None`
 
 **Description**: Load a logical `k x n` right tile from L1 into `l0b`. `src`
 must already point to an L1 cube-fractal tile; this op does not convert an
@@ -437,6 +439,8 @@ original data is plain ND/DN layout.
 | `dst` | `pto.ptr<T, l0b>` | L0B destination pointer |
 | `k` | `int` | K dimension size |
 | `n` | `int` | N dimension size |
+| `start_row` | `int` | Source tile row offset for the extraction start position; the DSL materializes `0` when omitted |
+| `start_col` | `int` | Source tile column offset for the extraction start position; the DSL materializes `0` when omitted |
 | `transpose` | `bool` | Whether to transpose the selected logical source tile before destination placement |
 
 **Constraints**:
@@ -446,7 +450,7 @@ original data is plain ND/DN layout.
 
 **Example**:
 ```python
-pto.mte_l1_l0b(l1_b.as_ptr(), l0b.as_ptr(), 64, 16, transpose=False)
+pto.mte_l1_l0b(l1_b.as_ptr(), l0b.as_ptr(), 64, 16)
 ```
 
 ---
@@ -459,7 +463,8 @@ pto.mte_l1_l0b(l1_b.as_ptr(), l0b.as_ptr(), 64, 16, transpose=False)
 operand tile and the associated MX scale payload that later `pto.mad_mx*`
 consumes.
 
-**Parameters**: Same as `pto.mte_l1_l0a`.
+**Parameters**: Same as `pto.mte_l1_l0a`, except `start_row` and `start_col`
+are not supported for MX stage loads.
 
 **Constraints**:
 - The source tile must use a target-supported MX dtype such as `f8E4M3FN`.
@@ -475,7 +480,8 @@ consumes.
 operand tile and the associated MX scale payload that later `pto.mad_mx*`
 consumes.
 
-**Parameters**: Same as `pto.mte_l1_l0b`.
+**Parameters**: Same as `pto.mte_l1_l0b`, except `start_row` and `start_col`
+are not supported for MX stage loads.
 
 **Constraints**:
 - The source tile must use a target-supported MX dtype such as `f8E4M3FN`.

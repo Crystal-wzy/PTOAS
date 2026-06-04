@@ -839,7 +839,7 @@ Inside `@pto.cube`, data flows through a hierarchy of private buffers: GM → L1
 
 ### Operand loading: L1 → L0A / L0B
 
-#### `pto.mte_l1_l0a(src: PtrType, dst: PtrType, m: int, k: int, *, transpose: bool = False) -> None`
+#### `pto.mte_l1_l0a(src: PtrType, dst: PtrType, m: int, k: int, *, start_row: int, start_col: int, transpose: bool = False) -> None`
 
 **Description**: Structured L1-to-L0A (left-operand buffer) load.
 
@@ -851,13 +851,15 @@ Inside `@pto.cube`, data flows through a hierarchy of private buffers: GM → L1
 | `dst` | `PtrType` (L0A) | L0A destination pointer |
 | `m` | `int` | M dimension size |
 | `k` | `int` | K dimension size |
+| `start_row` | `int` | Source tile row offset for the extraction start position; the DSL materializes `0` when omitted |
+| `start_col` | `int` | Source tile column offset for the extraction start position; the DSL materializes `0` when omitted |
 | `transpose` | `bool` | Whether to load in transposed order |
 
 **Returns**: None (side-effect operation).
 
 ---
 
-#### `pto.mte_l1_l0b(src: PtrType, dst: PtrType, k: int, n: int, *, transpose: bool = False) -> None`
+#### `pto.mte_l1_l0b(src: PtrType, dst: PtrType, k: int, n: int, *, start_row: int, start_col: int, transpose: bool = False) -> None`
 
 **Description**: Structured L1-to-L0B (right-operand buffer) load.
 
@@ -869,6 +871,8 @@ Inside `@pto.cube`, data flows through a hierarchy of private buffers: GM → L1
 | `dst` | `PtrType` (L0B) | L0B destination pointer |
 | `k` | `int` | K dimension size |
 | `n` | `int` | N dimension size |
+| `start_row` | `int` | Source tile row offset for the extraction start position; the DSL materializes `0` when omitted |
+| `start_col` | `int` | Source tile column offset for the extraction start position; the DSL materializes `0` when omitted |
 | `transpose` | `bool` | Whether to load in transposed order |
 
 **Returns**: None (side-effect operation).

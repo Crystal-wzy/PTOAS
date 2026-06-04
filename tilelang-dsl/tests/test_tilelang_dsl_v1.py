@@ -2883,7 +2883,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
             pto.mte_gm_l1(gm, l1.as_ptr(), 16, nburst=(1, 0, 0), loops=((2, 32, 64),))
             pto.mte_l1_bt(l1.as_ptr(), bias.as_ptr(), 16, nburst=(1, 0, 0))
-            pto.mte_l1_l0a(l1.as_ptr(), left.as_ptr(), 16, 32, transpose=True)
+            pto.mte_l1_l0a(l1.as_ptr(), left.as_ptr(), 16, 32, start_row=2, start_col=3, transpose=True)
             pto.mte_l1_l0b(l1.as_ptr(), right.as_ptr(), 32, 16)
             pto.mad(
                 left.as_ptr(),
@@ -2963,11 +2963,11 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         )
         self.assertRegex(
             text,
-            r"pto\.mte_l1_l0a %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+ \{transpose = true\} : !pto\.ptr<f16, l1>, !pto\.ptr<f16, l0a>, i64, i64",
+            r"pto\.mte_l1_l0a %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+ \{transpose = true\} : !pto\.ptr<f16, l1>, !pto\.ptr<f16, l0a>, i64, i64, i64, i64",
         )
         self.assertRegex(
             text,
-            r"pto\.mte_l1_l0b %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+ : !pto\.ptr<f16, l1>, !pto\.ptr<f16, l0b>, i64, i64",
+            r"pto\.mte_l1_l0b %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+ : !pto\.ptr<f16, l1>, !pto\.ptr<f16, l0b>, i64, i64, i64, i64",
         )
         self.assertRegex(
             text,
