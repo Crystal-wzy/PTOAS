@@ -2646,6 +2646,64 @@ LogicalResult mlir::pto::LocalArraySetOp::verify() {
   return success();
 }
 
+// Resolve the field type reached by following a constant `path` of field
+// indices from `root`, descending through nested structs. Emits an actionable
+// op error and returns failure on an empty path, an out-of-range index, or a
+// descent into a non-struct field. On success writes the terminal field type to
+// `fieldTyOut`.
+static LogicalResult walkStructPath(Operation *op, mlir::pto::StructType root,
+                                    llvm::ArrayRef<int64_t> path,
+                                    Type &fieldTyOut) {
+  if (path.empty())
+    return op->emitOpError() << "struct path must have at least one index";
+  Type cur = root;
+  for (auto [depth, idx] : llvm::enumerate(path)) {
+    auto st = dyn_cast<mlir::pto::StructType>(cur);
+    if (!st)
+      return op->emitOpError()
+             << "struct path index " << depth
+             << " descends into non-struct field of type " << cur;
+    if (idx < 0 || idx >= static_cast<int64_t>(st.getNumFields()))
+      return op->emitOpError()
+             << "struct path index " << depth << " (" << idx
+             << ") is out of range for " << st << " with " << st.getNumFields()
+             << " field(s)";
+    cur = st.getFieldType(static_cast<unsigned>(idx));
+  }
+  fieldTyOut = cur;
+  return success();
+}
+
+LogicalResult mlir::pto::StructGetOp::verify() {
+  Type fieldTy;
+  if (failed(walkStructPath(getOperation(), getS().getType(), getPath(),
+                            fieldTy)))
+    return failure();
+  if (getValue().getType() != fieldTy)
+    return emitOpError() << "result type " << getValue().getType()
+                         << " does not match field type " << fieldTy
+                         << " at the given path";
+  return success();
+}
+
+LogicalResult mlir::pto::StructSetOp::verify() {
+  Type fieldTy;
+  if (failed(walkStructPath(getOperation(), getS().getType(), getPath(),
+                            fieldTy)))
+    return failure();
+  if (getValue().getType() != fieldTy)
+    return emitOpError() << "value type " << getValue().getType()
+                         << " does not match field type " << fieldTy
+                         << " at the given path";
+  // A C array cannot be copy-assigned, so writing a whole local_array field is
+  // not expressible. Steer the user to the get-then-element-set idiom instead.
+  if (isa<mlir::pto::LocalArrayType>(fieldTy))
+    return emitOpError()
+           << "cannot assign a !pto.local_array field directly; obtain it with "
+              "pto.struct_get, then write elements with pto.local_array_set";
+  return success();
+}
+
 LogicalResult mlir::pto::CastPtrOp::verify() {
   Type inputType = getInput().getType();
   Type resultType = getResult().getType();
@@ -13253,6 +13311,60 @@ LogicalResult LocalArrayType::verify(
   return success();
 }
 
+// ---- StructType ----
+// Asm form: !pto.struct<T0, T1, ..., Tn-1>
+// A field type must be "scalar-storable": a scalar integer/float, a nested
+// !pto.local_array, or a nested !pto.struct. This allowlist deliberately
+// excludes the vec/cube types (tile_buf / tensor_view / partition view) and any
+// other handle type, keeping the scalar struct world disjoint from the
+// fractal/layout world.
+static bool isStructStorable(Type t) {
+  return t.isIntOrFloat() || llvm::isa<LocalArrayType, StructType>(t);
+}
+
+Type StructType::parse(AsmParser &parser) {
+  SmallVector<Type> fields;
+  if (parser.parseCommaSeparatedList(
+          AsmParser::Delimiter::LessGreater, [&]() -> ParseResult {
+            Type t;
+            if (parser.parseType(t))
+              return failure();
+            fields.push_back(t);
+            return success();
+          }))
+    return Type();
+  return StructType::getChecked(
+      [&]() { return parser.emitError(parser.getNameLoc()); },
+      parser.getContext(), fields);
+}
+
+void StructType::print(AsmPrinter &printer) const {
+  printer << "<";
+  llvm::ArrayRef<Type> fields = getFieldTypes();
+  for (size_t i = 0; i < fields.size(); ++i) {
+    if (i)
+      printer << ", ";
+    printer.printType(fields[i]);
+  }
+  printer << ">";
+}
+
+LogicalResult StructType::verify(
+    llvm::function_ref<InFlightDiagnostic()> emitError,
+    llvm::ArrayRef<Type> fieldTypes) {
+  if (fieldTypes.empty())
+    return emitError() << "'!pto.struct' requires at least one field";
+  for (auto [i, f] : llvm::enumerate(fieldTypes)) {
+    if (!isStructStorable(f))
+      return emitError()
+             << "'!pto.struct' field " << i << " type " << f
+             << " is not scalar-storable; only scalar integer/float, "
+                "!pto.local_array, or nested !pto.struct are allowed "
+                "(tile_buf / tensor_view belong to the vec/cube world)";
+  }
+  return success();
+}
+
 // =============================================================================
 // Decompose Helper (Reverse Engineering AffineMap -> Strides)
 // =============================================================================
@@ -18245,6 +18357,39 @@ static void printStL2Cache(OpAsmPrinter &printer, Operation *op,
   if (!l2cache)
     return;
   printer << "l2cache(" << stringifyStL2Cache(l2cache.getValue()) << ")";
+}
+
+// custom<StructPath>($path): a bracketed list of constant field indices, e.g.
+// `[0, 2]`. Backs pto.struct_get / pto.struct_set so they read as `%s[0, 2]`.
+static ParseResult parseStructPath(OpAsmParser &parser,
+                                   DenseI64ArrayAttr &path) {
+  SmallVector<int64_t> indices;
+  if (parser.parseLSquare())
+    return failure();
+  if (failed(parser.parseOptionalRSquare())) {
+    do {
+      int64_t idx;
+      if (parser.parseInteger(idx))
+        return failure();
+      indices.push_back(idx);
+    } while (succeeded(parser.parseOptionalComma()));
+    if (parser.parseRSquare())
+      return failure();
+  }
+  path = DenseI64ArrayAttr::get(parser.getContext(), indices);
+  return success();
+}
+
+static void printStructPath(OpAsmPrinter &printer, Operation *op,
+                            DenseI64ArrayAttr path) {
+  printer << "[";
+  llvm::ArrayRef<int64_t> indices = path.asArrayRef();
+  for (size_t i = 0; i < indices.size(); ++i) {
+    if (i)
+      printer << ", ";
+    printer << indices[i];
+  }
+  printer << "]";
 }
 
 // [Include 必须放在最后]

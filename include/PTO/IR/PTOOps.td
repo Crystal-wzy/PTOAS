@@ -2652,6 +2652,92 @@ def LocalArraySetOp : PTO_Op<"local_array_set"> {
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Stack-local heterogeneous aggregate (struct)
+//===----------------------------------------------------------------------===//
+//
+// Mirrors the `local_array` triad (declare / get / set) for a generic
+// heterogeneous scalar-unit aggregate. The struct's address is decided by the
+// host C++ compiler at codegen time, never by PTO memory planning or
+// `pto.pointer_cast`. Field positions are constant (struct semantics), so
+// `get` / `set` carry a constant `path` of field indices that may descend
+// through nested structs. Dynamic indexing of a nested `!pto.local_array` field
+// is left to `pto.local_array_get` / `pto.local_array_set` after obtaining the
+// array field with `pto.struct_get` — exactly the LLVM split between constant
+// struct GEPs and dynamic array indexing.
+
+def DeclareStructOp : PTO_Op<"declare_struct"> {
+  let summary = "Declare a stack-local heterogeneous aggregate";
+  let description = [{
+    Lowers to a plain C++ stack variable like `PtoStruct_X s;`. Field types are
+    restricted to scalars (integer / float), nested `!pto.local_array`, or
+    nested `!pto.struct`.
+
+    This op does not participate in PTO memory planning. The resulting struct's
+    address is determined by the host C++ compiler.
+  }];
+
+  let results = (outs StructType:$s);
+
+  let assemblyFormat = [{
+    attr-dict `->` qualified(type($s))
+  }];
+}
+
+def StructGetOp : PTO_Op<"struct_get"> {
+  let summary = "Read a field from a stack-local struct by constant path";
+  let description = [{
+    Reads the field reached by following the constant `path` of field indices
+    from the struct, descending through nested structs. Lowers to `s.fA.fB...`
+    member access. A scalar result is snapshotted into a fresh variable so the
+    SSA value keeps its value if the struct is mutated later (mirrors
+    `pto.local_array_get`); an aggregate result (nested array / struct) is the
+    member-access lvalue itself, so a nested array field can be fed to
+    `pto.local_array_get` / `pto.local_array_set`.
+
+    The result type must equal the type of the field at the end of `path`.
+  }];
+
+  let arguments = (ins
+    StructType:$s,
+    DenseI64ArrayAttr:$path
+  );
+  let results = (outs AnyType:$value);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $s custom<StructPath>($path) attr-dict
+      `:` qualified(type($s)) `->` type($value)
+  }];
+}
+
+def StructSetOp : PTO_Op<"struct_set"> {
+  let summary = "Write a field into a stack-local struct by constant path";
+  let description = [{
+    Writes `value` into the field reached by following the constant `path` of
+    field indices, descending through nested structs. Lowers to
+    `s.fA.fB... = value;`. The value type must equal the type of the field at
+    the end of `path`. The terminal field must be copy-assignable in C++, so a
+    `!pto.local_array` terminal is rejected — obtain the array with
+    `pto.struct_get` and write elements with `pto.local_array_set` instead.
+  }];
+
+  let arguments = (ins
+    StructType:$s,
+    DenseI64ArrayAttr:$path,
+    AnyType:$value
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $s custom<StructPath>($path) `,` $value attr-dict
+      `:` qualified(type($s)) `,` type($value)
+  }];
+}
+
 def DeclareTileMemRefOp : PTO_Op<"declare_tile_memref"> {
   let summary = "Internal memref placeholder for a tile whose address is assigned later";
   let description = [{

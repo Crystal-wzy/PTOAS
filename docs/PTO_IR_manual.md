@@ -264,6 +264,50 @@ The number of indices on `get` / `set` must equal the array's rank
 
 ---
 
+### 2.7 `!pto.struct<T0, T1, ..., Tn-1>`
+
+A **C++ stack-local heterogeneous aggregate** — the heterogeneous dual of
+`!pto.local_array`. Lowers to a plain `struct PtoStruct_X { ... };` definition
+plus a stack variable. The struct's address is decided by the host C++
+compiler, never by PTO memory planning or `pto.pointer_cast`. Fields are
+positionally numbered `f0, f1, ...`, matching an LLVM literal struct.
+
+| Parameter | Type | Constraints |
+|-----------|------|-------------|
+| `fieldTypes` (`T0..Tn-1`) | scalar `int`/`float`, `!pto.local_array`, or nested `!pto.struct` | At least one field; recursively scalar-storable |
+
+**Constraints (enforced by the type verifier):**
+
+- At least one field
+- Each field is *scalar-storable*: a scalar integer/float, a nested
+  `!pto.local_array`, or a nested `!pto.struct`
+
+**Disjoint from tile-buf world.** Vec/cube types (`tile_buf`, `tensor_view`,
+partition view) and other handle types are **rejected** as fields. This keeps
+the scalar struct world separate from the fractal/layout world, exactly like
+`!pto.local_array`.
+
+**Syntax:**
+```mlir
+!pto.struct<f16, i8>                                 // { half f0; int8_t f1; };
+!pto.struct<!pto.struct<f32, i8>, !pto.local_array<4xf32>>
+  // { PtoStruct_float_int8_t f0; float f1[4]; };
+```
+
+**Associated ops** (see Section 4 — mirrors the `local_array` triad):
+- `pto.declare_struct` — declare
+- `pto.struct_get`     — `s.fA.fB...` field read by constant path
+- `pto.struct_set`     — `s.fA.fB... = v;`
+
+Field positions in `get` / `set` are a constant `path` of indices that may
+descend through nested structs (like LLVM `extractvalue` / `insertvalue`).
+**Dynamic** indexing of a nested `!pto.local_array` field is *not* part of the
+path: obtain the array with `pto.struct_get`, then index it with
+`pto.local_array_get` / `pto.local_array_set` — the same split LLVM makes
+between constant struct GEPs and dynamic array indexing.
+
+---
+
 ## 3. Enums & Attributes
 
 ### 3.1 AddressSpace
@@ -10401,6 +10445,102 @@ Operates on the [`!pto.local_array<...>`](#26-ptolocal_arrayd1-x-d2-x--x-dk-x-t)
 ```mlir
 pto.local_array_set %m[%i, %j], %v
    : !pto.local_array<4x8xf32>, f32                        // m[i][j] = v;
+```
+
+---
+
+#### Struct Ops (`pto.declare_struct` / `pto.struct_get` / `pto.struct_set`)
+
+C++ stack-local heterogeneous aggregate ops. Disjoint from the tile-buf /
+scratch memory world: the struct's address is decided by the host C++
+compiler. Naming and asm style mirror the `local_array` triad.
+
+Operates on the [`!pto.struct<...>`](#27-ptostructt0-t1--tn-1) type. See
+Section 2.7 for type-level constraints.
+
+##### `pto.declare_struct` - Declare a Stack-Local Struct
+
+**Summary:** Declare a heterogeneous aggregate on the C++ stack.
+
+**Semantics:** `PtoStruct_X s;`
+
+**Arguments:** None.
+
+**Results:** `!pto.struct<T0, ..., Tn-1>`
+
+**Basic Example:**
+
+```mlir
+%s = pto.declare_struct -> !pto.struct<f16, i8>   // PtoStruct_half_int8_t s;
+```
+
+---
+
+##### `pto.struct_get` - Read a Field by Constant Path
+
+**Summary:** Read the field reached by a constant `path` of field indices,
+descending through nested structs.
+
+**Semantics:** `s.fA.fB...` — a scalar result is snapshotted into a fresh
+variable (value semantics, like `pto.local_array_get`); an aggregate result
+(nested array / struct) is the member-access lvalue itself.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `s` | `!pto.struct<...>` | The struct |
+| `path` | `DenseI64ArrayAttr` | Constant field indices, e.g. `[0, 2]` |
+
+**Results:** `value` — the field type at the end of `path`.
+
+**Constraints & Verification:**
+
+- `path` is non-empty; every index is in range at its level.
+- An intermediate index may only descend into a nested struct.
+- Result type must equal the field type at the end of `path`.
+
+**Basic Example:**
+
+```mlir
+%r = pto.struct_get %s[0]    : !pto.struct<f16, i8> -> f16      // r = s.f0;
+%v = pto.struct_get %s[0, 1]                                    // v = s.f0.f1;
+   : !pto.struct<!pto.struct<f32, i8>, !pto.local_array<4xf32>> -> i8
+```
+
+---
+
+##### `pto.struct_set` - Write a Field by Constant Path
+
+**Summary:** Write a value into the field reached by a constant `path` of field
+indices, descending through nested structs.
+
+**Semantics:** `s.fA.fB... = value;`
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `s` | `!pto.struct<...>` | The struct |
+| `path` | `DenseI64ArrayAttr` | Constant field indices, e.g. `[0, 2]` |
+| `value` | `AnyType` | Value to write (must match the field type) |
+
+**Results:** None.
+
+**Constraints & Verification:**
+
+- `path` is non-empty; every index is in range at its level.
+- Value type must equal the field type at the end of `path`.
+- The terminal field must be copy-assignable: a `!pto.local_array` terminal is
+  rejected (a C array cannot be assigned). Use `pto.struct_get` to obtain the
+  array, then write elements with `pto.local_array_set`.
+
+**Basic Example:**
+
+```mlir
+pto.struct_set %s[1], %v : !pto.struct<f16, i8>, i8            // s.f1 = v;
+pto.struct_set %s[0, 0], %v                                    // s.f0.f0 = v;
+   : !pto.struct<!pto.struct<f32, i8>, !pto.local_array<4xf32>>, f32
 ```
 
 ---

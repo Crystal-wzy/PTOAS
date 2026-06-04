@@ -1,0 +1,24 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: not ptoas %s 2>&1 | FileCheck %s
+
+// A C array cannot be copy-assigned, so writing a whole local_array field is
+// rejected: use struct_get + local_array_set on individual elements instead.
+
+module {
+  func.func @struct_set_array() {
+    %arr = pto.declare_local_array -> !pto.local_array<4xf32>
+    %s = pto.declare_struct -> !pto.struct<!pto.local_array<4xf32>>
+    pto.struct_set %s[0], %arr
+      : !pto.struct<!pto.local_array<4xf32>>, !pto.local_array<4xf32>
+    return
+  }
+}
+
+// CHECK: cannot assign a !pto.local_array field

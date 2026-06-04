@@ -44,6 +44,7 @@
 #include "mlir/Target/Cpp/CppEmitter.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
@@ -497,6 +498,90 @@ static int64_t getEmitCScalarByteWidth(Type elemTy) {
   return 4;
 }
 
+// ---------------------------------------------------------------------------
+// !pto.struct support: a deterministic C++ type name + file-scope definition.
+// ---------------------------------------------------------------------------
+
+// Replace any character that is not a C++ identifier character with '_'. The
+// scalar tokens below are already identifier-safe; this is defensive.
+static std::string sanitizeIdentifier(std::string s) {
+  for (char &c : s) {
+    bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') || c == '_';
+    if (!ok)
+      c = '_';
+  }
+  return s;
+}
+
+// Mangle a scalar-storable field type into a C++-identifier-safe token. The
+// encoding is injective, so distinct struct types never collide on a name:
+//   - scalar:        the emitC scalar token (half, int32_t, ...)
+//   - local_array:   arr<d0>_<d1>_..._<elem>
+//   - nested struct: S_<f0>_<f1>_..._E  (S/E delimiters disambiguate nesting)
+static std::string mangleStructFieldType(Type t) {
+  if (auto arr = dyn_cast<pto::LocalArrayType>(t)) {
+    std::string s = "arr";
+    for (int64_t d : arr.getShape())
+      s += std::to_string(d) + "_";
+    return s + mangleStructFieldType(arr.getElementType());
+  }
+  if (auto st = dyn_cast<pto::StructType>(t)) {
+    std::string s = "S";
+    for (Type f : st.getFieldTypes())
+      s += "_" + mangleStructFieldType(f);
+    return s + "_E";
+  }
+  return sanitizeIdentifier(getEmitCScalarTypeToken(t));
+}
+
+// Stable, content-derived C++ type name for a !pto.struct, e.g.
+// !pto.struct<f16, i8> -> "PtoStruct_half_int8_t". A pure function of the type,
+// so the type converter and the file-scope definition emitter agree without
+// any shared state.
+static std::string getStructTypeName(pto::StructType st) {
+  std::string s = "PtoStruct";
+  for (Type f : st.getFieldTypes())
+    s += "_" + mangleStructFieldType(f);
+  return s;
+}
+
+// Render a single struct field declaration `<cppType> <name><dims>;`. Array
+// fields put their dimensions after the name (C declarator syntax).
+static std::string renderStructFieldDecl(Type fieldTy,
+                                         const std::string &name) {
+  if (auto arr = dyn_cast<pto::LocalArrayType>(fieldTy)) {
+    std::string dims;
+    for (int64_t d : arr.getShape())
+      dims += "[" + std::to_string(d) + "]";
+    return getEmitCScalarTypeToken(arr.getElementType()) + " " + name + dims +
+           ";";
+  }
+  if (auto st = dyn_cast<pto::StructType>(fieldTy))
+    return getStructTypeName(st) + " " + name + ";";
+  return getEmitCScalarTypeToken(fieldTy) + " " + name + ";";
+}
+
+// Render the full C++ definition of a !pto.struct as file-scope text.
+static std::string renderStructDef(pto::StructType st) {
+  std::string s = "struct " + getStructTypeName(st) + " {\n";
+  for (auto [i, f] : llvm::enumerate(st.getFieldTypes()))
+    s += "  " + renderStructFieldDecl(f, "f" + std::to_string(i)) + "\n";
+  return s + "};";
+}
+
+// Collect every !pto.struct reachable from `t` into `out` in definition order:
+// a nested struct is inserted before the struct that embeds it, so emitting in
+// `out` order produces valid C++ (no use-before-definition).
+static void collectStructTypes(Type t, llvm::SetVector<pto::StructType> &out) {
+  auto st = dyn_cast<pto::StructType>(t);
+  if (!st || out.contains(st))
+    return;
+  for (Type f : st.getFieldTypes())
+    collectStructTypes(f, out);
+  out.insert(st);
+}
+
 static std::string tileBufBLayoutToken(pto::TileBufConfigAttr configAttr);
 static std::string tileBufSLayoutToken(pto::TileBufConfigAttr configAttr);
 static std::string tileBufPadToken(pto::TileBufConfigAttr configAttr);
@@ -886,6 +971,13 @@ public:
       if (!convertedElem)
         return std::nullopt;
       return emitc::ArrayType::get(type.getShape(), convertedElem);
+    });
+
+    // !pto.struct<...> -> !emitc.opaque<"PtoStruct_...">. The matching C++
+    // `struct PtoStruct_... { ... };` definition is emitted at file scope by
+    // the pass (see runOnOperation), keyed on the same content-derived name.
+    addConversion([Ctx](pto::StructType type) -> Type {
+      return emitc::OpaqueType::get(Ctx, getStructTypeName(type));
     });
 
     addConversion([Ctx](pto::AsyncSessionType type) -> Type {
@@ -7948,6 +8040,109 @@ struct PTOLocalArraySetToEmitC
   }
 };
 
+// pto.declare_struct -> emitc.variable of !emitc.opaque<"PtoStruct_...">.
+// Renders as `PtoStruct_X s;` in the emitted C++.
+struct PTODeclareStructToEmitC
+    : public OpConversionPattern<mlir::pto::DeclareStructOp> {
+  using OpConversionPattern<mlir::pto::DeclareStructOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(mlir::pto::DeclareStructOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    Type structTy = getTypeConverter()->convertType(op.getS().getType());
+    if (!structTy)
+      return rewriter.notifyMatchFailure(op, "failed to map !pto.struct type");
+
+    auto var = rewriter
+                   .create<emitc::VariableOp>(
+                       op.getLoc(), structTy,
+                       emitc::OpaqueAttr::get(rewriter.getContext(), ""))
+                   .getResult();
+    rewriter.replaceOp(op, var);
+    return success();
+  }
+};
+
+// Build the `s.fA.fB...` member-access chain for a constant struct path and
+// return the final emitc value (a deferred lvalue expression). `rootPtoTy` is
+// the PTO struct type, walked in parallel to look up field types per step.
+static FailureOr<Value> buildStructMemberChain(
+    ConversionPatternRewriter &rewriter, Location loc, const TypeConverter *tc,
+    Value root, mlir::pto::StructType rootPtoTy, llvm::ArrayRef<int64_t> path) {
+  Value cur = peelUnrealized(root);
+  Type curPtoTy = rootPtoTy;
+  for (int64_t idx : path) {
+    auto st = cast<mlir::pto::StructType>(curPtoTy);
+    Type fieldPtoTy = st.getFieldType(static_cast<unsigned>(idx));
+    Type fieldTy = tc->convertType(fieldPtoTy);
+    if (!fieldTy)
+      return failure();
+    cur = rewriter
+              .create<emitc::MemberOp>(
+                  loc, fieldTy,
+                  rewriter.getStringAttr("f" + std::to_string(idx)), cur)
+              .getResult();
+    curPtoTy = fieldPtoTy;
+  }
+  return cur;
+}
+
+// pto.struct_get %s[i, j, ...] -> `s.fi.fj...`, snapshotting a scalar result so
+// the SSA value survives later mutation of the struct (mirrors
+// pto.local_array_get). An aggregate result (nested array / struct) passes
+// through as the member lvalue, so a nested array field can then be indexed by
+// pto.local_array_get / pto.local_array_set.
+struct PTOStructGetToEmitC
+    : public OpConversionPattern<mlir::pto::StructGetOp> {
+  using OpConversionPattern<mlir::pto::StructGetOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(mlir::pto::StructGetOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Type resultTy = getTypeConverter()->convertType(op.getValue().getType());
+    if (!resultTy)
+      return rewriter.notifyMatchFailure(op, "failed to map struct field type");
+
+    FailureOr<Value> member = buildStructMemberChain(
+        rewriter, op.getLoc(), getTypeConverter(), adaptor.getS(),
+        op.getS().getType(), op.getPath());
+    if (failed(member))
+      return rewriter.notifyMatchFailure(op, "failed to map struct field type");
+
+    if (op.getValue().getType().isIntOrFloat()) {
+      auto snapshot =
+          rewriter
+              .create<emitc::VariableOp>(
+                  op.getLoc(), resultTy,
+                  emitc::OpaqueAttr::get(rewriter.getContext(), ""))
+              .getResult();
+      rewriter.create<emitc::AssignOp>(op.getLoc(), snapshot, *member);
+      rewriter.replaceOp(op, snapshot);
+    } else {
+      rewriter.replaceOp(op, *member);
+    }
+    return success();
+  }
+};
+
+// pto.struct_set %s[i, j, ...], %v -> `s.fi.fj... = v;`.
+struct PTOStructSetToEmitC
+    : public OpConversionPattern<mlir::pto::StructSetOp> {
+  using OpConversionPattern<mlir::pto::StructSetOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(mlir::pto::StructSetOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    FailureOr<Value> member = buildStructMemberChain(
+        rewriter, op.getLoc(), getTypeConverter(), adaptor.getS(),
+        op.getS().getType(), op.getPath());
+    if (failed(member))
+      return rewriter.notifyMatchFailure(op, "failed to map struct field type");
+
+    rewriter.create<emitc::AssignOp>(op.getLoc(), *member, adaptor.getValue());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 static std::optional<int64_t> getStaticIndexLikeValue(Value value) {
   if (!value)
     return std::nullopt;
@@ -14273,6 +14468,9 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTODeclareLocalArrayToEmitC>(typeConverter, ctx);
   patterns.add<PTOLocalArrayGetToEmitC>(typeConverter, ctx);
   patterns.add<PTOLocalArraySetToEmitC>(typeConverter, ctx);
+  patterns.add<PTODeclareStructToEmitC>(typeConverter, ctx);
+  patterns.add<PTOStructGetToEmitC>(typeConverter, ctx);
+  patterns.add<PTOStructSetToEmitC>(typeConverter, ctx);
   patterns.add<PTOTReshapeToEmitC>(typeConverter, ctx);
   patterns.add<PTOBitcastToEmitC>(typeConverter, ctx);
   patterns.add<PTOSetQuantScalarToEmitC, PTOSetQuantVectorToEmitC>(
@@ -14405,6 +14603,30 @@ struct EmitPTOManualPass
         }
 	    builder.create<emitc::VerbatimOp>(
 	        loc, builder.getStringAttr("using namespace pto;"));
+
+        // Emit a C++ definition for every !pto.struct used in the module, in
+        // dependency order (nested structs first) so there is no
+        // use-before-definition. The names match the type converter's
+        // content-derived !emitc.opaque tokens.
+        {
+          llvm::SetVector<pto::StructType> structDefs;
+          mop.walk([&](Operation *op) {
+            for (Type t : op->getResultTypes())
+              collectStructTypes(t, structDefs);
+            for (Value v : op->getOperands())
+              collectStructTypes(v.getType(), structDefs);
+            if (auto func = dyn_cast<func::FuncOp>(op)) {
+              for (Type t : func.getArgumentTypes())
+                collectStructTypes(t, structDefs);
+              for (Type t : func.getResultTypes())
+                collectStructTypes(t, structDefs);
+            }
+          });
+          for (pto::StructType st : structDefs)
+            builder.create<emitc::VerbatimOp>(
+                loc, builder.getStringAttr(renderStructDef(st)));
+        }
+
         if (needsGlobalTensorDataHelper) {
 	      builder.create<emitc::VerbatimOp>(
 	          loc, builder.getStringAttr(R"cpp(

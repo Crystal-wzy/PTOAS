@@ -1,0 +1,49 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas %s 2>&1 | FileCheck %s
+
+// Nested aggregate: a struct whose first field is a nested struct and whose
+// second field is a local_array.
+//   - struct_set with a 2-level path writes through the nested struct.
+//   - struct_get of the array field yields the array lvalue, which is then
+//     indexed dynamically with local_array_set / local_array_get.
+
+module {
+  func.func @struct_nested(%vf : f32, %i : index) {
+    %s = pto.declare_struct
+      -> !pto.struct<!pto.struct<f32, i8>, !pto.local_array<4xf32>>
+    pto.struct_set %s[0, 0], %vf
+      : !pto.struct<!pto.struct<f32, i8>, !pto.local_array<4xf32>>, f32
+    %arr = pto.struct_get %s[1]
+      : !pto.struct<!pto.struct<f32, i8>, !pto.local_array<4xf32>>
+      -> !pto.local_array<4xf32>
+    pto.local_array_set %arr[%i], %vf : !pto.local_array<4xf32>, f32
+    %g = pto.local_array_get %arr[%i] : !pto.local_array<4xf32> -> f32
+    pto.local_array_set %arr[%i], %g : !pto.local_array<4xf32>, f32
+    return
+  }
+}
+
+// Nested struct is defined before the struct that embeds it.
+// CHECK: struct PtoStruct_float_int8_t {
+// CHECK:   float f0;
+// CHECK:   int8_t f1;
+// CHECK: };
+// CHECK: struct PtoStruct_S_float_int8_t_E_arr4_float {
+// CHECK:   PtoStruct_float_int8_t f0;
+// CHECK:   float f1[4];
+// CHECK: };
+
+// CHECK-LABEL: struct_nested
+// CHECK: PtoStruct_S_float_int8_t_E_arr4_float [[S:v[0-9]+]];
+// CHECK: [[S]].f0.f0 = {{v[0-9]+}};
+// CHECK: [[S]].f1[{{v[0-9]+}}] = {{v[0-9]+}};
+// CHECK: float [[G:v[0-9]+]];
+// CHECK: [[G]] = [[S]].f1[{{v[0-9]+}}];
+// CHECK: [[S]].f1[{{v[0-9]+}}] = [[G]];

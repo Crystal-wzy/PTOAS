@@ -303,6 +303,30 @@ def LocalArrayType : TypeDef<PTO_Dialect, "LocalArray"> {
   }];
 }
 
+// ---- !pto.struct<T0, T1, ..., Tn-1> ----
+// Scalar-unit heterogeneous aggregate. The heterogeneous dual of
+// !pto.local_array: it lowers to a plain C++ `struct { ... };` whose address is
+// decided by the host C++ compiler, never by PTO memory planning or
+// pto.pointer_cast. Fields are positionally numbered (f0, f1, ...), matching an
+// LLVM literal struct. A field type may be a scalar (int / float), a nested
+// !pto.local_array, or a nested !pto.struct — this is how nested / complex
+// aggregates are expressed. Vec/cube types (tile_buf / tensor_view) are
+// forbidden by the type verifier, keeping the scalar world disjoint from the
+// fractal/layout world.
+def StructType : TypeDef<PTO_Dialect, "Struct"> {
+  let mnemonic = "struct";
+  let summary = "Scalar-unit heterogeneous aggregate (C++ struct / llvm.struct)";
+  let parameters = (ins ArrayRefParameter<"mlir::Type">:$fieldTypes);
+
+  let hasCustomAssemblyFormat = 1;   // form: !pto.struct<f16, i8, !pto.local_array<4xf32>>
+  let genVerifyDecl = 1;
+
+  let extraClassDeclaration = [{
+    size_t getNumFields() const { return getFieldTypes().size(); }
+    mlir::Type getFieldType(unsigned i) const { return getFieldTypes()[i]; }
+  }];
+}
+
 def PipeType : TypeDef<PTO_Dialect, "Pipe"> {
   let mnemonic = "pipe";
   let summary = "Opaque pipe handle type for TPUSH/TPOP communication";
