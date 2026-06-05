@@ -153,8 +153,10 @@ struct SpecKey {
 };
 
 struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
-  static inline SpecKey getEmptyKey() { return {"", "", {}}; }
-  static inline SpecKey getTombstoneKey() { return {"__tombstone__", "", {}}; }
+  static inline SpecKey getEmptyKey() { return {"", "", {}, {}}; }
+  static inline SpecKey getTombstoneKey() {
+    return {"__tombstone__", "", {}, {}};
+  }
   static unsigned getHashValue(const SpecKey &key) {
     unsigned h = llvm::hash_combine(key.opName, key.targetArch);
     for (const auto &op : key.operands) {

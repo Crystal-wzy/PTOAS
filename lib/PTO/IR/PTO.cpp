@@ -451,9 +451,8 @@ static StringRef printPtrAddressSpaceKeyword(pto::AddressSpace space) {
     return "bt";
   case pto::AddressSpace::SCALING:
     return "fb";
-  default:
-    return {};
   }
+  llvm_unreachable("unhandled pointer address space");
 }
 
 static ParseResult parseSyncEventOpCommon(OpAsmParser &parser,

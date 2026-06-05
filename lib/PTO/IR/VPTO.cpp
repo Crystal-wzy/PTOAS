@@ -1803,16 +1803,6 @@ static LogicalResult verifyCubeBridgeLoadLikeOp(BridgeLoadOp op,
   return success();
 }
 
-static bool hasAll(Value first, Value second, Value third) {
-  return static_cast<bool>(first) && static_cast<bool>(second) &&
-         static_cast<bool>(third);
-}
-
-static bool hasAny(Value first, Value second, Value third) {
-  return static_cast<bool>(first) || static_cast<bool>(second) ||
-         static_cast<bool>(third);
-}
-
 static ParseResult parseRequiredOperandWithComma(
     OpAsmParser &parser, OpAsmParser::UnresolvedOperand &operand) {
   if (parser.parseOperand(operand))
@@ -3118,7 +3108,11 @@ static LogicalResult verifyOptionalDmaLoopGroup(DmaOp op, Value count,
                                                 Value srcStride,
                                                 Value dstStride,
                                                 StringRef name) {
-  if (hasAny(count, srcStride, dstStride) && !hasAll(count, srcStride, dstStride))
+  bool hasAny = static_cast<bool>(count) || static_cast<bool>(srcStride) ||
+                static_cast<bool>(dstStride);
+  bool hasAll = static_cast<bool>(count) && static_cast<bool>(srcStride) &&
+                static_cast<bool>(dstStride);
+  if (hasAny && !hasAll)
     return op.emitOpError() << "requires " << name
                             << " group to provide count, src stride, and dst stride together";
   return success();
