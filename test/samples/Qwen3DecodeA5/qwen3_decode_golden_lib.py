@@ -13,7 +13,7 @@ from validation_runtime import (
     bf16_to_float32,
     float32_to_bf16,
     load_case_meta,
-    load_int32_assignments,
+    load_integer_assignments,
     load_strided_2d,
     rng,
     store_strided_2d,
@@ -568,7 +568,7 @@ BUILDERS = {
 def run_case(case_name: str):
     meta = load_case_meta()
     generator = rng()
-    ints = load_int32_assignments()
+    ints = load_integer_assignments()
     buffers, golden = BUILDERS[case_name](meta, generator, ints)
     write_buffers(meta, buffers)
     write_golden(meta, golden)

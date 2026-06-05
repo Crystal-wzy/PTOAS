@@ -83,6 +83,12 @@ def load_int32_assignments(main_cpp: str = 'main.cpp') -> List[int]:
     return load_scalar_assignments('int32_t', main_cpp=main_cpp)
 
 
+def load_integer_assignments(main_cpp: str = 'main.cpp') -> List[int]:
+    text = Path(main_cpp).read_text(encoding='utf-8')
+    pattern = r'\b(?:u?int(?:8|16|32|64)_t|int|unsigned)\s+\w+\s*=\s*(-?(?:0x[0-9A-Fa-f]+|\d+));'
+    return [int(value, 0) for value in re.findall(pattern, text)]
+
+
 def rng():
     return np.random.default_rng(SEED)
 

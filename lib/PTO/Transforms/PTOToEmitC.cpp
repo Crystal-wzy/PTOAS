@@ -716,7 +716,7 @@ public:
     });
 
     addConversion([Ctx](IndexType type) -> Type {
-      return emitc::OpaqueType::get(Ctx, "int32_t");
+      return emitc::OpaqueType::get(Ctx, "int64_t");
     });
 
     // vector<4xi16> (e.g. TMRGSORT executedNumList) -> pto::MrgSortExecutedNumList
@@ -875,7 +875,7 @@ public:
 };
 
 static constexpr unsigned kPTOIndexBitWidth =
-    32; // keep consistent with IndexType conversion
+    64; // keep consistent with IndexType conversion
 
 // Forward declarations (definitions below).
 static inline std::string pipeTokFromPipeAttr(mlir::pto::PipeAttr a);
@@ -1059,7 +1059,7 @@ static Attribute getFFTSModeCodegenArg(ConversionPatternRewriter &rewriter,
 }
 
 static Value createFFTSMsg(ConversionPatternRewriter &rewriter, Location loc,
-                           Value eventI32, int64_t fftsMode) {
+                           Value eventId, int64_t fftsMode) {
   auto *ctx = rewriter.getContext();
   auto msgTy = emitc::OpaqueType::get(ctx, "uint16_t");
   auto msgArgs = rewriter.getArrayAttr({
@@ -1070,7 +1070,7 @@ static Value createFFTSMsg(ConversionPatternRewriter &rewriter, Location loc,
       .create<emitc::CallOpaqueOp>(loc, msgTy, "getFFTSMsg",
                                    /*args=*/msgArgs,
                                    /*templateArgs=*/ArrayAttr{},
-                                   /*operands=*/ValueRange{eventI32})
+                                   /*operands=*/ValueRange{eventId})
       .getResult(0);
 }
 
@@ -1081,9 +1081,9 @@ static InterCoreSyncCallDesc buildInterCoreSyncSetCall(
   std::string pipeTok = pipeTokFromPipeAttr(pipeAttr);
 
   if (targetArch == PTOArch::A3) {
-    auto i32Ty = emitc::OpaqueType::get(ctx, "int32_t");
+    auto indexTy = emitc::OpaqueType::get(ctx, "int64_t");
     Value eventVal =
-        makeEmitCIntConstant(rewriter, loc, i32Ty, eventIdAttr.getInt());
+        makeEmitCIntConstant(rewriter, loc, indexTy, eventIdAttr.getInt());
     Value msgVal = createFFTSMsg(rewriter, loc, eventVal, fftsMode);
 
     InterCoreSyncCallDesc desc;
@@ -1108,10 +1108,9 @@ static InterCoreSyncCallDesc buildInterCoreSyncSetCallDyn(
     pto::PipeAttr pipeAttr, Value eventIdVal, int64_t fftsMode) {
   auto *ctx = rewriter.getContext();
   std::string pipeTok = pipeTokFromPipeAttr(pipeAttr);
-  Value eventI32 = castInterCoreEventIdToI32(rewriter, loc, eventIdVal);
 
   if (targetArch == PTOArch::A3) {
-    Value msgVal = createFFTSMsg(rewriter, loc, eventI32, fftsMode);
+    Value msgVal = createFFTSMsg(rewriter, loc, eventIdVal, fftsMode);
 
     InterCoreSyncCallDesc desc;
     desc.callee = "ffts_cross_core_sync";
@@ -1123,6 +1122,7 @@ static InterCoreSyncCallDesc buildInterCoreSyncSetCallDyn(
     return desc;
   }
 
+  Value eventI32 = castInterCoreEventIdToI32(rewriter, loc, eventIdVal);
   InterCoreSyncCallDesc desc;
   desc.callee = "set_intra_block";
   desc.args = rewriter.getArrayAttr({
@@ -3245,29 +3245,32 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
     // Part 1: 指针偏移计算 (Runtime Pointer Arithmetic)
     // -------------------------------------------------------------------------
     
-    // 准备类型: unsigned
-    Type u32Ty = emitc::OpaqueType::get(ctx, "unsigned");
+    // Use the same 64-bit width as lowered MLIR index values so remote
+    // offsets are not truncated before pointer arithmetic.
+    Type indexTy = emitc::OpaqueType::get(ctx, "int64_t");
     
-    // Helper: 创建 unsigned 常量
-    auto mkU32 = [&](int64_t v) -> Value {
+    auto mkIndex = [&](int64_t v) -> Value {
       return rewriter.create<emitc::ConstantOp>(
-          loc, u32Ty, emitc::OpaqueAttr::get(ctx, std::to_string(v)));
+          loc, indexTy, emitc::OpaqueAttr::get(ctx, std::to_string(v)));
+    };
+
+    auto asIndex = [&](Value value) -> Value {
+      if (value.getType() == indexTy)
+        return value;
+      return rewriter.create<emitc::CastOp>(loc, indexTy, value).getResult();
     };
 
     // Helper: 将 OpFoldResult 转为 EmitC Value (用于计算)
     auto ofrToEmitCValue = [&](OpFoldResult ofr) -> Value {
       if (auto v = ofr.dyn_cast<Value>()) {
         Value rv = rewriter.getRemappedValue(v);
-        // 如果类型不匹配，插入 Cast
-        if (rv.getType() != u32Ty)
-             return rewriter.create<emitc::CastOp>(loc, u32Ty, rv).getResult();
-        return rv;
+        return asIndex(rv);
       }
       if (auto attr = ofr.dyn_cast<Attribute>()) {
          if (auto ia = dyn_cast<IntegerAttr>(attr))
-             return mkU32(ia.getValue().getSExtValue());
+             return mkIndex(ia.getValue().getSExtValue());
       }
-      return mkU32(0);
+      return mkIndex(0);
     };
 
     // 1. 获取 Source 的 Strides (支持动态 Stride 收集)
@@ -3306,27 +3309,27 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
     auto staticOffsets = op.getStaticOffsets();
     auto dynamicOffsets = adaptor.getOffsets();
     int dynOffIdx = 0;
-    Value totalOffset = mkU32(0);
+    Value totalOffset = mkIndex(0);
 
     for (int i = 0; i < rank; ++i) {
         // A. 获取 Offset
         Value offVal;
         if (staticOffsets[i] == ShapedType::kDynamic) {
             Value rawDyn = dynamicOffsets[dynOffIdx++];
-            offVal = rewriter.create<emitc::CastOp>(loc, u32Ty, rawDyn);
+            offVal = asIndex(rawDyn);
         } else {
-            offVal = mkU32(staticOffsets[i]);
+            offVal = mkIndex(staticOffsets[i]);
         }
 
         // B. 获取 Stride (用于指针计算)
-        Value strideVal = mkU32(1);
+        Value strideVal = mkIndex(1);
         if (i < (int)sourceStrides.size()) {
             strideVal = ofrToEmitCValue(sourceStrides[i]);
         }
 
         // C. 累加
-        Value term = rewriter.create<emitc::MulOp>(loc, u32Ty, offVal, strideVal);
-        totalOffset = rewriter.create<emitc::AddOp>(loc, u32Ty, totalOffset, term);
+        Value term = rewriter.create<emitc::MulOp>(loc, indexTy, offVal, strideVal);
+        totalOffset = rewriter.create<emitc::AddOp>(loc, indexTy, totalOffset, term);
     }
 
     // 3. 生成新指针
@@ -3421,7 +3424,7 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
 
     // 2. 生成 Shape 模板参数，之后会右对齐有效维度并补齐到 5 维（高维填 1）
     SmallVector<int64_t> shapeParamsVec;
-    SmallVector<Value> sizeValues; // 每个维度对应的运行时 size（统一为 unsigned）
+    SmallVector<Value> sizeValues; // 每个维度对应的运行时 size（统一为 64-bit index）
     auto resShape = resTy.getShape();
     auto mixedSizes = op.getMixedSizes();
     sizeValues.reserve(rank);
@@ -3436,12 +3439,12 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
         sizeValues.push_back(ofrToEmitCValue(mixedSizes[i]));
       else
         sizeValues.push_back(
-            mkU32(resShape[i] == ShapedType::kDynamic ? 1 : resShape[i]));
+            mkIndex(resShape[i] == ShapedType::kDynamic ? 1 : resShape[i]));
     }
 
     // 3. 生成 Stride 模板参数 + 运行时 stride 值（考虑 subview step）
     SmallVector<int64_t> strideTemplateVec;
-    SmallVector<Value> strideValues; // 每个维度对应的运行时 stride（统一为 unsigned）
+    SmallVector<Value> strideValues; // 每个维度对应的运行时 stride（统一为 64-bit index）
     strideTemplateVec.reserve(rank);
     strideValues.reserve(rank);
     auto subViewSteps = op.getMixedStrides();
@@ -3458,7 +3461,7 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
       if (srcStatic && stepStatic) {
         int64_t finalStride = (*srcStatic) * (*stepStatic);
         strideTemplateVec.push_back(finalStride);
-        strideValues.push_back(mkU32(finalStride));
+        strideValues.push_back(mkIndex(finalStride));
         continue;
       }
 
@@ -3472,7 +3475,7 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
         strideValues.push_back(stepV);
       else
         strideValues.push_back(
-            rewriter.create<emitc::MulOp>(loc, u32Ty, srcV, stepV));
+            rewriter.create<emitc::MulOp>(loc, indexTy, srcV, stepV));
     }
 
     // 3.1 右对齐到 5 维：shape 补 1；已有维度继承原 stride；
@@ -3481,9 +3484,9 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
     SmallVector<int64_t, 5> finalStride;
     buildGlobalTensorShapeAndStride(shapeParamsVec, strideTemplateVec,
                                     finalShape, finalStride);
-    Value oneU32 = mkU32(1);
-    SmallVector<Value, 5> finalShapeValues(5, oneU32);
-    SmallVector<Value, 5> finalStrideValues(5, oneU32);
+    Value oneIndex = mkIndex(1);
+    SmallVector<Value, 5> finalShapeValues(5, oneIndex);
+    SmallVector<Value, 5> finalStrideValues(5, oneIndex);
     int shift = 5 - rank;
 
     // 先放入原始 shape/stride（保持用户提供的值）
@@ -3498,7 +3501,7 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
       if (i >= shift)
         continue;
       if (finalStride[i] != -1) {
-        finalStrideValues[i] = mkU32(finalStride[i]);
+        finalStrideValues[i] = mkIndex(finalStride[i]);
         continue;
       }
       // 动态推导：stride[i] = shape[i+1] * stride[i+1]
@@ -3506,7 +3509,7 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
         finalStrideValues[i] = finalStrideValues[i + 1];
       } else {
         finalStrideValues[i] = rewriter.create<emitc::MulOp>(
-            loc, u32Ty, finalShapeValues[i + 1], finalStrideValues[i + 1]);
+            loc, indexTy, finalShapeValues[i + 1], finalStrideValues[i + 1]);
       }
     }
 
@@ -7333,29 +7336,29 @@ struct PTOPartitionViewToEmitC
                     .getResult(0);
     Value ptr = data;
     if (!dynamicOffsetTerms.empty()) {
-      Type u32Ty = emitc::OpaqueType::get(ctx, "unsigned");
-      auto makeU32 = [&](int64_t value) {
-        return makeEmitCIntConstant(rewriter, op.getLoc(), u32Ty, value);
+      Type indexTy = emitc::OpaqueType::get(ctx, "int64_t");
+      auto makeIndex = [&](int64_t value) {
+        return makeEmitCIntConstant(rewriter, op.getLoc(), indexTy, value);
       };
-      auto asU32 = [&](Value value) -> Value {
-        if (value.getType() == u32Ty)
+      auto asIndex = [&](Value value) -> Value {
+        if (value.getType() == indexTy)
           return value;
-        return rewriter.create<emitc::CastOp>(op.getLoc(), u32Ty, value)
+        return rewriter.create<emitc::CastOp>(op.getLoc(), indexTy, value)
             .getResult();
       };
 
-      Value totalOffset = makeU32(staticLinearOffset);
+      Value totalOffset = makeIndex(staticLinearOffset);
       for (auto [offsetValue, stride] : dynamicOffsetTerms) {
-        Value term = asU32(offsetValue);
+        Value term = asIndex(offsetValue);
         if (stride != 1) {
-          Value strideValue = makeU32(stride);
+          Value strideValue = makeIndex(stride);
           term = rewriter
-                     .create<emitc::MulOp>(op.getLoc(), u32Ty, term,
+                     .create<emitc::MulOp>(op.getLoc(), indexTy, term,
                                            strideValue)
                      .getResult();
         }
         totalOffset = rewriter
-                          .create<emitc::AddOp>(op.getLoc(), u32Ty,
+                          .create<emitc::AddOp>(op.getLoc(), indexTy,
                                                 totalOffset, term)
                           .getResult();
       }
