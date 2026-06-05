@@ -7,14 +7,19 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
+#include "PTO/Support/CANNVersion.h"
 
 namespace mlir::pto {
+
+static bool usesCANN900Lowering(const CANNVersion &cannVersion) {
+  return cannVersion >= CANNVersion::release(9, 0, 0);
+}
 
 LogicalResult lowerVPTOModuleToLLVMModules(
     ModuleOp module, const VPTOEmissionOptions &options,
     EmittedLLVMModule &cubeModule, EmittedLLVMModule &vectorModule,
     llvm::raw_ostream &diagOS) {
-  if (options.cannVersion == "9.0.0")
+  if (usesCANN900Lowering(options.cannVersion))
     return lowerVPTOModuleToLLVMModulesCANN900(module, options, cubeModule,
                                                vectorModule, diagOS);
   return lowerVPTOModuleToLLVMModulesBeta1(module, options, cubeModule,

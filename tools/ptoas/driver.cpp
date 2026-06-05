@@ -321,6 +321,15 @@ mlir::pto::PTOASContext::initializeToolchain(llvm::raw_ostream &diagOS) {
       mlir::pto::CANNToolchain::create(diagOS);
   if (!discovered)
     return failure();
+  std::optional<CANNVersion> parsedVersion =
+      parseCANNVersion(discovered->cannVersionString);
+  if (!parsedVersion) {
+    diagOS << "Error: unable to parse CANN version: "
+           << discovered->cannVersionString << "\n";
+    return failure();
+  }
+  discovered->cannVersion = *parsedVersion;
+  cannVersion = discovered->cannVersion;
   toolchain = std::move(*discovered);
   return success();
 }
@@ -334,10 +343,9 @@ mlir::pto::PTOASContext::getToolchain(llvm::raw_ostream &diagOS) const {
   return &*toolchain;
 }
 
-llvm::StringRef mlir::pto::PTOASContext::getCANNVersionOrDefault() const {
-  if (toolchain)
-    return toolchain->cannVersion;
-  return "9.0.0-beta.1";
+mlir::pto::CANNVersion
+mlir::pto::PTOASContext::getCANNVersionOrDefault() const {
+  return cannVersion;
 }
 
 mlir::pto::TempFileRegistry &mlir::pto::PTOASContext::getTempFiles() {

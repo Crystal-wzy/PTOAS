@@ -76,7 +76,17 @@ resolve_sim_lib_dir() {
 
   local -a candidates=()
   readarray -t candidates < <(
-    find "${ASCEND_HOME_PATH}" -type d -path '*/simulator/dav_3510/lib' | sort
+    find "${ASCEND_HOME_PATH}" -type f \
+      \( -path '*/simulator/dav_3510/camodel/libruntime_camodel.so' \
+         -o -path '*/simulator/dav_3510/lib/libruntime_camodel.so' \) |
+      sed 's#/libruntime_camodel\.so$##' | sort -u |
+      awk '
+        /\/simulator\/dav_3510\/camodel$/ { camodel[++camodel_count] = $0; next }
+        /\/simulator\/dav_3510\/lib$/ { lib[++lib_count] = $0; next }
+        END {
+          for (i = 1; i <= camodel_count; ++i) print camodel[i]
+          for (i = 1; i <= lib_count; ++i) print lib[i]
+        }'
   )
 
   if [[ "${#candidates[@]}" -eq 1 ]]; then
@@ -91,7 +101,7 @@ resolve_sim_lib_dir() {
     return 0
   fi
 
-  die "SIM_LIB_DIR is required for DEVICE=SIM and no dav_3510 simulator lib dir was found under: ${ASCEND_HOME_PATH}"
+  die "SIM_LIB_DIR is required for DEVICE=SIM and no dav_3510 simulator runtime dir was found under: ${ASCEND_HOME_PATH}"
 }
 
 resolve_sim_lib_dir

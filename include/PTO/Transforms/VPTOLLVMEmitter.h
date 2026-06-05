@@ -9,6 +9,8 @@
 #ifndef MLIR_DIALECT_PTO_TRANSFORMS_VPTOLLVMEMITTER_H
 #define MLIR_DIALECT_PTO_TRANSFORMS_VPTOLLVMEMITTER_H
 
+#include "PTO/Support/CANNVersion.h"
+
 #include <memory>
 #include <string>
 
@@ -36,7 +38,7 @@ struct VPTOEmissionOptions {
   std::string aicoreArch;
   std::string defaultTargetCPU;
   std::string defaultTargetFeatures;
-  std::string cannVersion = "9.0.0-beta.1";
+  CANNVersion cannVersion = CANNVersion{9, 0, 0, 1};
 };
 
 struct EmittedLLVMModule {

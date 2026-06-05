@@ -1509,17 +1509,17 @@ static void inlineTilelangHelpersOnVPTOInput(PassManager &pm) {
 }
 
 static pto::VPTOEmissionOptions
-buildVPTOEmissionOptions(llvm::StringRef cannVersion) {
+buildVPTOEmissionOptions(const pto::CANNVersion &cannVersion) {
   pto::VPTOEmissionOptions options;
   options.dumpVPTOIR = false;
   options.targetTriple = "hiipu64-hisilicon-cce";
-  options.cannVersion = cannVersion.str();
+  options.cannVersion = cannVersion;
   return options;
 }
 
 static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
                                  bool emitHostStub,
-                                 llvm::StringRef cannVersion) {
+                                 const pto::CANNVersion &cannVersion) {
   if (emitVPTO) {
     result.kind = PTOASCompileResultKind::Text;
     llvm::raw_string_ostream os(result.textOutput);

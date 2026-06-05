@@ -76,7 +76,7 @@ public:
   std::string allocModuleId();
 
   const CANNToolchain *getToolchain(llvm::raw_ostream &diagOS) const;
-  llvm::StringRef getCANNVersionOrDefault() const;
+  CANNVersion getCANNVersionOrDefault() const;
 
   TempFileRegistry &getTempFiles();
   LogicalResult createTempPath(llvm::StringRef prefix, llvm::StringRef suffix,
@@ -89,6 +89,7 @@ private:
   BackendInfo backendInfo;
   int argc = 0;
   char **argv = nullptr;
+  CANNVersion cannVersion = CANNVersion{9, 0, 0, 1};
   std::optional<CANNToolchain> toolchain;
   TempFileRegistry tempFiles;
 
