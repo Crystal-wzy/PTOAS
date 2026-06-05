@@ -12,6 +12,8 @@
 #                                (default: /llvm-workspace/llvm-project/build-shared)
 #   PTO_BUILD_DIR                Path to PTOAS build dir (default: <repo>/build)
 #   PTO_INSTALL_DIR              Install prefix (default: <repo>/install)
+#   CMAKE_C_COMPILER             Optional C compiler passed through to CMake
+#   CMAKE_CXX_COMPILER           Optional C++ compiler passed through to CMake
 #   PTOAS_PYTHON_PACKAGE_VERSION Wheel version override
 
 [build-system]

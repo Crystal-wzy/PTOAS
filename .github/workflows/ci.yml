@@ -204,9 +204,12 @@ jobs:
 
       - name: Build PTOAS
         run: |
+          rm -rf "${PTO_BUILD_DIR}"
           rm -rf "${PTO_INSTALL_DIR}"
           # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
           LLVM_BUILD_DIR="${LLVM_DIR}" \
+          CMAKE_C_COMPILER=clang \
+          CMAKE_CXX_COMPILER=clang++ \
             PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
             python3 -m pip install . --no-build-isolation --no-deps --ignore-installed --prefix "${PTO_INSTALL_DIR}"
 
@@ -332,7 +335,7 @@ jobs:
         run: |
           set -euo pipefail
           missing_tools=()
-          for tool in python3 git cmake ninja make; do
+          for tool in python3 git cmake ninja make clang clang++; do
             if ! command -v "${tool}" >/dev/null 2>&1; then
               missing_tools+=("${tool}")
             fi
@@ -341,7 +344,7 @@ jobs:
           if [[ "${#missing_tools[@]}" -gt 0 ]]; then
             if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
               sudo apt-get update
-              sudo apt-get install -y python3 python3-pip git cmake ninja-build make
+              sudo apt-get install -y python3 python3-pip git cmake ninja-build make clang
             else
               echo "ERROR: missing required tools on self-hosted runner: ${missing_tools[*]}" >&2
               echo "ERROR: automatic installation requires sudo + apt-get" >&2
@@ -413,9 +416,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf "${GITHUB_WORKSPACE}/build"
           rm -rf "${PTO_INSTALL_DIR}"
           # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
           LLVM_BUILD_DIR="${LLVM_DIR}" \
+          CMAKE_C_COMPILER=clang \
+          CMAKE_CXX_COMPILER=clang++ \
             PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
             python3 -m pip install . --no-build-isolation --no-deps --ignore-installed --prefix "${PTO_INSTALL_DIR}"
 

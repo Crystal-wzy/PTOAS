@@ -17,6 +17,8 @@ Environment variables (all optional):
                                (default: /llvm-workspace/llvm-project/build-shared)
   PTO_BUILD_DIR                Path to PTOAS build dir (default: <repo>/build)
   PTO_INSTALL_DIR              Install prefix (default: <repo>/install)
+  CMAKE_C_COMPILER             Optional C compiler passed through to CMake
+  CMAKE_CXX_COMPILER           Optional C++ compiler passed through to CMake
   PTOAS_PYTHON_PACKAGE_VERSION Wheel version override
 """
 from __future__ import annotations
@@ -113,6 +115,11 @@ def _cmake_configure_and_build():
         f"-DMLIR_PYTHON_PACKAGE_DIR={_MLIR_PY_PKG}",
         f"-DCMAKE_INSTALL_PREFIX={_PTO_INSTALL_DIR}",
     ]
+
+    for compiler_var in ("CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"):
+        compiler = os.environ.get(compiler_var, "").strip()
+        if compiler:
+            cmake_cmd.append(f"-D{compiler_var}={compiler}")
 
     release_version = os.environ.get("PTOAS_RELEASE_VERSION_OVERRIDE", "")
     if release_version:
