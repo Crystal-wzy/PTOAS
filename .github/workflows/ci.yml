@@ -104,7 +104,7 @@ jobs:
       PTO_BUILD_DIR: ${{ github.workspace }}/build-assert
       PTO_INSTALL_DIR: ${{ github.workspace }}/install-assert
       MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core
-      LLVM_CACHE_FLAVOR: assert-shared-mlirpy-hardening-v1
+      LLVM_CACHE_FLAVOR: assert-shared-mlirpy-hardening-v2
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -143,6 +143,18 @@ jobs:
           mkdir -p "${PAYLOAD_DIR}/test/npu_validation/scripts"
           mkdir -p "${PAYLOAD_DIR}/test/npu_validation/templates"
 
+      - name: Resolve clang-${{ env.PTOAS_CLANG_MAJOR }} toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          clang_c="$(command -v "clang-${PTOAS_CLANG_MAJOR}")"
+          clang_cxx="$(command -v "clang++-${PTOAS_CLANG_MAJOR}")"
+          echo "PTOAS_CMAKE_C_COMPILER=${clang_c}" >> "${GITHUB_ENV}"
+          echo "PTOAS_CMAKE_CXX_COMPILER=${clang_cxx}" >> "${GITHUB_ENV}"
+          "${clang_c}" --version | head -n 1
+          "${clang_cxx}" --version | head -n 1
+
       - name: Resolve LLVM source SHA
         shell: bash
         run: |
@@ -161,7 +173,7 @@ jobs:
         with:
           path: |
             llvm-project/llvm/build-assert
-          key: llvm-${{ runner.os }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
+          key: llvm-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
 
       - name: Prepare LLVM source (no rebuild)
         run: |
@@ -189,6 +201,8 @@ jobs:
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
             -DPython3_EXECUTABLE=python3 \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
+            -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
             -DLLVM_TARGETS_TO_BUILD="host"
 
           ninja -C "${LLVM_BUILD_DIR}"
@@ -201,19 +215,7 @@ jobs:
         with:
           path: |
             llvm-project/llvm/build-assert
-          key: llvm-${{ runner.os }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
-
-      - name: Resolve clang-${{ env.PTOAS_CLANG_MAJOR }} toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          clang_c="$(command -v "clang-${PTOAS_CLANG_MAJOR}")"
-          clang_cxx="$(command -v "clang++-${PTOAS_CLANG_MAJOR}")"
-          echo "PTOAS_CMAKE_C_COMPILER=${clang_c}" >> "${GITHUB_ENV}"
-          echo "PTOAS_CMAKE_CXX_COMPILER=${clang_cxx}" >> "${GITHUB_ENV}"
-          "${clang_c}" --version | head -n 1
-          "${clang_cxx}" --version | head -n 1
+          key: llvm-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
 
       - name: Build PTOAS
         run: |
