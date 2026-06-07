@@ -10,21 +10,21 @@ name: Watchdog
 
 on:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ["ci-sim"]
     types: [completed]
 
 permissions:
   actions: write
   contents: read
+  pull-requests: read
 
 jobs:
   rerun-self-hosted-git-failure:
     if: >-
       ${{
-        github.repository == 'hw-native-sys/PTOAS' &&
         github.event.workflow_run.event == 'pull_request' &&
         github.event.workflow_run.conclusion == 'failure' &&
-        github.event.workflow_run.run_attempt == 1
+        github.event.workflow_run.run_attempt <= 8
       }}
     runs-on: ubuntu-22.04
     steps:
@@ -37,10 +37,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Watchdog is running in observe-only mode; skip rerun."
-          exit 0
-
           echo "Inspecting CI workflow run ${RUN_ID} in ${REPO}"
+          run_head_sha="$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" --jq '.head_sha')"
+          pr_number="$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" --jq '.pull_requests[0].number // ""')"
+
+          if [[ -z "${pr_number}" ]]; then
+            echo "No pull request number found for workflow run ${RUN_ID}; skip rerun."
+            exit 0
+          fi
+
+          read -r pr_state current_head_sha < <(
+            gh api "repos/${REPO}/pulls/${pr_number}" \
+              --jq '[.state, .head.sha] | @tsv'
+          )
+          if [[ "${pr_state}" != "open" ]]; then
+            echo "PR #${pr_number} is ${pr_state}; skip rerun."
+            exit 0
+          fi
+
+          if [[ "${run_head_sha}" != "${current_head_sha}" ]]; then
+            echo "Workflow run ${RUN_ID} is stale for PR #${pr_number}; skip rerun."
+            echo "Run head SHA: ${run_head_sha}"
+            echo "Current PR head SHA: ${current_head_sha}"
+            exit 0
+          fi
+
           mapfile -t job_ids < <(
             gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" \
               --jq '.jobs[] | select(.name == "vpto-sim-validation" and .conclusion == "failure") | .id'
@@ -51,7 +72,7 @@ jobs:
             exit 0
           fi
 
-          git_failure_pattern='(fatal:|error: RPC failed|unable to access|Operation timed out|Connection timed out|Failed to connect|Could not resolve host|early EOF|fetch-pack|remote end hung up|index\.lock|GnuTLS recv error|TLS connection|HTTP/2 stream|exit code 128)'
+          git_failure_pattern='(error: RPC failed|Operation timed out|Connection timed out|Failed to connect|Could not resolve host|early EOF|fetch-pack|remote end hung up|GnuTLS recv error|TLS connection|HTTP/2 stream)'
           rerun_count=0
 
           for job_id in "${job_ids[@]}"; do
