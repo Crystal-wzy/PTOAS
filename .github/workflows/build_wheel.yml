@@ -203,12 +203,19 @@ jobs:
         run: |
           bash $PTO_SOURCE_DIR/docker/collect_ptoas_dist.sh $GITHUB_WORKSPACE/ptoas-dist
 
+      - name: Archive ptoas binary artifact
+        if: matrix.python == '3.11'
+        run: |
+          chmod +x "$GITHUB_WORKSPACE/ptoas-dist/ptoas" "$GITHUB_WORKSPACE/ptoas-dist/bin/ptoas"
+          tar -czf "$GITHUB_WORKSPACE/ptoas-bin-${{ matrix.arch }}.tar.gz" \
+            -C "$GITHUB_WORKSPACE/ptoas-dist" .
+
       - name: Upload ptoas binary artifact
         if: matrix.python == '3.11'
         uses: actions/upload-artifact@v4
         with:
           name: ptoas-bin-${{ matrix.arch }}
-          path: ptoas-dist/
+          path: ptoas-bin-${{ matrix.arch }}.tar.gz
 
   upload_release_assets:
     name: Upload release assets
@@ -264,13 +271,13 @@ jobs:
           name: ptoas-bin-aarch64
           path: release-artifacts/ptoas-bin-aarch64
 
-      - name: Package ptoas binaries
+      - name: Collect packaged ptoas binaries
         run: |
           set -euo pipefail
-          tar -czf "release-artifacts/ptoas-bin-x86_64.tar.gz" \
-            -C "release-artifacts/ptoas-bin-x86_64" .
-          tar -czf "release-artifacts/ptoas-bin-aarch64.tar.gz" \
-            -C "release-artifacts/ptoas-bin-aarch64" .
+          mv "release-artifacts/ptoas-bin-x86_64/ptoas-bin-x86_64.tar.gz" \
+            "release-artifacts/ptoas-bin-x86_64.tar.gz"
+          mv "release-artifacts/ptoas-bin-aarch64/ptoas-bin-aarch64.tar.gz" \
+            "release-artifacts/ptoas-bin-aarch64.tar.gz"
 
       - name: Upload assets to GitHub Release
         uses: softprops/action-gh-release@v2
