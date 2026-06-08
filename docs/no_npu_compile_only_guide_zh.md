@@ -168,7 +168,7 @@ cmake --build build --parallel
 ```bash
 export PAYLOAD_ROOT=/tmp/ptoas_payload
 export TARGET_SOC_VERSION=Ascend910
-export PTO_ISA_COMMIT=ceef9a49c18ff421404251a1884a0f6c3bb9b6c1
+export PTO_ISA_COMMIT=b65945bf2aa7b0020b9ae813c4d60f18cf0e538f
 
 rm -rf "$PAYLOAD_ROOT"
 mkdir -p "$PAYLOAD_ROOT/test/samples"
@@ -220,7 +220,7 @@ export STAGE=build
 export RUN_MODE=npu
 export SOC_VERSION="$TARGET_SOC_VERSION"
 export PTO_ISA_REPO=https://gitcode.com/cann/pto-isa.git
-export PTO_ISA_COMMIT=ceef9a49c18ff421404251a1884a0f6c3bb9b6c1
+export PTO_ISA_COMMIT=b65945bf2aa7b0020b9ae813c4d60f18cf0e538f
 
 # 参照 CI 的做法，按目标 SoC 排除非匹配的 A3/A5 变体。
 A3_ONLY_CASES="partition5d,partition5d_dynamic,mrgsort,tmatmulk_autosync"
