@@ -4053,6 +4053,80 @@ def TFModSOp : PTO_TOp<"tfmods", [
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// PTOOps.td  (TPOW: elementwise tile-tile power, DPS, tmp scratch optional)
+//===----------------------------------------------------------------------===//
+
+def TPowOp : PTO_TOp<"tpow", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TPOW: Elementwise power with both base and exponent as tiles.";
+  let description = [{
+    For each element (i, j): dst[i,j] = pow(base[i,j], exp[i,j]).
+    The `tmp` tile is backend scratch only used by the floating-point lowering
+    path: it is required when the element type is floating-point or when
+    `precisionType = high_precision`, and must be omitted for the pure
+    integer path.
+  }];
+
+  let arguments = (ins
+    PTODpsType:$base,
+    PTODpsType:$exp,
+    PTODpsType:$dst,
+    Optional<PTODpsType>:$tmp,
+    DefaultValuedAttr<PTO_PowPrecisionAttr, "::mlir::pto::PowPrecision::Default">:$precisionType
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// PTOOps.td  (TPOWS: elementwise tile-scalar power, DPS, tmp scratch optional)
+//===----------------------------------------------------------------------===//
+
+def TPowSOp : PTO_TOp<"tpows", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TPOWS: Elementwise power with a scalar exponent.";
+  let description = [{
+    For each element (i, j): dst[i,j] = pow(src[i,j], scalar).
+    The `tmp` tile is backend scratch only used by the floating-point lowering
+    path: required when the element type is floating-point or when
+    `precisionType = high_precision`, and must be omitted for the pure integer
+    path.
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src,
+    ScalarType:$scalar,
+    PTODpsType:$dst,
+    Optional<PTODpsType>:$tmp,
+    DefaultValuedAttr<PTO_PowPrecisionAttr, "::mlir::pto::PowPrecision::Default">:$precisionType
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
 def TExpOp : PTO_TOp<"texp", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,

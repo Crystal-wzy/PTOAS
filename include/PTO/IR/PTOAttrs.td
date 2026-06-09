@@ -746,6 +746,19 @@ def PTO_FmodPrecisionAttr : EnumAttr<PTO_Dialect, PTO_FmodPrecisionEnum, "fmod_p
   let summary = "TFMOD precision mode attribute";
 }
 //===----------------------------------------------------------------------===//
+// TPOW / TPOWS template controls
+//===----------------------------------------------------------------------===//
+
+def PTO_PowPrecisionEnum : PTO_I32Enum<
+  "PowPrecision", "PTO TPOW/TPOWS precision mode", [
+    I32EnumAttrCase<"Default", 0, "default">,
+    I32EnumAttrCase<"HighPrecision", 1, "high_precision">
+  ]>;
+
+def PTO_PowPrecisionAttr : EnumAttr<PTO_Dialect, PTO_PowPrecisionEnum, "pow_precision"> {
+  let summary = "TPOW/TPOWS precision mode attribute";
+}
+//===----------------------------------------------------------------------===//
 // TStore template controls
 //===----------------------------------------------------------------------===//
 

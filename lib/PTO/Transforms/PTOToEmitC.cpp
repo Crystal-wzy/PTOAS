@@ -9849,6 +9849,81 @@ struct PTOFModSToEmitC : public OpConversionPattern<pto::TFModSOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// PTOConvert.cpp  (add lowering + patterns.add for TPOW DPS/memref op)
+//===----------------------------------------------------------------------===//
+
+struct PTOPowToEmitC : public OpConversionPattern<pto::TPowOp> {
+  using OpConversionPattern<pto::TPowOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TPowOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
+
+    Value base = peelUnrealized(adaptor.getBase());
+    Value exp  = peelUnrealized(adaptor.getExp());
+    Value dst  = peelUnrealized(adaptor.getDst());
+
+    // Forms:
+    //   integer:  TPOW(dst, base, exp)
+    //   float:    TPOW(dst, base, exp, tmp)
+    SmallVector<Value, 4> operands{dst, base, exp};
+    if (Value tmp = adaptor.getTmp())
+      operands.push_back(peelUnrealized(tmp));
+    ArrayAttr templateArgs;
+    if (op.getPrecisionType() == pto::PowPrecision::HighPrecision) {
+      templateArgs = rewriter.getArrayAttr(
+          {emitc::OpaqueAttr::get(ctx, "pto::PowAlgorithm::HIGH_PRECISION")});
+    }
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TPOW",
+        /*args=*/ArrayAttr{}, /*templateArgs=*/templateArgs,
+        /*operands=*/operands);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// PTOConvert.cpp  (add lowering + patterns.add for TPOWS DPS/memref op)
+//===----------------------------------------------------------------------===//
+
+struct PTOPowSToEmitC : public OpConversionPattern<pto::TPowSOp> {
+  using OpConversionPattern<pto::TPowSOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TPowSOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
+
+    Value src    = peelUnrealized(adaptor.getSrc());
+    Value dst    = peelUnrealized(adaptor.getDst());
+    Value scalar = peelUnrealized(adaptor.getScalar());
+
+    // Forms:
+    //   integer:  TPOWS(dst, src, scalar)
+    //   float:    TPOWS(dst, src, scalar, tmp)
+    SmallVector<Value, 4> operands{dst, src, scalar};
+    if (Value tmp = adaptor.getTmp())
+      operands.push_back(peelUnrealized(tmp));
+
+    ArrayAttr templateArgs;
+    if (op.getPrecisionType() == pto::PowPrecision::HighPrecision) {
+      templateArgs = rewriter.getArrayAttr(
+          {emitc::OpaqueAttr::get(ctx, "pto::PowAlgorithm::HIGH_PRECISION")});
+    }
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TPOWS",
+        /*args=*/ArrayAttr{}, /*templateArgs=*/templateArgs,
+        /*operands=*/operands);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // PTOConvert.cpp  (add lowering + patterns.add for TROWEXPAND DPS/memref op)
 //===----------------------------------------------------------------------===//
 
@@ -12603,6 +12678,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOPreluToEmitC>(typeConverter, ctx);
   patterns.add<PTOFModSToEmitC>(typeConverter, ctx);
   patterns.add<PTORemSToEmitC>(typeConverter, ctx);
+  patterns.add<PTOPowToEmitC>(typeConverter, ctx);
+  patterns.add<PTOPowSToEmitC>(typeConverter, ctx);
   patterns.add<PTOPartMaxToEmitC>(typeConverter, ctx);
   patterns.add<PTONotToEmitC>(typeConverter, ctx);
   patterns.add<PTOPartMinToEmitC>(typeConverter, ctx);
