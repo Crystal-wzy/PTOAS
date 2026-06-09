@@ -1053,3 +1053,336 @@ def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):
 ```
 
 At the cube micro-op boundary, PTODSL currently uses explicit typed pointers. `tile.as_ptr()` materializes the pointer view for UB and cube-local scratch buffers, while the surrounding sub-kernel surface still uses `Tile` values for metadata such as `valid_shape`.
+
+## 7.6 Pipe Communication (Cube ↔ Vector FIFO)
+
+Pipe communication is the mechanism for Cube and Vector sub-kernels to exchange
+data through hardware FIFO channels. PTODSL provides a high-level `pto.pipe`
+API that presents pipes as logical declarations plus direction-aware
+transactions.
+
+### 7.6.1 Pipe Constructors
+
+#### `pto.pipe.c2v(*, id, slot_size=None, consumer_buf=None, gm_slot_buffer=None, gm_slot_tensor=None, local_slot_num=None, nosplit=None)`
+
+Creates a logical Cube-to-Vector pipe.
+
+The constructor does not expose separate global/local names. A local tile-entry
+pipe is selected by passing `slot_size` and `consumer_buf`. An A2/A3
+global-entry L2G2L pipe is selected by passing `gm_slot_tensor`; the tensor view
+describes the single FIFO slot entry. Global-entry pipes do not use a
+consumer-side local FIFO buffer and do not take `consumer_buf` or
+`gm_slot_buffer`. On A5, use the local tile-entry form and omit
+`gm_slot_tensor`.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `consumer_buf` | varies | Required for local tile-entry pipes. Consumer-owned FIFO buffer. The consumer side reserves it with `pto.reserve_buffer`; the producer side imports it with `pto.import_reserved_buffer`. Omit for global-entry pipes. |
+| `id` | `int` | Required. Stable pipe identifier shared by the producer and consumer sides. |
+| `slot_size` | `int` | Required for local tile-entry pipes. Optional for global-entry pipes; defaults to the byte size of one slot of `gm_slot_tensor`. |
+| `gm_slot_buffer` | `PtrType` | Optional GM FIFO storage pointer for A2/A3 local tile-entry L2G2L lowering. Do not use with `gm_slot_tensor`. |
+| `gm_slot_tensor` | `TensorView` | Optional. When provided, the pipe uses GlobalTensor-like entries and `alloc/pop` infer the entry descriptor type. |
+| `local_slot_num` | `int` | Optional. Local FIFO slot count override for local tile-entry pipes. |
+| `nosplit` | `bool` | Optional. Override-only metadata; not required in the common path. |
+
+The returned pipe object exposes C2V-producer methods (`init_cube`, `alloc`,
+`push`) on the Cube side and C2V-consumer methods (`init_simd`, `pop`, `free`)
+on the Vector side.
+
+#### `pto.pipe.v2c(*, id, slot_size=None, consumer_buf=None, gm_slot_buffer=None, gm_slot_tensor=None, local_slot_num=None, nosplit=None)`
+
+Creates a logical Vector-to-Cube pipe. Same contract as `c2v`, but
+reversed direction: the Vector side is the producer and the Cube side is the
+consumer.
+
+#### `pto.pipe.bidirectional(*, slot_size, c2v_consumer_buf, v2c_consumer_buf, id, gm_slot_buffer=None, local_slot_num=None, nosplit=None)`
+
+Creates a bidirectional local tile-entry pipe. Accepts both `c2v_consumer_buf`
+and `v2c_consumer_buf` since the pipe carries traffic in both directions. Use
+the root pipe for `init_cube()` / `init_simd()`, and use directional endpoints
+for transactions:
+
+
+```python
+# Cube side
+bidi.init_cube()
+bidi.c2v.push(cube_tile)
+cube_tile = bidi.v2c.pop(result_type=cube_tile_type)
+bidi.v2c.free()
+
+# SIMD side
+bidi.init_simd()
+vec_tile = bidi.c2v.pop(result_type=vec_tile_type)
+bidi.c2v.free()
+bidi.v2c.push(vec_tile)
+```
+
+### 7.6.2 Pipe Methods
+
+Every logical pipe object exposes only the methods that make sense for its
+direction.
+
+**Producer-side methods** (Cube side for C2V, Vector side for V2C):
+
+| Method | Description |
+|--------|-------------|
+| `init_cube()` | Initialise the pipe on the Cube side. |
+| `init_simd()` | Initialise the pipe on the Vector (SIMD) side. |
+| `alloc(split=0)` | Allocate the next FIFO slot. Global-entry pipes only. Returns an entry descriptor. |
+| `push(entry_or_tile, split=0)` | Push a filled GlobalTensor entry or local tile to the consumer. Notifies the consumer side. |
+
+**Consumer-side methods** (Vector side for C2V, Cube side for V2C):
+
+| Method | Description |
+|--------|-------------|
+| `init_cube()` | Initialise the pipe on the Cube side. |
+| `init_simd()` | Initialise the pipe on the Vector (SIMD) side. |
+| `pop(split=0, result_type=None, valid_shape=None)` | Pop the next entry from the producer. Global-entry pipes return a GM slot descriptor; local/tile-entry pipes return a tile. |
+| `free(entry=None, split=0)` | Release the consumed slot back to the producer. |
+
+**Read-only properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `entry_type` | type | The entry descriptor type for this pipe. |
+| `id` | `int` | The compile-time stable pipe identifier. |
+| `slot_size` | `int` | The logical slot size in bytes. |
+
+Rules:
+
+- `split` is a compile-time integer: `0` = no split, `1` = up/down split,
+  `2` = left/right split.
+- Pipe transactions are associated with their pipe by the stable `id`,
+  direction, and the enclosing kernel function. Python variable names are not part of the IR. Kernels
+  with multiple pipes must use distinct stable ids.
+- For global-entry pipes, `push` and `pop` do not implicitly perform
+  `tstore`/`tload`; callers must move data explicitly before `push` or after
+  `pop`.
+- For global-entry pipes, `result_type` on `pop()` defaults to the pipe's
+  `entry_type`, and `pop()` returns a `TensorView` descriptor for the current GM
+  FIFO slot. Callers can derive a sub-view from that descriptor and then load
+  data explicitly.
+- For local/tile-entry pipes, there is no `alloc()`. The producer pushes an
+  existing tile directly. The consumer pops into a newly declared tile of
+  `result_type`.
+- For local/tile-entry pipes, `result_type` may be either a tile type or a tile
+  value whose type should be reused. `valid_shape=[rows, cols]` can be supplied
+  when the popped tile needs runtime valid-shape metadata.
+- `entry` on `free()` may be omitted for tile-entry pipes. For global-entry
+  pipes it must carry the entry descriptor returned by the matching `pop()`.
+
+### 7.6.3 Global-Entry C2V Pipe
+
+Declaration (shared between Cube and Vector sides):
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.c2v_global_declaration","symbol":"pipe_communication_c2v_global_declaration_probe","compile":{}} -->
+```python
+c2v = pto.pipe.c2v(
+    gm_slot_tensor=gm_slots,
+    id=0,
+)
+```
+
+Cube (producer) side:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.c2v_global_producer","symbol":"pipe_communication_c2v_global_producer_probe","compile":{}} -->
+```python
+@pto.cube
+def producer(src_tile):
+    c2v.init_cube()
+    entry = c2v.alloc(split=0)
+    entry_part = pto.partition_view(entry, offsets=[0, 0], sizes=[16, 16])
+    pto.tile.store(src_tile, entry_part)
+    c2v.push(entry, split=0)
+```
+
+Vector (consumer) side:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.c2v_global_consumer","symbol":"pipe_communication_c2v_global_consumer_probe","compile":{}} -->
+```python
+@pto.simd
+def consumer(dst_tile):
+    c2v.init_simd()
+    entry = c2v.pop(split=0)
+    entry_part = pto.partition_view(entry, offsets=[0, 0], sizes=[16, 16])
+    pto.tile.load(entry_part, dst_tile)
+    c2v.free(entry, split=0)
+```
+
+The Cube side initialises the pipe, allocates a GM FIFO slot, stores the tile
+data into that slot via `tile.store`, then pushes the entry to notify the
+consumer. The Vector side initialises the pipe, pops the next ready entry, loads
+the data into a local tile via `tile.load`, then frees the slot.
+
+### 7.6.4 Global-Entry V2C Pipe
+
+Declaration:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.v2c_global_declaration","symbol":"pipe_communication_v2c_global_declaration_probe","compile":{}} -->
+```python
+v2c = pto.pipe.v2c(
+    gm_slot_tensor=gm_slots,
+    id=0,
+)
+```
+
+Vector (producer) side:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.v2c_global_producer","symbol":"pipe_communication_v2c_global_producer_probe","compile":{}} -->
+```python
+@pto.simd
+def producer(src_tile):
+    v2c.init_simd()
+    entry = v2c.alloc(split=0)
+    pto.tile.store(src_tile, pto.partition_view(entry, offsets=[0, 0], sizes=[16, 16]))
+    v2c.push(entry, split=0)
+```
+
+Cube (consumer) side:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.v2c_global_consumer","symbol":"pipe_communication_v2c_global_consumer_probe","compile":{}} -->
+```python
+@pto.cube
+def consumer(dst_tile):
+    v2c.init_cube()
+    entry = v2c.pop(split=0)
+    pto.tile.load(pto.partition_view(entry, offsets=[0, 0], sizes=[16, 16]), dst_tile)
+    v2c.free(entry, split=0)
+```
+
+### 7.6.5 Local FIFO C2V Pipe
+
+Vector (consumer) side reserves the local buffer:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.c2v_local_declaration","symbol":"pipe_communication_c2v_local_declaration_probe","compile":{}} -->
+```python
+c2v_buf = pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
+c2v = pto.pipe.c2v(
+    slot_size=1024,
+    consumer_buf=c2v_buf,
+    id=0,
+)
+```
+
+Cube (producer) side imports the peer buffer:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.c2v_local_import","symbol":"pipe_communication_c2v_local_import_probe","compile":{}} -->
+```python
+c2v_buf = pto.import_reserved_buffer("c2v_fifo", peer_func="vector_kernel")
+c2v_peer = pto.pipe.c2v(
+    slot_size=1024,
+    consumer_buf=c2v_buf,
+    id=0,
+)
+```
+
+Cube (producer) transaction:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.c2v_local_producer","symbol":"pipe_communication_c2v_local_producer_probe","compile":{}} -->
+```python
+@pto.cube
+def producer(src_tile):
+    c2v_peer.init_cube()
+    c2v_peer.push(src_tile, split=0)
+```
+
+Vector (consumer) transaction:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.c2v_local_consumer","symbol":"pipe_communication_c2v_local_consumer_probe","compile":{}} -->
+```python
+@pto.simd
+def consumer(dst_part):
+    c2v.init_simd()
+    tile = c2v.pop(result_type=dst_tile, split=0)
+    pto.tile.store(tile, dst_part)
+    c2v.free(split=0)
+```
+
+The local form is the A5-facing form used when Cube and Vector exchange UB/MAT
+tiles through a local FIFO. `push(tile)` emits a tile-entry `tpush`; `pop()`
+emits a tile-entry `tpop`; `free()` can omit the entry because no GM FIFO slot
+descriptor was allocated by the frontend.
+
+### 7.6.6 Bidirectional Local Pipe
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.bidirectional_local_declaration","symbol":"pipe_communication_bidirectional_local_declaration_probe","compile":{}} -->
+```python
+bidi = pto.pipe.bidirectional(
+    slot_size=1024,
+    c2v_consumer_buf=c2v_buf,
+    v2c_consumer_buf=v2c_buf,
+    id=0,
+)
+```
+
+For bidirectional local pipes, the C2V consumer buffer lives in `VEC` and the V2C consumer buffer lives in `MAT`.
+
+The two-buffer shape only appears where the pipe is genuinely bidirectional.
+
+### 7.6.7 Complete Example: C2V Global-Entry Pipe
+
+This is a complete two-kernel C2V pipe example with `@pto.jit` entry points
+and `gm_slots` expressed via `pto.make_tensor_view`:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.c2v_global","symbol":"pipe_communication_c2v_global_probe","compile":{"BLOCK":128}} -->
+```python
+@pto.jit(target="a3")
+def cube_producer(
+    gm_slot_buffer: pto.gm_ptr(pto.f32),
+    src: pto.gm_ptr(pto.f32),
+    *,
+    BLOCK: pto.constexpr = 128,
+):
+    gm_view = pto.make_tensor_view(gm_slot_buffer, shape=[16, 16], strides=[16, 1])
+    c2v = pto.pipe.c2v(
+        gm_slot_tensor=gm_view,
+        id=0,
+    )
+
+    a_part = pto.partition_view(
+        pto.make_tensor_view(src, shape=[16, 16], strides=[16, 1]),
+        offsets=[0, 0], sizes=[16, 16])
+    a_tile = pto.alloc_tile(shape=[16, 16], dtype=pto.f32)
+
+    @pto.cube
+    def cube_kernel():
+        pto.tile.load(a_part, a_tile)
+        c2v.init_cube()
+        entry = c2v.alloc(split=0)
+        entry_part = pto.partition_view(entry, offsets=[0, 0], sizes=[16, 16])
+        pto.tile.store(a_tile, entry_part)
+        c2v.push(entry, split=0)
+
+    cube_kernel()
+
+@pto.jit(target="a3")
+def vector_consumer(
+    gm_slot_buffer: pto.gm_ptr(pto.f32),
+    dst: pto.gm_ptr(pto.f32),
+    *,
+    BLOCK: pto.constexpr = 128,
+):
+    gm_view = pto.make_tensor_view(gm_slot_buffer, shape=[16, 16], strides=[16, 1])
+    c2v = pto.pipe.c2v(
+        gm_slot_tensor=gm_view,
+        id=0,
+    )
+
+    b_tile = pto.alloc_tile(shape=[16, 16], dtype=pto.f32)
+    b_part = pto.partition_view(
+        pto.make_tensor_view(dst, shape=[16, 16], strides=[16, 1]),
+        offsets=[0, 0], sizes=[16, 16])
+
+    @pto.simd
+    def vector_kernel():
+        c2v.init_simd()
+        entry = c2v.pop(split=0)
+        entry_part = pto.partition_view(entry, offsets=[0, 0], sizes=[16, 16])
+        pto.tile.load(entry_part, b_tile)
+        c2v.free(entry, split=0)
+        pto.tile.store(b_tile, b_part)
+
+    vector_kernel()
+```

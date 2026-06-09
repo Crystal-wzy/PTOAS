@@ -12248,10 +12248,24 @@ static LogicalResult verifySplitAttr(Operation *op, int64_t split) {
 static LogicalResult verifyFrontendKernelKind(Operation *op,
                                               FunctionKernelKind expected,
                                               StringRef kernelName) {
-  auto kernelKind = getEnclosingFunctionKernelKind(op);
+  if (isInsideSectionCube(op)) {
+    if (expected == FunctionKernelKind::Cube)
+      return success();
+    return op->emitOpError("must be inside a ")
+           << kernelName << " kernel function or section";
+  }
+  if (isInsideSectionVector(op)) {
+    if (expected == FunctionKernelKind::Vector)
+      return success();
+    return op->emitOpError("must be inside a ")
+           << kernelName << " kernel function or section";
+  }
+
+  std::optional<FunctionKernelKind> kernelKind =
+      getEnclosingFunctionKernelKind(op);
   if (!kernelKind || *kernelKind != expected) {
     return op->emitOpError("must be inside a ")
-           << kernelName << " kernel function";
+           << kernelName << " kernel function or section";
   }
   return success();
 }
@@ -12590,14 +12604,22 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
         op.getOperation(), op.getGmSlotTensor(), dirMask, op.getSlotSize());
   }
 
-  if (hasC2vConsumerBuf != hasV2cConsumerBuf) {
+  if (!hasC2vConsumerBuf && !hasV2cConsumerBuf) {
     return op.emitOpError(
-        "expects 'c2v_consumer_buf' and 'v2c_consumer_buf' to be provided together");
+        "expects local pipe init to provide at least one consumer buffer "
+        "operand; use 'gm_slot_tensor' for globaltensor pipe entries");
   }
-  if (!hasC2vConsumerBuf) {
+  if (dirMask == 1 && !hasC2vConsumerBuf) {
     return op.emitOpError(
-        "expects local pipe init to provide 'c2v_consumer_buf' and "
-        "'v2c_consumer_buf'; use 'gm_slot_tensor' for globaltensor pipe entries");
+        "expects 'c2v_consumer_buf' when dir_mask is 1");
+  }
+  if (dirMask == 2 && !hasV2cConsumerBuf) {
+    return op.emitOpError(
+        "expects 'v2c_consumer_buf' when dir_mask is 2");
+  }
+  if (dirMask == 3 && (!hasC2vConsumerBuf || !hasV2cConsumerBuf)) {
+    return op.emitOpError(
+        "expects both 'c2v_consumer_buf' and 'v2c_consumer_buf' when dir_mask is 3");
   }
 
   if (auto localSlotNumAttr = op.getLocalSlotNumAttr()) {

@@ -17,7 +17,10 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ptodsl"))
 
 import ptodsl._ops as _ops
+import ptodsl._pipe_namespace as _pipe_namespace
+from ptodsl._bootstrap import make_context
 from ptodsl import pto
+from mlir.ir import F32Type
 
 
 def _identity(value):
@@ -476,6 +479,335 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
         sync_set_op.assert_not_called()
         sync_wait_op.assert_not_called()
+
+    def test_pipe_namespace_and_buffer_helpers_are_exposed(self):
+        names = [
+            "c2v", "v2c", "bidirectional",
+        ]
+        for name in names:
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(pto.pipe, name), name)
+        old_names = [
+            "c2v_global", "v2c_global",
+            "c2v_local", "v2c_local", "bidirectional_local",
+        ]
+        for name in old_names:
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(pto.pipe, name), name)
+
+        for name in ["reserve_buffer", "import_reserved_buffer"]:
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(pto, name), name)
+
+        self.assertTrue(hasattr(pto, "gm_ptr"), "gm_ptr")
+
+    def test_global_pipe_methods_dispatch_to_matching_frontend_ops(self):
+        alloc_entry = object()
+        pop_entry = object()
+
+        with make_context():
+            gm_slot_type = _pipe_namespace._pto.TensorViewType.get([16, 16], F32Type.get())
+        gm_slot = SimpleNamespace(type=gm_slot_type)
+
+        with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "_infer_global_slot_size", return_value=1024):
+            pipe = pto.pipe.c2v(
+                gm_slot_tensor=gm_slot,
+                id=7,
+            )
+
+        self.assertEqual(pipe.id, 7)
+        self.assertEqual(pipe.slot_size, 1024)
+        self.assertEqual(pipe.entry_type, gm_slot_type)
+
+        with patch.object(_pipe_namespace._pto, "AicInitializePipeOp") as aic_init, \
+             patch.object(_pipe_namespace._pto, "AivInitializePipeOp") as aiv_init, \
+             patch.object(_pipe_namespace._pto, "TAllocToAivOp", return_value=SimpleNamespace(result=alloc_entry)) as alloc_op, \
+             patch.object(_pipe_namespace._pto, "TPushToAivOp") as push_op, \
+             patch.object(_pipe_namespace._pto, "TPopFromAicOp", return_value=SimpleNamespace(result=pop_entry)) as pop_op, \
+             patch.object(_pipe_namespace._pto, "TFreeFromAicOp") as free_op, \
+             patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity):
+            pipe.init_cube()
+            pipe.init_simd()
+            alloc_result = pipe.alloc()
+            pipe.push(alloc_result, split=1)
+            pop_result = pipe.pop()
+            pipe.free(pop_result, split=2)
+
+        expected_init_kwargs = {
+            "id": 7,
+            "gm_slot_tensor": gm_slot,
+        }
+        aic_init.assert_called_once_with(1, 1024, **expected_init_kwargs)
+        aiv_init.assert_called_once_with(1, 1024, **expected_init_kwargs)
+        alloc_op.assert_called_once_with(gm_slot_type, 0, id=7)
+        push_op.assert_called_once_with(alloc_entry, 1, id=7)
+        pop_op.assert_called_once_with(gm_slot_type, 0, id=7)
+        free_op.assert_called_once_with(2, entry=pop_entry, id=7)
+        self.assertIs(alloc_result, alloc_entry)
+        self.assertIs(pop_result, pop_entry)
+
+    def test_local_pipe_constructors_route_consumer_buffers(self):
+        c2v_buf = object()
+        v2c_buf = object()
+        gm_slot_buffer = object()
+
+        with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
+            c2v = pto.pipe.c2v(
+                slot_size=1024,
+                consumer_buf=c2v_buf,
+                gm_slot_buffer=gm_slot_buffer,
+                id=3,
+                local_slot_num=2,
+                nosplit=True,
+            )
+            v2c = pto.pipe.v2c(
+                slot_size=2048,
+                consumer_buf=v2c_buf,
+                gm_slot_buffer=gm_slot_buffer,
+                id=4,
+                local_slot_num=5,
+            )
+            bidi = pto.pipe.bidirectional(
+                slot_size=4096,
+                c2v_consumer_buf=c2v_buf,
+                v2c_consumer_buf=v2c_buf,
+                gm_slot_buffer=gm_slot_buffer,
+                id=5,
+            )
+
+        self.assertIsNone(c2v.entry_type)
+        self.assertIsNone(v2c.entry_type)
+        self.assertIsNone(bidi.entry_type)
+        self.assertEqual(bidi.c2v.id, 5)
+        self.assertEqual(bidi.v2c.id, 5)
+
+        with patch.object(_pipe_namespace._pto, "AicInitializePipeOp") as aic_init, \
+             patch.object(_pipe_namespace._pto, "AivInitializePipeOp") as aiv_init:
+            c2v.init_cube()
+            c2v.init_simd()
+            v2c.init_cube()
+            bidi.init_simd()
+
+        self.assertEqual(aic_init.call_args_list[0].args, (1, 1024))
+        self.assertEqual(aic_init.call_args_list[0].kwargs, {
+            "id": 3,
+            "local_slot_num": 2,
+            "nosplit": True,
+            "gm_slot_buffer": gm_slot_buffer,
+            "c2v_consumer_buf": c2v_buf,
+        })
+        self.assertEqual(aiv_init.call_args_list[0].args, (1, 1024))
+        self.assertEqual(aiv_init.call_args_list[0].kwargs, {
+            "id": 3,
+            "local_slot_num": 2,
+            "nosplit": True,
+            "gm_slot_buffer": gm_slot_buffer,
+            "c2v_consumer_buf": c2v_buf,
+        })
+        self.assertEqual(aic_init.call_args_list[1].args, (2, 2048))
+        self.assertEqual(aic_init.call_args_list[1].kwargs, {
+            "id": 4,
+            "local_slot_num": 5,
+            "gm_slot_buffer": gm_slot_buffer,
+            "v2c_consumer_buf": v2c_buf,
+        })
+        self.assertEqual(aiv_init.call_args_list[1].args, (3, 4096))
+        self.assertEqual(aiv_init.call_args_list[1].kwargs, {
+            "id": 5,
+            "gm_slot_buffer": gm_slot_buffer,
+            "c2v_consumer_buf": c2v_buf,
+            "v2c_consumer_buf": v2c_buf,
+        })
+
+    def test_pipe_constructors_require_explicit_stable_ids(self):
+        buf = object()
+        with make_context():
+            gm_slot_type = _pipe_namespace._pto.TensorViewType.get([16, 16], F32Type.get())
+        gm_slot = SimpleNamespace(type=gm_slot_type)
+
+        with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "_infer_global_slot_size", return_value=1024):
+            cases = [
+                lambda: pto.pipe.c2v(gm_slot_tensor=gm_slot),
+                lambda: pto.pipe.v2c(gm_slot_tensor=gm_slot),
+                lambda: pto.pipe.c2v(slot_size=1024, consumer_buf=buf),
+                lambda: pto.pipe.v2c(slot_size=1024, consumer_buf=buf),
+                lambda: pto.pipe.bidirectional(
+                    slot_size=1024,
+                    c2v_consumer_buf=buf,
+                    v2c_consumer_buf=buf,
+                ),
+            ]
+            for case in cases:
+                with self.subTest(case=case):
+                    with self.assertRaises(TypeError) as exc:
+                        case()
+                    self.assertIn("requires an explicit stable id", str(exc.exception))
+
+            invalid_global_cases = [
+                lambda: pto.pipe.c2v(gm_slot_tensor=gm_slot, consumer_buf=buf, id=1),
+                lambda: pto.pipe.v2c(gm_slot_tensor=gm_slot, gm_slot_buffer=buf, id=1),
+                lambda: pto.pipe.c2v(gm_slot_tensor=gm_slot, local_slot_num=2, id=1),
+            ]
+            for case in invalid_global_cases:
+                with self.subTest(case=case):
+                    with self.assertRaises(TypeError):
+                        case()
+
+    def test_local_pipe_transactions_dispatch_to_tile_entry_frontend_ops(self):
+        c2v_buf = object()
+        v2c_buf = object()
+        c2v_tile = object()
+        v2c_tile = object()
+        c2v_result = object()
+        v2c_result = object()
+        c2v_type = "c2v_tile_ty"
+        v2c_type = "v2c_tile_ty"
+
+        with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
+            c2v = pto.pipe.c2v(slot_size=1024, consumer_buf=c2v_buf, id=6)
+            v2c = pto.pipe.v2c(slot_size=2048, consumer_buf=v2c_buf, id=7)
+
+        with patch.object(_pipe_namespace._pto, "TPushToAivOp") as c2v_push, \
+             patch.object(_pipe_namespace._pto, "TPopFromAicOp", return_value=SimpleNamespace(result=c2v_result)) as c2v_pop, \
+             patch.object(_pipe_namespace._pto, "TFreeFromAicOp") as c2v_free, \
+             patch.object(_pipe_namespace._pto, "TPushToAicOp") as v2c_push, \
+             patch.object(_pipe_namespace._pto, "TPopFromAivOp", return_value=SimpleNamespace(result=v2c_result)) as v2c_pop, \
+             patch.object(_pipe_namespace._pto, "TFreeFromAivOp") as v2c_free, \
+             patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
+            c2v.push(c2v_tile, split=1)
+            c2v_output = c2v.pop(result_type=c2v_type, split=2)
+            c2v.free(split=0)
+
+            v2c.push(v2c_tile, split=2)
+            v2c_output = v2c.pop(result_type=v2c_type, split=1)
+            v2c.free(split=0)
+
+        c2v_push.assert_called_once_with(c2v_tile, 1, id=6)
+        c2v_pop.assert_called_once_with(c2v_type, 2, id=6)
+        c2v_free.assert_called_once_with(0, entry=None, id=6)
+        self.assertIs(c2v_output, c2v_result)
+
+        v2c_push.assert_called_once_with(v2c_tile, 2, id=7)
+        v2c_pop.assert_called_once_with(v2c_type, 1, id=7)
+        v2c_free.assert_called_once_with(0, entry=None, id=7)
+        self.assertIs(v2c_output, v2c_result)
+
+    def test_local_pipe_pop_can_carry_runtime_valid_shape(self):
+        c2v_buf = object()
+        c2v_type = "c2v_tile_ty"
+        row = object()
+        col = object()
+        result = object()
+
+        with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
+            c2v = pto.pipe.c2v(slot_size=1024, consumer_buf=c2v_buf, id=8)
+
+        with patch.object(_pipe_namespace._pto, "TPopFromAicOp", return_value=SimpleNamespace(result=result)) as pop_op, \
+             patch.object(_pipe_namespace, "_coerce_index", side_effect=lambda value, *, context: value), \
+             patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
+            output = c2v.pop(result_type=c2v_type, valid_shape=[row, col])
+
+        pop_op.assert_called_once_with(
+            c2v_type,
+            0,
+            valid_row=row,
+            valid_col=col,
+            id=8,
+        )
+        self.assertIs(output, result)
+
+    def test_pipe_surface_rejects_ambiguous_or_invalid_transactions(self):
+        c2v_buf = object()
+        v2c_buf = object()
+
+        with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
+            c2v = pto.pipe.c2v(slot_size=1024, consumer_buf=c2v_buf, id=9)
+            bidi = pto.pipe.bidirectional(
+                slot_size=1024,
+                c2v_consumer_buf=c2v_buf,
+                v2c_consumer_buf=v2c_buf,
+                id=10,
+            )
+
+        with self.assertRaises(TypeError):
+            c2v.alloc()
+        with self.assertRaises(TypeError):
+            c2v.pop()
+        with self.assertRaises(TypeError):
+            bidi.push(object())
+        with self.assertRaises(TypeError):
+            bidi.pop(result_type="tile_ty")
+        with self.assertRaises(TypeError):
+            bidi.free()
+
+    def test_bidirectional_pipe_endpoints_dispatch_transactions(self):
+        c2v_buf = object()
+        v2c_buf = object()
+        c2v_tile = object()
+        v2c_tile = object()
+        c2v_result = object()
+        v2c_result = object()
+
+        with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
+            bidi = pto.pipe.bidirectional(
+                slot_size=1024,
+                c2v_consumer_buf=c2v_buf,
+                v2c_consumer_buf=v2c_buf,
+                id=10,
+            )
+
+        with patch.object(_pipe_namespace._pto, "TPushToAivOp") as c2v_push, \
+             patch.object(_pipe_namespace._pto, "TPopFromAicOp", return_value=SimpleNamespace(result=c2v_result)) as c2v_pop, \
+             patch.object(_pipe_namespace._pto, "TFreeFromAicOp") as c2v_free, \
+             patch.object(_pipe_namespace._pto, "TPushToAicOp") as v2c_push, \
+             patch.object(_pipe_namespace._pto, "TPopFromAivOp", return_value=SimpleNamespace(result=v2c_result)) as v2c_pop, \
+             patch.object(_pipe_namespace._pto, "TFreeFromAivOp") as v2c_free, \
+             patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
+            bidi.c2v.push(c2v_tile, split=0)
+            c2v_output = bidi.c2v.pop(result_type="c2v_ty", split=1)
+            bidi.c2v.free(split=2)
+            bidi.v2c.push(v2c_tile, split=2)
+            v2c_output = bidi.v2c.pop(result_type="v2c_ty", split=1)
+            bidi.v2c.free(split=0)
+
+        c2v_push.assert_called_once_with(c2v_tile, 0, id=10)
+        c2v_pop.assert_called_once_with("c2v_ty", 1, id=10)
+        c2v_free.assert_called_once_with(2, entry=None, id=10)
+        v2c_push.assert_called_once_with(v2c_tile, 2, id=10)
+        v2c_pop.assert_called_once_with("v2c_ty", 1, id=10)
+        v2c_free.assert_called_once_with(0, entry=None, id=10)
+        self.assertIs(c2v_output, c2v_result)
+        self.assertIs(v2c_output, v2c_result)
+
+    def test_reserved_buffer_helpers_normalize_location_and_peer_func(self):
+        with make_context():
+            with patch.object(_ops._pto, "ReserveBufferOp", return_value=SimpleNamespace(result=object())) as reserve_op, \
+                 patch.object(_ops._pto, "ImportReservedBufferOp", return_value=SimpleNamespace(result=object())) as import_op, \
+                 patch.object(_ops, "wrap_surface_value", side_effect=_identity):
+                reserve_result = _ops.reserve_buffer("fifo", size=8192, location="vec")
+                import_result = _ops.import_reserved_buffer(
+                    "fifo",
+                    peer_func=SimpleNamespace(spec=SimpleNamespace(symbol_name="vector_kernel")),
+                )
+
+        self.assertIsNotNone(reserve_result)
+        self.assertIsNotNone(import_result)
+        self.assertEqual(reserve_op.call_args.args[0], "fifo")
+        self.assertEqual(reserve_op.call_args.args[1], 8192)
+        self.assertEqual(str(reserve_op.call_args.args[2]), "#pto.address_space<vec>")
+        self.assertEqual(reserve_op.call_args.args[3], True)
+        self.assertEqual(import_op.call_args.args, ("fifo", "vector_kernel"))
 
 
 if __name__ == "__main__":

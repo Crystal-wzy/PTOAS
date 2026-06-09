@@ -109,6 +109,7 @@ from ._ops import (             # noqa: F401
     get_buf, rls_buf,
     set_cross_flag, wait_cross_flag, set_intra_flag, wait_intra_flag,
     set_flag, wait_flag,
+    reserve_buffer, import_reserved_buffer,
 )
 
 # ── Control flow ──────────────────────────────────────────────────────────────
@@ -120,8 +121,13 @@ from ._control_flow import (    # noqa: F401
 # ── Decorator ─────────────────────────────────────────────────────────────────
 from ._jit import jit, KernelHandle, merge_jit_modules      # noqa: F401
 from ._subkernels import cube, simd, simt     # noqa: F401
+from ._pipe_namespace import pipe  # noqa: F401
 
 # ── Shorthand dtype aliases ───────────────────────────────────────────────────
+def gm_ptr(elem):
+    return ptr(elem, "gm")
+
+
 f32 = float32
 f16 = float16
 i1 = int1

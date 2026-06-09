@@ -53,6 +53,7 @@ from ._types import (
     _isinstance_pto_type,
     _integer_signedness,
     _materialize_integer_literal,
+    _normalize_address_space,
     _resolve,
     _strip_integer_signedness,
     mask_type,
@@ -4008,6 +4009,33 @@ def wait_flag(src: str, dst: str, *, event_id: int = 0):
     _pto.wait_flag_dyn(_pipe_attr(src), _pipe_attr(dst), event_operand)
 
 
+def reserve_buffer(name, *, size, location, auto=True, base=None):
+    """``pto.reserve_buffer(name, size, location, auto=True, base=None)``."""
+    space = _normalize_address_space(location)
+    if space not in (_pto.AddressSpace.VEC, _pto.AddressSpace.MAT):
+        raise ValueError(
+            "reserve_buffer(location=...) expects 'vec' or 'mat' address space"
+        )
+    op = _pto.ReserveBufferOp(
+        name,
+        size,
+        _pto.AddressSpaceAttr.get(space),
+        bool(auto),
+        base=base,
+    )
+    return wrap_surface_value(op.result)
+
+
+def import_reserved_buffer(name, *, peer_func):
+    """``pto.import_reserved_buffer(name, peer_func=...)``."""
+    if not isinstance(peer_func, str):
+        peer_func = getattr(getattr(peer_func, "spec", None), "symbol_name", None) \
+            or getattr(peer_func, "__name__", None) \
+            or str(peer_func)
+    op = _pto.ImportReservedBufferOp(name, peer_func)
+    return wrap_surface_value(op.result)
+
+
 __all__ = [
     "const",
     "castptr", "addptr",
@@ -4062,4 +4090,5 @@ __all__ = [
     "pipe_barrier", "get_buf", "rls_buf",
     "set_cross_flag", "wait_cross_flag", "set_intra_flag", "wait_intra_flag",
     "set_flag", "wait_flag",
+    "reserve_buffer", "import_reserved_buffer",
 ]

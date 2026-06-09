@@ -121,6 +121,16 @@ class TraceSession:
     def lower_inline_subkernel(self, subkernel, *args, **kwargs):
         """Lower one inline PTODSL subkernel call through the shared session."""
         with self.enter_subkernel(subkernel):
+            role = subkernel.spec.role.value
+            if role in {"cube", "simd"}:
+                section = (
+                    _pto.SectionCubeOp()
+                    if role == "cube"
+                    else _pto.SectionVectorOp()
+                )
+                section_block = section.body.blocks.append()
+                with InsertionPoint(section_block):
+                    return subkernel.emit_body(*args, **kwargs)
             return subkernel.emit_body(*args, **kwargs)
 
     def begin_carry_loop(self, start, stop, step, state_items):
