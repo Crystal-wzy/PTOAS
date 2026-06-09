@@ -133,6 +133,19 @@ add_subdirectory(tools)
 if(BUILD_TESTING)
   enable_testing()
   if(PTO_ENABLE_PYTHON_BINDING)
+    get_filename_component(_llvm_root "${LLVM_DIR}/../../.." ABSOLUTE)
+    set(_pto_python_test_pythonpath
+      "${CMAKE_BINARY_DIR}/python:${MLIR_PYTHON_PACKAGE_DIR}:${CMAKE_INSTALL_PREFIX}:$ENV{PYTHONPATH}"
+    )
+    if(DEFINED ENV{PTO_INSTALL_DIR} AND NOT "$ENV{PTO_INSTALL_DIR}" STREQUAL "")
+      set(_pto_python_test_pythonpath "$ENV{PTO_INSTALL_DIR}:${_pto_python_test_pythonpath}")
+    endif()
+    set(_pto_python_test_env
+      "PYTHONPATH=${_pto_python_test_pythonpath}"
+      "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib:${_llvm_root}/lib:${CMAKE_INSTALL_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+      "PATH=${CMAKE_BINARY_DIR}/tools/ptoas:${CMAKE_INSTALL_PREFIX}/bin:$ENV{PATH}"
+    )
+
     add_subdirectory(ptodsl/tests)
     add_test(
       NAME tilelang_dsl_import
@@ -140,7 +153,8 @@ if(BUILD_TESTING)
               "${CMAKE_CURRENT_SOURCE_DIR}/tilelang-dsl/tests/import_tilelang_dsl.py"
     )
     set_tests_properties(tilelang_dsl_import PROPERTIES
-      ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python:$ENV{PYTHONPATH}"
+      LABELS "PTODSL"
+      ENVIRONMENT "${_pto_python_test_env}"
     )
     add_test(
       NAME tilelang_dsl_unittest
@@ -149,7 +163,8 @@ if(BUILD_TESTING)
               -p "test_*.py"
     )
     set_tests_properties(tilelang_dsl_unittest PROPERTIES
-      ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python:$ENV{PYTHONPATH}"
+      LABELS "PTODSL"
+      ENVIRONMENT "${_pto_python_test_env}"
     )
   endif()
   add_subdirectory(tools/ptobc/tests)
@@ -161,14 +176,32 @@ endif()
 if(BUILD_TESTING)
   add_subdirectory(test/lit)
 
+  set(_pto_check_ctest_depends)
+  foreach(_target IN ITEMS PTOPythonModules pto-opt ptoas ptobc)
+    if(TARGET ${_target})
+      list(APPEND _pto_check_ctest_depends ${_target})
+    endif()
+  endforeach()
+
+  if(NOT TARGET check-ctest)
+    add_custom_target(check-ctest
+      COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      DEPENDS ${_pto_check_ctest_depends}
+      USES_TERMINAL
+      COMMENT "Running the CTest regression tests"
+    )
+    set_target_properties(check-ctest PROPERTIES FOLDER "Tests")
+  endif()
+
   if(NOT TARGET check)
     add_custom_target(check)
   endif()
   if(TARGET check-pto)
     add_dependencies(check check-pto)
   endif()
-  if(TARGET check-dsl)
-    add_dependencies(check check-dsl)
+  if(TARGET check-ctest)
+    add_dependencies(check check-ctest)
   endif()
 endif()
 
