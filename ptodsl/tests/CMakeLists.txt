@@ -51,3 +51,14 @@ foreach(test_file IN LISTS _ptodsl_test_files)
 
   add_ptodsl_python_test("${test_name}" "${rel_path}")
 endforeach()
+
+if(NOT TARGET check-dsl)
+  add_custom_target(check-dsl
+    COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure -L PTODSL
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    DEPENDS PTOPythonModules pto-opt
+    USES_TERMINAL
+    COMMENT "Running the PTODSL regression tests"
+  )
+  set_target_properties(check-dsl PROPERTIES FOLDER "Tests")
+endif()

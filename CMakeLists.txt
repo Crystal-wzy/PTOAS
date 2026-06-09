@@ -160,6 +160,16 @@ endif()
 # =========================================================
 if(BUILD_TESTING)
   add_subdirectory(test/lit)
+
+  if(NOT TARGET check)
+    add_custom_target(check)
+  endif()
+  if(TARGET check-pto)
+    add_dependencies(check check-pto)
+  endif()
+  if(TARGET check-dsl)
+    add_dependencies(check check-dsl)
+  endif()
 endif()
 
 # =========================================================
