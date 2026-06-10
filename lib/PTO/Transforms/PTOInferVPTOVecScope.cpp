@@ -44,10 +44,16 @@ struct NestedRegionSummary {
   bool hasBoundaryOperation = false;
 };
 
-struct EscapingVectorScopeValue {
+struct EscapingMovedValue {
   Value value;
   Operation *producer = nullptr;
   Operation *user = nullptr;
+  bool requiresDiagnostic = false;
+};
+
+struct ResultlessScopePlan {
+  SmallVector<Operation *, 16> hoistOps;
+  SmallVector<Operation *, 16> moveOps;
 };
 
 static VPTOInferenceOpClass classifyOperationForInference(Operation *op);
@@ -186,41 +192,71 @@ static bool isUserInsideCluster(Operation *user,
   return false;
 }
 
-static bool canMoveIntoResultlessScope(ArrayRef<Operation *> ops) {
-  llvm::SmallPtrSet<Operation *, 16> opSet;
-  for (Operation *op : ops)
-    opSet.insert(op);
+static bool anyUserIsMoved(Value result,
+                           const llvm::SmallPtrSetImpl<Operation *> &movedOps) {
+  for (Operation *user : result.getUsers()) {
+    if (isUserInsideCluster(user, movedOps))
+      return true;
+  }
+  return false;
+}
 
+static llvm::SmallPtrSet<Operation *, 16>
+computeMovedOpsForResultlessScope(ArrayRef<Operation *> ops) {
+  llvm::SmallPtrSet<Operation *, 16> movedOps;
   for (Operation *op : ops) {
-    for (Value result : op->getResults()) {
-      for (Operation *user : result.getUsers()) {
-        if (!isUserInsideCluster(user, opSet))
-          return false;
+    if (classifyOperationForInference(op) == VPTOInferenceOpClass::Vector)
+      movedOps.insert(op);
+  }
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (Operation *op : llvm::reverse(ops)) {
+      if (movedOps.contains(op) ||
+          classifyOperationForInference(op) !=
+              VPTOInferenceOpClass::SafeScalar)
+        continue;
+
+      bool hasMovedUser = false;
+      bool allUsersMoved = true;
+      for (Value result : op->getResults()) {
+        for (Operation *user : result.getUsers()) {
+          if (isUserInsideCluster(user, movedOps)) {
+            hasMovedUser = true;
+            continue;
+          }
+          if (!isUserInsideCluster(user, movedOps)) {
+            allUsersMoved = false;
+            break;
+          }
+        }
+        if (!allUsersMoved)
+          break;
+      }
+
+      if (hasMovedUser && allUsersMoved) {
+        movedOps.insert(op);
+        changed = true;
       }
     }
   }
-  return true;
+  return movedOps;
 }
 
-static bool
-findEscapingVectorScopeResult(ArrayRef<Operation *> ops,
-                              EscapingVectorScopeValue &escapingValue) {
-  llvm::SmallPtrSet<Operation *, 16> opSet;
-  for (Operation *op : ops)
-    opSet.insert(op);
-
-  for (Operation *op : ops) {
+static bool findEscapingMovedResult(
+    const llvm::SmallPtrSetImpl<Operation *> &movedOps,
+    EscapingMovedValue &escapingValue) {
+  for (Operation *op : movedOps) {
     for (Value result : op->getResults()) {
-      if (!isVecScopeType(result.getType()))
-        continue;
-
       for (Operation *user : result.getUsers()) {
-        if (isUserInsideCluster(user, opSet))
+        if (isUserInsideCluster(user, movedOps))
           continue;
 
         escapingValue.value = result;
         escapingValue.producer = op;
         escapingValue.user = user;
+        escapingValue.requiresDiagnostic = isVecScopeType(result.getType());
         return true;
       }
     }
@@ -229,7 +265,7 @@ findEscapingVectorScopeResult(ArrayRef<Operation *> ops,
 }
 
 static LogicalResult
-emitEscapingVectorScopeValueError(const EscapingVectorScopeValue &escapingValue) {
+emitEscapingVectorScopeValueError(const EscapingMovedValue &escapingValue) {
   Operation *producer = escapingValue.producer;
   if (!producer)
     return failure();
@@ -246,12 +282,82 @@ emitEscapingVectorScopeValueError(const EscapingVectorScopeValue &escapingValue)
   return failure();
 }
 
-static void wrapCluster(ArrayRef<Operation *> ops, MLIRContext *context) {
+// classify which operations need to be moved into a vecscope, which can be hoisted out of the
+// vecscope, and check for any vector-scope-typed values that would escape the vecscope if we were to
+// move the candidate operations into a resultless vecscope. Returns failure if the candidate cluster
+// is not suitable for vecscope inference.
+static LogicalResult
+buildResultlessScopePlan(ArrayRef<Operation *> ops, ResultlessScopePlan &plan,
+                         EscapingMovedValue &escapingValue) {
   if (ops.empty() || !hasVectorOperation(ops))
+    return failure();
+
+  llvm::SmallPtrSet<Operation *, 16> movedOps =
+      computeMovedOpsForResultlessScope(ops);
+  if (movedOps.empty())
+    return failure();
+
+  if (findEscapingMovedResult(movedOps, escapingValue))
+    return failure();
+
+  llvm::SmallPtrSet<Operation *, 16> hoistedOps;
+  for (Operation *op : ops) {
+    if (movedOps.contains(op) ||
+        classifyOperationForInference(op) != VPTOInferenceOpClass::SafeScalar)
+      continue;
+
+    for (Value result : op->getResults()) {
+      if (anyUserIsMoved(result, movedOps)) {
+        hoistedOps.insert(op);
+        break;
+      }
+    }
+  }
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (Operation *op : llvm::reverse(ops)) {
+      if (movedOps.contains(op) || hoistedOps.contains(op) ||
+          classifyOperationForInference(op) !=
+              VPTOInferenceOpClass::SafeScalar)
+        continue;
+
+      bool feedsHoistedOp = false;
+      for (Value result : op->getResults()) {
+        for (Operation *user : result.getUsers()) {
+          if (isUserInsideCluster(user, hoistedOps)) {
+            feedsHoistedOp = true;
+            break;
+          }
+        }
+        if (feedsHoistedOp)
+          break;
+      }
+
+      if (feedsHoistedOp) {
+        hoistedOps.insert(op);
+        changed = true;
+      }
+    }
+  }
+
+  plan.hoistOps.clear();
+  plan.moveOps.clear();
+  for (Operation *op : ops) {
+    if (hoistedOps.contains(op))
+      plan.hoistOps.push_back(op);
+    if (movedOps.contains(op))
+      plan.moveOps.push_back(op);
+  }
+  return success();
+}
+
+static void wrapCluster(const ResultlessScopePlan &plan, MLIRContext *context) {
+  if (plan.moveOps.empty())
     return;
 
-  Operation *first = ops.front();
-  Operation *last = ops.back();
+  Operation *first = plan.moveOps.front();
   Block *parentBlock = first->getBlock();
 
   IRRewriter rewriter(context);
@@ -259,18 +365,26 @@ static void wrapCluster(ArrayRef<Operation *> ops, MLIRContext *context) {
   auto scope = rewriter.create<pto::VecScopeOp>(first->getLoc());
   scope.getBody().push_back(new Block());
 
+  for (Operation *op : plan.hoistOps) {
+    if (op->getBlock() == parentBlock && scope->isBeforeInBlock(op))
+      op->moveBefore(scope);
+  }
+
   Block &scopeBody = scope.getBody().front();
-  scopeBody.getOperations().splice(scopeBody.end(), parentBlock->getOperations(),
-                                   Block::iterator(first),
-                                   std::next(Block::iterator(last)));
+  for (Operation *op : plan.moveOps) {
+    scopeBody.getOperations().splice(scopeBody.end(),
+                                     parentBlock->getOperations(),
+                                     Block::iterator(op));
+  }
 }
 
 static LogicalResult wrapGreedySubclusters(ArrayRef<Operation *> ops,
                                            MLIRContext *context) {
   for (size_t begin = 0; begin < ops.size();) {
     size_t bestEnd = begin;
-    EscapingVectorScopeValue escapingValue;
-    bool sawEscapingVectorScopeResult = false;
+    ResultlessScopePlan bestPlan;
+    EscapingMovedValue escapingValue;
+    bool sawEscapingMovedResult = false;
 
     for (size_t end = ops.size(); end > begin; --end) {
       ArrayRef<Operation *> candidate = ops.slice(begin, end - begin);
@@ -279,26 +393,31 @@ static LogicalResult wrapGreedySubclusters(ArrayRef<Operation *> ops,
 
       // Prefer the largest suffix-preserving candidate that actually needs a
       // vecscope and can be moved into today's resultless pto.vecscope form.
-      if (canMoveIntoResultlessScope(candidate)) {
+      ResultlessScopePlan plan;
+      EscapingMovedValue candidateEscapingValue;
+      if (succeeded(buildResultlessScopePlan(candidate, plan,
+                                             candidateEscapingValue))) {
         bestEnd = end;
+        bestPlan = std::move(plan);
         break;
       }
 
-      if (!sawEscapingVectorScopeResult &&
-          findEscapingVectorScopeResult(candidate, escapingValue))
-        sawEscapingVectorScopeResult = true;
+      if (!sawEscapingMovedResult && candidateEscapingValue.producer) {
+        escapingValue = candidateEscapingValue;
+        sawEscapingMovedResult = true;
+      }
     }
 
     if (bestEnd == begin) {
       if (classifyOperationForInference(ops[begin]) ==
               VPTOInferenceOpClass::Vector &&
-          sawEscapingVectorScopeResult)
+          sawEscapingMovedResult && escapingValue.requiresDiagnostic)
         return emitEscapingVectorScopeValueError(escapingValue);
       ++begin;
       continue;
     }
 
-    wrapCluster(ops.slice(begin, bestEnd - begin), context);
+    wrapCluster(bestPlan, context);
     begin = bestEnd;
   }
   return success();
