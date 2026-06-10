@@ -29,12 +29,14 @@ from .kernel import (
     KernelRegistry,
     VKernelDescriptor,
     select_kernel,
-    AnyType,
 )
 from .types import (
     MemorySpace,
+    ScalarType,
     TileSpecialization,
     TileConfig,
+    WildcardType,
+    is_integer_dtype,
 )
 import tilelang_dsl as pto
 
@@ -274,9 +276,11 @@ def _import_and_find_descriptors(py_file: Path) -> list[VKernelDescriptor]:
     Returns:
         List of VKernelDescriptor objects
     """
-    template_parent = py_file.parent.parent
-    if str(template_parent) not in sys.path:
-        sys.path.insert(0, str(template_parent))
+    import_roots = (py_file.parent, py_file.parent.parent)
+    for root in reversed(import_roots):
+        root_text = str(root)
+        if root_text not in sys.path:
+            sys.path.insert(0, root_text)
 
     module_name = f"_tl_template_{py_file.stem}"
     spec = importlib.util.spec_from_file_location(module_name, str(py_file))
@@ -476,9 +480,18 @@ def _dtype_matches(dtype_sig: Any, dtype_spec: Any) -> bool:
     Returns:
         True if matches
     """
-    # AnyType matches any dtype (wildcard)
-    if dtype_sig == AnyType:
-        return True
+    if isinstance(dtype_sig, WildcardType):
+        if dtype_sig.name == "AnyType":
+            return isinstance(dtype_spec, ScalarType)
+        if dtype_sig.name == "AnyFloat":
+            return isinstance(dtype_spec, ScalarType) and dtype_spec.name in {
+                "f16",
+                "bf16",
+                "f32",
+            }
+        if dtype_sig.name == "AnyInt":
+            return isinstance(dtype_spec, ScalarType) and is_integer_dtype(dtype_spec)
+        return False
     
     # Normal matching logic
     if hasattr(dtype_sig, "name") and hasattr(dtype_spec, "name"):

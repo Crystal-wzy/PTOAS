@@ -379,6 +379,8 @@ static const llvm::StringSet<> &highPrecisionImplementedOps() {
     "pto.trecip",
     "pto.trowexpanddiv",
     "pto.tcolexpanddiv",
+    "pto.texp",
+    "pto.tsqrt",
   };
   return kImplementedOps;
 }
@@ -1183,6 +1185,8 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
   // Collect tile ops first (avoid modifying while iterating).
   SmallVector<Operation *, 16> tileOps;
   func.walk([&](Operation *op) {
+    if (isa<pto::TReshapeOp>(op))
+      return;
     if (isa<pto::OpPipeInterface>(op))
       tileOps.push_back(op);
   });

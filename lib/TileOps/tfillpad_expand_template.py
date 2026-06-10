@@ -75,8 +75,11 @@ def template_tfillpad_expand(src: pto.Tile, dst: pto.Tile):
 
     # PadValue handling - dtype-specific
     if pto.constexpr(dtype == pto.f32):
-        if pto.constexpr(dst.pad_value == pto.PadValue.ZERO and has_valid_expansion):
-            fill_scalar = pto.f32(_NEG1_F32)
+        if pto.constexpr(dst.pad_value == pto.PadValue.ZERO):
+            if has_valid_expansion:
+                fill_scalar = pto.f32(_NEG1_F32)
+            else:
+                fill_scalar = pto.f32(0.0)
         elif pto.constexpr(dst.pad_value != pto.PadValue.NULL):
             fill_scalar = dst.pad_value.eval()
         else:
@@ -136,7 +139,7 @@ def template_tfillpad_expand(src: pto.Tile, dst: pto.Tile):
             pto.vsts(data, dst[row, col:], mask)
 
     # Phase 2: Fill col padding
-    if pto.constexpr(aligned_col < dst_valid_cols):
+    if aligned_col < dst_valid_cols:
         for row in range(0, dst_valid_rows, 1):
             remained = dst_valid_cols - aligned_col
             for col in range(aligned_col, dst_valid_cols, lanes):
@@ -145,7 +148,7 @@ def template_tfillpad_expand(src: pto.Tile, dst: pto.Tile):
                 pto.vsts(vec, dst[row, col:], mask)
 
     # Phase 3: Copy tail valid lanes
-    if pto.constexpr(has_tail):
+    if has_tail:
         for row in range(0, src_valid_rows, 1):
             remained = src_valid_cols - aligned_col
             mask_copy, remained = pto.make_mask(dtype, remained)

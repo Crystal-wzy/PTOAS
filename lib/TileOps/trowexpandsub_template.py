@@ -13,13 +13,37 @@ from pathlib import Path
 import tilelang_dsl as pto
 
 
+def _config_value(config, name):
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return config.get(name)
+    return getattr(config, name, None)
+
+
+def _matches_layout(value, expected, expected_name):
+    if value is None:
+        return False
+    return value == expected or value == expected_name or str(value).lower().endswith(expected_name)
+
+
+def _is_row_major(tile: pto.Tile) -> bool:
+    return _matches_layout(_config_value(tile.config, "b_layout"), pto.BLayout.ROW_MAJOR, "row_major")
+
+
+def _is_col_major(tile: pto.Tile) -> bool:
+    return _matches_layout(_config_value(tile.config, "b_layout"), pto.BLayout.COL_MAJOR, "col_major")
+
+
+def _is_col_major_row_scalar(tile: pto.Tile) -> bool:
+    shape = tuple(tile.shape)
+    return len(shape) == 2 and _is_col_major(tile) and shape[1] == 1
+
+
 def _constraint_trowexpandsub_row_major(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile) -> bool:
     """Constraint for RowMajor layout trowexpandsub template."""
-    # All tiles must be RowMajor layout
-    src0_row_major = src0.config.b_layout == pto.BLayout.ROW_MAJOR
-    src1_row_major = src1.config.b_layout == pto.BLayout.ROW_MAJOR
-    dst_row_major = dst.config.b_layout == pto.BLayout.ROW_MAJOR
-    return src0_row_major and src1_row_major and dst_row_major
+    src1_supported = _is_row_major(src1) or _is_col_major_row_scalar(src1)
+    return _is_row_major(src0) and src1_supported and _is_row_major(dst)
 
 
 @pto.vkernel(

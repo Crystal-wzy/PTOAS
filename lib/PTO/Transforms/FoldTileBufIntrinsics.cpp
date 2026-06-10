@@ -74,6 +74,16 @@ struct TileHandleInfo {
   pto::TileBufConfigAttr config;
 };
 
+static std::pair<Value, Value> findSetValidShapeOverride(Value tileBuf) {
+  for (Operation *user : tileBuf.getUsers()) {
+    auto setValid = dyn_cast<pto::SetValidShapeOp>(user);
+    if (!setValid || setValid.getSource() != tileBuf)
+      continue;
+    return {setValid.getValidRow(), setValid.getValidCol()};
+  }
+  return {Value(), Value()};
+}
+
 static std::optional<TileHandleInfo> resolveTileHandle(Value tileBuf,
                                                        Operation *user) {
   if (auto alloc = tileBuf.getDefiningOp<pto::AllocTileOp>()) {
@@ -93,9 +103,29 @@ static std::optional<TileHandleInfo> resolveTileHandle(Value tileBuf,
                           materialize.getConfig()};
   }
 
+  if (auto reshape = tileBuf.getDefiningOp<pto::TReshapeOp>()) {
+    auto sourceInfo = resolveTileHandle(reshape.getSrc(), user);
+    if (!sourceInfo)
+      return std::nullopt;
+
+    auto tileTy = dyn_cast<pto::TileBufType>(reshape.getResult().getType());
+    if (!tileTy) {
+      user->emitError(
+          "FoldTileBufIntrinsics: pto.treshape must produce !pto.tile_buf");
+      return std::nullopt;
+    }
+
+    auto [validRow, validCol] = findSetValidShapeOverride(tileBuf);
+    return TileHandleInfo{sourceInfo->sourceMemref,
+                          sourceInfo->addr,
+                          validRow ? validRow : sourceInfo->validRow,
+                          validCol ? validCol : sourceInfo->validCol,
+                          tileTy.getConfigAttr()};
+  }
+
   user->emitError("FoldTileBufIntrinsics: expected tile_buf to be defined by "
                   "the active materialized tile-handle bridge "
-                  "(pto.alloc_tile or pto.materialize_tile)");
+                  "(pto.alloc_tile, pto.materialize_tile, or pto.treshape)");
   return std::nullopt;
 }
 

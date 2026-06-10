@@ -76,6 +76,12 @@ static bool isForbiddenInsideInferredVectorScope(Operation *op) {
   return isa<pto::VbitsortOp, pto::Vmrgsort4Op>(op);
 }
 
+static bool isCloneableMaskProducer(Operation *op) {
+  return isa<pto::PsetB8Op, pto::PsetB16Op, pto::PsetB32Op, pto::PgeB8Op,
+             pto::PgeB16Op, pto::PgeB32Op, pto::PltB8Op, pto::PltB16Op,
+             pto::PltB32Op>(op);
+}
+
 static bool isVectorScopeBoundaryOperation(Operation *op) {
   return isa<pto::BarrierOp, pto::BarrierSyncOp>(op);
 }
@@ -242,6 +248,67 @@ computeMovedOpsForResultlessScope(ArrayRef<Operation *> ops) {
     }
   }
   return movedOps;
+}
+
+static Operation *getAncestorInBlock(Operation *op, Block &block) {
+  for (Operation *cur = op; cur; cur = cur->getParentOp()) {
+    if (cur->getBlock() == &block)
+      return cur;
+  }
+  return nullptr;
+}
+
+static bool isUseBeforeInBlock(OpOperand *lhs, OpOperand *rhs, Block &block) {
+  Operation *lhsAncestor = getAncestorInBlock(lhs->getOwner(), block);
+  Operation *rhsAncestor = getAncestorInBlock(rhs->getOwner(), block);
+  if (!lhsAncestor || !rhsAncestor || lhsAncestor == rhsAncestor)
+    return false;
+  return lhsAncestor->isBeforeInBlock(rhsAncestor);
+}
+
+static void keepEarliestUseFirst(SmallVectorImpl<OpOperand *> &uses,
+                                 Block &block) {
+  if (uses.size() < 2)
+    return;
+
+  unsigned earliest = 0;
+  for (unsigned i = 1, e = uses.size(); i < e; ++i) {
+    if (isUseBeforeInBlock(uses[i], uses[earliest], block))
+      earliest = i;
+  }
+  if (earliest != 0)
+    std::swap(uses.front(), uses[earliest]);
+}
+
+static void cloneSharedMaskProducers(Block &block, MLIRContext *context) {
+  IRRewriter rewriter(context);
+  SmallVector<Operation *, 32> ops;
+  for (Operation &op : block)
+    ops.push_back(&op);
+
+  for (Operation *op : ops) {
+    if (!isCloneableMaskProducer(op))
+      continue;
+
+    for (OpResult result : op->getOpResults()) {
+      if (!isa<pto::MaskType>(result.getType()) || result.use_empty())
+        continue;
+
+      SmallVector<OpOperand *, 8> uses;
+      for (OpOperand &use : result.getUses())
+        uses.push_back(&use);
+      if (uses.size() < 2)
+        continue;
+
+      keepEarliestUseFirst(uses, block);
+      for (OpOperand *use : ArrayRef<OpOperand *>(uses).drop_front()) {
+        Operation *user = use->getOwner();
+        rewriter.setInsertionPoint(user);
+        Operation *clone = rewriter.clone(*op);
+        use->set(clone->getResult(result.getResultNumber()));
+      }
+    }
+  }
 }
 
 static bool findEscapingMovedResult(
@@ -424,6 +491,8 @@ static LogicalResult wrapGreedySubclusters(ArrayRef<Operation *> ops,
 }
 
 static LogicalResult inferVecScopesInBlock(Block &block, MLIRContext *context) {
+  cloneSharedMaskProducers(block, context);
+
   SmallVector<Operation *, 16> pending;
 
   auto flush = [&]() -> LogicalResult {

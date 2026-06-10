@@ -11,42 +11,23 @@
 import tilelang_dsl as pto
 from exp_hp import _tl_exp_precision
 
-@pto.inline_proc
-def template_texp_hp_impl(src: pto.Tile, dst: pto.Tile):
-    dtype = dst.element_type
-    valid_rows, valid_cols = dst.valid_shape
-    
-    for row in range(0, valid_rows, 1):
-        remained = valid_cols
-        for col in range(0, valid_cols, pto.get_lanes(dtype)):
-            mask, remained = pto.make_mask(dtype, remained)
-            vinput = pto.vlds(src[row, col:])
-            result = _tl_exp_precision(vinput, mask, dtype)
-            pto.vsts(result, dst[row, col:], mask)
-    return
-
-@pto.inline_proc
-def template_texp_impl(src: pto.Tile, dst: pto.Tile):
-    dtype = dst.element_type
-    valid_rows, valid_cols = dst.valid_shape
-    
-    for row in range(0, valid_rows, 1):
-        remained = valid_cols
-        for col in range(0, valid_cols, pto.get_lanes(dtype)):
-            mask, remained = pto.make_mask(dtype, remained)
-            vinput = pto.vlds(src[row, col:])
-            result = pto.vexp(vinput, mask)
-            pto.vsts(result, dst[row, col:], mask)
-    return
-
 @pto.vkernel(
     target="a5",
     op="pto.texp"
 )
 def template_texp(src: pto.Tile, dst: pto.Tile):
+    dtype = dst.element_type
+    valid_rows, valid_cols = dst.valid_shape
     precision_type = pto.get_op_attr("precisionType", "default")
-    if pto.constexpr(precision_type == "high_precision"):
-        template_texp_hp_impl(src, dst)
-    else:
-        template_texp_impl(src, dst)
+
+    for row in range(0, valid_rows, 1):
+        remained = valid_cols
+        for col in range(0, valid_cols, pto.get_lanes(dtype)):
+            mask, remained = pto.make_mask(dtype, remained)
+            vinput = pto.vlds(src[row, col:])
+            if pto.constexpr(precision_type == "high_precision"):
+                result = _tl_exp_precision(vinput, mask, dtype)
+            else:
+                result = pto.vexp(vinput, mask)
+            pto.vsts(result, dst[row, col:], mask)
     return

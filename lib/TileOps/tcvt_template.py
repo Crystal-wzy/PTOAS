@@ -11,6 +11,20 @@
 import tilelang_dsl as pto
 
 
+def _config_value(config, name):
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return config.get(name)
+    return getattr(config, name, None)
+
+
+def _matches_layout(value, expected, expected_name):
+    if value is None:
+        return False
+    return value == expected or value == expected_name or str(value).lower().endswith(expected_name)
+
+
 def _supports_basic_rowwise_tcvt(
     src=None,
     dst=None,
@@ -31,13 +45,13 @@ def _supports_basic_rowwise_tcvt(
     dst_config = dst.config
     if src_config is None or dst_config is None:
         return False
-    if src_config.b_layout != pto.BLayout.ROW_MAJOR:
+    if not _matches_layout(_config_value(src_config, "b_layout"), pto.BLayout.ROW_MAJOR, "row_major"):
         return False
-    if dst_config.b_layout != pto.BLayout.ROW_MAJOR:
+    if not _matches_layout(_config_value(dst_config, "b_layout"), pto.BLayout.ROW_MAJOR, "row_major"):
         return False
-    if src_config.s_layout != pto.SLayout.NONE_BOX:
+    if not _matches_layout(_config_value(src_config, "s_layout"), pto.SLayout.NONE_BOX, "none_box"):
         return False
-    if dst_config.s_layout != pto.SLayout.NONE_BOX:
+    if not _matches_layout(_config_value(dst_config, "s_layout"), pto.SLayout.NONE_BOX, "none_box"):
         return False
     return True
 
@@ -62,13 +76,13 @@ def _supports_bf16_to_fp4_rowwise_tcvt(
     dst_config = dst.config
     if src_config is None or dst_config is None:
         return False
-    if src_config.b_layout != pto.BLayout.ROW_MAJOR:
+    if not _matches_layout(_config_value(src_config, "b_layout"), pto.BLayout.ROW_MAJOR, "row_major"):
         return False
-    if dst_config.b_layout != pto.BLayout.ROW_MAJOR:
+    if not _matches_layout(_config_value(dst_config, "b_layout"), pto.BLayout.ROW_MAJOR, "row_major"):
         return False
-    if src_config.s_layout != pto.SLayout.NONE_BOX:
+    if not _matches_layout(_config_value(src_config, "s_layout"), pto.SLayout.NONE_BOX, "none_box"):
         return False
-    if dst_config.s_layout != pto.SLayout.NONE_BOX:
+    if not _matches_layout(_config_value(dst_config, "s_layout"), pto.SLayout.NONE_BOX, "none_box"):
         return False
     return True
 
