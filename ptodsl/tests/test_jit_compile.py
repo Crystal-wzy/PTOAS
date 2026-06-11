@@ -102,7 +102,7 @@ def host_vec_copy(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -121,7 +121,7 @@ def host_vec_copy_explicit(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -140,7 +140,7 @@ def pointer_runtime_shape_specialization_probe(
     cols: pto.i32,
     row_stride: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     x_view = pto.make_tensor_view(x_ptr, shape=[rows, cols], strides=[row_stride, 1])
     x_part = pto.partition_view(x_view, offsets=[0, 0], sizes=[rows, cols])
@@ -155,7 +155,7 @@ def tile_transfer_surface_probe(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -208,7 +208,7 @@ def runtime_metadata_kernel(
     row_stride: pto.i32,
     col_stride: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[row_stride, col_stride])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[row_stride, col_stride])
@@ -368,14 +368,14 @@ def top_level_simd_probe():
 
 
 @pto.jit(target="a5")
-def shared_subkernel_lowering_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+def shared_subkernel_lowering_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     top_level_cube_probe()
     top_level_simd_probe()
     nested_simd_probe()
 
 
 @pto.jit(target="a5", mode="explicit")
-def inline_subkernel_scope_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+def inline_subkernel_scope_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     session = current_session()
     meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 1])
 
@@ -408,7 +408,7 @@ def ast_subkernel_runtime_for_helper(rows: pto.i32):
 
 
 @pto.jit(target="a5")
-def simt_helper_lowering_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+def simt_helper_lowering_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     simt_tid_probe()
     simt_tid_probe()
 
@@ -419,7 +419,7 @@ def ast_subkernel_runtime_for_probe(rows: pto.i32):
 
 
 @pto.jit(target="a5")
-def carry_loop_lowering_probe(*, BLOCK: pto.constexpr = 128):
+def carry_loop_lowering_probe(*, BLOCK: pto.const_expr = 128):
     m_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
     l_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
     o_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
@@ -736,7 +736,7 @@ ast_mutable_closure_cache_kernel_probe, set_ast_mutable_closure_cache_limit = (
 
 def make_ast_signature_closure_default_kernel(limit: int):
     @pto.jit(target="a5")
-    def ast_signature_closure_default_kernel(*, BLOCK: pto.constexpr = limit):
+    def ast_signature_closure_default_kernel(*, BLOCK: pto.const_expr = limit):
         for _ in pto.static_range(BLOCK):
             pto.pipe_barrier(pto.Pipe.ALL)
 
@@ -757,7 +757,7 @@ def make_ast_rebound_subkernel_probe():
     limit = 4
 
     @pto.jit(target="a5")
-    def ast_rebound_subkernel_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+    def ast_rebound_subkernel_probe(*, TRACE_TOKEN: pto.const_expr = 0):
         helper()
 
     return ast_rebound_subkernel_probe
@@ -797,7 +797,7 @@ def sourceless_subkernel_helper():
     helper = namespace["sourceless_subkernel_helper"]
 
     @pto.jit(target="a5")
-    def sourceless_subkernel_entry_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+    def sourceless_subkernel_entry_probe(*, TRACE_TOKEN: pto.const_expr = 0):
         helper()
 
     return sourceless_subkernel_entry_probe
@@ -807,7 +807,7 @@ sourceless_subkernel_entry_probe = make_sourceless_subkernel_entry()
 
 
 @pto.jit(target="a5")
-def ast_static_control_flow_probe(*, ENABLE: pto.constexpr = True):
+def ast_static_control_flow_probe(*, ENABLE: pto.const_expr = True):
     if pto.const_expr(ENABLE):
         for _ in pto.static_range(2):
             pto.pipe_barrier(pto.Pipe.ALL)
@@ -816,8 +816,8 @@ def ast_static_control_flow_probe(*, ENABLE: pto.constexpr = True):
 @pto.jit(target="a5")
 def ast_python_bool_guard_probe(
     *,
-    BLOCK: pto.constexpr = 128,
-    ENABLE: pto.constexpr = True,
+    BLOCK: pto.const_expr = 128,
+    ENABLE: pto.const_expr = True,
 ):
     if BLOCK == 128:
         pto.pipe_barrier(pto.Pipe.ALL)
@@ -852,7 +852,7 @@ def runtime_scalar_operator_probe(
     cols: pto.i32,
     row_stride: pto.i32,
     *,
-    BLOCK: pto.constexpr = 8,
+    BLOCK: pto.const_expr = 8,
 ):
     block_idx = pto.get_block_idx()
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[row_stride, 1])
@@ -926,7 +926,7 @@ def tile_slice_vector_probe(inp_tile: pto.Tile, out_tile: pto.Tile, row: pto.ind
 
 
 @pto.jit(target="a5")
-def tile_slice_surface_probe(*, BLOCK: pto.constexpr = 128):
+def tile_slice_surface_probe(*, BLOCK: pto.const_expr = 128):
     inp_tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
     out_tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
     for row in range(0, 1, 1):
@@ -934,7 +934,7 @@ def tile_slice_surface_probe(*, BLOCK: pto.constexpr = 128):
 
 
 @pto.jit(target="a5")
-def tile_slice_1d_surface_probe(*, BLOCK: pto.constexpr = 128):
+def tile_slice_1d_surface_probe(*, BLOCK: pto.const_expr = 128):
     inp_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
     out_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
     start = pto.const(0, dtype=pto.i32)
@@ -950,7 +950,7 @@ def tile_valid_shape_update_probe(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     tile = pto.alloc_tile(
         shape=[1, BLOCK],
@@ -964,7 +964,7 @@ def tile_valid_shape_update_probe(
 def tile_valid_shape_update_1d_probe(
     length: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     tile = pto.alloc_tile(
         shape=[BLOCK],
@@ -995,7 +995,7 @@ def carry_static_pyint_init_probe():
 
 
 @pto.jit(target="a5")
-def integer_loop_bound_probe(*, BLOCK: pto.constexpr = 8):
+def integer_loop_bound_probe(*, BLOCK: pto.const_expr = 8):
     row_start = pto.const(0, dtype=pto.i32)
     row_stop = pto.const(BLOCK, dtype=pto.i32)
     valid_dim = pto.const(BLOCK // 2, dtype=pto.i32)
@@ -1386,7 +1386,7 @@ def low_precision_storage_probe():
 
 
 @pto.jit(target="a5")
-def pointer_vlds_inference_probe(*, BLOCK: pto.constexpr = 128):
+def pointer_vlds_inference_probe(*, BLOCK: pto.const_expr = 128):
     tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
     vec = pto.vlds(tile.as_ptr(), pto.const(0))
     vec_brc = pto.vlds(tile.as_ptr(), pto.const(0), dist="BRC_B32")
@@ -1905,6 +1905,7 @@ def main() -> None:
     expect(not hasattr(pto, "as_ptr"), "pto.as_ptr should not remain on the public pto namespace")
     expect(not hasattr(pto, "vbrc_load"), "pto.vbrc_load should not remain on the public pto namespace")
     expect(not hasattr(pto, "vsts_1pt"), "pto.vsts_1pt should not remain on the public pto namespace")
+    expect(not hasattr(pto, "constexpr"), "pto.constexpr should not remain on the public pto namespace")
     expect(not hasattr(scalar, "sts"), "scalar.sts should not remain in the public scalar namespace")
     expect(not hasattr(scalar, "cmpi"), "scalar.cmpi should not remain in the public scalar namespace")
     expect(not hasattr(scalar, "cmpi_sgt"), "scalar.cmpi_sgt should not remain in the public scalar namespace")
@@ -1932,6 +1933,12 @@ def main() -> None:
     expect(
         "pto.vsts_1pt is not a supported PTODSL public interface" in str(removed_vsts_1pt),
         "removed pto.vsts_1pt should diagnose the public vsts(dist=...) replacement",
+    )
+    removed_constexpr = expect_raises(AttributeError, lambda: getattr(pto, "constexpr"))
+    expect(
+        "pto.constexpr is not a supported PTODSL public interface" in str(removed_constexpr)
+        and "Use pto.const_expr" in str(removed_constexpr),
+        "removed pto.constexpr should diagnose pto.const_expr as the replacement",
     )
     for name in ("max", "min", "exp", "log", "sqrt", "abs"):
         expect(hasattr(scalar, name), f"scalar.{name} should be exported from the public scalar namespace")

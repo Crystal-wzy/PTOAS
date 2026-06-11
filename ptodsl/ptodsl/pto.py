@@ -34,7 +34,7 @@ from ._types import (           # noqa: F401
     _resolve,
 )
 from ._surface_types import (   # noqa: F401
-    constexpr,
+    const_expr,
     tensor_spec,
     TensorSpec,
     BarrierType,
@@ -122,7 +122,7 @@ from ._ops import (             # noqa: F401
 # ── Control flow ──────────────────────────────────────────────────────────────
 from ._control_flow import (    # noqa: F401
     for_, if_, yield_,
-    const_expr, static_range,
+    static_range,
     LoopHandle, BranchHandle,
 )
 
@@ -149,6 +149,6 @@ mask_b32 = mask_type("b32")
 
 
 def __getattr__(name):
-    if name in {"ukernel", "tile_buf_type", "vecscope", "as_ptr", "vbrc_load", "vsts_1pt"}:
+    if name in {"ukernel", "tile_buf_type", "vecscope", "as_ptr", "vbrc_load", "vsts_1pt", "constexpr"}:
         raise unsupported_public_surface_error(name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

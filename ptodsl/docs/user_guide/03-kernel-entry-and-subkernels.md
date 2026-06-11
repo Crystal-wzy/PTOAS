@@ -36,8 +36,8 @@ def kernel_name(
     rows: pto.i32,                  # runtime metadata (positional)
     cols: pto.i32,                  # runtime metadata (positional)
     *,
-    CONST_A: pto.constexpr = 128,  # compile-time constant (keyword-only)
-    CONST_B: pto.constexpr = 64,   # compile-time constant (keyword-only)
+    CONST_A: pto.const_expr = 128,  # compile-time constant (keyword-only)
+    CONST_B: pto.const_expr = 64,   # compile-time constant (keyword-only)
 ):
     x_view = pto.make_tensor_view(x_ptr, shape=[rows, cols], strides=[cols, 1])
     y_view = pto.make_tensor_view(y_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -54,7 +54,7 @@ position in the signature, and way to supply the value:
 |---|---|---|---|
 | **Device buffer** | positional (before `*`) | `pto.ptr(dtype, "gm")` | launch time |
 | **Runtime scalar** | positional (before `*`) | `pto.i32`, `pto.f32`, `pto.i1`, etc. | launch time |
-| **Compile-time constant** | keyword-only (after `*`) | `pto.constexpr = <default>` | compile time |
+| **Compile-time constant** | keyword-only (after `*`) | `pto.const_expr = <default>` | compile time |
 
 #### 1. Device-buffer parameters
 
@@ -95,7 +95,7 @@ def my_kernel(
 
 #### 3. Compile-time constants
 
-Declare after `*` with `pto.constexpr` and a default value.
+Declare after `*` with `pto.const_expr` and a default value.
 Pass the value to `.compile(...)` — **not** at launch time:
 
 ```python
@@ -103,7 +103,7 @@ Pass the value to `.compile(...)` — **not** at launch time:
 def my_kernel(
     X_ptr: pto.ptr(pto.f32, "gm"),
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     # BLOCK is a Python value at trace time — use it for tile shapes,
     # unrolled loops, or dtype arguments:
@@ -128,7 +128,7 @@ def scaled_bias_add(
     alpha: pto.f32,                               # runtime scalar
     bias: pto.f32,                                # runtime scalar
     *,
-    BLOCK: pto.constexpr = 128,                   # compile-time constant
+    BLOCK: pto.const_expr = 128,                   # compile-time constant
 ):
     x_view = pto.make_tensor_view(X_ptr, shape=[rows, cols], strides=[cols, 1])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -225,7 +225,7 @@ def my_kernel(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     b_view = pto.make_tensor_view(B_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -283,7 +283,7 @@ def my_kernel(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     b_view = pto.make_tensor_view(B_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -655,9 +655,9 @@ pointers:
 | `@pto.simd` → caller | Only via `vsts`/`psts` to UB tiles; `vreg` cannot escape |
 | Cube-local → UB | Only via `mte_l0c_ub`; LEFT/RIGHT/ACC/BIAS are private |
 
-## 3.6 `pto.constexpr`
+## 3.6 `pto.const_expr`
 
-`pto.constexpr` marks a `@pto.jit` keyword-only parameter as a compile-time
+`pto.const_expr` marks a `@pto.jit` keyword-only parameter as a compile-time
 constant. The compiler specializes the kernel for each combination of constexpr
 values, and the compiled artifact is cached by specialization key together with
 the kernel's entry annotation contract.
@@ -668,8 +668,8 @@ the kernel's entry annotation contract.
 def kernel(
     A_ptr: pto.ptr(pto.f32, "gm"),
     *,
-    BLOCK: pto.constexpr = 128,
-    DTYPE: pto.constexpr = pto.f32,
+    BLOCK: pto.const_expr = 128,
+    DTYPE: pto.const_expr = pto.f32,
 ):
     # ... use BLOCK / DTYPE in tile shapes, loop bounds, or dtype-specialized paths ...
     return
@@ -682,7 +682,7 @@ def kernel(
 - Cannot change between launches of the same compiled instance — compile a new
   variant for a different value.
 
-`pto.constexpr` parameters can be used anywhere in the kernel body where a
+`pto.const_expr` parameters can be used anywhere in the kernel body where a
 Python value is expected: tile shapes, loop bounds that are known at compile
 time, dtype arguments, etc. They are evaluated at trace time, so `for i in
 range(BLOCK)` would unroll `BLOCK` times.

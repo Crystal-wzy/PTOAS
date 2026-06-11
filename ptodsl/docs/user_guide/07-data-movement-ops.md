@@ -1342,7 +1342,7 @@ def cube_producer(
     gm_slot_buffer: pto.gm_ptr(pto.f32),
     src: pto.gm_ptr(pto.f32),
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     gm_view = pto.make_tensor_view(gm_slot_buffer, shape=[16, 16], strides=[16, 1])
     c2v = pto.pipe.c2v(
@@ -1371,7 +1371,7 @@ def vector_consumer(
     gm_slot_buffer: pto.gm_ptr(pto.f32),
     dst: pto.gm_ptr(pto.f32),
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     gm_view = pto.make_tensor_view(gm_slot_buffer, shape=[16, 16], strides=[16, 1])
     c2v = pto.pipe.c2v(
