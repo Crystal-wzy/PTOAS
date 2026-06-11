@@ -19,8 +19,8 @@ for case in CASES:
     setup_case_rng(case)
 
     dtype = case["dtype"]
-    shape = case["shape"]
-    valid_shape = case["valid_shape"]
+    shape = case["src_shape"]
+    valid_shape = case["src_valid_shape"]
     dst_shape = case["dst_shape"]
     dst_valid_shape = case["dst_valid_shape"]
     dst_dtype = case["dst_dtype"]

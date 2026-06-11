@@ -20,8 +20,8 @@ for case in CASES:
 
     dtype = case["dtype"]
     dst_dtype = case["dst_dtype"]
-    shape = case["shape"]
-    valid_shape = case["valid_shape"]
+    shape = case["src_shape"]
+    valid_shape = case["src_valid_shape"]
 
     if dtype in (np.int8, np.uint8, np.int16, np.uint16, np.int32, np.uint32):
         dtype_info = np.iinfo(dtype)

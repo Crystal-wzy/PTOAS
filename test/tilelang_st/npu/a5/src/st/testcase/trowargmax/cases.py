@@ -213,3 +213,19 @@ CASES = [
         "eps": 0,
     },
 ]
+
+
+def _a5_tmp_placeholder_shape(dtype):
+    return (1, max(1, 32 // np.dtype(dtype).itemsize))
+
+
+def _augment_case(case):
+    case = dict(case)
+    case.setdefault("src_shape", case["shape"])
+    case.setdefault("src_valid_shape", case["valid_shape"])
+    case.setdefault("tmp_shape", _a5_tmp_placeholder_shape(case["dtype"]))
+    case.setdefault("tmp_valid_shape", (1, 1))
+    return case
+
+
+CASES = [_augment_case(case) for case in CASES]

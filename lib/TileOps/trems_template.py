@@ -29,6 +29,8 @@ import tilelang_dsl as pto
     advanced=True,
 )
 def template_trems(src: pto.Tile, scalar: pto.AnyType, tmp: pto.Tile, dst: pto.Tile):
+    # A5 keeps tmp in the ABI for compatibility with A2/A3, but this template
+    # computes directly in registers and never touches it.
     dtype = src.element_type
     valid_rows, valid_cols = src.valid_shape
 

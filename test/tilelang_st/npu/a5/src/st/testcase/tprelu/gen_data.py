@@ -19,8 +19,9 @@ for case in CASES:
     setup_case_rng(case)
 
     dtype = case["dtype"]
-    shape = case["shape"]
-    valid_shape = case["valid_shape"]
+    shape = case["src_shape"]
+    valid_shape = case["src_valid_shape"]
+    dst_shape = case["dst_shape"]
 
     rows, cols = shape
     vr, vc = valid_shape
@@ -28,7 +29,7 @@ for case in CASES:
     input0 = np.random.uniform(-8, high=8, size=(rows, cols)).astype(dtype)
     input1 = np.random.uniform(-8, high=8, size=(rows, cols)).astype(dtype)
 
-    golden = np.zeros((rows, cols), dtype=dtype)
+    golden = np.zeros(dst_shape, dtype=dtype)
     for i in range(vr):
         for j in range(vc):
             if input0[i, j] > 0:
@@ -37,4 +38,4 @@ for case in CASES:
                 golden[i, j] = dtype(input0[i, j] * input1[i, j])
 
     save_case_data(case["name"], {"input0": input0, "input1": input1, "golden": golden})
-    print(f"[INFO] gen_data: {case['name']} shape={shape} valid_shape={valid_shape} dtype={dtype.__name__}")
+    print(f"[INFO] gen_data: {case['name']} src_shape={shape} src_valid_shape={valid_shape} dst_shape={dst_shape} dtype={dtype.__name__}")

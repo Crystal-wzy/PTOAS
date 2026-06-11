@@ -276,7 +276,7 @@ def _split_cpp_args(text: str):
 
 def _extract_aicore_functions(text: str):
     pattern = re.compile(
-        r"(?P<global>__global__\s+)?AICORE\s+void\s+(?P<name>\w+)\s*\((?P<params>[^)]*)\)\s*\{",
+        r"(?P<extern_c>extern\s+\"C\"\s+)?(?P<global>__global__\s+)?AICORE\s+void\s+(?P<name>\w+)\s*\((?P<params>[^)]*)\)\s*\{",
         re.S,
     )
     functions = []
@@ -294,6 +294,7 @@ def _extract_aicore_functions(text: str):
                 "params_blob": params_blob,
                 "raw_params": _split_params_blob(params_blob),
                 "is_global": bool(match.group("global")),
+                "is_extern_c": bool(match.group("extern_c")),
                 "text": text[match.start():end_index + 1],
             }
         )
@@ -508,7 +509,7 @@ def _append_mixed_kernel_wrapper(
 
     wrapper = (
         "\n\n"
-        f"__global__ AICORE void {kernel_name}({', '.join(raw_params)}) {{\n"
+        f"extern \"C\" __global__ AICORE void {kernel_name}({', '.join(raw_params)}) {{\n"
         + ("\n".join(shared_decls) + ("\n\n" if shared_decls else ""))
         + "\n".join(wrapper_blocks)
         + ("\n  ptoas_auto_sync_tail(PTOAutoSyncTailMode::kBarrierAll);" if (aic_has_tail or aiv_has_tail) else "")
@@ -1098,10 +1099,12 @@ def _infer_aicore_arch(kernel_text: str, soc_version: str) -> str:
         # kernels with dav-c310-{vec|cube}.
         return "dav-c310-cube" if needs_cube else "dav-c310-vec"
     if "910b" in sv:
+        # A3 board validation follows the official a2a3 PTO-ISA ST setup:
+        # build vec/cube kernels with dav-c220 and MEMORY_BASE rather than
+        # the A5 dav-c310/REGISTER_BASE path.
         if has_mixed_section_sync:
-            return "dav-c310"
-        # Ascend910B* (e.g. Ascend910B1) uses dav-c310 toolchain arch.
-        return "dav-c310-cube" if needs_cube else "dav-c310-vec"
+            return "dav-c220"
+        return "dav-c220-cube" if needs_cube else "dav-c220-vec"
 
     # Default to Ascend910 (dav-c220) when SoC is unknown.
     return "dav-c220-cube" if needs_cube else "dav-c220-vec"
@@ -1610,7 +1613,7 @@ def generate_testcase(
             if "950" in sv or "a5" in sv:
                 aicore_arch = "dav-c310"
             elif "910b" in sv:
-                aicore_arch = "dav-c310"
+                aicore_arch = "dav-c220"
             else:
                 aicore_arch = "dav-c220"
         elif has_cube_only_section:
@@ -1618,7 +1621,7 @@ def generate_testcase(
             # while forcing `__DAV_CUBE__` makes AIC pipe synchronization fail
             # legality checks on A5.
             sv = (soc_version or "").lower()
-            if "950" in sv or "a5" in sv or "910b" in sv:
+            if "950" in sv or "a5" in sv:
                 aicore_arch = "dav-c310-cube"
             else:
                 aicore_arch = "dav-c220-cube"
@@ -1627,7 +1630,7 @@ def generate_testcase(
             if "950" in sv or "a5" in sv:
                 aicore_arch = "dav-c310-vec"
             elif "910b" in sv:
-                aicore_arch = "dav-c310-vec"
+                aicore_arch = "dav-c220-vec"
             else:
                 aicore_arch = "dav-c220-vec"
         elif has_dav_cube or has_dav_vec:
@@ -1637,7 +1640,7 @@ def generate_testcase(
             if "950" in sv or "a5" in sv:
                 aicore_arch = "dav-c310-vec"
             elif "910b" in sv:
-                aicore_arch = "dav-c310-vec"
+                aicore_arch = "dav-c220-vec"
             else:
                 aicore_arch = "dav-c220-vec"
         else:
@@ -2245,10 +2248,12 @@ def generate_testcase(
     (output_dir / "launch.cpp").write_text(launch_cpp, encoding="utf-8")
 
     # pto-isa selects instruction implementations based on MEMORY_BASE vs
-    # REGISTER_BASE. Ascend A5 (e.g. Ascend950) and Ascend910B use REGISTER_BASE.
+    # REGISTER_BASE. A3 board validation follows the official a2a3 ST setup,
+    # so Ascend910B still uses MEMORY_BASE. Only A5-class targets use
+    # REGISTER_BASE here.
     mem_base_define = "MEMORY_BASE"
     sv = (soc_version or "").lower()
-    if "910b" in sv or "950" in sv or "a5" in sv:
+    if "950" in sv or "a5" in sv:
         mem_base_define = "REGISTER_BASE"
     if uses_prefetch_async_runtime and not is_a5_soc:
         mem_base_define = "MEMORY_BASE"

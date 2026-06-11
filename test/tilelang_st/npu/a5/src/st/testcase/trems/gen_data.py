@@ -29,12 +29,13 @@ for case in CASES:
     setup_case_rng(case)
 
     dtype = case["dtype"]
-    shape = case["shape"]
-    valid_shape = case["valid_shape"]
+    shape = case["src_shape"]
+    valid_shape = case["src_valid_shape"]
+    dst_shape = case["dst_shape"]
 
     input1 = np.random.randint(1, 10, size=shape).astype(dtype)
 
-    golden = np.zeros(shape, dtype=dtype)
+    golden = np.zeros(dst_shape, dtype=dtype)
     vr, vc = valid_shape
     scalar_val = dtype(SCALAR)
     if np.issubdtype(dtype, np.floating):
@@ -43,4 +44,4 @@ for case in CASES:
         golden[:vr, :vc] = (input1[:vr, :vc] % scalar_val).astype(dtype, copy=False)
 
     save_case_data(case["name"], {"input1": input1, "golden": golden})
-    print(f"[INFO] gen_data: {case['name']} shape={shape} valid_shape={valid_shape} dtype={dtype.__name__} scalar={SCALAR}")
+    print(f"[INFO] gen_data: {case['name']} src_shape={shape} src_valid_shape={valid_shape} dst_shape={dst_shape} dtype={dtype.__name__} scalar={SCALAR}")

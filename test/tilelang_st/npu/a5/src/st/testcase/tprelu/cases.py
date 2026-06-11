@@ -11,12 +11,8 @@
 
 """Single source of truth for tprelu ST test cases.
 
-Each case defines:
-  - name:        case identifier, used as subdirectory name and by main.cpp kCases[].
-  - dtype:       numpy dtype (e.g. np.float16, np.float32).
-  - shape:       (rows, cols) — allocated tile dimensions.
-  - valid_shape: (valid_rows, valid_cols) — effective computation region.
-  - eps:         tolerance for numpy.allclose (atol and rtol).
+Each case now also carries explicit src/tmp/dst fields so A5 tmp placeholders
+are not conflated with src shape.
 
 gen_data.py and compare.py both import this list to avoid redundant definitions.
 """
@@ -81,3 +77,21 @@ CASES = [
         "eps": 1e-6,
     },
 ]
+
+
+def _a5_tmp_placeholder_shape(dtype):
+    return (1, max(1, 32 // np.dtype(dtype).itemsize))
+
+
+def _augment_case(case):
+    case = dict(case)
+    case.setdefault("src_shape", case["shape"])
+    case.setdefault("src_valid_shape", case["valid_shape"])
+    case.setdefault("tmp_shape", _a5_tmp_placeholder_shape(case["dtype"]))
+    case.setdefault("tmp_valid_shape", (1, 1))
+    case.setdefault("dst_shape", case["shape"])
+    case.setdefault("dst_valid_shape", case["valid_shape"])
+    return case
+
+
+CASES = [_augment_case(case) for case in CASES]

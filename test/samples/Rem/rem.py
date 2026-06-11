@@ -31,6 +31,9 @@ def build():
             fractal_ab_size = pto.TileConfig.fractalABSize
             cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, pd, ctx)
             tile_buf_32 = pto.TileBufType.get([32, 32], f32, vec, [32, 32], cfg, ctx)
+            # A2/A3 TREM workspace contract only needs 2 valid rows and
+            # validCol covering dst.validCol.
+            tile_buf_tmp = pto.TileBufType.get([2, 32], f32, vec, [2, 32], cfg, ctx)
 
             fn_ty = func.FunctionType.get([ptr_f32, ptr_f32, ptr_f32], [])
             with InsertionPoint(m.body):
@@ -55,7 +58,7 @@ def build():
 
                 tb0 = pto.AllocTileOp(tile_buf_32).result
                 tb1 = pto.AllocTileOp(tile_buf_32).result
-                tmp = pto.AllocTileOp(tile_buf_32).result
+                tmp = pto.AllocTileOp(tile_buf_tmp).result
                 tb2 = pto.AllocTileOp(tile_buf_32).result
 
                 pto.TLoadOp(None, sv0, tb0)  # result=None

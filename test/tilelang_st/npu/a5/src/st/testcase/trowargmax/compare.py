@@ -27,7 +27,7 @@ def main():
             continue
 
         case_dir = case["name"]
-        vr, vc = case["valid_shape"]
+        vr, vc = case["src_valid_shape"]
         out_shape = (vr, 1)
 
         golden = np.fromfile(os.path.join(case_dir, "golden.bin"), dtype=case["dst_dtype"], count=np.prod(out_shape)).reshape(out_shape)

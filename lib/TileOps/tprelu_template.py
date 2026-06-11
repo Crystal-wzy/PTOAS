@@ -26,7 +26,8 @@ def template_tprelu(src0: pto.Tile, src1: pto.Tile, tmp: pto.Tile, dst: pto.Tile
         dst[i, j] = src0[i, j] > 0 ? src0[i, j] : src0[i, j] * src1[i, j]
     
     Supported data types: f16, f32
-    tmp is a workspace buffer with same dtype as src0.
+    A5 keeps the tmp operand in the ABI for cross-arch compatibility, but this
+    implementation does not read or write it.
     """
     dtype = dst.element_type
     valid_rows, valid_cols = dst.valid_shape
