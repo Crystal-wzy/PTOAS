@@ -488,6 +488,20 @@ def simt_memory_atomic_probe(
 
 
 @pto.simt
+def simt_specialized_ptr_probe(ptr):
+    value = scalar.load(ptr)
+    _ = value
+
+
+@pto.simt
+def simt_specialized_flag_probe(*, FLAG):
+    if FLAG:
+        pto.get_tid_x()
+    else:
+        pto.get_tid_y()
+
+
+@pto.simt
 def simt_keep_stage():
     pto.keep(pto.get_tid_x(), slot=0)
 
@@ -543,6 +557,23 @@ def simt_full_surface_probe(
     pto.simt_launch(simt_memory_atomic_probe, gm, dims=(32, 1, 1))
     pto.simt_launch(simt_keep_stage, dims=(32, 1, 1))
     pto.simt_launch(simt_resume_stage, gm, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5")
+def simt_specialized_arg_type_probe(
+    gm_i32: pto.ptr(pto.i32, "gm"),
+    gm_f32: pto.ptr(pto.f32, "gm"),
+    *,
+    TRACE_TOKEN: pto.constexpr = 0,
+):
+    pto.simt_launch(simt_specialized_ptr_probe, gm_i32, dims=(32, 1, 1))
+    pto.simt_launch(simt_specialized_ptr_probe, gm_f32, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5")
+def simt_specialized_static_kwarg_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+    pto.simt_launch(simt_specialized_flag_probe, dims=(32, 1, 1), FLAG=False)
+    pto.simt_launch(simt_specialized_flag_probe, dims=(32, 1, 1), FLAG=True)
 
 
 @pto.jit(target="a5")
@@ -2609,11 +2640,15 @@ def main() -> None:
         "each @pto.simt callsite should materialize a caller-side store_vfsimt_info",
     )
     expect(
-        simt_text.count("call @simt_tid_probe()") == 2,
+        re.search(r"call @simt_tid_probe__simt_\d+\(\)", simt_text) is not None,
         "each @pto.simt callsite should lower to a func.call of the helper symbol",
     )
     expect(
-        simt_text.count("func.func @simt_tid_probe() attributes {pto.simt_entry}") == 1,
+        len(re.findall(r"call @simt_tid_probe__simt_\d+\(\)", simt_text)) == 2,
+        "both @pto.simt callsites should call the same helper specialization",
+    )
+    expect(
+        len(re.findall(r"func\.func @simt_tid_probe__simt_\d+\(\) attributes \{pto\.simt_entry\}", simt_text)) == 1,
         "@pto.simt helper should materialize exactly one reusable pto.simt_entry function",
     )
     expect("pto.get_tid_x" in simt_text, "SIMT helper body should contain pto.get_tid_x")
@@ -2623,11 +2658,11 @@ def main() -> None:
     simt_launch_text = simt_explicit_launch_probe.compile(TRACE_TOKEN=1).mlir_text()
     expect_parse_roundtrip_and_verify(simt_launch_text, "explicit simt launch specialization")
     expect(
-        "pto.simt_launch @simt_query_probe<<<" in simt_launch_text,
+        re.search(r"pto\.simt_launch @simt_query_probe__simt_\d+<<<", simt_launch_text) is not None,
         "pto.simt_launch(...) should emit VPTO simt_launch sugar",
     )
     expect(
-        "func.func @simt_query_probe() attributes {pto.simt_entry}" in simt_launch_text,
+        re.search(r"func\.func @simt_query_probe__simt_\d+\(\) attributes \{pto\.simt_entry\}", simt_launch_text) is not None,
         "explicit pto.simt_launch should materialize a reusable pto.simt_entry helper",
     )
     for op_name in (
@@ -2654,6 +2689,26 @@ def main() -> None:
         "pto.get_lanemask_gt",
     ):
         expect(op_name in simt_launch_text, f"SIMT query body should contain {op_name}")
+
+    simt_arg_type_text = simt_specialized_arg_type_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_arg_type_text, "simt arg-type specialization")
+    expect(
+        len(re.findall(r"func\.func @simt_specialized_ptr_probe__simt_\d+\(", simt_arg_type_text)) == 2,
+        "same @pto.simt body launched with different argument types should materialize two helpers",
+    )
+    expect(
+        "!pto.ptr<i32, gm>" in simt_arg_type_text and "!pto.ptr<f32, gm>" in simt_arg_type_text,
+        "SIMT argument-type specializations should preserve distinct helper pointer types",
+    )
+
+    simt_static_kwarg_text = simt_specialized_static_kwarg_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_static_kwarg_text, "simt static kwarg specialization")
+    expect(
+        len(re.findall(r"func\.func @simt_specialized_flag_probe__simt_\d+\(", simt_static_kwarg_text)) == 2,
+        "same @pto.simt body launched with different static kwargs should materialize two helpers",
+    )
+    expect("pto.get_tid_x" in simt_static_kwarg_text, "FLAG=True SIMT specialization should emit get_tid_x")
+    expect("pto.get_tid_y" in simt_static_kwarg_text, "FLAG=False SIMT specialization should emit get_tid_y")
 
     simt_full_text = simt_full_surface_probe.compile(TRACE_TOKEN=1).mlir_text()
     expect_parse_roundtrip_and_verify(simt_full_text, "full simt surface specialization")
@@ -3228,7 +3283,7 @@ def main() -> None:
     simt_pointer_offset_text = simt_pointer_offset_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(simt_pointer_offset_text, "simt pointer offset specialization")
     expect(
-        "call @simt_pointer_offset_helper" in simt_pointer_offset_text,
+        re.search(r"call @simt_pointer_offset_helper__simt_\d+", simt_pointer_offset_text) is not None,
         "@pto.simt pointer helper should lower to a helper func.call",
     )
     expect(

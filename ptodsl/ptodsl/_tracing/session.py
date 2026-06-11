@@ -36,6 +36,15 @@ class HelperFunctionSpec:
 
 
 @dataclass(frozen=True)
+class SimtHelperSpecializationKey:
+    """Cache key for one specialized ``@pto.simt`` helper body."""
+
+    symbol_name: str
+    arg_types: tuple
+    static_kwargs: tuple[tuple[str, object], ...]
+
+
+@dataclass(frozen=True)
 class SubkernelTraceFrame:
     """Active inline-lowering frame for one PTODSL subkernel call."""
 
@@ -55,6 +64,8 @@ class TraceSession:
         self._function_stack = [entry_function]
         self._function_symbol_table = entry_function.operation.parent.regions[0].blocks[0]
         self._helpers: dict[str, object] = {}
+        self._simt_helper_specializations: dict[SimtHelperSpecializationKey, object] = {}
+        self._simt_helper_symbol_counters: dict[str, int] = {}
         self._subkernel_stack: list[SubkernelTraceFrame] = []
         self._carry_loop_stack = []
 
@@ -173,7 +184,7 @@ class TraceSession:
         dim_x, dim_y, dim_z = _coerce_simt_launch_dims(dims)
         Operation.create(
             "pto.simt_launch",
-            attributes={"callee": FlatSymbolRefAttr.get(subkernel.spec.symbol_name)},
+            attributes={"callee": FlatSymbolRefAttr.get(_symbol_name(helper_fn))},
             operands=[dim_x, dim_y, dim_z, *[unwrap_surface_value(arg) for arg in arg_templates]],
         )
 
@@ -185,12 +196,24 @@ class TraceSession:
 
         arg_templates = tuple(args)
         arg_types = tuple(unwrap_surface_value(arg).type for arg in arg_templates)
-        helper_spec = HelperFunctionSpec(
+        static_kwargs = _simt_static_kwargs_signature(kwargs)
+        specialization_key = SimtHelperSpecializationKey(
             symbol_name=subkernel.spec.symbol_name,
+            arg_types=arg_types,
+            static_kwargs=static_kwargs,
+        )
+        helper_fn = self._simt_helper_specializations.get(specialization_key)
+        if helper_fn is not None:
+            return helper_fn, arg_templates
+
+        helper_symbol = self._next_simt_helper_symbol(subkernel.spec.symbol_name)
+        helper_spec = HelperFunctionSpec(
+            symbol_name=helper_symbol,
             arg_types=arg_types,
             attributes=(("pto.simt_entry", UnitAttr.get()),),
         )
         helper_fn, created = self.get_or_create_helper_function(helper_spec)
+        self._simt_helper_specializations[specialization_key] = helper_fn
 
         if created:
             entry_block = helper_fn.add_entry_block()
@@ -203,6 +226,15 @@ class TraceSession:
                 func.ReturnOp([])
 
         return helper_fn, arg_templates
+
+    def _next_simt_helper_symbol(self, base_symbol: str) -> str:
+        index = self._simt_helper_symbol_counters.get(base_symbol, 0)
+        while True:
+            symbol = f"{base_symbol}__simt_{index}"
+            index += 1
+            if symbol not in self._helpers:
+                self._simt_helper_symbol_counters[base_symbol] = index
+                return symbol
 
     def lookup_helper(self, symbol_name: str):
         """Return a previously declared helper function, or ``None``."""
@@ -261,6 +293,63 @@ def _coerce_i32_dim(value, *, context: str):
             raise TypeError(f"{context} expects i32 launch dimension, got {raw_value.type}")
         return _strip_integer_signedness(raw_value)
     raise TypeError(f"{context} expects i32 launch dimension, got {raw_value.type}")
+
+
+def _symbol_name(ir_fn) -> str:
+    try:
+        name_attr = ir_fn.attributes["sym_name"]
+    except KeyError as exc:
+        raise RuntimeError("PTODSL helper function is missing sym_name")
+    if name_attr is None:
+        raise RuntimeError("PTODSL helper function has empty sym_name")
+    return str(name_attr.value)
+
+
+def _simt_static_kwargs_signature(kwargs):
+    return tuple(
+        (name, _simt_static_signature_atom(value))
+        for name, value in sorted(kwargs.items())
+    )
+
+
+def _simt_static_signature_atom(value):
+    raw_value = unwrap_surface_value(value)
+    if hasattr(raw_value, "type"):
+        raise TypeError(
+            "pto.simt_launch keyword arguments must be static hashable values; "
+            "pass runtime SSA arguments positionally"
+        )
+    try:
+        hash(value)
+    except TypeError:
+        if isinstance(value, dict):
+            return (
+                "dict",
+                tuple(
+                    sorted(
+                        tuple(
+                            (
+                                _simt_static_signature_atom(key),
+                                _simt_static_signature_atom(item),
+                            )
+                            for key, item in value.items()
+                        ),
+                        key=repr,
+                    )
+                ),
+            )
+        if isinstance(value, (list, tuple)):
+            return (
+                type(value).__name__,
+                tuple(_simt_static_signature_atom(item) for item in value),
+            )
+        if isinstance(value, set):
+            return (
+                "set",
+                tuple(sorted((_simt_static_signature_atom(item) for item in value), key=repr)),
+            )
+        return (type(value).__name__, repr(value))
+    return value
 
 
 __all__ = [
