@@ -23,8 +23,8 @@ void LaunchAcc2Mat_f16_32x32(uint16_t *a, uint16_t *b, uint16_t *c, void *stream
 void LaunchAcc2Mat_bf16_16x16(uint16_t *a, uint16_t *b, uint16_t *c, void *stream);
 void LaunchAcc2Mat_f32_16x16(uint16_t *a, uint16_t *b, uint32_t *c, void *stream);
 void LaunchAcc2VecND_f16_16x16(uint16_t *a, uint16_t *b, uint16_t *c, void *stream);
-void LaunchAcc2VecND_f32_16x16(uint16_t *a, uint16_t *b, uint16_t *c, void *stream);
-void LaunchAcc2VecNZ_f32_16x16(uint16_t *a, uint16_t *b, uint16_t *c, void *stream);
+void LaunchAcc2VecND_f32_16x16(uint16_t *a, uint16_t *b, uint32_t *c, void *stream);
+void LaunchAcc2VecNZ_f32_16x16(uint16_t *a, uint16_t *b, uint32_t *c, void *stream);
 
 struct TestCase {
     const char *name;
@@ -35,13 +35,13 @@ struct TestCase {
 };
 
 static const TestCase kCases[] = {
-    {"acc2mat_f16_16x16",    LaunchAcc2Mat_f16_16x16,    16, 16, 16, false, 2},
-    {"acc2mat_f16_32x32",    LaunchAcc2Mat_f16_32x32,    32, 32, 32, false, 2},
-    {"acc2mat_bf16_16x16",   LaunchAcc2Mat_bf16_16x16,   16, 16, 16, false, 2},
-    {"acc2mat_f32_16x16",    reinterpret_cast<LaunchFn>(LaunchAcc2Mat_f32_16x16),    16, 16, 16, false, 4},
-    {"acc2vec_nd_f16_16x16", LaunchAcc2VecND_f16_16x16,  16, 16, 16, true,  4},
-    {"acc2vec_nd_f32_16x16", LaunchAcc2VecND_f32_16x16,  16, 16, 16, true,  4},
-    {"acc2vec_nz_f32_16x16", LaunchAcc2VecNZ_f32_16x16,  16, 16, 16, true,  4},
+    {"acc2mat_f16_16x16",    LaunchAcc2Mat_f16_16x16,    16, 16, 16, true, 2},
+    {"acc2mat_f16_32x32",    LaunchAcc2Mat_f16_32x32,    32, 32, 32, true, 2},
+    {"acc2mat_bf16_16x16",   LaunchAcc2Mat_bf16_16x16,   16, 16, 16, true, 2},
+    {"acc2mat_f32_16x16",    reinterpret_cast<LaunchFn>(LaunchAcc2Mat_f32_16x16),    16, 16, 16, true, 4},
+    {"acc2vec_nd_f16_16x16", LaunchAcc2VecND_f16_16x16,  16, 16, 16, true,  2},
+    {"acc2vec_nd_f32_16x16", reinterpret_cast<LaunchFn>(LaunchAcc2VecND_f32_16x16),  16, 16, 16, true,  4},
+    {"acc2vec_nz_f32_16x16", reinterpret_cast<LaunchFn>(LaunchAcc2VecNZ_f32_16x16),  16, 16, 16, true,  4},
 };
 static constexpr size_t kNumCases = sizeof(kCases) / sizeof(kCases[0]);
 
