@@ -122,13 +122,35 @@ jobs:
 
       - name: Resolve LLVM directories
         shell: bash
-        env:
-          TOOL_CACHE: ${{ runner.tool_cache }}
         run: |
           set -euo pipefail
-          echo "LLVM_ROOT=${TOOL_CACHE}/llvm-project" >> "${GITHUB_ENV}"
-          echo "LLVM_DIR=${TOOL_CACHE}/llvm-project/llvm/build-assert" >> "${GITHUB_ENV}"
-          echo "MLIR_PYTHONPATH=${TOOL_CACHE}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core" >> "${GITHUB_ENV}"
+          echo "LLVM_ROOT=${RUNNER_TOOL_CACHE}/llvm-project" >> "${GITHUB_ENV}"
+          echo "LLVM_DIR=${RUNNER_TOOL_CACHE}/llvm-project/llvm/build-assert" >> "${GITHUB_ENV}"
+          echo "MLIR_PYTHONPATH=${RUNNER_TOOL_CACHE}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core" >> "${GITHUB_ENV}"
+
+      - name: Resolve LLVM cache key
+        id: llvm-cache-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Resolve to a Git object that ls-remote can handle: either a tag
+          # (LLVM_TAG) or a branch head (LLVM_REF).  Only one is expected.
+          ref="${LLVM_TAG:-${LLVM_REF}}"
+          sha="$(git ls-remote "${LLVM_REPO}" "${ref}" | awk '{print $1}')"
+          if [[ -z "${sha}" ]]; then
+            echo "ERROR: failed to resolve ${LLVM_REPO} ${ref}" >&2
+            exit 1
+          fi
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+          echo "key=llvm-build-${sha}-assert-v1" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore LLVM build cache
+        id: llvm-cache
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.LLVM_DIR }}
+          key: ${{ steps.llvm-cache-key.outputs.key }}
 
       - name: Ensure runner dependencies
         shell: bash
@@ -181,7 +203,7 @@ jobs:
           rm -rf "${VPTO_SIM_WORKSPACE}"
           rm -rf "${TILELANG_DSL_WORKSPACE}"
 
-      - name: Prepare LLVM source (no rebuild)
+      - name: Prepare LLVM source
         shell: bash
         run: |
           set -euo pipefail
@@ -194,14 +216,25 @@ jobs:
           fi
 
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_REF}"
+          ref="${LLVM_TAG:-${LLVM_REF}}"
+          git fetch --depth 1 origin "${ref}"
           git checkout --force FETCH_HEAD
 
       - name: Build LLVM/MLIR
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
           cd "${LLVM_ROOT}"
+          # Pin system compilers.  Self-hosted runners may have conda GCC on
+          # PATH; letting CMake autodetect it produces build errors or ABI
+          # mismatches with system libraries.
+          export CC=gcc
+          export CXX=g++
+          # Clean the build directory so that stale generated files from a
+          # previous run (e.g. _smt_ops_gen.py left behind when the ref
+          # changed) do not leak into the fresh build.
+          rm -rf llvm/build-assert
           cmake -G Ninja -S llvm -B llvm/build-assert \
             -DLLVM_ENABLE_PROJECTS="mlir;clang" \
             -DBUILD_SHARED_LIBS=ON \
@@ -213,11 +246,22 @@ jobs:
 
           ninja -C llvm/build-assert
 
+      - name: Save LLVM build cache
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.LLVM_DIR }}
+          key: ${{ steps.llvm-cache-key.outputs.key }}
+
       - name: Build PTOAS
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "${PTO_INSTALL_DIR}"
+          # Pin system compilers for the same reason as LLVM above.
+          export CC=gcc
+          export CXX=g++
           # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
           LLVM_BUILD_DIR="${LLVM_DIR}" \
             PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
