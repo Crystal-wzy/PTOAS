@@ -168,6 +168,9 @@ log "CASE_NAME=${CASE_NAME:-<all>}" | tee -a "${RUNNER_LOG}"
 log "CASE_PREFIX=${CASE_PREFIX:-<none>}" | tee -a "${RUNNER_LOG}"
 log "JOBS=${JOBS}" | tee -a "${RUNNER_LOG}"
 log "TOTAL_CASES=${#CASES[@]}" | tee -a "${RUNNER_LOG}"
+if [[ -n "${SIM_LIB_DIR:-}" ]]; then
+  log "SIM_LIB_DIR=${SIM_LIB_DIR}" | tee -a "${RUNNER_LOG}"
+fi
 
 next_index=0
 while [[ "${next_index}" -lt "${#CASES[@]}" || "${#PID_TO_CASE[@]}" -gt 0 ]]; do
