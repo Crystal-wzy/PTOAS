@@ -202,9 +202,13 @@ set(ALL_TESTCASES
     tmatmul
     tmatmul_acc
     tmatmul_bias
+    tmatmul_mx
+    tgemv
+    tgemv_mx
     textract
     textract_fp
     textract_v2v
+    fp8_load_test
 )
 
 if((TEST_CASE IN_LIST ALL_TESTCASES) OR (TEST_CASE STREQUAL "all"))

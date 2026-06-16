@@ -22,11 +22,11 @@ void LaunchTMATMUL_i8_6x7x8(void *a, void *b, void *c, void *stream);
 void LaunchTMATMUL_f16_127x128x61(void *a, void *b, void *c, void *stream);
 void LaunchTMATMUL_f32_120x110x50(void *a, void *b, void *c, void *stream);
 void LaunchTMATMUL_bf16_144x80x48(void *a, void *b, void *c, void *stream);
-// void LaunchTMATMUL_f8e4m3_32x64x96(void *a, void *b, void *c, void *stream);
-// void LaunchTMATMUL_f8e4m3_f8e5m2_128x96x64(void *a, void *b, void *c, void *stream);
-// void LaunchTMATMUL_f8e5m2_f8e4m3_145x115x85(void *a, void *b, void *c, void *stream);
-// void LaunchTMATMUL_f8e5m2_120x90x160(void *a, void *b, void *c, void *stream);
-// void LaunchTMATMUL_hif8_30x90x60(void *a, void *b, void *c, void *stream);
+void LaunchTMATMUL_f8e4m3_32x64x96(void *a, void *b, void *c, void *stream);
+void LaunchTMATMUL_f8e4m3_f8e5m2_128x96x64(void *a, void *b, void *c, void *stream);
+void LaunchTMATMUL_f8e5m2_f8e4m3_145x115x85(void *a, void *b, void *c, void *stream);
+void LaunchTMATMUL_f8e5m2_120x90x160(void *a, void *b, void *c, void *stream);
+void LaunchTMATMUL_hif8_30x90x60(void *a, void *b, void *c, void *stream);
 void LaunchTMATMUL_f32_16x32x64(void *a, void *b, void *c, void *stream);
 void LaunchTMATMUL_f32_128x96x64(void *a, void *b, void *c, void *stream);
 
@@ -50,7 +50,11 @@ static const TestCase kCases[] = {
     {"f16_127x128x61",                  LaunchTMATMUL_f16_127x128x61,                 128, 128,  64,  2, 2, 4},
     {"f32_120x110x50",                  LaunchTMATMUL_f32_120x110x50,                 128, 112,  64,  4, 4, 4},
     {"bf16_144x80x48",                  LaunchTMATMUL_bf16_144x80x48,                 144,  80,  48,  2, 2, 4},
-    // ...
+    {"f8e4m3_32x64x96",                 LaunchTMATMUL_f8e4m3_32x64x96,                 32,  64,  96,  1, 1, 4},
+    {"f8e4m3_f8e5m2_128x96x64",         LaunchTMATMUL_f8e4m3_f8e5m2_128x96x64,        128,  96,  64,  1, 1, 4},
+    {"f8e5m2_f8e4m3_145x115x85",        LaunchTMATMUL_f8e5m2_f8e4m3_145x115x85,       160, 128,  96,  1, 1, 4},
+    {"f8e5m2_120x90x160",               LaunchTMATMUL_f8e5m2_120x90x160,              128,  96, 160,  1, 1, 4},
+    {"hif8_30x90x60",                   LaunchTMATMUL_hif8_30x90x60,                   32,  96,  64,  1, 1, 4},
     {"f32_16x32x64",                    LaunchTMATMUL_f32_16x32x64,                   16,  32,  64,  4, 4, 4},
     {"f32_128x96x64",                   LaunchTMATMUL_f32_128x96x64,                 128,  96,  64,  4, 4, 4},
 };

@@ -380,8 +380,8 @@ static std::string getMadDstFragment(Type type) {
 }
 
 static FailureOr<StringRef> buildMadTypedCalleeName(MLIRContext *context,
-                                                    Type lhsElem, Type rhsElem,
-                                                    Type dstElem) {
+                                                     Type lhsElem, Type rhsElem,
+                                                     Type dstElem) {
   std::string rhs = getMadRhsFragment(rhsElem);
   std::string dst = getMadDstFragment(dstElem);
   if (lhsElem.isF16() && rhs == "f16" && dst == "f32")
@@ -3063,8 +3063,8 @@ static FailureOr<StringRef> buildOrdinaryMadCallee(MLIRContext *context,
     return failure();
 
   return buildMadTypedCalleeName(context, lhsType.getElementType(),
-                                 rhsType.getElementType(),
-                                 dstType.getElementType());
+                                  rhsType.getElementType(),
+                                  dstType.getElementType());
 }
 
 static FailureOr<StringRef> buildMxMadCallee(MLIRContext *context,

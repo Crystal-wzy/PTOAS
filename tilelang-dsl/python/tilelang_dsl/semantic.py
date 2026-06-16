@@ -3873,12 +3873,19 @@ class _SemanticAnalyzer:
         lhs: SemanticExpr,
         rhs: SemanticExpr,
         context: str,
+        allow_mixed_fp8: bool = False,
     ) -> None:
         lhs_dtype = lhs.type.element_dtype
         rhs_dtype = rhs.type.element_dtype
         if lhs_dtype is None or rhs_dtype is None:
             return
         if lhs_dtype != rhs_dtype:
+            if allow_mixed_fp8:
+                lhs_name = getattr(lhs_dtype, "name", "")
+                rhs_name = getattr(rhs_dtype, "name", "")
+                fp8_set = {"f8e4m3", "f8e5m2"}
+                if lhs_name in fp8_set and rhs_name in fp8_set:
+                    return
             raise TypeError(f"{context} requires source/destination pointer element dtypes to match")
 
     def _require_cube_i64_tuple(
@@ -3990,6 +3997,7 @@ class _SemanticAnalyzer:
             lhs,
             rhs,
             f"pto.{name}",
+            allow_mixed_fp8=True,
         )
         if "bias" in name:
             bias = self._require_pointer_expr(args[3], f"pto.{name} bias", memory_space="bias")

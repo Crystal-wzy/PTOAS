@@ -21,7 +21,7 @@ export LLVM_INSTALL_DIR=/opt/llvm
 export LLVM_BUILD_DIR=$LLVM_INSTALL_DIR
 
 # ptoas 源码与安装路径
-export PTO_SOURCE_DIR=$WORKSPACE_DIR/PTOAS
+export PTO_SOURCE_DIR=$WORKSPACE_DIR/00_pto/PTOAS
 export PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install-optllvm
 # ============================================================
 
@@ -91,7 +91,8 @@ cmake -G Ninja \
     -Dpybind11_DIR="${PYBIND11_CMAKE_DIR}" \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
     -DMLIR_PYTHON_PACKAGE_DIR="$LLVM_INSTALL_DIR/python_packages/mlir_core" \
-    -DCMAKE_INSTALL_PREFIX="$PTO_INSTALL_DIR"
+    -DCMAKE_INSTALL_PREFIX="$PTO_INSTALL_DIR" \
+    -DPTOAS_LIT_TEST=OFF
 
 # 3. 编译并安装
 ninja -C build

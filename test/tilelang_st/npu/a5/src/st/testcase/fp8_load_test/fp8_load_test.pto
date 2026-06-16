@@ -1,0 +1,180 @@
+// FP8 Load Test - 验证FP8数据从GM加载到L1是否正确
+// 这个测试只做数据加载，不执行mad_mx计算
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cube>} {
+  // 测试1: 加载 32x64 FP8 矩阵到L1，然后移动到L0A，使用mad_mx转换为F32，再写回GM
+  func.func @fp8_load_32x64(%arg0: !pto.ptr<f8E4M3FN, gm>, %arg1: !pto.ptr<f32, gm>) attributes {pto.aicore} {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c128_i64 = arith.constant 128 : i64
+    %c2048_i64 = arith.constant 2048 : i64
+    %false = arith.constant false
+
+    // 分配L1 buffer (32x64 = 2048 bytes)
+    %l1_data = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, l1>
+    
+    // 分配L0A buffer
+    %l0a = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, l0a>
+    
+    // 分配L0B buffer (64x64 identity matrix)
+    %l0b = pto.castptr %c2048_i64 : i64 -> !pto.ptr<f8E4M3FN, l0b>
+    
+    // 分配L0C buffer (32x64 = 8192 bytes for f32)
+    %l0c = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, l0c>
+
+    // 从GM加载到L1 (使用nd2nz)
+    pto.mte_gm_l1_frac %arg0, %l1_data, nd2nz,
+      shape(%c32_i64, %c64_i64), src_layout(%c64_i64),
+      dst_group(%c1_i64, %c1_i64, %c32_i64, %c0_i64),
+      ctrl(%c0_i64, %false)
+      : !pto.ptr<f8E4M3FN, gm>, !pto.ptr<f8E4M3FN, l1>, nd2nz,
+        shape i64, i64, src_layout(i64),
+        dst_group i64, i64, i64, i64, ctrl i64, i1
+
+    // 同步等待DMA完成
+    pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
+
+    // 从L1移动到L0A
+    pto.mte_l1_l0a %l1_data, %l0a, %c32_i64, %c64_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f8E4M3FN, l1>, !pto.ptr<f8E4M3FN, l0a>, i64, i64, i64, i64
+
+    // 同步等待L1->L0A完成
+    pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
+
+    // 使用mad_mx将L0A (FP8) 转换为 L0C (F32)
+    // 这里我们使用B矩阵为单位矩阵（简化处理）
+    pto.mad_mx %l0a, %l0b, %l0c, %c32_i64, %c64_i64, %c64_i64 unit_flag(check_only) disable_gemv sat
+      : !pto.ptr<f8E4M3FN, l0a>, !pto.ptr<f8E4M3FN, l0b>, !pto.ptr<f32, l0c>, i64, i64, i64
+
+    // 同步等待转换完成
+    pto.set_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
+    pto.wait_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
+
+    // 从L0C写回GM
+    pto.mte_l0c_gm %l0c, %arg1, %c32_i64, %c64_i64, %c32_i64, %c64_i64, %c0_i64, %c0_i64, nz2nd
+      : !pto.ptr<f32, l0c>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
+
+    pto.barrier #pto.pipe<PIPE_ALL>
+    return
+  }
+
+  // 测试2: 加载 64x64 FP8 矩阵到L1，然后移动到L0A，使用mad_mx转换为F32，再写回GM
+  func.func @fp8_load_64x64(%arg0: !pto.ptr<f8E4M3FN, gm>, %arg1: !pto.ptr<f32, gm>) attributes {pto.aicore} {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c128_i64 = arith.constant 128 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %false = arith.constant false
+
+    // 分配L1 buffer (64x64 = 4096 bytes)
+    %l1_data = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, l1>
+    
+    // 分配L0A buffer
+    %l0a = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, l0a>
+    
+    // 分配L0B buffer (64x64 identity matrix)
+    %l0b = pto.castptr %c4096_i64 : i64 -> !pto.ptr<f8E4M3FN, l0b>
+    
+    // 分配L0C buffer (64x64 = 16384 bytes for f32)
+    %l0c = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, l0c>
+
+    // 从GM加载到L1 (使用nd2nz)
+    pto.mte_gm_l1_frac %arg0, %l1_data, nd2nz,
+      shape(%c64_i64, %c64_i64), src_layout(%c64_i64),
+      dst_group(%c1_i64, %c1_i64, %c64_i64, %c0_i64),
+      ctrl(%c0_i64, %false)
+      : !pto.ptr<f8E4M3FN, gm>, !pto.ptr<f8E4M3FN, l1>, nd2nz,
+        shape i64, i64, src_layout(i64),
+        dst_group i64, i64, i64, i64, ctrl i64, i1
+
+    // 同步等待DMA完成
+    pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
+
+    // 从L1移动到L0A
+    pto.mte_l1_l0a %l1_data, %l0a, %c64_i64, %c64_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f8E4M3FN, l1>, !pto.ptr<f8E4M3FN, l0a>, i64, i64, i64, i64
+
+    // 同步等待L1->L0A完成
+    pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
+
+    // 使用mad_mx将L0A (FP8) 转换为 L0C (F32)
+    pto.mad_mx %l0a, %l0b, %l0c, %c64_i64, %c64_i64, %c64_i64 unit_flag(check_only) disable_gemv sat
+      : !pto.ptr<f8E4M3FN, l0a>, !pto.ptr<f8E4M3FN, l0b>, !pto.ptr<f32, l0c>, i64, i64, i64
+
+    // 同步等待转换完成
+    pto.set_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
+    pto.wait_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
+
+    // 从L0C写回GM
+    pto.mte_l0c_gm %l0c, %arg1, %c64_i64, %c64_i64, %c64_i64, %c64_i64, %c0_i64, %c0_i64, nz2nd
+      : !pto.ptr<f32, l0c>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
+
+    pto.barrier #pto.pipe<PIPE_ALL>
+    return
+  }
+
+  // 测试3: 加载 128x64 FP8 矩阵到L1，然后移动到L0A，使用mad_mx转换为F32，再写回GM
+  func.func @fp8_load_128x64(%arg0: !pto.ptr<f8E4M3FN, gm>, %arg1: !pto.ptr<f32, gm>) attributes {pto.aicore} {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c128_i64 = arith.constant 128 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %false = arith.constant false
+
+    // 分配L1 buffer (128x64 = 8192 bytes)
+    %l1_data = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, l1>
+    
+    // 分配L0A buffer
+    %l0a = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, l0a>
+    
+    // 分配L0B buffer (64x64 identity matrix)
+    %l0b = pto.castptr %c8192_i64 : i64 -> !pto.ptr<f8E4M3FN, l0b>
+    
+    // 分配L0C buffer (128x64 = 32768 bytes for f32)
+    %l0c = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, l0c>
+
+    // 从GM加载到L1 (使用nd2nz)
+    pto.mte_gm_l1_frac %arg0, %l1_data, nd2nz,
+      shape(%c128_i64, %c64_i64), src_layout(%c64_i64),
+      dst_group(%c1_i64, %c1_i64, %c128_i64, %c0_i64),
+      ctrl(%c0_i64, %false)
+      : !pto.ptr<f8E4M3FN, gm>, !pto.ptr<f8E4M3FN, l1>, nd2nz,
+        shape i64, i64, src_layout(i64),
+        dst_group i64, i64, i64, i64, ctrl i64, i1
+
+    // 同步等待DMA完成
+    pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
+
+    // 从L1移动到L0A
+    pto.mte_l1_l0a %l1_data, %l0a, %c128_i64, %c64_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f8E4M3FN, l1>, !pto.ptr<f8E4M3FN, l0a>, i64, i64, i64, i64
+
+    // 同步等待L1->L0A完成
+    pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
+
+    // 使用mad_mx将L0A (FP8) 转换为 L0C (F32)
+    pto.mad_mx %l0a, %l0b, %l0c, %c128_i64, %c64_i64, %c64_i64 unit_flag(check_only) disable_gemv sat
+      : !pto.ptr<f8E4M3FN, l0a>, !pto.ptr<f8E4M3FN, l0b>, !pto.ptr<f32, l0c>, i64, i64, i64
+
+    // 同步等待转换完成
+    pto.set_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
+    pto.wait_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
+
+    // 从L0C写回GM
+    pto.mte_l0c_gm %l0c, %arg1, %c128_i64, %c64_i64, %c128_i64, %c64_i64, %c0_i64, %c0_i64, nz2nd
+      : !pto.ptr<f32, l0c>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
+
+    pto.barrier #pto.pipe<PIPE_ALL>
+    return
+  }
+}
