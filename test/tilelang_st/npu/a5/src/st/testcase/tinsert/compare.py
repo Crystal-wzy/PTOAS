@@ -16,30 +16,6 @@ from cases import CASES
 from st_common import result_cmp, style_fail, style_pass
 
 
-def bf16_to_f32(raw_bytes):
-    """Convert raw bf16 bytes (2 bytes each) to f32 numpy array."""
-    u16 = np.frombuffer(raw_bytes, dtype=np.uint16)
-    u32 = u16.astype(np.uint32) << 16
-    return u32.view(np.float32)
-
-
-def nz_to_nd_16x16_f32(raw_bytes):
-    """Convert 16x16 f32 NZ layout (N1=2, M1=1, M0=16, N0=8) to ND row-major."""
-    nz = np.frombuffer(raw_bytes, dtype=np.float32).reshape(2, 1, 16, 8)
-    return nz.transpose(1, 2, 0, 3).reshape(16, 16)
-
-
-def nz_to_nd_32x32_f16(raw_bytes):
-    """Convert 32x32 f16 NZ layout (K1=2, M1=2, M0=16, K0=16) to ND row-major.
-
-    Physical layout: K1 x M1 x M0 x K0 where K1=N/K0 (outer K), M1=M/M0 (outer M).
-    For output [M=N=32]: K1=2, M1=2.
-    We need to convert to ND [M, N] = [M1, M0, K1, K0] ordering.
-    """
-    nz = np.frombuffer(raw_bytes, dtype=np.float16).reshape(2, 2, 16, 16)
-    return nz.transpose(1, 2, 0, 3).reshape(32, 32)
-
-
 def main():
     case_filter = sys.argv[1] if len(sys.argv) > 1 else None
 
@@ -64,43 +40,23 @@ def main():
             all_passed = False
             continue
 
-        golden = np.fromfile(golden_path, dtype=dtype_out)
+        golden = np.fromfile(golden_path, dtype=dtype_out).astype(np.float32)
 
-        if case.get("out_bf16"):
-            with open(output_path, "rb") as f:
-                output = bf16_to_f32(f.read())
-        else:
-            out_dtype_map = {np.dtype(np.float16): np.float16, np.dtype(np.float32): np.float32}
-            out_dtype = out_dtype_map.get(np.dtype(dtype_out), np.float32)
-            output = np.fromfile(output_path, dtype=out_dtype)
-            output = output.astype(np.float32)
+        output = np.fromfile(output_path, dtype=np.float32)
 
-        golden_f32 = golden.astype(np.float32)
+        golden_2d = golden.reshape(m, n)
 
-        if case.get("nz_layout"):
-            if m == 32 and n == 32:
-                output = nz_to_nd_32x32_f16(output.astype(np.float16).tobytes()).astype(np.float32)
+        if output.shape != (m, n):
+            if output.size == m * n:
+                output = output.reshape(m, n)
             else:
-                print(style_fail(f"[ERROR] {case['name']}: unsupported nz_layout dims {m}x{n}"))
+                print(style_fail(
+                    f"[ERROR] {case['name']}: size mismatch golden={golden.size} output={output.size}"
+                ))
                 all_passed = False
                 continue
 
-        if case.get("nz_layout_f32"):
-            if m == 16 and n == 16:
-                output = nz_to_nd_16x16_f32(output.astype(np.float32).tobytes())
-            else:
-                print(style_fail(f"[ERROR] {case['name']}: unsupported nz_layout_f32 dims {m}x{n}"))
-                all_passed = False
-                continue
-
-        if golden_f32.shape != output.shape:
-            print(style_fail(
-                f"[ERROR] {case['name']}: shape mismatch golden={golden_f32.shape} output={output.shape}"
-            ))
-            all_passed = False
-            continue
-
-        ok = result_cmp(golden_f32.reshape(m, n), output, case["eps"])
+        ok = result_cmp(golden_2d, output, case["eps"])
         if ok:
             print(style_pass(f"[INFO] {case['name']}: compare passed"))
         else:
