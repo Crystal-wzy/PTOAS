@@ -7,27 +7,10 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-# Create Python wheel for ptoas.
-#
-# Usage: ./create_wheel.sh
-#
-# Required environment variables:
-#   PTO_SOURCE_DIR  - Path to PTO source directory
-#   PTO_INSTALL_DIR - Path to PTO install directory
-#   LLVM_BUILD_DIR  - Path to LLVM build directory (for python packages location)
-#
-# Optional environment variables:
-#   WHEEL_PLAT_NAME - Explicit wheel platform tag (for bdist_wheel --plat-name)
-#   PTO_WHEEL_STAGING_DIR - Temporary wheel staging directory
-#   PTO_WHEEL_DIST_DIR - Directory for built wheel artifacts
-#   PTOAS_PYTHON_PACKAGE_VERSION - Wheel package version override
-#   PYTHON - Python interpreter to use for wheel metadata and setup.py
+set -euo pipefail
 
-set -e
-
-# Validate required environment variables
 for var in PTO_SOURCE_DIR PTO_INSTALL_DIR LLVM_BUILD_DIR; do
-  if [ -z "${!var}" ]; then
+  if [[ -z "${!var:-}" ]]; then
     echo "Error: $var environment variable is not set" >&2
     exit 1
   fi
@@ -38,16 +21,12 @@ WHEEL_STAGING_DIR="${PTO_WHEEL_STAGING_DIR:-${PTO_SOURCE_DIR}/build/wheel-stagin
 WHEEL_DIST_DIR="${PTO_WHEEL_DIST_DIR:-${PTO_SOURCE_DIR}/build/wheel-dist}"
 PYTHON_BIN="${PYTHON:-python3}"
 PTOAS_PYTHON_PACKAGE_VERSION="${PTOAS_PYTHON_PACKAGE_VERSION:-${PTOAS_VERSION:-}}"
-if [ -z "${PTOAS_PYTHON_PACKAGE_VERSION}" ]; then
-  PTOAS_PYTHON_PACKAGE_VERSION="$("${PYTHON_BIN}" "${PTO_SOURCE_DIR}/.github/scripts/compute_ptoas_version.py" --cmake-file "${PTO_SOURCE_DIR}/CMakeLists.txt" --mode dev)"
+
+if [[ -z "${PTOAS_PYTHON_PACKAGE_VERSION}" ]]; then
+  PTOAS_PYTHON_PACKAGE_VERSION="$("${PYTHON_BIN}" "${PTO_SOURCE_DIR}/.github/scripts/compute_ptoas_version.py" \
+    --cmake-file "${PTO_SOURCE_DIR}/CMakeLists.txt" --mode dev)"
 fi
 export PTOAS_PYTHON_PACKAGE_VERSION
-
-"${PYTHON_BIN}" -c "import setuptools, wheel" >/dev/null 2>&1 || {
-  echo "Error: ${PYTHON_BIN} is missing required wheel build modules (setuptools, wheel)" >&2
-  echo "Hint: install them in the active environment before running pip with --no-build-isolation" >&2
-  exit 1
-}
 
 echo "Creating Python wheel..."
 echo "Wheel package version: ${PTOAS_PYTHON_PACKAGE_VERSION}"
@@ -55,52 +34,113 @@ echo "Wheel package version: ${PTOAS_PYTHON_PACKAGE_VERSION}"
 rm -rf "${WHEEL_STAGING_DIR}" "${WHEEL_DIST_DIR}"
 mkdir -p "${WHEEL_STAGING_DIR}" "${WHEEL_DIST_DIR}"
 
-# Build the wheel from an isolated staging tree. The LLVM MLIR Python package is
-# a read-only input; PTOAS files are overlaid only inside WHEEL_STAGING_DIR.
 echo "Copying MLIR Python package into wheel staging..."
 cp -a "${MLIR_PYTHON_PACKAGE_DIR}/." "${WHEEL_STAGING_DIR}/"
 
 echo "Overlaying PTO dialect files..."
 mkdir -p "${WHEEL_STAGING_DIR}/mlir/dialects"
-cp "${PTO_INSTALL_DIR}/mlir/dialects/"*.py "${WHEEL_STAGING_DIR}/mlir/dialects/"
+find "${PTO_INSTALL_DIR}/mlir/dialects" -maxdepth 1 -type f -name '*.py' -exec cp {} "${WHEEL_STAGING_DIR}/mlir/dialects/" \;
 
 echo "Overlaying PTO native extension..."
 mkdir -p "${WHEEL_STAGING_DIR}/mlir/_mlir_libs"
-cp "${PTO_INSTALL_DIR}/mlir/_mlir_libs"/_pto* "${WHEEL_STAGING_DIR}/mlir/_mlir_libs/"
+find "${PTO_INSTALL_DIR}/mlir/_mlir_libs" -maxdepth 1 -type f -name '_pto*' -exec cp {} "${WHEEL_STAGING_DIR}/mlir/_mlir_libs/" \;
 
-# Copy TileLang resources into the wheel staging tree so wheel installs keep
-# the template library and Python DSL available.
 echo "Copying TileLang resources..."
 rm -rf "${WHEEL_STAGING_DIR}/tilelang_dsl" "${WHEEL_STAGING_DIR}/TileOps"
 cp -R "${PTO_INSTALL_DIR}/tilelang_dsl" "${WHEEL_STAGING_DIR}/tilelang_dsl"
 cp -R "${PTO_INSTALL_DIR}/share/ptoas/TileOps" "${WHEEL_STAGING_DIR}/TileOps"
 
-# Copy ptodsl into the wheel so it is always shipped with ptoas
+echo "Copying ptodsl package..."
 rm -rf "${WHEEL_STAGING_DIR}/ptodsl"
 cp -R "${PTO_SOURCE_DIR}/ptodsl/ptodsl" "${WHEEL_STAGING_DIR}/ptodsl"
 
-# Copy platform-specific setup.py to package directory.
-# On macOS, use setup_mac.py and rename it to setup.py in the build dir.
-SETUP_TEMPLATE="${PTO_SOURCE_DIR}/docker/setup.py"
-if [ "$(uname -s)" = "Darwin" ] && [ -f "${PTO_SOURCE_DIR}/docker/setup_mac.py" ]; then
-  SETUP_TEMPLATE="${PTO_SOURCE_DIR}/docker/setup_mac.py"
-fi
-echo "Copying $(basename "${SETUP_TEMPLATE}") as setup.py..."
-cp "${SETUP_TEMPLATE}" "${WHEEL_STAGING_DIR}/setup.py"
+echo "Removing packaging residue..."
+find "${WHEEL_STAGING_DIR}" \( -name '*.egg-info' -o -name '*.dist-info' \) -prune -exec rm -rf {} +
+find "${WHEEL_STAGING_DIR}" -name '__pycache__' -prune -exec rm -rf {} +
 
-# Determine Python version tag (e.g., cp311, cp312)
-PY_VERSION=$("${PYTHON_BIN}" -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
-echo "Python version tag: ${PY_VERSION}"
+export PTO_WHEEL_STAGING_DIR="${WHEEL_STAGING_DIR}"
+export PTO_WHEEL_DIST_DIR="${WHEEL_DIST_DIR}"
+export PTOAS_PYTHON_PACKAGE_VERSION
 
-# Build the wheel with version-specific tag
-echo "Building wheel..."
-cd "${WHEEL_STAGING_DIR}"
-if [ -n "${WHEEL_PLAT_NAME:-}" ]; then
-  echo "Using wheel platform tag: ${WHEEL_PLAT_NAME}"
-  "${PYTHON_BIN}" setup.py bdist_wheel --python-tag "${PY_VERSION}" --plat-name "${WHEEL_PLAT_NAME}" --dist-dir "${WHEEL_DIST_DIR}"
-else
-  "${PYTHON_BIN}" setup.py bdist_wheel --python-tag "${PY_VERSION}" --dist-dir "${WHEEL_DIST_DIR}"
-fi
+echo "Building wheel archive directly..."
+"${PYTHON_BIN}" - <<'PY'
+import base64
+import csv
+import hashlib
+import os
+import platform
+import sys
+import zipfile
+from pathlib import Path
+
+staging = Path(os.environ["PTO_WHEEL_STAGING_DIR"])
+dist = Path(os.environ["PTO_WHEEL_DIST_DIR"])
+version = os.environ["PTOAS_PYTHON_PACKAGE_VERSION"]
+
+py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+if sys.platform == "darwin":
+    platform_tag = os.environ.get("WHEEL_PLAT_NAME") or "macosx_11_0_arm64"
+else:
+    arch = platform.machine().lower().replace("-", "_")
+    platform_tag = os.environ.get("WHEEL_PLAT_NAME") or f"linux_{arch}"
+
+wheel_name = f"ptoas-{version}-{py_tag}-{py_tag}-{platform_tag}.whl"
+wheel_path = dist / wheel_name
+dist_info = f"ptoas-{version}.dist-info"
+
+metadata = "\n".join([
+    "Metadata-Version: 2.1",
+    "Name: ptoas",
+    f"Version: {version}",
+    "Summary: PTO Assembler & Optimizer",
+    "Requires-Python: >=3.9",
+    "License: Apache-2.0",
+    "Requires-Dist: numpy",
+    "",
+]).encode("utf-8")
+
+wheel = "\n".join([
+    "Wheel-Version: 1.0",
+    "Generator: create_wheel.sh",
+    "Root-Is-Purelib: false",
+    f"Tag: {py_tag}-{py_tag}-{platform_tag}",
+    "",
+]).encode("utf-8")
+
+record_rows = []
+
+def hash_bytes(data: bytes) -> str:
+    digest = hashlib.sha256(data).digest()
+    return "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+with zipfile.ZipFile(wheel_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    for path in sorted(staging.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(staging).as_posix()
+        data = path.read_bytes()
+        zf.writestr(rel, data)
+        record_rows.append((rel, hash_bytes(data), str(len(data))))
+
+    for rel, data in [
+        (f"{dist_info}/METADATA", metadata),
+        (f"{dist_info}/WHEEL", wheel),
+    ]:
+        zf.writestr(rel, data)
+        record_rows.append((rel, hash_bytes(data), str(len(data))))
+
+    record_rel = f"{dist_info}/RECORD"
+    from io import StringIO
+    buf = StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    for row in record_rows:
+        writer.writerow(row)
+    writer.writerow((record_rel, "", ""))
+    record_bytes = buf.getvalue().encode("utf-8")
+    zf.writestr(record_rel, record_bytes)
+
+print(f"Wheel created at {wheel_path}")
+PY
 
 echo "Wheel created at ${WHEEL_DIST_DIR}/"
 ls -la "${WHEEL_DIST_DIR}/"*.whl
