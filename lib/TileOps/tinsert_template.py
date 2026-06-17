@@ -359,8 +359,8 @@ def template_tinsert_acc_to_vec_nd(
     dst_offset = index_row * dst_cols + index_col
     dst_ptr = pto.addptr(dst_ptr, dst_offset)
 
-    dst_stride = dst_cols * elem_bytes
-    src_stride = (valid_rows + 15) // 16 * 16 * pto.bytewidth(src_elem)
+    dst_stride = dst_cols
+    src_stride = (valid_rows + 15) // 16 * 16
 
     relu_mode_name = pto.get_op_attr("relu_pre_mode", "no_relu")
     acc_mode_name = pto.get_op_attr("acc_to_vec_mode", "single_mode_vec0")
@@ -415,11 +415,26 @@ def template_tinsert_acc_to_vec_nd(
             pre_relu=("normal_relu", None, None),
         )
     else:
-        pto.mte_l0c_ub(
-            src_ptr, dst_ptr,
-            valid_rows, valid_cols, src_stride, dst_stride, dst_mode,
-            layout="nz2nd",
-        )
+        if pto.constexpr(src_elem == pto.f32 and dst_elem == pto.f16):
+            pto.mte_l0c_ub(
+                src_ptr, dst_ptr,
+                valid_rows, valid_cols, src_stride, dst_stride, dst_mode,
+                layout="nz2nd",
+                pre_quant=(pto.f16(1.0), "f32_f16"),
+            )
+        elif pto.constexpr(src_elem == pto.f32 and dst_elem == pto.bf16):
+            pto.mte_l0c_ub(
+                src_ptr, dst_ptr,
+                valid_rows, valid_cols, src_stride, dst_stride, dst_mode,
+                layout="nz2nd",
+                pre_quant=(pto.bf16(1.0), "f32_bf16"),
+            )
+        else:
+            pto.mte_l0c_ub(
+                src_ptr, dst_ptr,
+                valid_rows, valid_cols, src_stride, dst_stride, dst_mode,
+                layout="nz2nd",
+            )
     return None
 
 
@@ -455,8 +470,8 @@ def template_tinsert_acc_to_vec_nd_basic(
     dst_offset = index_row * dst_cols + index_col
     dst_ptr = pto.addptr(dst_ptr, dst_offset)
 
-    dst_stride = dst_cols * elem_bytes
-    src_stride = (valid_rows + 15) // 16 * 16 * pto.bytewidth(src_elem)
+    dst_stride = dst_cols
+    src_stride = (valid_rows + 15) // 16 * 16
 
     relu_mode_name = pto.get_op_attr("relu_pre_mode", "no_relu")
     acc_mode_name = pto.get_op_attr("acc_to_vec_mode", "single_mode_vec0")
@@ -477,11 +492,26 @@ def template_tinsert_acc_to_vec_nd_basic(
             pre_relu=("normal_relu", None, None),
         )
     else:
-        pto.mte_l0c_ub(
-            src_ptr, dst_ptr,
-            valid_rows, valid_cols, src_stride, dst_stride, dst_mode,
-            layout="nz2nd",
-        )
+        if pto.constexpr(src_elem == pto.f32 and dst.element_type == pto.f16):
+            pto.mte_l0c_ub(
+                src_ptr, dst_ptr,
+                valid_rows, valid_cols, src_stride, dst_stride, dst_mode,
+                layout="nz2nd",
+                pre_quant=(pto.f16(1.0), "f32_f16"),
+            )
+        elif pto.constexpr(src_elem == pto.f32 and dst.element_type == pto.bf16):
+            pto.mte_l0c_ub(
+                src_ptr, dst_ptr,
+                valid_rows, valid_cols, src_stride, dst_stride, dst_mode,
+                layout="nz2nd",
+                pre_quant=(pto.bf16(1.0), "f32_bf16"),
+            )
+        else:
+            pto.mte_l0c_ub(
+                src_ptr, dst_ptr,
+                valid_rows, valid_cols, src_stride, dst_stride, dst_mode,
+                layout="nz2nd",
+            )
     return None
 
 

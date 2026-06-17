@@ -8,31 +8,36 @@
 
 # coding=utf-8
 
-"""Test cases for pto.tinsert ST (Acc->Mat NZ only)."""
+"""Test cases for pto.tinsert acc->vec ST (section split, mte_ub_gm output path)."""
 
 import numpy as np
 
 
 CASES = [
     {
-        "name": "acc2mat_f16_16x16",
-        "kernel": "TINSERT_acc2mat_f16_16x16",
+        "name": "acc2vec_nd_f16_16x16",
+        "kernel": "TINSERT_acc2vec_nd_f16_16x16",
         "m": 16, "k": 16, "n": 16,
         "dtype": np.float16,
-        "dtype_out": np.float32,
-        "id_dtype": np.float16,
-        "path": "acc2mat_nz",
+        "dtype_out": np.float16,
         "has_output": True,
         "eps": 1e-2,
     },
     {
-        "name": "acc2mat_bf16_16x16",
-        "kernel": "TINSERT_acc2mat_bf16_16x16",
+        "name": "acc2vec_nd_f32_16x16",
+        "kernel": "TINSERT_acc2vec_nd_f32_16x16",
         "m": 16, "k": 16, "n": 16,
         "dtype": np.float16,
         "dtype_out": np.float32,
-        "id_dtype": np.float16,
-        "path": "acc2mat_nz",
+        "has_output": True,
+        "eps": 1e-2,
+    },
+    {
+        "name": "acc2vec_nz_f32_16x16",
+        "kernel": "TINSERT_acc2vec_nz_f32_16x16",
+        "m": 16, "k": 16, "n": 16,
+        "dtype": np.float16,
+        "dtype_out": np.float32,
         "has_output": True,
         "eps": 1e-2,
     },

@@ -16,23 +16,23 @@
 
 using namespace PtoTestCommon;
 
-using LaunchFn = void (*)(uint16_t *a, uint16_t *b, uint16_t *id, uint16_t *out, void *stream);
+using LaunchFn = void (*)(uint16_t *, uint16_t *, uint16_t *, void *);
 
-void LaunchAcc2Mat_f16_16x16(uint16_t *a, uint16_t *b, uint16_t *id, uint16_t *out, void *stream);
-void LaunchAcc2Mat_bf16_16x16(uint16_t *a, uint16_t *b, uint16_t *id, uint16_t *out, void *stream);
+void LaunchAcc2VecND_f16_16x16(uint16_t *a, uint16_t *b, uint16_t *c, void *stream);
+void LaunchAcc2VecND_f32_16x16(uint16_t *a, uint16_t *b, uint32_t *c, void *stream);
+void LaunchAcc2VecNZ_f32_16x16(uint16_t *a, uint16_t *b, uint32_t *c, void *stream);
 
 struct TestCase {
     const char *name;
     LaunchFn launch;
     size_t m, k, n;
-    bool has_output;
     size_t out_elem_bytes;
-    bool has_id;
 };
 
 static const TestCase kCases[] = {
-    {"acc2mat_f16_16x16",  reinterpret_cast<LaunchFn>(LaunchAcc2Mat_f16_16x16),  16, 16, 16, true, 4, true},
-    {"acc2mat_bf16_16x16", reinterpret_cast<LaunchFn>(LaunchAcc2Mat_bf16_16x16), 16, 16, 16, true, 4, true},
+    {"acc2vec_nd_f16_16x16", LaunchAcc2VecND_f16_16x16,                            16, 16, 16, 2},
+    {"acc2vec_nd_f32_16x16", reinterpret_cast<LaunchFn>(LaunchAcc2VecND_f32_16x16), 16, 16, 16, 4},
+    {"acc2vec_nz_f32_16x16", reinterpret_cast<LaunchFn>(LaunchAcc2VecNZ_f32_16x16), 16, 16, 16, 4},
 };
 static constexpr size_t kNumCases = sizeof(kCases) / sizeof(kCases[0]);
 
@@ -47,14 +47,13 @@ static int RunCase(const TestCase &tc, int deviceId, aclrtStream stream) {
     const size_t outBytes = outElems * tc.out_elem_bytes;
     size_t aFileSize = aBytes;
     size_t bFileSize = bBytes;
-    size_t idFileSize = tc.has_id ? outElems * sizeof(uint16_t) : 0;
 
     std::printf("[INFO] === case: %s (m=%zu, k=%zu, n=%zu) ===\n", tc.name, tc.m, tc.k, tc.n);
 
     std::string caseDir = std::string("./") + tc.name;
 
-    void *aHost = nullptr, *bHost = nullptr, *idHost = nullptr, *outHost = nullptr;
-    void *aDev = nullptr, *bDev = nullptr, *idDev = nullptr, *outDev = nullptr;
+    void *aHost = nullptr, *bHost = nullptr, *outHost = nullptr;
+    void *aDev = nullptr, *bDev = nullptr, *outDev = nullptr;
 
     aclrtMallocHost(&aHost, aBytes);
     aclrtMallocHost(&bHost, bBytes);
@@ -62,11 +61,6 @@ static int RunCase(const TestCase &tc, int deviceId, aclrtStream stream) {
     aclrtMalloc(&aDev, aBytes, ACL_MEM_MALLOC_HUGE_FIRST);
     aclrtMalloc(&bDev, bBytes, ACL_MEM_MALLOC_HUGE_FIRST);
     aclrtMalloc(&outDev, outBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-
-    if (tc.has_id) {
-        aclrtMallocHost(&idHost, idFileSize);
-        aclrtMalloc(&idDev, idFileSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    }
 
     if (!ReadFile((caseDir + "/input1.bin").c_str(), aFileSize, aHost, aBytes)) {
         std::fprintf(stderr, "[ERROR] failed to read %s/input1.bin\n", caseDir.c_str());
@@ -76,45 +70,33 @@ static int RunCase(const TestCase &tc, int deviceId, aclrtStream stream) {
         std::fprintf(stderr, "[ERROR] failed to read %s/input2.bin\n", caseDir.c_str());
         rc = 1;
     }
-    if (rc == 0 && tc.has_id && !ReadFile((caseDir + "/input3.bin").c_str(), idFileSize, idHost, idFileSize)) {
-        std::fprintf(stderr, "[ERROR] failed to read %s/input3.bin\n", caseDir.c_str());
-        rc = 1;
-    }
 
     if (rc == 0) {
         aclrtMemcpy(aDev, aBytes, aHost, aBytes, ACL_MEMCPY_HOST_TO_DEVICE);
         aclrtMemcpy(bDev, bBytes, bHost, bBytes, ACL_MEMCPY_HOST_TO_DEVICE);
         aclrtMemset(outDev, outBytes, 0, outBytes);
-        if (tc.has_id) {
-            aclrtMemcpy(idDev, idFileSize, idHost, idFileSize, ACL_MEMCPY_HOST_TO_DEVICE);
-        }
 
         tc.launch(
             static_cast<uint16_t *>(aDev),
             static_cast<uint16_t *>(bDev),
-            static_cast<uint16_t *>(idDev),
             static_cast<uint16_t *>(outDev),
             stream
         );
 
         aclrtSynchronizeStream(stream);
 
-        if (tc.has_output) {
-            aclrtMemcpy(outHost, outBytes, outDev, outBytes, ACL_MEMCPY_DEVICE_TO_HOST);
-            if (!WriteFile((caseDir + "/output.bin").c_str(), outHost, outBytes)) {
-                std::fprintf(stderr, "[ERROR] failed to write %s/output.bin\n", caseDir.c_str());
-                rc = 1;
-            }
+        aclrtMemcpy(outHost, outBytes, outDev, outBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+        if (!WriteFile((caseDir + "/output.bin").c_str(), outHost, outBytes)) {
+            std::fprintf(stderr, "[ERROR] failed to write %s/output.bin\n", caseDir.c_str());
+            rc = 1;
         }
     }
 
     if (aDev) aclrtFree(aDev);
     if (bDev) aclrtFree(bDev);
-    if (idDev) aclrtFree(idDev);
     if (outDev) aclrtFree(outDev);
     if (aHost) aclrtFreeHost(aHost);
     if (bHost) aclrtFreeHost(bHost);
-    if (idHost) aclrtFreeHost(idHost);
     if (outHost) aclrtFreeHost(outHost);
 
     if (rc == 0)
