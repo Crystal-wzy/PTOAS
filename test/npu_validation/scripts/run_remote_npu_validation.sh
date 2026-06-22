@@ -108,7 +108,7 @@ discover_cann_host_link_dirs() {
   fi
 
   if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
-    log "ASCEND_HOME_PATH=${ASCEND_HOME_PATH} is missing libnnopbase.so under standard host lib dirs; probing fallback CANN roots."
+    log "ASCEND_HOME_PATH=${ASCEND_HOME_PATH} is missing libnnopbase.so under standard host lib dirs; probing fallback CANN roots." >&2
   fi
 
   for root in \

@@ -2410,6 +2410,7 @@ target_link_libraries({testcase} PRIVATE
     runtime
     stdc++ ascendcl m tiling_api platform c_sec dl ${{PTO_NNOPBASE_LIB}}
 )
+target_link_options({testcase} PRIVATE -Wl,--allow-shlib-undefined)
 
 if(ENABLE_SIM_GOLDEN)
     # Simulator executable: used to generate golden outputs (Ascend camodel).
@@ -2432,6 +2433,7 @@ if(ENABLE_SIM_GOLDEN)
         runtime_camodel
         stdc++ ascendcl m tiling_api platform c_sec dl ${{PTO_NNOPBASE_LIB}}
     )
+    target_link_options({testcase}_sim PRIVATE -Wl,--allow-shlib-undefined)
 endif()
 """
     (output_dir / "CMakeLists.txt").write_text(cmake_content.strip() + "\n", encoding="utf-8")
