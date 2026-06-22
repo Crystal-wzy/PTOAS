@@ -114,24 +114,24 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
       // Tile domain: alloc_tile creates UB tile handles; tload/tstore operate
       // on tile_buf values before/after the vector scope compute region.
       %oldmax_tile = pto.alloc_tile addr = %c0_i64 valid_row = %row_count
-        : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>
+        : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
       %oldsum_tile = pto.alloc_tile addr = %c128_i64 valid_row = %row_count
-        : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>
+        : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
       %qk_tile = pto.alloc_tile addr = %c256_i64 valid_row = %row_count valid_col = %seq
         : !pto.tile_buf<vec, 8x128xf32, valid=?x?>
       %out_tile = pto.alloc_tile addr = %c8448_i64 valid_row = %row_count valid_col = %seq
         : !pto.tile_buf<vec, 8x128xf32, valid=?x?>
       %newmax_tile = pto.alloc_tile addr = %c16640_i64 valid_row = %row_count
-        : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>
+        : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
       %newsum_tile = pto.alloc_tile addr = %c16768_i64 valid_row = %row_count
-        : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>
+        : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
       %expmax_tile = pto.alloc_tile addr = %c16896_i64 valid_row = %row_count
-        : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>
+        : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
 
       pto.tload ins(%oldmax_part : !pto.partition_tensor_view<?x?x?x?x?xf32>)
-                outs(%oldmax_tile : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>)
+                outs(%oldmax_tile : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>)
       pto.tload ins(%oldsum_part : !pto.partition_tensor_view<?x?x?x?x?xf32>)
-                outs(%oldsum_tile : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>)
+                outs(%oldsum_tile : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>)
       pto.tload ins(%qk_part : !pto.partition_tensor_view<?x?x?x?x?xf32>)
                 outs(%qk_tile : !pto.tile_buf<vec, 8x128xf32, valid=?x?>)
 
@@ -142,10 +142,10 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
         // Boundary into vecscope instructions: tile_buf_addr materializes UB
         // pointers from tile handles so vecscope can use vlds/vsts.
         %ub_oldmax = pto.tile_buf_addr %oldmax_tile
-          : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>
+          : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
          -> !pto.ptr<f32, ub>
         %ub_oldsum = pto.tile_buf_addr %oldsum_tile
-          : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>
+          : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
          -> !pto.ptr<f32, ub>
         %ub_qk = pto.tile_buf_addr %qk_tile
           : !pto.tile_buf<vec, 8x128xf32, valid=?x?>
@@ -154,13 +154,13 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
           : !pto.tile_buf<vec, 8x128xf32, valid=?x?>
          -> !pto.ptr<f32, ub>
         %ub_newmax = pto.tile_buf_addr %newmax_tile
-          : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>
+          : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
          -> !pto.ptr<f32, ub>
         %ub_newsum = pto.tile_buf_addr %newsum_tile
-          : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>
+          : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
          -> !pto.ptr<f32, ub>
         %ub_expmax = pto.tile_buf_addr %expmax_tile
-          : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>
+          : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
          -> !pto.ptr<f32, ub>
         %active = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
         %one_mask, %one_remaining = pto.plt_b32 %c1_i32 : i32 -> !pto.mask<b32>, i32
@@ -223,11 +223,11 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
       // Back in the tile domain: tstore writes the tile_buf results to GM
       // partitions after the VPTO vecscope finishes.
-      pto.tstore ins(%newmax_tile : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>)
+      pto.tstore ins(%newmax_tile : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>)
                  outs(%newmax_part : !pto.partition_tensor_view<?x?x?x?x?xf32>)
-      pto.tstore ins(%newsum_tile : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>)
+      pto.tstore ins(%newsum_tile : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>)
                  outs(%newsum_part : !pto.partition_tensor_view<?x?x?x?x?xf32>)
-      pto.tstore ins(%expmax_tile : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=row_major>)
+      pto.tstore ins(%expmax_tile : !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>)
                  outs(%expmax_part : !pto.partition_tensor_view<?x?x?x?x?xf32>)
       pto.tstore ins(%out_tile : !pto.tile_buf<vec, 8x128xf32, valid=?x?>)
                  outs(%out_part : !pto.partition_tensor_view<?x?x?x?x?xf32>)

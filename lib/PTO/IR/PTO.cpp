@@ -1920,15 +1920,11 @@ static LogicalResult verifyTRowReductionWithTmpCommon(Operation *op, Type srcTy,
                                                       Type tmpTy, Type dstTy,
                                                       StringRef elemTypeError) {
   if (failed(verifyRowReductionSrcLayout(op, srcTy, "src")) ||
-      failed(verifyVecTileCommon(op, tmpTy, "tmp")) ||
+      failed(verifyVecTileStorage(op, tmpTy, "tmp")) ||
       failed(verifyRowReductionDstLayout(op, dstTy, "dst")))
-    return failure();
-  if (failed(verifyTileBufSameElemType(op, srcTy, tmpTy, "src", "tmp")))
     return failure();
   if (getElemTy(srcTy) != getElemTy(dstTy))
     return op->emitOpError("expects src and dst to have the same element type");
-  if (!isRowMajorTileBuf(tmpTy))
-    return op->emitOpError("expects tmp to use the row_major blayout");
   if (failed(verifyRowReductionValidRegion(op, srcTy, dstTy,
                                            /*allowEmptyMarker=*/true)))
     return failure();

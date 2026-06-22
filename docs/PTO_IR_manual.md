@@ -4333,9 +4333,9 @@ pto.trowsum ins(<src>, <tmp> : <src_type>, <tmp_type>)
 
 **Constraints & Verification:**
 
-- `src`, `tmp`, and `dst` must use `loc=vec`.
+- `src` and `dst` must use `loc=vec`.
+- `tmp` must be a `loc=vec` tile.
 - `src` must use ND-style tile layout (`blayout=row_major`, `slayout=none_box`).
-- `tmp` must use row-major layout and have the same element type as `src`.
 - `dst` must use `slayout=none_box` and either:
   - a DN-style column vector tile (`blayout=col_major`, `cols=1`), or
   - a legacy ND-style tile with `valid column == 1`.
@@ -4345,7 +4345,7 @@ pto.trowsum ins(<src>, <tmp> : <src_type>, <tmp_type>)
   - `src valid_shape[0]` and `src valid_shape[1]` must be non-zero.
   - `src valid_shape[0] == dst valid_shape[0]`.
   - `dst valid_shape[1] == 1`.
-- PTO IR does not require `tmp` to match the shape or valid shape of `src` / `dst`.
+- PTO IR does not impose extra `tmp` element-type, shape, or layout constraints for this op.
 - On A2/A3, `tmp` is consumed as reduction workspace.
 - On A5, `tmp` is kept for ABI compatibility and the current implementation does not consume it.
 **Hardware Mapping:**
@@ -4399,9 +4399,9 @@ pto.trowmax ins(<src>, <tmp> : <src_type>, <tmp_type>)
 
 **Constraints & Verification:**
 
-- `src`, `tmp`, and `dst` must use `loc=vec`.
+- `src` and `dst` must use `loc=vec`.
+- `tmp` must be a `loc=vec` tile and have the same element type as `src`.
 - `src` must use ND-style tile layout (`blayout=row_major`, `slayout=none_box`).
-- `tmp` must use row-major layout and have the same element type as `src`.
 - `dst` must use `slayout=none_box` and either:
   - a DN-style column vector tile (`blayout=col_major`, `cols=1`), or
   - a legacy ND-style tile with `valid column == 1`.
@@ -4411,7 +4411,7 @@ pto.trowmax ins(<src>, <tmp> : <src_type>, <tmp_type>)
   - `src valid_shape[0]` and `src valid_shape[1]` must be non-zero.
   - `src valid_shape[0] == dst valid_shape[0]`.
   - `dst valid_shape[1] == 1`.
-- PTO IR does not require `tmp` to match the shape or valid shape of `src` / `dst`.
+- PTO IR does not impose extra `tmp` shape or layout constraints for this op.
 - On A2/A3, `tmp` is consumed as reduction workspace.
 - On A5, `tmp` is kept for ABI compatibility and the current implementation does not consume it.
 
@@ -4542,9 +4542,9 @@ pto.trowmin ins(<src>, <tmp> : <src_type>, <tmp_type>)
 
 **Constraints & Verification:**
 
-- `src`, `tmp`, and `dst` must use `loc=vec`.
+- `src` and `dst` must use `loc=vec`.
+- `tmp` must be a `loc=vec` tile and have the same element type as `src`.
 - `src` must use ND-style tile layout (`blayout=row_major`, `slayout=none_box`).
-- `tmp` must use row-major layout and have the same element type as `src`.
 - `dst` must use `slayout=none_box` and either:
   - a DN-style column vector tile (`blayout=col_major`, `cols=1`), or
   - a legacy ND-style tile with `valid column == 1`.
@@ -4554,7 +4554,7 @@ pto.trowmin ins(<src>, <tmp> : <src_type>, <tmp_type>)
   - `src valid_shape[0]` and `src valid_shape[1]` must be non-zero.
   - `src valid_shape[0] == dst valid_shape[0]`.
   - `dst valid_shape[1] == 1`.
-- PTO IR does not require `tmp` to match the shape or valid shape of `src` / `dst`.
+- PTO IR does not impose extra `tmp` shape or layout constraints for this op.
 - On A2/A3, `tmp` is consumed as reduction workspace.
 - On A5, `tmp` is kept for ABI compatibility and the current implementation does not consume it.
 
@@ -4685,9 +4685,9 @@ pto.trowprod ins(<src>, <tmp> : <src_type>, <tmp_type>)
 
 **Constraints & Verification:**
 
-- `src`, `tmp`, and `dst` must use `loc=vec`.
+- `src` and `dst` must use `loc=vec`.
+- `tmp` must be a `loc=vec` tile and have the same element type as `src`.
 - `src` must use ND-style tile layout (`blayout=row_major`, `slayout=none_box`).
-- `tmp` must use row-major layout and have the same element type as `src`.
 - `dst` must use `slayout=none_box` and either:
   - a DN-style column vector tile (`blayout=col_major`, `cols=1`), or
   - a legacy ND-style tile with `valid column == 1`.
@@ -4697,7 +4697,7 @@ pto.trowprod ins(<src>, <tmp> : <src_type>, <tmp_type>)
   - `src valid_shape[0]` and `src valid_shape[1]` must be non-zero.
   - `src valid_shape[0] == dst valid_shape[0]`.
   - `dst valid_shape[1] == 1`.
-- PTO IR does not require `tmp` to match the shape or valid shape of `src` / `dst`.
+- PTO IR does not impose extra `tmp` shape or layout constraints for this op.
 - On A2/A3, `tmp` is consumed as reduction workspace.
 - On A5, `tmp` is kept for ABI compatibility and the current implementation does not consume it.
 
