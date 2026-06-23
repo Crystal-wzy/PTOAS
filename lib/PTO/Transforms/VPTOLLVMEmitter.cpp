@@ -10391,6 +10391,28 @@ collectSimtEntryFunctionNames(ModuleOp module) {
   return simtEntries;
 }
 
+static void applyArtifactVisibilityLinkage(ModuleOp sourceModule,
+                                           llvm::Module &llvmModule) {
+  llvm::StringMap<bool> externalByName;
+  sourceModule.walk([&](func::FuncOp funcOp) {
+    if (funcOp.isDeclaration())
+      return;
+    externalByName[funcOp.getSymName()] =
+        pto::hasExternalArtifactVisibility(funcOp);
+  });
+
+  for (llvm::Function &function : llvmModule) {
+    auto it = externalByName.find(function.getName());
+    if (it == externalByName.end())
+      continue;
+    if (it->second) {
+      function.setLinkage(llvm::GlobalValue::ExternalLinkage);
+      continue;
+    }
+    function.setLinkage(llvm::GlobalValue::InternalLinkage);
+  }
+}
+
 static void applySimtEntryCallingConvention(
     llvm::Module &llvmModule,
     const llvm::StringSet<llvm::BumpPtrAllocator> &simtEntryNames) {
@@ -10445,6 +10467,7 @@ emitDeviceLLVMModule(ModuleOp deviceModule, StringRef kernelKind,
     return failure();
   }
 
+  applyArtifactVisibilityLinkage(deviceModule, *llvmModule);
   applySimtEntryCallingConvention(*llvmModule, simtEntryNames);
   if (failed(attachAIVectorScopeMetadata(*llvmModule, diagOS)))
     return failure();

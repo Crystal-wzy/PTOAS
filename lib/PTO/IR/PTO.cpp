@@ -2680,6 +2680,30 @@ bool mlir::pto::isPTOEntryFunction(func::FuncOp func) {
   return hasExplicitPTOEntryAttr(func);
 }
 
+bool mlir::pto::hasExternalArtifactVisibility(func::FuncOp func) {
+  if (!func || func.isDeclaration())
+    return false;
+  if (isPTOEntryFunction(func))
+    return true;
+  auto attr = func->getAttrOfType<StringAttr>(kPTOVisibilityAttrName);
+  if (!attr)
+    return false;
+  return attr.getValue() == kPTOVisibilityExternalValue;
+}
+
+void mlir::pto::setExternalArtifactVisibility(func::FuncOp func,
+                                              bool isExternal) {
+  if (!func)
+    return;
+  if (isExternal) {
+    func->setAttr(kPTOVisibilityAttrName,
+                  StringAttr::get(func.getContext(),
+                                  kPTOVisibilityExternalValue));
+    return;
+  }
+  func->removeAttr(kPTOVisibilityAttrName);
+}
+
 LogicalResult mlir::pto::validatePTOEntryFunctions(ModuleOp module) {
   if (!module)
     return success();

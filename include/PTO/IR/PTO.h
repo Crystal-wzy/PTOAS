@@ -187,6 +187,9 @@ inline constexpr llvm::StringLiteral kPTOSimtMaxThreadsAttrName =
     "pto.simt_max_threads";
 inline constexpr llvm::StringLiteral kPTOSimtMaxRegistersAttrName =
     "pto.simt_max_regs";
+inline constexpr llvm::StringLiteral kPTOVisibilityAttrName = "pto.visibility";
+inline constexpr llvm::StringLiteral kPTOVisibilityInternalValue = "internal";
+inline constexpr llvm::StringLiteral kPTOVisibilityExternalValue = "external";
 inline constexpr llvm::StringLiteral kPTODSLLogicalNameAttrName =
     "pto.ptodsl.logical_name";
 
@@ -208,6 +211,15 @@ bool hasExplicitPTOEntryAttr(func::FuncOp func);
 
 /// Return true if the function should be emitted as an AICORE entry.
 bool isPTOEntryFunction(func::FuncOp func);
+
+/// Return true if the function should remain externally visible in backend
+/// artifacts. PTO entries are always treated as externally visible. Non-entry
+/// functions default to internal visibility unless they carry
+/// `pto.visibility = "external"`.
+bool hasExternalArtifactVisibility(func::FuncOp func);
+
+/// Set explicit artifact visibility on one function definition.
+void setExternalArtifactVisibility(func::FuncOp func, bool isExternal);
 
 /// Validate module-level PTO entry configuration before EmitC lowering.
 LogicalResult validatePTOEntryFunctions(ModuleOp module);

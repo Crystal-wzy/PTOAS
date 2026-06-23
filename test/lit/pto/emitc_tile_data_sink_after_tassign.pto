@@ -24,7 +24,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
   }
 }
 
-// CHECK-LABEL: extern "C" AICORE void kernel(int64_t
+// CHECK-LABEL: AICORE void kernel(int64_t
 // CHECK: Tile<TileType::Vec, float, 1, 16
 // CHECK-NEXT: TASSIGN(v2, v1);
 // CHECK: Tile<TileType::Vec, float, 32, 32

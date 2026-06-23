@@ -7,7 +7,8 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // RUN: ptoas %s | FileCheck %s
-// Guards the mixed-backend helper ABI: public non-entry EmitC functions must keep C linkage.
+// Guards explicit artifact visibility: public non-entry EmitC functions only
+// keep C linkage when they opt into external artifact visibility.
 
 module {
   func.func @entry() attributes {pto.entry} {
@@ -15,7 +16,7 @@ module {
     return
   }
 
-  func.func public @helper() {
+  func.func public @helper() attributes {pto.visibility = "external"} {
     return
   }
 }

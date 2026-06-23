@@ -737,6 +737,7 @@ class TraceSession:
             helper = func.FuncOp(specialized_symbol_name, fn_ty)
             self._attach_ptodsl_logical_name_attr(helper, spec.symbol_name)
             helper.attributes["sym_visibility"] = StringAttr.get("public")
+            helper.attributes["pto.visibility"] = StringAttr.get("external")
             if (
                 module_spec.backend == "emitc"
                 and not module_spec.entry

@@ -3026,6 +3026,10 @@ def main() -> None:
         "kernel-module callee definition should be materialized as a public ABI-specialized symbol",
     )
     expect(
+        'pto.visibility = "external"' in kernel_module_call_text,
+        "kernel-module ABI-specialized primary definitions should carry explicit external artifact visibility",
+    )
+    expect(
         'pto.ptodsl.logical_name = "process_tile_module"' in kernel_module_call_text,
         "PTODSL-specialized kernel-module symbols should carry the authored logical symbol name as IR metadata",
     )
@@ -3046,6 +3050,10 @@ def main() -> None:
     expect(
         "func.func public @ast_rewrite_kernel_module_probe__ptodsl_" in ast_rewrite_kernel_module_text,
         "entry=False kernel-module lowering should materialize the AST-rewritten callee definition",
+    )
+    expect(
+        'pto.visibility = "external"' in ast_rewrite_kernel_module_text,
+        "AST-rewritten kernel-module primary definitions should carry explicit external artifact visibility",
     )
     expect(
         ast_rewrite_kernel_module_text.count("scf.for") >= 2,
@@ -3105,6 +3113,10 @@ def main() -> None:
         and "func.func private @process_row_ptr_kernel_module__ptodsl_"
         in mixed_backend_text,
         "mixed-backend kernel-module calls should currently lower through the C-ABI-compatible ptr/scalar subset",
+    )
+    expect(
+        'pto.visibility = "external"' in mixed_backend_text,
+        "mixed-backend kernel-module primary definitions should mark their artifact ABI visibility explicitly",
     )
     expect(
         mixed_backend_text.count("func.func private @process_row_ptr_kernel_module__ptodsl_") >= 1

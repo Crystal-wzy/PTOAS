@@ -76,7 +76,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // IR: func.func private @ptodsl_helper_sink(!pto.ptr<f32, ub>, f32)
 
 // EMITC-LABEL: extern "C" AICORE void ptodsl_helper_sink(
-// EMITC-LABEL: extern "C" AICORE void ptodsl_subkernel_helper_tile_abi_emitc
+// EMITC-LABEL: AICORE void ptodsl_subkernel_helper_tile_abi_emitc
 // EMITC: TLOAD(
 // EMITC: .data()
 // EMITC: ptodsl_helper_sink(

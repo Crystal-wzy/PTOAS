@@ -40,7 +40,7 @@ module {
   }
 }
 
-// CHECK-LABEL: extern "C" AICORE void emitc_memref_cast_from_dynamic_subview
+// CHECK-LABEL: AICORE void emitc_memref_cast_from_dynamic_subview
 // CHECK: TLOAD(
 // CHECK: TABS(
 // CHECK: TSTORE(

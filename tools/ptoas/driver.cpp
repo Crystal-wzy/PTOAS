@@ -425,6 +425,8 @@ static func::FuncOp cloneFunctionIntoModule(ModuleOp jobModule,
   cloned.setSymName(newName);
   cloned->setAttr("sym_visibility", StringAttr::get(jobModule.getContext(),
                                                      visibility));
+  mlir::pto::setExternalArtifactVisibility(cloned, visibility != "private" &&
+                                                       mlir::pto::hasExternalArtifactVisibility(sourceFunc));
   builder.insert(cloned);
   return cloned;
 }

@@ -422,6 +422,7 @@ def main() -> None:
     )
     expect(
         "func.func public @scale_row_kernel_module__ptodsl_" in example_vpto_child
+        and 'pto.visibility = "external"' in example_vpto_child
         and "pto.section.vector {" in example_vpto_child,
         "mixed_backend_kernel_module.py VPTO child should expose a public helper definition with explicit vector authoring, matching the vector-helper side of mixed-external-vadd",
     )
@@ -472,6 +473,7 @@ def main() -> None:
     )
     expect(
         'pto.kernel_kind = #pto.kernel_kind<cube>' in cv_split_frontend_text
+        and 'pto.visibility = "external"' in cv_split_frontend_text
         and "func.func public @hw_native_flash_attention_cv_split_cube_h128_s1t256_qp3_qr128__ptodsl_"
         in cv_split_frontend_text,
         "cv-split frontend verification should preserve the cube helper public ABI-specialized symbol and kernel_kind",
@@ -484,6 +486,8 @@ def main() -> None:
     )
     expect(
         'pto.kernel_kind = #pto.kernel_kind<vector>' in cv_split_frontend_text
+        and
+        'pto.visibility = "external"' in cv_split_frontend_text
         and
         "func.func public @hw_native_flash_attention_cv_split_vector_h128_s1t256_qp3_qr128__ptodsl_"
         in cv_split_frontend_text,

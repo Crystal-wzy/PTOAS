@@ -7,5 +7,5 @@ module attributes {pto.target_arch = "a2a3"} {
   }
 }
 
-// CHECK-LABEL: extern "C" AICORE void softmax(
+// CHECK-LABEL: AICORE void softmax(
 // CHECK: #if defined(__DAV_VEC__)
