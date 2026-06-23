@@ -1576,6 +1576,8 @@ For each (i, j):
   - `lhs_scale` and `rhs_scale` must use `loc=scaling` and compact MX block-scale shapes:
     - `lhs_scale` shape and valid shape are `[M, ceil(K/32)]`
     - `rhs_scale` shape and valid shape are `[ceil(K/32), N]`
+  - `lhs_scale` must use `blayout=row_major`, `slayout=row_major`, `fractal=32`.
+  - `rhs_scale` must use `blayout=col_major`, `slayout=col_major`, `fractal=32`.
   - `m/k/n` are taken from `lhs valid row`, `lhs valid column`, and `rhs valid column`.
   - Runtime: `m/k/n` must be in `[1, 4095]`.
 
@@ -1901,8 +1903,10 @@ dst = gemv(a, b)   // quantization/mixed-precision behavior is target-defined
     - any pair from `!pto.f4E1M2x2` and `!pto.f4E2M1x2`
   - `a`/`b`/`dst` follow the same A5 tile location and layout constraints as `pto.tmatmul`.
   - `a_scale` and `b_scale` must be tile buffers in `loc=scaling`.
-  - `a_scale` must have the same shape and valid shape as `a`.
-  - `b_scale` must have the same shape and valid shape as `b`.
+  - `a_scale` shape and valid shape must be `[M, ceil(K/32)]`.
+  - `b_scale` shape and valid shape must be `[ceil(K/32), N]`.
+  - `a_scale` must use `blayout=row_major`, `slayout=row_major`, `fractal=32`.
+  - `b_scale` must use `blayout=col_major`, `slayout=col_major`, `fractal=32`.
   - Runtime: `m/k/n` are taken from `a valid row`, `a valid column`, and `b valid column`, and must be in `[1, 4095]`.
 
 **Hardware Mapping:**

@@ -457,14 +457,14 @@ pto.mte_l1_l0b(l1_b.as_ptr(), l0b.as_ptr(), 64, 16)
 
 ### `pto.mte_l1_l0a_mx` — MX L1 → L0A
 
-#### `pto.mte_l1_l0a_mx(src: PtrType, dst: PtrType, m: int, k: int, *, transpose: bool = False) -> None`
+#### `pto.mte_l1_l0a_mx(src: PtrType, dst: PtrType, m: int, k: int, *, start_row: int = 0, start_col: int = 0) -> None`
 
 **Description**: MX-mode L1-to-L0A wrapper. It prepares both the logical left
 operand tile and the associated MX scale payload that later `pto.mad_mx*`
 consumes.
 
-**Parameters**: Same as `pto.mte_l1_l0a`, except `start_row` and `start_col`
-are not supported for MX stage loads.
+**Parameters**: Same as `pto.mte_l1_l0a`, except MX stage loads do not expose
+`transpose`.
 
 **Constraints**:
 - The source tile must use a target-supported MX dtype such as `f8E4M3FN`.
@@ -474,14 +474,14 @@ are not supported for MX stage loads.
 
 ### `pto.mte_l1_l0b_mx` — MX L1 → L0B
 
-#### `pto.mte_l1_l0b_mx(src: PtrType, dst: PtrType, k: int, n: int, *, transpose: bool = False) -> None`
+#### `pto.mte_l1_l0b_mx(src: PtrType, dst: PtrType, k: int, n: int, *, start_row: int = 0, start_col: int = 0) -> None`
 
 **Description**: MX-mode L1-to-L0B wrapper. It prepares both the logical right
 operand tile and the associated MX scale payload that later `pto.mad_mx*`
 consumes.
 
-**Parameters**: Same as `pto.mte_l1_l0b`, except `start_row` and `start_col`
-are not supported for MX stage loads.
+**Parameters**: Same as `pto.mte_l1_l0b`, except MX stage loads do not expose
+`transpose`.
 
 **Constraints**:
 - The source tile must use a target-supported MX dtype such as `f8E4M3FN`.

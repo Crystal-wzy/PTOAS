@@ -227,17 +227,12 @@ def main():
         run_st.set_env_variables(args.run_mode, default_soc_version)
 
         if not args.without_build:
-            if args.smoke:
-                build_target = selected_testcases[0] if len(selected_testcases) == 1 else "all"
+            if len(selected_testcases) == 1:
+                build_target = selected_testcases[0]
             else:
-                build_target = "all" if selected_testcases == all_testcases else ";".join(selected_testcases)
+                build_target = "all"
             print(f"[INFO] build requested for {build_target}")
-            run_st.build_project(
-                args.run_mode,
-                default_soc_version,
-                build_target if args.smoke else "all",
-                ptoas_bin,
-            )
+            run_st.build_project(args.run_mode, default_soc_version, build_target, ptoas_bin)
 
         total = len(selected_testcases)
         if args.jobs == 1:

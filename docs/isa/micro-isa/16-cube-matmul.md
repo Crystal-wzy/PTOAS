@@ -686,8 +686,8 @@ entry applies to one 32-element K group.
 
 - **syntax:**
 ```mlir
-pto.mte_l1_l0a_mx %src, %dst, %m, %k
-  : !pto.ptr<T, l1>, !pto.ptr<T, l0a>, i64, i64
+pto.mte_l1_l0a_mx %src, %dst, %m, %k, %start_row, %start_col
+  : !pto.ptr<T, l1>, !pto.ptr<T, l0a>, i64, i64, i64, i64
 ```
 - **semantics:** Load left-side MX scale fragments for a logical `%m x %k`
   left data tile.
@@ -700,6 +700,8 @@ pto.mte_l1_l0a_mx %src, %dst, %m, %k
 | `%dst` | ptr | Left-side MX payload destination associated with `l0a` |
 | `%m` | i64 | M extent of the associated left data tile |
 | `%k` | i64 | K extent; scale grouping is by 32 K elements |
+| `%start_row` | i64 | Source MX-fractal row offset in the packed L1 big matrix |
+| `%start_col` | i64 | Source MX-fractal column offset in the packed L1 big matrix |
 
 **Constraints:**
 
@@ -709,8 +711,8 @@ pto.mte_l1_l0a_mx %src, %dst, %m, %k
 **Example:**
 
 ```mlir
-pto.mte_l1_l0a_mx %l1_a_scale, %l0a_scale, %c16_i64, %c64_i64
-  : !pto.ptr<f8E4M3FN, l1>, !pto.ptr<f8E4M3FN, l0a>, i64, i64
+pto.mte_l1_l0a_mx %l1_a_scale, %l0a_scale, %c16_i64, %c64_i64, %c0_i64, %c0_i64
+  : !pto.ptr<f8E4M3FN, l1>, !pto.ptr<f8E4M3FN, l0a>, i64, i64, i64, i64
 ```
 
 ---
@@ -719,8 +721,8 @@ pto.mte_l1_l0a_mx %l1_a_scale, %l0a_scale, %c16_i64, %c64_i64
 
 - **syntax:**
 ```mlir
-pto.mte_l1_l0b_mx %src, %dst, %k, %n
-  : !pto.ptr<T, l1>, !pto.ptr<T, l0b>, i64, i64
+pto.mte_l1_l0b_mx %src, %dst, %k, %n, %start_row, %start_col
+  : !pto.ptr<T, l1>, !pto.ptr<T, l0b>, i64, i64, i64, i64
 ```
 - **semantics:** Load right-side MX scale fragments for a logical `%k x %n`
   right data tile.
@@ -733,6 +735,8 @@ pto.mte_l1_l0b_mx %src, %dst, %k, %n
 | `%dst` | ptr | Right-side MX payload destination associated with `l0b` |
 | `%k` | i64 | K extent; scale grouping is by 32 K elements |
 | `%n` | i64 | N extent of the associated right data tile |
+| `%start_row` | i64 | Source MX-fractal row offset in the packed L1 big matrix |
+| `%start_col` | i64 | Source MX-fractal column offset in the packed L1 big matrix |
 
 **Constraints:**
 
@@ -742,8 +746,8 @@ pto.mte_l1_l0b_mx %src, %dst, %k, %n
 **Example:**
 
 ```mlir
-pto.mte_l1_l0b_mx %l1_b_scale, %l0b_scale, %c64_i64, %c16_i64
-  : !pto.ptr<f8E4M3FN, l1>, !pto.ptr<f8E4M3FN, l0b>, i64, i64
+pto.mte_l1_l0b_mx %l1_b_scale, %l0b_scale, %c64_i64, %c16_i64, %c0_i64, %c0_i64
+  : !pto.ptr<f8E4M3FN, l1>, !pto.ptr<f8E4M3FN, l0b>, i64, i64, i64, i64
 ```
 
 ---

@@ -62,9 +62,16 @@ def build():
                 pad,
                 ctx,
             )
-            cfg_scaling = pto.TileBufConfigAttr.get(
+            cfg_scale_left = pto.TileBufConfigAttr.get(
                 pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx),
-                pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx),
+                pto.SLayoutAttr.get(pto.SLayout.RowMajor, ctx),
+                pto.TileConfig.fractalMxSize,
+                pad,
+                ctx,
+            )
+            cfg_scale_right = pto.TileBufConfigAttr.get(
+                pto.BLayoutAttr.get(pto.BLayout.ColMajor, ctx),
+                pto.SLayoutAttr.get(pto.SLayout.ColMajor, ctx),
                 pto.TileConfig.fractalMxSize,
                 pad,
                 ctx,
@@ -86,8 +93,8 @@ def build():
 
             a_ty = pto.TileBufType.get([m, k], f8e4m3fn, left, [m, k], cfg_left, ctx)
             b_ty = pto.TileBufType.get([k, n], f8e5m2, right, [k, n], cfg_right, ctx)
-            a_scale_ty = pto.TileBufType.get([m, scale_k], f16, scaling, [m, scale_k], cfg_scaling, ctx)
-            b_scale_ty = pto.TileBufType.get([scale_k, n], f16, scaling, [scale_k, n], cfg_scaling, ctx)
+            a_scale_ty = pto.TileBufType.get([m, scale_k], f16, scaling, [m, scale_k], cfg_scale_left, ctx)
+            b_scale_ty = pto.TileBufType.get([scale_k, n], f16, scaling, [scale_k, n], cfg_scale_right, ctx)
             bias_ty = pto.TileBufType.get([1, n], f32, bias, [1, n], cfg_bias, ctx)
             c_ty = pto.TileBufType.get([m, n], f32, acc, [m, n], cfg_acc, ctx)
 

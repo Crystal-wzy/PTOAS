@@ -915,12 +915,10 @@ Inside `@pto.cube`, data flows through a hierarchy of private buffers: GM → L1
 
 ---
 
-#### `pto.mte_l1_l0a_mx(src: PtrType, dst: PtrType, m: int, k: int, *, transpose: bool = False) -> None`
-#### `pto.mte_l1_l0b_mx(src: PtrType, dst: PtrType, k: int, n: int, *, transpose: bool = False) -> None`
+#### `pto.mte_l1_l0a_mx(src: PtrType, dst: PtrType, m: int, k: int, *, start_row: int = 0, start_col: int = 0) -> None`
+#### `pto.mte_l1_l0b_mx(src: PtrType, dst: PtrType, k: int, n: int, *, start_row: int = 0, start_col: int = 0) -> None`
 
 **Description**: MX-mode variants of `mte_l1_l0a` and `mte_l1_l0b` for MX-capable dtypes. Parameters match their non-MX counterparts.
-
-**Compatibility note**: `transpose` is part of the TileLang DSL-compatible API surface. Current VPTO MX backend lowering does not yet consume MX `transpose=True`, so it should be treated as an accepted compatibility flag until the backend path is completed.
 
 ---
 

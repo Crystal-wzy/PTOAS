@@ -77,9 +77,57 @@ CASES = [
         "M_aligned": 144, "K_use": 80, "N_aligned": 48,
         "eps": 1e-2,
     },
-    # # ---- case6: f8e4m3 x f8e4m3 -> f32, 32x64x96 ----
-    # ...
-    # # ---- case7..10 commented out ----
+    # ---- case6: f8e4m3 x f8e4m3 -> f32, 32x64x96 ----
+    {
+        "name": "f8e4m3_32x64x96",
+        "a_dtype": fp8_e4m3fn,
+        "b_dtype": fp8_e4m3fn,
+        "c_dtype": np.float32,
+        "M": 32, "K": 64, "N": 96,
+        "M_aligned": 32, "K_use": 64, "N_aligned": 96,
+        "eps": 1e-3,
+    },
+    # ---- case7: f8e4m3 x f8e5m2 -> f32, 128x96x64 ----
+    {
+        "name": "f8e4m3_f8e5m2_128x96x64",
+        "a_dtype": fp8_e4m3fn,
+        "b_dtype": fp8_e5m2,
+        "c_dtype": np.float32,
+        "M": 128, "K": 96, "N": 64,
+        "M_aligned": 128, "K_use": 96, "N_aligned": 64,
+        "eps": 1e-3,
+    },
+    # ---- case8: f8e5m2 x f8e4m3 -> f32, 145x115x85 ----
+    {
+        "name": "f8e5m2_f8e4m3_145x115x85",
+        "a_dtype": fp8_e5m2,
+        "b_dtype": fp8_e4m3fn,
+        "c_dtype": np.float32,
+        "M": 145, "K": 115, "N": 85,
+        "M_aligned": 160, "K_use": 128, "N_aligned": 96,
+        "eps": 1e-3,
+    },
+    # ---- case9: f8e5m2 x f8e5m2 -> f32, 120x90x160 ----
+    {
+        "name": "f8e5m2_120x90x160",
+        "a_dtype": fp8_e5m2,
+        "b_dtype": fp8_e5m2,
+        "c_dtype": np.float32,
+        "M": 120, "K": 90, "N": 160,
+        "M_aligned": 128, "K_use": 96, "N_aligned": 160,
+        "eps": 1e-3,
+    },
+    # ---- case10: hif8 x hif8 -> f32, 30x90x60 ----
+    {
+        "name": "hif8_30x90x60",
+        "a_dtype": np.uint8,
+        "b_dtype": np.uint8,
+        "c_dtype": np.float32,
+        "M": 30, "K": 90, "N": 60,
+        "M_aligned": 32, "K_use": 96, "N_aligned": 64,
+        "eps": 1e-3,
+        "is_hifloat": True,
+    },
     # ---- case12: f32 x f32 -> f32, 16x32x64 (fully aligned) ----
     {
         "name": "f32_16x32x64",

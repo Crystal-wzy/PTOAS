@@ -290,6 +290,8 @@ static Value getI32Constant(OpBuilder &builder, Location loc, uint64_t value) {
 static bool isMxElementType(Type ty) {
   if (auto floatType = dyn_cast<FloatType>(ty))
     return floatType.getWidth() == 8;
+  if (isa<pto::F4E1M2x2Type, pto::F4E2M1x2Type>(ty))
+    return true;
   std::string typeText;
   llvm::raw_string_ostream os(typeText);
   ty.print(os);
@@ -367,6 +369,10 @@ static bool isMadE4M3ElementType(Type type) {
          type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ();
 }
 
+static bool isMadE5M2ElementType(Type type) {
+  return type.isFloat8E5M2() || type.isFloat8E5M2FNUZ();
+}
+
 static std::string getMadDstFragment(Type type) {
   if (type.isF16())
     return "f16";
@@ -380,8 +386,8 @@ static std::string getMadDstFragment(Type type) {
 }
 
 static FailureOr<StringRef> buildMadTypedCalleeName(MLIRContext *context,
-                                                    Type lhsElem, Type rhsElem,
-                                                    Type dstElem) {
+                                                     Type lhsElem, Type rhsElem,
+                                                     Type dstElem) {
   std::string rhs = getMadRhsFragment(rhsElem);
   std::string dst = getMadDstFragment(dstElem);
   if (lhsElem.isF16() && rhs == "f16" && dst == "f32")
@@ -400,6 +406,15 @@ static FailureOr<StringRef> buildMadTypedCalleeName(MLIRContext *context,
   if (isMadE4M3ElementType(lhsElem) && isMadE4M3ElementType(rhsElem) &&
       dst == "f32")
     return StringAttr::get(context, "llvm.hivm.MAD.e4m3e4m3.c310").getValue();
+  if (isMadE4M3ElementType(lhsElem) && isMadE5M2ElementType(rhsElem) &&
+      dst == "f32")
+    return StringAttr::get(context, "llvm.hivm.MAD.e4m3e5m2.c310").getValue();
+  if (isMadE5M2ElementType(lhsElem) && isMadE4M3ElementType(rhsElem) &&
+      dst == "f32")
+    return StringAttr::get(context, "llvm.hivm.MAD.e5m2e4m3.c310").getValue();
+  if (isMadE5M2ElementType(lhsElem) && isMadE5M2ElementType(rhsElem) &&
+      dst == "f32")
+    return StringAttr::get(context, "llvm.hivm.MAD.e5m2e5m2.c310").getValue();
   if (pto::isPTOHiFloat8Type(lhsElem) && pto::isPTOHiFloat8Type(rhsElem) &&
       dst == "f32")
     return StringAttr::get(context, "llvm.hivm.MAD.e4m3e4m3.c310").getValue();
@@ -598,7 +613,9 @@ static std::string getL0LoadElementFragment(Type type) {
   if (StringRef(lower).contains("e4m3") ||
       StringRef(lower).contains("e5m2") ||
       StringRef(lower).contains("e8m0") ||
-      StringRef(lower).contains("hif8"))
+      StringRef(lower).contains("hif8") ||
+      StringRef(lower).contains("e1m2x2") ||
+      StringRef(lower).contains("e2m1x2"))
     return "s8";
   return {};
 }
@@ -798,6 +815,8 @@ static std::string getCopyElementFragment(Type elementType) {
     return "e8m0";
   if (StringRef(lower).contains("hif8"))
     return "hif8";
+  if (StringRef(lower).contains("e1m2x2") || StringRef(lower).contains("e2m1x2"))
+    return "u8";
   if (auto intType = dyn_cast<IntegerType>(elementType)) {
     switch (intType.getWidth()) {
     case 8:
@@ -823,6 +842,8 @@ static std::string getNd2NzCopyElementFragment(Type elementType) {
   std::string lower = StringRef(typeText).lower();
   if (StringRef(lower).contains("e4m3") || StringRef(lower).contains("e5m2") ||
       StringRef(lower).contains("e8m0") || StringRef(lower).contains("hif8"))
+    return "U8";
+  if (StringRef(lower).contains("e1m2x2") || StringRef(lower).contains("e2m1x2"))
     return "U8";
 
   if (elementType.isF16() || elementType.isBF16())
@@ -3063,8 +3084,8 @@ static FailureOr<StringRef> buildOrdinaryMadCallee(MLIRContext *context,
     return failure();
 
   return buildMadTypedCalleeName(context, lhsType.getElementType(),
-                                 rhsType.getElementType(),
-                                 dstType.getElementType());
+                                  rhsType.getElementType(),
+                                  dstType.getElementType());
 }
 
 static FailureOr<StringRef> buildMxMadCallee(MLIRContext *context,
@@ -3167,11 +3188,6 @@ static FailureOr<StringRef> buildLoadCbufToCaCallee(MLIRContext *context,
       .getValue();
 }
 
-static StringRef buildLoadCbufToCaS4Callee(MLIRContext *context) {
-  return StringAttr::get(context, "llvm.hivm.LOAD.L1.TO.L0A.2Dv2.s4")
-      .getValue();
-}
-
 static FailureOr<StringRef> buildLoadCbufToCbCallee(MLIRContext *context,
                                                      Type sourceType) {
   auto ptrType = dyn_cast<pto::PtrType>(sourceType);
@@ -3184,7 +3200,26 @@ static FailureOr<StringRef> buildLoadCbufToCbCallee(MLIRContext *context,
       .getValue();
 }
 
-static StringRef buildLoadCbufToCbS4Callee(MLIRContext *context) {
+static FailureOr<StringRef> buildLoadCbufToCaS4Callee(MLIRContext *context,
+                                                       Type sourceType) {
+  auto ptrType = dyn_cast<pto::PtrType>(sourceType);
+  if (!ptrType)
+    return failure();
+  Type elementType = ptrType.getElementType();
+  if (!isa<pto::F4E1M2x2Type, pto::F4E2M1x2Type>(elementType))
+    return failure();
+  return StringAttr::get(context, "llvm.hivm.LOAD.L1.TO.L0A.2Dv2.s4")
+      .getValue();
+}
+
+static FailureOr<StringRef> buildLoadCbufToCbS4Callee(MLIRContext *context,
+                                                       Type sourceType) {
+  auto ptrType = dyn_cast<pto::PtrType>(sourceType);
+  if (!ptrType)
+    return failure();
+  Type elementType = ptrType.getElementType();
+  if (!isa<pto::F4E1M2x2Type, pto::F4E2M1x2Type>(elementType))
+    return failure();
   return StringAttr::get(context, "llvm.hivm.LOAD.L1.TO.L0B.2Dv2.s4")
       .getValue();
 }
@@ -5040,18 +5075,24 @@ public:
     if (!transpose)
       return rewriter.notifyMatchFailure(op, "failed to cast transpose to i64");
 
-    StringRef calleeName = std::is_same_v<LoadOp, pto::LoadCbufToCaS4Op>
-                               ? buildLoadCbufToCaS4Callee(op.getContext())
-                               : buildLoadCbufToCbS4Callee(op.getContext());
+    FailureOr<StringRef> calleeName =
+        std::is_same_v<LoadOp, pto::LoadCbufToCaS4Op>
+            ? buildLoadCbufToCaS4Callee(op.getContext(),
+                                        op.getSource().getType())
+            : buildLoadCbufToCbS4Callee(op.getContext(),
+                                        op.getSource().getType());
+    if (failed(calleeName))
+      return rewriter.notifyMatchFailure(
+          op, "unsupported load_cbuf_to_*_s4 element type");
     Type i64Ty = rewriter.getI64Type();
     auto funcType = rewriter.getFunctionType(
         TypeRange{destination->getType(), source->getType(), i64Ty, i64Ty,
                   i64Ty},
         TypeRange{});
     rewriter.create<func::CallOp>(
-        op.getLoc(), calleeName, TypeRange{},
+        op.getLoc(), *calleeName, TypeRange{},
         ValueRange{*destination, *source, *config0, *config1, transpose});
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     rewriter.eraseOp(op);
     return success();
   }
@@ -5146,7 +5187,10 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     Value srcRaw = adaptor.getSource();
     Value dstRaw = adaptor.getDestination();
-    if (!srcRaw || !dstRaw || !adaptor.getM() || !adaptor.getK())
+    if (!srcRaw || !dstRaw || !adaptor.getXStartPosition() ||
+        !adaptor.getYStartPosition() || !adaptor.getXStep() ||
+        !adaptor.getYStep() || !adaptor.getSrcStride() ||
+        !adaptor.getDstStride())
       return rewriter.notifyMatchFailure(op, "expected converted operands");
     if (!isa<LLVM::LLVMPointerType>(srcRaw.getType()) ||
         !isa<LLVM::LLVMPointerType>(dstRaw.getType()))
@@ -5166,26 +5210,13 @@ public:
     if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
       return rewriter.notifyMatchFailure(op,
                                          "unsupported load_cbuf_to_ca_mx element type");
-    uint64_t elemBytes = elemBitWidth / 8;
-    Location loc = op.getLoc();
-    auto constant = [&](uint64_t value) -> Value {
-      return rewriter.create<arith::ConstantIntOp>(loc, value, 64);
-    };
-    auto ceilDivConst = [&](Value value, uint64_t divisor) -> Value {
-      Value bias = constant(divisor - 1);
-      Value sum = rewriter.create<arith::AddIOp>(loc, value, bias);
-      return rewriter.create<arith::DivUIOp>(loc, sum, constant(divisor));
-    };
-    Value zero = constant(0);
-    Value mStep = ceilDivConst(adaptor.getM(), 16);
-    Value kBytes =
-        rewriter.create<arith::MulIOp>(loc, adaptor.getK(), constant(elemBytes));
-    Value kStep = ceilDivConst(kBytes, 32);
-    Value stride = ceilDivConst(adaptor.getM(), 16);
     FailureOr<Value> config0 =
-        packLoadCbufToCaConfig0(op, zero, zero, mStep, kStep);
+        packLoadCbufToCaConfig0(op, adaptor.getXStartPosition(),
+                                adaptor.getYStartPosition(), adaptor.getXStep(),
+                                adaptor.getYStep());
     FailureOr<Value> config1 =
-        packLoadCbufToCaConfig1(op, stride, stride);
+        packLoadCbufToCaConfig1(op, adaptor.getSrcStride(),
+                                adaptor.getDstStride());
     if (failed(config0) || failed(config1))
       return rewriter.notifyMatchFailure(op,
                                          "failed to pack load_cbuf_to_ca_mx config");
@@ -5245,11 +5276,11 @@ public:
       return rewriter.notifyMatchFailure(op,
                                          "unsupported load_cbuf_to_cb_mx element type");
     FailureOr<Value> config0 =
-        packLoadCbufToCaConfig0(op, adaptor.getXStartPosition(),
+        packLoadCbufToCbConfig0(op, adaptor.getXStartPosition(),
                                 adaptor.getYStartPosition(), adaptor.getXStep(),
                                 adaptor.getYStep());
     FailureOr<Value> config1 =
-        packLoadCbufToCaConfig1(op, adaptor.getSrcStride(),
+        packLoadCbufToCbConfig1(op, adaptor.getSrcStride(),
                                 adaptor.getDstStride());
     if (failed(config0) || failed(config1))
       return rewriter.notifyMatchFailure(op,

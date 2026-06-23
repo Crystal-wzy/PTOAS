@@ -42,35 +42,35 @@ void LaunchTMATMUL_bf16_144x80x48(void *a, void *b, void *c, void *stream) {
     TMATMUL_bf16_144x80x48<<<1, nullptr, stream>>>((__gm__ uint16_t *)a, (__gm__ uint16_t *)b, (__gm__ float *)c);
 }
 
-// // ---- case6: f8e4m3 x f8e4m3 -> f32, 32x64x96 ----
-// extern "C" __global__ AICORE void TMATMUL_f8e4m3_32x64x96(__gm__ uint8_t *a, __gm__ uint8_t *b, __gm__ float *c);
-// void LaunchTMATMUL_f8e4m3_32x64x96(void *a, void *b, void *c, void *stream) {
-//     TMATMUL_f8e4m3_32x64x96<<<1, nullptr, stream>>>((__gm__ uint8_t *)a, (__gm__ uint8_t *)b, (__gm__ float *)c);
-// }
-//
-// // ---- case7: f8e4m3 x f8e5m2 -> f32, 128x96x64 ----
-// extern "C" __global__ AICORE void TMATMUL_f8e4m3_f8e5m2_128x96x64(__gm__ uint8_t *a, __gm__ uint8_t *b, __gm__ float *c);
-// void LaunchTMATMUL_f8e4m3_f8e5m2_128x96x64(void *a, void *b, void *c, void *stream) {
-//     TMATMUL_f8e4m3_f8e5m2_128x96x64<<<1, nullptr, stream>>>((__gm__ uint8_t *)a, (__gm__ uint8_t *)b, (__gm__ float *)c);
-// }
-//
-// // ---- case8: f8e5m2 x f8e4m3 -> f32, 145x115x85 ----
-// extern "C" __global__ AICORE void TMATMUL_f8e5m2_f8e4m3_145x115x85(__gm__ uint8_t *a, __gm__ uint8_t *b, __gm__ float *c);
-// void LaunchTMATMUL_f8e5m2_f8e4m3_145x115x85(void *a, void *b, void *c, void *stream) {
-//     TMATMUL_f8e5m2_f8e4m3_145x115x85<<<1, nullptr, stream>>>((__gm__ uint8_t *)a, (__gm__ uint8_t *)b, (__gm__ float *)c);
-// }
-//
-// // ---- case9: f8e5m2 x f8e5m2 -> f32, 120x90x160 ----
-// extern "C" __global__ AICORE void TMATMUL_f8e5m2_120x90x160(__gm__ uint8_t *a, __gm__ uint8_t *b, __gm__ float *c);
-// void LaunchTMATMUL_f8e5m2_120x90x160(void *a, void *b, void *c, void *stream) {
-//     TMATMUL_f8e5m2_120x90x160<<<1, nullptr, stream>>>((__gm__ uint8_t *)a, (__gm__ uint8_t *)b, (__gm__ float *)c);
-// }
-//
-// // ---- case10: hif8 x hif8 -> f32, 30x90x60 ----
-// extern "C" __global__ AICORE void TMATMUL_hif8_30x90x60(__gm__ uint8_t *a, __gm__ uint8_t *b, __gm__ float *c);
-// void LaunchTMATMUL_hif8_30x90x60(void *a, void *b, void *c, void *stream) {
-//     TMATMUL_hif8_30x90x60<<<1, nullptr, stream>>>((__gm__ uint8_t *)a, (__gm__ uint8_t *)b, (__gm__ float *)c);
-// }
+// ---- case6: f8e4m3 x f8e4m3 -> f32, 32x64x96 ----
+extern "C" __global__ AICORE void TMATMUL_f8e4m3_32x64x96(__gm__ uint8_t *a, __gm__ uint8_t *b, __gm__ float *c);
+void LaunchTMATMUL_f8e4m3_32x64x96(void *a, void *b, void *c, void *stream) {
+    TMATMUL_f8e4m3_32x64x96<<<1, nullptr, stream>>>((__gm__ uint8_t *)a, (__gm__ uint8_t *)b, (__gm__ float *)c);
+}
+
+// ---- case7: f8e4m3 x f8e5m2 -> f32, 128x96x64 ----
+extern "C" __global__ AICORE void TMATMUL_f8e4m3_f8e5m2_128x96x64(__gm__ uint8_t *a, __gm__ uint8_t *b, __gm__ float *c);
+void LaunchTMATMUL_f8e4m3_f8e5m2_128x96x64(void *a, void *b, void *c, void *stream) {
+    TMATMUL_f8e4m3_f8e5m2_128x96x64<<<1, nullptr, stream>>>((__gm__ uint8_t *)a, (__gm__ uint8_t *)b, (__gm__ float *)c);
+}
+
+// ---- case8: f8e5m2 x f8e4m3 -> f32, 145x115x85 ----
+extern "C" __global__ AICORE void TMATMUL_f8e5m2_f8e4m3_145x115x85(__gm__ uint8_t *a, __gm__ uint8_t *b, __gm__ float *c);
+void LaunchTMATMUL_f8e5m2_f8e4m3_145x115x85(void *a, void *b, void *c, void *stream) {
+    TMATMUL_f8e5m2_f8e4m3_145x115x85<<<1, nullptr, stream>>>((__gm__ uint8_t *)a, (__gm__ uint8_t *)b, (__gm__ float *)c);
+}
+
+// ---- case9: f8e5m2 x f8e5m2 -> f32, 120x90x160 ----
+extern "C" __global__ AICORE void TMATMUL_f8e5m2_120x90x160(__gm__ uint8_t *a, __gm__ uint8_t *b, __gm__ float *c);
+void LaunchTMATMUL_f8e5m2_120x90x160(void *a, void *b, void *c, void *stream) {
+    TMATMUL_f8e5m2_120x90x160<<<1, nullptr, stream>>>((__gm__ uint8_t *)a, (__gm__ uint8_t *)b, (__gm__ float *)c);
+}
+
+// ---- case10: hif8 x hif8 -> f32, 30x90x60 ----
+extern "C" __global__ AICORE void TMATMUL_hif8_30x90x60(__gm__ uint8_t *a, __gm__ uint8_t *b, __gm__ float *c);
+void LaunchTMATMUL_hif8_30x90x60(void *a, void *b, void *c, void *stream) {
+    TMATMUL_hif8_30x90x60<<<1, nullptr, stream>>>((__gm__ uint8_t *)a, (__gm__ uint8_t *)b, (__gm__ float *)c);
+}
 
 // ---- case12: f32 x f32 -> f32, 16x32x64 ----
 extern "C" __global__ AICORE void TMATMUL_f32_16x32x64(__gm__ float *a, __gm__ float *b, __gm__ float *c);

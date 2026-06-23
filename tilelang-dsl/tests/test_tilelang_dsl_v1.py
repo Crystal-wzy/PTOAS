@@ -3089,8 +3089,8 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             bias = pto.Tile((1, 16), pto.f32, pto.MemorySpace.BIAS)
 
             pto.mte_l1_ub(l1.as_ptr(), ub.as_ptr(), 16, nburst=(1, 2, 3))
-            pto.mte_l1_l0a_mx(l1.as_ptr(), left.as_ptr(), 16, 64)
-            pto.mte_l1_l0b_mx(l1.as_ptr(), right.as_ptr(), 64, 16)
+            pto.mte_l1_l0a_mx(l1.as_ptr(), left.as_ptr(), 16, 64, start_row=2, start_col=3)
+            pto.mte_l1_l0b_mx(l1.as_ptr(), right.as_ptr(), 64, 16, start_row=4, start_col=5)
             pto.mad_acc(left.as_ptr(), right.as_ptr(), acc.as_ptr(), 16, 16, 64, unit_flag="check_and_set")
             pto.mad_bias(left.as_ptr(), right.as_ptr(), acc.as_ptr(), bias.as_ptr(), 16, 16, 64)
             return None
@@ -3107,11 +3107,11 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         )
         self.assertRegex(
             text,
-            r"pto\.mte_l1_l0a_mx %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+ : !pto\.ptr<f16, l1>, !pto\.ptr<f16, l0a>, i64, i64",
+            r"pto\.mte_l1_l0a_mx %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+ : !pto\.ptr<f16, l1>, !pto\.ptr<f16, l0a>, i64, i64, i64, i64",
         )
         self.assertRegex(
             text,
-            r"pto\.mte_l1_l0b_mx %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+ : !pto\.ptr<f16, l1>, !pto\.ptr<f16, l0b>, i64, i64",
+            r"pto\.mte_l1_l0b_mx %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+, %[A-Za-z0-9_]+ : !pto\.ptr<f16, l1>, !pto\.ptr<f16, l0b>, i64, i64, i64, i64",
         )
         self.assertRegex(
             text,
@@ -10783,6 +10783,18 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
 
         self.assertIn("unsupported keyword `tf32_mode` for `pto.mad_mx`", str(tf32_mx_ctx.exception))
 
+        with self.assertRaises(pto.TileLangFrontendError) as transpose_mx_ctx:
+
+            @pto.ckernel(op="pto.mad_mx", dtypes=[(pto.f16,)], name="cube_bad_mx_transpose_unique")
+            def transpose_mx_kernel(inp: pto.TensorView):
+                l1 = pto.Tile((16, 64), pto.f16, pto.MemorySpace.MAT)
+                left = pto.Tile((16, 64), pto.f16, pto.MemorySpace.LEFT)
+                pto.mte_l1_l0a_mx(l1.as_ptr(), left.as_ptr(), 16, 64, transpose=True)
+
+            build_frontend_kernel_node(transpose_mx_kernel)
+
+        self.assertIn("unsupported keyword `transpose` for `pto.mte_l1_l0a_mx`", str(transpose_mx_ctx.exception))
+
         @pto.ckernel(op="pto.mad", dtypes=[(pto.i32,)], name="cube_bad_sat_unique")
         def sat_kernel(inp: pto.TensorView):
             left = pto.Tile((16, 32), pto.i32, pto.MemorySpace.LEFT)
@@ -10794,6 +10806,15 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
             analyze_frontend_kernel(build_frontend_kernel_node(sat_kernel))
 
         self.assertIn("pto.mad sat requires a floating lhs/rhs/dst dtype combination", str(sat_ctx.exception))
+
+        @pto.ckernel(op="pto.mad_mx", dtypes=[(pto.f4e2m1x2,)], name="cube_good_mx_sat_low_precision_unique")
+        def sat_mx_kernel(inp: pto.TensorView):
+            left = pto.Tile((16, 64), pto.f4e2m1x2, pto.MemorySpace.LEFT)
+            right = pto.Tile((64, 16), pto.f4e2m1x2, pto.MemorySpace.RIGHT)
+            acc = pto.Tile((16, 16), pto.f32, pto.MemorySpace.ACC)
+            pto.mad_mx(left.as_ptr(), right.as_ptr(), acc.as_ptr(), 16, 16, 64, sat="sat")
+
+        analyze_frontend_kernel(build_frontend_kernel_node(sat_mx_kernel))
 
     def test_ckernel_mte_l0c_rejects_invalid_fixpipe_payload_forms(self) -> None:
         @pto.ckernel(op="pto.mad", dtypes=[(pto.f16,)], name="cube_bad_relu_payload_unique")

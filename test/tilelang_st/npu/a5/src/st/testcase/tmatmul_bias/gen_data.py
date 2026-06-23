@@ -24,7 +24,7 @@ for case in CASES:
     c_dtype = case["c_dtype"]
     M, K, N = case["M"], case["K"], case["N"]
     M_aligned = case.get("M_aligned", M)
-    K_aligned = case.get("K_aligned", K)
+    K_aligned = case.get("K_use", K)
     N_aligned = case.get("N_aligned", N)
 
     x1 = np.random.randint(-10, 10, size=(M, K)).astype(a_dtype)

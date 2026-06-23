@@ -93,6 +93,16 @@ expect_raises(
     lambda: pto.tile.load(object(), _FakeTileWithPartialValidShape(), offsets=[0, 0]),
     "tile.valid_shape[1] is None",
 )
+expect_raises(
+    TypeError,
+    lambda: pto.mte_l1_l0a_mx(None, None, 16, 64, transpose=True),
+    "transpose",
+)
+expect_raises(
+    TypeError,
+    lambda: pto.mte_l1_l0b_mx(None, None, 64, 16, transpose=True),
+    "transpose",
+)
 
 
 @pto.jit(target="a5")
@@ -1391,8 +1401,22 @@ def public_cube_surface_probe(
         start_col=start_row,
         transpose=True,
     )
-    pto.mte_l1_l0a_mx(lhs_tile_mx.as_ptr(), lhs_l0a_mx.as_ptr(), m, k, transpose=True)
-    pto.mte_l1_l0b_mx(rhs_tile_mx.as_ptr(), rhs_l0b_mx.as_ptr(), k, n, transpose=True)
+    pto.mte_l1_l0a_mx(
+        lhs_tile_mx.as_ptr(),
+        lhs_l0a_mx.as_ptr(),
+        m,
+        k,
+        start_row=start_row,
+        start_col=start_col,
+    )
+    pto.mte_l1_l0b_mx(
+        rhs_tile_mx.as_ptr(),
+        rhs_l0b_mx.as_ptr(),
+        k,
+        n,
+        start_row=start_col,
+        start_col=start_row,
+    )
     pto.mad(
         lhs_l0a.as_ptr(),
         rhs_l0b.as_ptr(),

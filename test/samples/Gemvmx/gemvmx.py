@@ -8,7 +8,7 @@
 
 from mlir.ir import Context, Location, Module, InsertionPoint, StringAttr, UnitAttr
 from mlir.dialects import func, arith, pto
-from mlir.ir import F16Type, F32Type, IndexType
+from mlir.ir import F16Type, F32Type, Float8E4M3FNType, Float8E5M2Type, IndexType
 
 
 def build():
@@ -21,7 +21,11 @@ def build():
 
             f16 = F16Type.get(ctx)
             f32 = F32Type.get(ctx)
+            f8e4m3fn = Float8E4M3FNType.get()
+            f8e5m2 = Float8E5M2Type.get()
             ptr_f16 = pto.PtrType.get(f16, ctx)
+            ptr_f8e4m3fn = pto.PtrType.get(f8e4m3fn, ctx)
+            ptr_f8e5m2 = pto.PtrType.get(f8e5m2, ctx)
             ptr_f32 = pto.PtrType.get(f32, ctx)
 
             # TGEMV_MX family:
@@ -32,13 +36,16 @@ def build():
             M_ALIGN = M
             K = 128
             N = 16
+            SCALE_K = K // 32
 
+            tv2_f8e4m3fn = pto.TensorViewType.get(2, f8e4m3fn, ctx)
+            tv2_f8e5m2 = pto.TensorViewType.get(2, f8e5m2, ctx)
             tv2_f16 = pto.TensorViewType.get(2, f16, ctx)
             tv2_f32 = pto.TensorViewType.get(2, f32, ctx)
-            tile_view_a = pto.PartitionTensorViewType.get([M, K], f16, ctx)
-            tile_view_b = pto.PartitionTensorViewType.get([K, N], f16, ctx)
-            tile_view_as = pto.PartitionTensorViewType.get([M, K], f16, ctx)
-            tile_view_bs = pto.PartitionTensorViewType.get([K, N], f16, ctx)
+            tile_view_a = pto.PartitionTensorViewType.get([M, K], f8e4m3fn, ctx)
+            tile_view_b = pto.PartitionTensorViewType.get([K, N], f8e5m2, ctx)
+            tile_view_as = pto.PartitionTensorViewType.get([M, SCALE_K], f16, ctx)
+            tile_view_bs = pto.PartitionTensorViewType.get([SCALE_K, N], f16, ctx)
             tile_view_c = pto.PartitionTensorViewType.get([M, N], f32, ctx)
             tile_view_bias = pto.PartitionTensorViewType.get([M, N], f32, ctx)
 
@@ -59,8 +66,8 @@ def build():
                 ctx,
             )
             cfg_b_mat = pto.TileBufConfigAttr.get(
-                pto.BLayoutAttr.get(pto.BLayout.ColMajor, ctx),
-                pto.SLayoutAttr.get(pto.SLayout.RowMajor, ctx),
+                pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx),
+                pto.SLayoutAttr.get(pto.SLayout.ColMajor, ctx),
                 pto.TileConfig.fractalABSize,
                 pd,
                 ctx,
@@ -79,10 +86,17 @@ def build():
                 pd,
                 ctx,
             )
-            cfg_scaling = pto.TileBufConfigAttr.get(
+            cfg_scale_left = pto.TileBufConfigAttr.get(
                 pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx),
                 pto.SLayoutAttr.get(pto.SLayout.RowMajor, ctx),
-                pto.TileConfig.fractalABSize,
+                pto.TileConfig.fractalMxSize,
+                pd,
+                ctx,
+            )
+            cfg_scale_right = pto.TileBufConfigAttr.get(
+                pto.BLayoutAttr.get(pto.BLayout.ColMajor, ctx),
+                pto.SLayoutAttr.get(pto.SLayout.ColMajor, ctx),
+                pto.TileConfig.fractalMxSize,
                 pd,
                 ctx,
             )
@@ -101,23 +115,31 @@ def build():
                 ctx,
             )
 
-            tile_buf_a_mat = pto.TileBufType.get([M, K], f16, mat, [M, K], cfg_a_mat, ctx)
-            tile_buf_b_mat = pto.TileBufType.get([K, N], f16, mat, [K, N], cfg_b_mat, ctx)
-            tile_buf_as_mat = pto.TileBufType.get([M, K], f16, mat, [M, K], cfg_a_mat, ctx)
-            tile_buf_bs_mat = pto.TileBufType.get([K, N], f16, mat, [K, N], cfg_b_mat, ctx)
+            tile_buf_a_mat = pto.TileBufType.get([M, K], f8e4m3fn, mat, [M, K], cfg_a_mat, ctx)
+            tile_buf_b_mat = pto.TileBufType.get([K, N], f8e5m2, mat, [K, N], cfg_b_mat, ctx)
+            tile_buf_as_mat = pto.TileBufType.get(
+                [M, SCALE_K], f16, mat, [M, SCALE_K], cfg_scale_left, ctx
+            )
+            tile_buf_bs_mat = pto.TileBufType.get(
+                [SCALE_K, N], f16, mat, [SCALE_K, N], cfg_scale_right, ctx
+            )
             tile_buf_bias_mat = pto.TileBufType.get([M, N], f32, mat, [M, N], cfg_bias, ctx)
 
-            tile_buf_a = pto.TileBufType.get([M, K], f16, left, [M, K], cfg_left, ctx)
-            tile_buf_b = pto.TileBufType.get([K, N], f16, right, [K, N], cfg_right, ctx)
-            tile_buf_as = pto.TileBufType.get([M, K], f16, scaling, [M, K], cfg_scaling, ctx)
-            tile_buf_bs = pto.TileBufType.get([K, N], f16, scaling, [K, N], cfg_scaling, ctx)
+            tile_buf_a = pto.TileBufType.get([M, K], f8e4m3fn, left, [M, K], cfg_left, ctx)
+            tile_buf_b = pto.TileBufType.get([K, N], f8e5m2, right, [K, N], cfg_right, ctx)
+            tile_buf_as = pto.TileBufType.get(
+                [M, SCALE_K], f16, scaling, [M, SCALE_K], cfg_scale_left, ctx
+            )
+            tile_buf_bs = pto.TileBufType.get(
+                [SCALE_K, N], f16, scaling, [SCALE_K, N], cfg_scale_right, ctx
+            )
             tile_buf_bias = pto.TileBufType.get([M, N], f32, bias_space, [M, N], cfg_bias, ctx)
             tile_buf_c = pto.TileBufType.get([M_ALIGN, N], f32, acc, [M, N], cfg_acc, ctx)
 
             fn_ty = func.FunctionType.get(
                 [
-                    ptr_f16,  # a
-                    ptr_f16,  # b
+                    ptr_f8e4m3fn,  # a
+                    ptr_f8e5m2,  # b
                     ptr_f16,  # a_scale
                     ptr_f16,  # b_scale
                     ptr_f32,  # bias (for mx.bias)
@@ -138,6 +160,7 @@ def build():
                 cM = arith.ConstantOp(IndexType.get(ctx), M).result
                 cK = arith.ConstantOp(IndexType.get(ctx), K).result
                 cN = arith.ConstantOp(IndexType.get(ctx), N).result
+                cScaleK = arith.ConstantOp(IndexType.get(ctx), SCALE_K).result
 
                 (
                     arg_a,
@@ -150,10 +173,10 @@ def build():
                     arg_out_mx_bias,
                 ) = entry.arguments
 
-                tv_a = pto.MakeTensorViewOp(tv2_f16, arg_a, [cM, cK], [cK, c1]).result
-                tv_b = pto.MakeTensorViewOp(tv2_f16, arg_b, [cK, cN], [cN, c1]).result
-                tv_as = pto.MakeTensorViewOp(tv2_f16, arg_as, [cM, cK], [cK, c1]).result
-                tv_bs = pto.MakeTensorViewOp(tv2_f16, arg_bs, [cK, cN], [cN, c1]).result
+                tv_a = pto.MakeTensorViewOp(tv2_f8e4m3fn, arg_a, [cM, cK], [cK, c1]).result
+                tv_b = pto.MakeTensorViewOp(tv2_f8e5m2, arg_b, [cK, cN], [cN, c1]).result
+                tv_as = pto.MakeTensorViewOp(tv2_f16, arg_as, [cM, cScaleK], [cScaleK, c1]).result
+                tv_bs = pto.MakeTensorViewOp(tv2_f16, arg_bs, [cScaleK, cN], [cN, c1]).result
                 tv_bias = pto.MakeTensorViewOp(tv2_f32, arg_bias, [cM, cN], [cN, c1]).result
                 tv_out_mx = pto.MakeTensorViewOp(tv2_f32, arg_out_mx, [cM, cN], [cN, c1]).result
                 tv_out_mx_acc = pto.MakeTensorViewOp(tv2_f32, arg_out_mx_acc, [cM, cN], [cN, c1]).result
@@ -161,18 +184,13 @@ def build():
 
                 sv_a = pto.PartitionViewOp(tile_view_a, tv_a, offsets=[c0, c0], sizes=[cM, cK]).result
                 sv_b = pto.PartitionViewOp(tile_view_b, tv_b, offsets=[c0, c0], sizes=[cK, cN]).result
-                sv_as = pto.PartitionViewOp(tile_view_as, tv_as, offsets=[c0, c0], sizes=[cM, cK]).result
-                sv_bs = pto.PartitionViewOp(tile_view_bs, tv_bs, offsets=[c0, c0], sizes=[cK, cN]).result
+                sv_as = pto.PartitionViewOp(tile_view_as, tv_as, offsets=[c0, c0], sizes=[cM, cScaleK]).result
+                sv_bs = pto.PartitionViewOp(tile_view_bs, tv_bs, offsets=[c0, c0], sizes=[cScaleK, cN]).result
                 sv_bias = pto.PartitionViewOp(tile_view_bias, tv_bias, offsets=[c0, c0], sizes=[cM, cN]).result
                 sv_out_mx = pto.PartitionViewOp(tile_view_c, tv_out_mx, offsets=[c0, c0], sizes=[cM, cN]).result
                 sv_out_mx_acc = pto.PartitionViewOp(tile_view_c, tv_out_mx_acc, offsets=[c0, c0], sizes=[cM, cN]).result
                 sv_out_mx_bias = pto.PartitionViewOp(tile_view_c, tv_out_mx_bias, offsets=[c0, c0], sizes=[cM, cN]).result
 
-                a_mat = pto.AllocTileOp(tile_buf_a_mat).result
-                b_mat = pto.AllocTileOp(tile_buf_b_mat).result
-                as_mat = pto.AllocTileOp(tile_buf_as_mat).result
-                bs_mat = pto.AllocTileOp(tile_buf_bs_mat).result
-                bias_mat = pto.AllocTileOp(tile_buf_bias_mat).result
                 a_tile = pto.AllocTileOp(tile_buf_a).result
                 b_tile = pto.AllocTileOp(tile_buf_b).result
                 as_tile = pto.AllocTileOp(tile_buf_as).result
@@ -182,17 +200,11 @@ def build():
                 c_mx_acc_tile = pto.AllocTileOp(tile_buf_c).result
                 c_mx_bias_tile = pto.AllocTileOp(tile_buf_c).result
 
-                pto.TLoadOp(None, sv_a, a_mat)
-                pto.TLoadOp(None, sv_b, b_mat)
-                pto.TLoadOp(None, sv_as, as_mat)
-                pto.TLoadOp(None, sv_bs, bs_mat)
-                pto.TLoadOp(None, sv_bias, bias_mat)
-
-                pto.TExtractOp(a_mat, c0, c0, a_tile)
-                pto.TMovOp(None, b_mat, b_tile)
-                pto.TMovOp(None, as_mat, as_tile)
-                pto.TMovOp(None, bs_mat, bs_tile)
-                pto.TMovOp(None, bias_mat, bias_tile)
+                pto.TLoadOp(None, sv_a, a_tile)
+                pto.TLoadOp(None, sv_b, b_tile)
+                pto.TLoadOp(None, sv_as, as_tile)
+                pto.TLoadOp(None, sv_bs, bs_tile)
+                pto.TLoadOp(None, sv_bias, bias_tile)
 
                 pto.TGemvMxOp(None, a_tile, as_tile, b_tile, bs_tile, c_mx_tile)
                 pto.TGemvMxAccOp(None, c_mx_tile, a_tile, as_tile, b_tile, bs_tile, c_mx_acc_tile)

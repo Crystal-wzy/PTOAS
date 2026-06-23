@@ -4120,32 +4120,44 @@ def mte_l1_l0b(
 
 
 @_explicit_mode_only("pto.mte_l1_l0a_mx(...)")
-def mte_l1_l0a_mx(source, destination, m, k, *, transpose=False):
-    """``pto.mte_l1_l0a_mx`` – MX cube-side LEFT staging.
-
-    The current VPTO MX backend path does not consume ``transpose`` yet. The
-    flag is accepted to keep the PTODSL API aligned with TileLang DSL.
-    """
+def mte_l1_l0a_mx(
+    source,
+    destination,
+    m,
+    k,
+    *,
+    start_row=0,
+    start_col=0,
+):
+    """``pto.mte_l1_l0a_mx`` – MX cube-side LEFT staging."""
     _pto.MteL1L0aMxOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
         _coerce_i64(m, context="mte_l1_l0a_mx m"),
         _coerce_i64(k, context="mte_l1_l0a_mx k"),
+        _coerce_i64(start_row, context="mte_l1_l0a_mx start_row"),
+        _coerce_i64(start_col, context="mte_l1_l0a_mx start_col"),
     )
 
 
 @_explicit_mode_only("pto.mte_l1_l0b_mx(...)")
-def mte_l1_l0b_mx(source, destination, k, n, *, transpose=False):
-    """``pto.mte_l1_l0b_mx`` – MX cube-side RIGHT staging.
-
-    The current VPTO MX backend path does not consume ``transpose`` yet. The
-    flag is accepted to keep the PTODSL API aligned with TileLang DSL.
-    """
+def mte_l1_l0b_mx(
+    source,
+    destination,
+    k,
+    n,
+    *,
+    start_row=0,
+    start_col=0,
+):
+    """``pto.mte_l1_l0b_mx`` – MX cube-side RIGHT staging."""
     _pto.MteL1L0bMxOp(
         unwrap_surface_value(source),
         unwrap_surface_value(destination),
         _coerce_i64(k, context="mte_l1_l0b_mx k"),
         _coerce_i64(n, context="mte_l1_l0b_mx n"),
+        _coerce_i64(start_row, context="mte_l1_l0b_mx start_row"),
+        _coerce_i64(start_col, context="mte_l1_l0b_mx start_col"),
     )
 
 

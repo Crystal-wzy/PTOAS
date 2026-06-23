@@ -19,11 +19,11 @@ import tilelang_dsl as pto
         (pto.bf16, pto.bf16, pto.f32),
         (pto.f32, pto.f32, pto.f32),
         (pto.i8, pto.i8, pto.i32),
-        (pto.ScalarType("f8E4M3FN"), pto.ScalarType("f8E4M3FN"), pto.f32),
-        (pto.ScalarType("f8E4M3FN"), pto.ScalarType("f8E5M2"), pto.f32),
-        (pto.ScalarType("f8E5M2"), pto.ScalarType("f8E4M3FN"), pto.f32),
-        (pto.ScalarType("f8E5M2"), pto.ScalarType("f8E5M2"), pto.f32),
-        (pto.ScalarType("hif8"), pto.ScalarType("hif8"), pto.f32),
+        (pto.f8e4m3, pto.f8e4m3, pto.f32),
+        (pto.f8e4m3, pto.f8e5m2, pto.f32),
+        (pto.f8e5m2, pto.f8e4m3, pto.f32),
+        (pto.f8e5m2, pto.f8e5m2, pto.f32),
+        (pto.hif8, pto.hif8, pto.f32),
     ],
 )
 def template_tmatmul(lhs: pto.Tile, rhs: pto.Tile, acc: pto.Tile):

@@ -4590,6 +4590,23 @@ static LogicalResult verifyA5MxMatTileOperands(Operation *op, Type lhsTy,
                                      /*allowLowPrecision=*/true)))
     return failure();
 
+  auto lhsShape = getShapeVec(lhsTy);
+  auto rhsShape = getShapeVec(rhsTy);
+  if (lhsShape.size() == 2 && rhsShape.size() == 2) {
+    int64_t lhsK = lhsShape[1];
+    int64_t rhsK = rhsShape[0];
+    auto checkPhysicalK = [&](int64_t value, StringRef name) -> LogicalResult {
+      if (value != ShapedType::kDynamic && (value < 1 || (value % 64) != 0))
+        return op->emitOpError() << "expects " << name
+                                 << " physical K shape to be a positive multiple of 64 on A5";
+      return success();
+    };
+    if (failed(checkPhysicalK(lhsK, "lhs")))
+      return failure();
+    if (failed(checkPhysicalK(rhsK, "rhs")))
+      return failure();
+  }
+
   auto lhsValid = getValidShapeVec(lhsTy);
   auto rhsValid = getValidShapeVec(rhsTy);
   if (lhsValid.size() == 2 && rhsValid.size() == 2) {
@@ -4646,8 +4663,33 @@ static LogicalResult verifyA5MxMatScaleTile(Operation *op, Type scaleTy,
   if (failed(checkDims(getShapeVec(scaleTy), getShapeVec(lhsTy), getShapeVec(rhsTy),
                        "shape")))
     return failure();
-  return checkDims(getValidShapeVec(scaleTy), getValidShapeVec(lhsTy),
-                   getValidShapeVec(rhsTy), "valid_shape");
+  if (failed(checkDims(getValidShapeVec(scaleTy), getValidShapeVec(lhsTy),
+                       getValidShapeVec(rhsTy), "valid_shape")))
+    return failure();
+
+  auto scaleTb = dyn_cast<pto::TileBufType>(scaleTy);
+  if (!scaleTb)
+    return success();
+  if (scaleTb.getBLayoutValueI32() !=
+      static_cast<int32_t>(isLeftScale ? pto::BLayout::RowMajor
+                                       : pto::BLayout::ColMajor)) {
+    return op->emitOpError()
+           << "expects " << scaleName << " to use the "
+           << (isLeftScale ? "row_major" : "col_major")
+           << " blayout on A5";
+  }
+  if (scaleTb.getSLayoutValueI32() !=
+      static_cast<int32_t>(isLeftScale ? pto::SLayout::RowMajor
+                                       : pto::SLayout::ColMajor)) {
+    return op->emitOpError()
+           << "expects " << scaleName << " to use the "
+           << (isLeftScale ? "row_major" : "col_major")
+           << " slayout on A5";
+  }
+  if (scaleTb.getSFractalSizeI32() != 32)
+    return op->emitOpError() << "expects " << scaleName
+                             << " to use fractal=32 on A5";
+  return success();
 }
 
 static LogicalResult verifyA5MxMatScaleTiles(Operation *op, Type lhsScaleTy,
