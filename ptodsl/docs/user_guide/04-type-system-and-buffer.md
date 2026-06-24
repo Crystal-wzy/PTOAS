@@ -40,6 +40,8 @@ z: pto.i32 = 1024
 
 The following low-precision types may appear as element types for device storage and vector memory movement: `Tile`, `TensorView`, `PartitionTensorView`, `pto.ptr(...)`, and `pto.vreg_type(...)`. Use them to reduce memory bandwidth; convert to a compute-capable type before arithmetic unless the operation explicitly supports that low-precision format.
 
+Low-precision `VRegType` values are valid intermediate payloads, but they are not generic vector-arithmetic types. In practice, use them on explicit memory/conversion paths such as `vlds`, `vsts`, `vcvt`, `vmulscvt`, and `vpack`, then convert to a compute-capable type before feeding the value to generic vector compute ops.
+
 | DSL Type | Description |
 |----------|-------------|
 | `pto.hif8` | HiFloat8 format |

@@ -1260,6 +1260,8 @@ Vector compute ops operate on `VRegType` values inside `@pto.simd` sub-kernels. 
 
 All vector ops in this section follow the pattern established in Section 7.3 for tile-index and pointer-form addressing. The signatures below use the vector-register form — tile-index forms load into `vreg` first, then compute.
 
+Unless a section explicitly says otherwise, the generic vector compute ops below expect compute-capable vector element types. Low-precision `vreg` payloads are intended for explicit memory/conversion paths such as `vlds`, `vsts`, `vcvt`, `vmulscvt`, and `vpack`; convert them to `f16`, `bf16`, `f32`, or another supported compute type before using generic vector arithmetic, reduction, or select ops.
+
 ### 8.2.1 Unary vector ops
 
 #### `pto.vexp(vec: VRegType, mask: MaskType) -> VRegType`

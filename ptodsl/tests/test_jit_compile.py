@@ -2484,6 +2484,42 @@ def low_precision_vcvt_surface_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def low_precision_vadd_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    f8_src = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    f8 = pto.vlds(f8_src, pto.const(0))
+    _ = pto.vadd(f8, f8, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vexp_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    f8_src = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    f8 = pto.vlds(f8_src, pto.const(0))
+    _ = pto.vexp(f8, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vmuls_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    hif8_src = pto.castptr(zero_u64, pto.ptr(pto.hif8, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    hif8 = pto.vlds(hif8_src, pto.const(0))
+    _ = pto.vmuls(hif8, 1.0, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vsel_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    f8_src = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    f8 = pto.vlds(f8_src, pto.const(0))
+    _ = pto.vsel(f8, f8, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
 def vdup_surface_probe():
     zero_u64 = pto.const(0, dtype=pto.ui64)
     ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
@@ -2526,6 +2562,30 @@ def vcvt_surface_invalid_dtype_pair_probe():
     mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
     vec_f32 = pto.vlds(ub_f32, pto.const(0))
     _ = pto.vcvt(vec_f32, pto.ui16, mask32_full)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vcvt_low_precision_invalid_dtype_pair_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f8 = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    vec_f8 = pto.vlds(ub_f8, pto.const(0))
+    _ = pto.vcvt(vec_f8, pto.bf16, mask_b8, part=pto.VcvtPartMode.P0)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vcvt_low_precision_invalid_dtype_pair_probe_2():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vcvt(
+        vec_f32,
+        pto.f4e1m2x2,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.R,
+        part=pto.VcvtPartMode.P0,
+    )
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -4834,6 +4894,36 @@ def main() -> None:
         TypeError,
         lambda: vcvt_surface_invalid_dtype_pair_probe.compile(),
         "vcvt(src, to_dtype, mask) currently does not support the dtype pair f32 -> u16",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vadd_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vexp_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vmuls_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vsel_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vcvt_low_precision_invalid_dtype_pair_probe.compile(),
+        "vcvt(src, to_dtype, mask) currently does not support the dtype pair f8e4m3 -> bf16",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vcvt_low_precision_invalid_dtype_pair_probe_2.compile(),
+        "vcvt(src, to_dtype, mask) currently does not support the dtype pair f32 -> f4e1m2x2",
     )
     expect_raises(
         ValueError,

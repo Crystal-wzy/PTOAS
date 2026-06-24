@@ -1623,6 +1623,7 @@ def vbr(value):
 
 
 def _emit_unary_vec_op(op_ctor, inp, mask):
+    _reject_low_precision_vreg_operands(inp, context=f"pto.{_surface_name_for_op_ctor(op_ctor)}(...)")
     return wrap_surface_value(
         op_ctor(
             unwrap_surface_value(inp).type,
@@ -1633,6 +1634,11 @@ def _emit_unary_vec_op(op_ctor, inp, mask):
 
 
 def _emit_binary_vec_op(op_ctor, lhs, rhs, mask):
+    _reject_low_precision_vreg_operands(
+        lhs,
+        rhs,
+        context=f"pto.{_surface_name_for_op_ctor(op_ctor)}(...)",
+    )
     return wrap_surface_value(
         op_ctor(
             unwrap_surface_value(lhs).type,
@@ -1644,6 +1650,7 @@ def _emit_binary_vec_op(op_ctor, lhs, rhs, mask):
 
 
 def _emit_vec_scalar_masked_op(op_ctor, inp, scalar, mask, *, context: str):
+    _reject_low_precision_vreg_operands(inp, context=f"pto.{context}(...)")
     scalar_value = _coerce_scalar_like_vector_element(inp, scalar, context=context)
     return wrap_surface_value(
         op_ctor(
@@ -1657,6 +1664,7 @@ def _emit_vec_scalar_masked_op(op_ctor, inp, scalar, mask, *, context: str):
 
 def vadd(lhs, rhs, mask, result_type=None):
     """``pto.vadd`` – element-wise add."""
+    _reject_low_precision_vreg_operands(lhs, rhs, context="pto.vadd(...)")
     rt = result_type if result_type is not None else lhs.type
     return wrap_surface_value(
         _pto.VaddOp(
@@ -1826,6 +1834,7 @@ def vdup(input_value, mask, position=None):
     raw_input = unwrap_surface_value(input_value)
     try:
         _pto.VRegType(raw_input.type)
+        _reject_low_precision_vreg_operands(input_value, context="pto.vdup(vec, mask, position=...)")
         result_type = raw_input.type
         normalized_position = (
             _normalize_vdup_position_mode(position, context="vdup(vec, mask, position=...)")
@@ -1880,6 +1889,7 @@ def vnot(inp, mask):
 
 def vexpdif(inp, ref, mask, part: str = "ODD"):
     """``pto.vexpdif`` – ``exp(inp - ref)`` selecting ODD or EVEN lanes."""
+    _reject_low_precision_vreg_operands(inp, ref, context="pto.vexpdif(...)")
     return wrap_surface_value(
         _pto.VexpdifOp(
             unwrap_surface_value(inp).type,
@@ -1911,6 +1921,7 @@ def vrsqrt(inp, mask):
 
 def vcgmax(v, mask):
     """``pto.vcgmax`` – group maximum reduction, surfaced as the lowest-lane scalar."""
+    _reject_low_precision_vreg_operands(v, context="pto.vcgmax(...)")
     reduced = _pto.VcgmaxOp(
         unwrap_surface_value(v).type,
         unwrap_surface_value(v),
@@ -1921,6 +1932,7 @@ def vcgmax(v, mask):
 
 def vcgadd(v, mask):
     """``pto.vcgadd`` – group sum reduction, surfaced as the lowest-lane scalar."""
+    _reject_low_precision_vreg_operands(v, context="pto.vcgadd(...)")
     reduced = _pto.VcgaddOp(
         unwrap_surface_value(v).type,
         unwrap_surface_value(v),
@@ -1931,6 +1943,7 @@ def vcgadd(v, mask):
 
 def vcgmin(v, mask):
     """``pto.vcgmin`` – group minimum reduction, surfaced as the lowest-lane scalar."""
+    _reject_low_precision_vreg_operands(v, context="pto.vcgmin(...)")
     reduced = _pto.VcgminOp(
         unwrap_surface_value(v).type,
         unwrap_surface_value(v),
@@ -1995,6 +2008,7 @@ def vsubrelu(lhs, rhs, mask):
 
 def vaxpy(alpha, x, y, mask):
     """``pto.vaxpy`` – fused ``alpha * x + y``."""
+    _reject_low_precision_vreg_operands(x, y, context="pto.vaxpy(...)")
     alpha_value = _coerce_scalar_like_vector_element(x, alpha, context="vaxpy")
     return wrap_surface_value(
         _pto.VaxpyOp(
@@ -2009,6 +2023,7 @@ def vaxpy(alpha, x, y, mask):
 
 def vsel(true_v, false_v, mask):
     """``pto.vsel`` – element-wise select under a predicate mask."""
+    _reject_low_precision_vreg_operands(true_v, false_v, context="pto.vsel(...)")
     return wrap_surface_value(
         _pto.VselOp(
             unwrap_surface_value(true_v).type,
@@ -3481,6 +3496,41 @@ def _infer_vreg_metadata(vector_value):
         body = text[len("!pto.vreg<"):-1]
         lanes_text, elem_text = body.split("x", 1)
         return int(lanes_text), Type.parse(elem_text)
+
+
+def _surface_name_for_op_ctor(op_ctor) -> str:
+    name = getattr(op_ctor, "__name__", "")
+    if name.startswith("V") and name.endswith("Op"):
+        return name[1:-2].lower()
+    return name or "vector_op"
+
+
+def _is_low_precision_elem_type(elem_type) -> bool:
+    if Float8E4M3FNType.isinstance(elem_type) or Float8E5M2Type.isinstance(elem_type):
+        return True
+    return any(
+        _isinstance_pto_type(elem_type, name)
+        for name in ("HiF8Type", "F4E1M2x2Type", "F4E2M1x2Type")
+    )
+
+
+def _reject_low_precision_vreg(value, *, context: str) -> None:
+    raw_value = unwrap_surface_value(value)
+    try:
+        _, elem_type = _infer_vreg_metadata(raw_value)
+    except TypeError:
+        return
+    if _is_low_precision_elem_type(elem_type):
+        raise TypeError(
+            f"{context} does not support low-precision vreg elements yet; "
+            "low-precision vregs are currently only supported on explicit memory/conversion paths such as "
+            "vlds/vsts/vcvt/vmulscvt/vpack"
+        )
+
+
+def _reject_low_precision_vreg_operands(*values, context: str) -> None:
+    for value in values:
+        _reject_low_precision_vreg(value, context=context)
 
 
 def _extract_lowest_lane_scalar(vector_value, mask):
