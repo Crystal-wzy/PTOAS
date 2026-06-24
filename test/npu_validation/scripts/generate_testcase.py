@@ -379,7 +379,8 @@ def _append_single_kernel_global_wrapper(
 ) -> str:
     impl_name = f"__ptoas_{kernel_name}_impl"
     pattern = re.compile(
-        rf"(?P<prefix>extern\s+\"C\"\s+)?AICORE\s+void\s+{re.escape(kernel_name)}\s*\((?P<params>[^)]*)\)\s*\{{",
+        rf"(?P<prefix>extern\s+\"C\"\s+)?(?P<global>__global__\s+)?(?P<static>static\s+)?"
+        rf"AICORE\s+(?P<inline>inline\s+)?void\s+{re.escape(kernel_name)}\s*\((?P<params>[^)]*)\)\s*\{{",
         re.S,
     )
 
