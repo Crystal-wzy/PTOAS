@@ -840,7 +840,7 @@ static std::string buildUniqueFunctionBaseName(const SpecKey &key) {
       uniqueName += "_pd" + llvm::utohexstr(op.pad, /*LowerCase=*/false);
     } else if (op.kind == OperandKind::View) {
       if (op.viewLayout)
-        uniqueName += "_vl" + std::to_string(static_cast<int>(*op.viewLayout));
+        uniqueName += "_vl_" + stringifyLayout(*op.viewLayout).str();
     } else if (op.kind == OperandKind::Vector) {
       for (int64_t d : op.vectorShape)
         uniqueName += "_" + std::to_string(d);
