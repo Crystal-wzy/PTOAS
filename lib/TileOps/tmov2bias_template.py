@@ -73,14 +73,17 @@ def template_tmov_m2b(src: pto.Tile, dst: pto.Tile):
         dst: Destination tile in Bias Table location
 
     The bias data is moved using burst transfer to the Bias Table.
+
+    mte_l1_bt semantics:
+      - len_burst = N (number of bias load units, where N = column count)
+      - Each load unit corresponds to one bias channel/column
+      - For 1x16 f32 bias: len_burst = 16
     """
     # Bias has shape 1xN, we derive N from the valid shape
     _, n = dst.valid_shape
-    dtype = dst.element_type
-    # len_burst = ceil(N * sizeof(dtype) / 32)
-    # Use integer arithmetic: (n * dtype_size + 31) // 32
-    dtype_size = pto.bytewidth(dtype)
-    len_burst = (n * dtype_size + 31) // 32
+    # len_burst = N (number of bias channels/columns)
+    # See test/tilelang_st/npu/a5/src/st/testcase/tmatmul_bias/tmatmul_bias.pto:79
+    len_burst = n
     # nburst = (n_burst, src_gap, dst_gap) - single burst with no gaps
     n_burst = 1
     src_gap = 0

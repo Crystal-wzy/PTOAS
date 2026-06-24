@@ -6,15 +6,20 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// TileLang ST kernel for cube tmov (Acc->Vec): tests template expansion path.
+// TileLang ST kernel for cube tmov (Acc->Vec): IR generation verification test.
 // Uses pto.tmov OP which will be expanded via --enable-tile-op-expand.
 // The template_tmov_a2v template should be selected when src memory_space is "acc" and dst is "ub".
 //
-// IMPORTANT: Due to VPTO lowering limitations with castptr in section mode for tile-based vec operations,
-// this test uses a pure cube kernel mode. The TMOV Acc->Vec operation is validated via VPTO IR generation.
-// The vec_tile content cannot be directly stored to GM in cube kernels (mte_ub_gm requires vector section).
+// === IMPORTANT: IR Generation Verification Only ===
+// This test verifies that the VPTO IR correctly generates mte_l0c_ub for Acc->Vec transfer.
+// Due to VPTO lowering limitations with castptr in cube section for tile-based vec operations,
+// the vec_tile content cannot be directly stored to GM (mte_ub_gm requires vector section).
 //
-// For full validation of Acc->Vec flow with output to GM, see tmov2vec_full.pto which uses direct operations.
+// The golden/output validation is for the matmul result (%l0c -> GM), NOT the TMOV Acc->Vec result.
+// This is intentional - this test validates IR generation, not runtime correctness of vec_tile data.
+//
+// For full runtime validation of Acc->Vec flow with GM output, a separate vector section kernel
+// or alternative test approach would be required.
 //
 // Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --pto-backend=vpto --pto-level=level3
 

@@ -77,20 +77,18 @@ def template_tmov_m2s(src: pto.Tile, dst: pto.Tile):
 
     The scale parameters are loaded into FB for fixpipe quantization.
 
-    Data format: Each f32 scale is stored as ui64 (f32 bits in lower 32 bits).
-    Hardware reads each ui64 and interprets lower 32 bits as f32 scale for column[i].
+    mte_l1_fb semantics:
+      - len_burst = M (number of rows in the scaling tile)
+      - Each row contains one set of scale parameters for all columns
+      - For 16x16 f32 scaling: len_burst = 16 (see textract_fp.pto:128)
+      - For 1x16 f32 scaling: len_burst = 1 (single row of parameters)
 
-    mte_l1_fb uses ui64 (8-byte) burst unit:
-      - len_burst = N (number of ui64 elements, where N = column count)
-      - Total bytes = N * 8
-      - n_burst = 1 (single burst configuration)
+    nburst = (n_burst, src_gap, dst_gap) - single burst with no gaps
     """
-    # Scale has shape 1xN
-    _, n = dst.valid_shape
-    # mte_l1_fb uses ui64 (8-byte) burst unit
-    # Each ui64 contains one f32 scale value (lower 32 bits)
-    # len_burst = N (number of ui64 elements)
-    len_burst = n
+    # Scale tile has shape MxN (typically 1xN for per-column scales)
+    m, _ = dst.valid_shape
+    # len_burst = M (number of rows/parameter sets)
+    len_burst = m
     n_burst = 1
     src_gap = 0
     dst_gap = 0

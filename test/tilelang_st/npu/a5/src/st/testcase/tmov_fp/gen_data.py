@@ -10,8 +10,11 @@
 
 """Single source of truth for tmov_fp ST test cases.
 
-Tests the TMOV Mat->Scaling template (template_tmov_m2s).
-Simple test: matmul with f32 output (no fixpipe quantization).
+Tests the TMOV_FP (Acc+Scaling->Mat fixpipe quantization) path.
+Golden: (A @ B).astype(f16) (fixpipe quantization with scale=1, like textract_fp).
+
+Note: Fixpipe requires 16x16 scaling tile format. For scale=1 quantization,
+each row of the scaling tile contains all 1s (identity scaling).
 """
 
 import numpy as np
@@ -25,20 +28,34 @@ for case in CASES:
 
     shape_a = case["shape_a"]
     shape_b = case["shape_b"]
-    shape_scale = case["shape_scale"]
+    shape_scale = case["shape_scale"]  # (16, 16) for fixpipe format
+    shape_id = case["shape_id"]
     dtype_a = case["dtype_a"]
     dtype_b = case["dtype_b"]
     dtype_scale = case["dtype_scale"]
+    dtype_id = case["dtype_id"]
 
     lhs = np.random.uniform(-1.0, 1.0, size=shape_a).astype(dtype_a)
     rhs = np.random.uniform(-1.0, 1.0, size=shape_b).astype(dtype_b)
-    scale = np.random.uniform(1.0, 4.0, size=shape_scale).astype(dtype_scale)
 
-    # Compute golden: matmul result as float32 (no fixpipe)
-    golden = np.matmul(lhs.astype(np.float32), rhs.astype(np.float32)).astype(np.float32)
+    # Fixpipe scaling buffer requires 16x16 format with all 1s for identity scaling
+    # (similar to textract_fp test which validates the fixpipe path)
+    scale = np.ones(shape_scale, dtype=dtype_scale)
 
-    save_case_data(case["name"], {"input1": lhs, "input2": rhs, "scale": scale, "golden": golden})
+    # Identity matrix for readback validation
+    identity = np.eye(shape_id[0], shape_id[1], dtype=dtype_id)
+
+    # Compute golden: fixpipe quantization output with scale=1
+    # Acc = A @ B (f32)
+    # Mat_f16 = fixpipe(Acc, scale=1) = Acc.astype(f16) (quantization)
+    # Output = Mat_f16.astype(f32) (readback via identity matmul)
+    acc = np.matmul(lhs.astype(np.float32), rhs.astype(np.float32))
+    mat_f16 = acc.astype(np.float16)  # Fixpipe quantization result (f16) with scale=1
+    # Readback: Mat_f16 @ Identity -> Output (f32)
+    golden = mat_f16.astype(np.float32)
+
+    save_case_data(case["name"], {"input1": lhs, "input2": rhs, "scale": scale, "identity": identity, "golden": golden})
     print(
         f"[INFO] gen_data: {case['name']} "
-        f"lhs={shape_a} rhs={shape_b} scale={shape_scale} out={case['shape_c']} dtype=f32"
+        f"lhs={shape_a} rhs={shape_b} scale={shape_scale} (all_ones) id={shape_id} out={case['shape_c']} dtype=f32"
     )

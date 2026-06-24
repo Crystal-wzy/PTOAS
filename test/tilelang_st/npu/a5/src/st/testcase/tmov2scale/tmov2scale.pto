@@ -6,10 +6,19 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// TileLang ST kernel for cube tmov (Mat->Scaling): tests template expansion path.
+// TileLang ST kernel for cube tmov (Mat->Scaling): IR generation verification test.
 // Uses pto.tmov OP which will be expanded via --enable-tile-op-expand.
 // The template_tmov_m2s template should be selected when dst memory_space is "scaling".
-// This test verifies the template works, output is f32 (no fixpipe quantization).
+//
+// === IMPORTANT: IR Generation Verification Only ===
+// This test verifies that the VPTO IR correctly generates mte_l1_fb for Mat->Scaling transfer.
+// The scale data is moved to the Scaling buffer but is NOT consumed in this test.
+// The golden/output validation is for the pure matmul result, NOT the fixpipe quantization result.
+//
+// For full fixpipe quantization validation where scale is consumed, see the tmov_fp test which:
+//   1. Loads scale to Scaling buffer (mte_l1_fb)
+//   2. Performs fixpipe quantization: Acc + scale -> Mat (mte_l0c_l1 with pre_quant)
+//
 // Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --pto-backend=vpto --pto-level=level3
 
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cube>} {

@@ -10,8 +10,13 @@
 
 """Single source of truth for tmov_fp ST test cases.
 
-Tests the TMOV Mat->Scaling template (template_tmov_m2s).
-Simple test: matmul with f32 output (no fixpipe quantization).
+Tests the TMOV_FP (Acc+Scaling->Mat fixpipe quantization) path:
+  - TMOV Mat->Scaling: L1 Mat -> Scaling buffer (mte_l1_fb)
+  - TMOV_FP: Acc(f32) + scaling buffer -> Mat(f16) via fixpipe quantization
+  - Readback: Mat(f16) x identity -> Acc(f32) -> GM for validation
+
+Golden computation: (A @ B) * scale (per-column scale multiplication)
+This matches the fixpipe quantization semantics: output = accumulator * scale
 """
 
 import numpy as np
@@ -23,10 +28,12 @@ CASES = [
         "dtype_a": np.float16,
         "dtype_b": np.float16,
         "dtype_scale": np.float32,
+        "dtype_id": np.float16,
         "dtype_c": np.float32,
         "shape_a": (16, 16),
         "shape_b": (16, 16),
-        "shape_scale": (1, 16),
+        "shape_scale": (16, 16),  # Fixpipe requires 16x16 scaling tile
+        "shape_id": (16, 16),
         "shape_c": (16, 16),
         "eps": 1e-3,
     },
