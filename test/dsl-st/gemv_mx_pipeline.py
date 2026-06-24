@@ -17,6 +17,8 @@ if __package__ in {None, ""}:
 
 from common import assert_close, auto_main
 from ptodsl import pto
+from ptodsl._surface_values import unwrap_surface_value
+from mlir.dialects import pto as _pto
 
 
 M = 1
@@ -33,6 +35,8 @@ L1_B_SCALE_ADDR = 9344
 L1_BIAS_ADDR = 9600
 
 L0_BASE_ADDR = 0
+L0_SCALE_LHS_ADDR = 0
+L0_SCALE_RHS_ADDR = 256
 
 E4M3_BITS = np.asarray([0x00, 0x30, 0x38, 0x40, 0xB0, 0xB8, 0xC0], dtype=np.uint8)
 E5M2_BITS = np.asarray([0x00, 0x38, 0x3C, 0x40, 0xB8, 0xBC, 0xC0], dtype=np.uint8)
@@ -136,7 +140,7 @@ def _alloc_common_tiles():
         shape=[M, SCALE_K],
         dtype=pto.f16,
         memory_space=pto.MemorySpace.SCALING,
-        addr=L0_BASE_ADDR,
+        addr=L0_SCALE_LHS_ADDR,
         valid_shape=[M, SCALE_K],
         blayout="RowMajor",
         slayout="RowMajor",
@@ -155,7 +159,7 @@ def _alloc_common_tiles():
         shape=[SCALE_K, N_STORAGE],
         dtype=pto.f16,
         memory_space=pto.MemorySpace.SCALING,
-        addr=L0_BASE_ADDR,
+        addr=L0_SCALE_RHS_ADDR,
         valid_shape=[SCALE_K, N],
         blayout="ColMajor",
         slayout="ColMajor",
@@ -171,6 +175,17 @@ def _alloc_common_tiles():
         slayout="RowMajor",
     )
     return lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile
+
+
+def _bind_mx_scale_tiles(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile):
+    _pto.TGetScaleAddrOp(
+        unwrap_surface_value(lhs_tile),
+        unwrap_surface_value(lhs_scale_tile),
+    )
+    _pto.TGetScaleAddrOp(
+        unwrap_surface_value(rhs_tile),
+        unwrap_surface_value(rhs_scale_tile),
+    )
 
 
 def _alloc_bias_tile():
@@ -256,6 +271,7 @@ def gemv_mx_fp8_pipeline_kernel(
 ):
     lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile = _alloc_common_tiles()
     _stage_fp8_tiles(a_ptr, b_ptr, a_scale_ptr, b_scale_ptr, lhs_tile, rhs_tile)
+    _bind_mx_scale_tiles(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile)
     pto.tile.gemv_mx(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile)
     _writeback_output(dst_tile, out_ptr)
 
@@ -276,6 +292,7 @@ def gemv_mx_acc_fp8_pipeline_kernel(
 ):
     lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile = _alloc_common_tiles()
     _stage_fp8_tiles(a_ptr, b_ptr, a_scale_ptr, b_scale_ptr, lhs_tile, rhs_tile)
+    _bind_mx_scale_tiles(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile)
     pto.tile.gemv_mx(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile)
     pto.tile.gemv_mx_acc(dst_tile, lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile)
     _writeback_output(dst_tile, out_ptr)
@@ -308,6 +325,7 @@ def gemv_mx_bias_fp8_pipeline_kernel(
         bias_ptr=bias_ptr,
         bias_tile=bias_tile,
     )
+    _bind_mx_scale_tiles(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile)
     pto.tile.gemv_mx_bias(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, bias_tile, dst_tile)
     _writeback_output(dst_tile, out_ptr)
 
