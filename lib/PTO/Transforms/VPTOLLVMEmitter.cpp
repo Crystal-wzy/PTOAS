@@ -349,7 +349,7 @@ static bool isMadE4M3ElementType(Type type) {
 }
 
 static bool isMadE5M2ElementType(Type type) {
-  return type.isFloat8E5M2() || type.isFloat8E5M2FNUZ();
+  return pto::isPTOFloat8E5M2LikeType(type);
 }
 
 static std::string getMadDstFragment(Type type) {
