@@ -59,6 +59,7 @@ from ._surface_types import (   # noqa: F401
     VcvtSatMode,
     VcvtPartMode,
     AlignType,
+    RoundMode,
     DivPrecision,
     ExpPrecision,
     LogPrecision,

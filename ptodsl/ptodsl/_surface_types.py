@@ -242,6 +242,7 @@ class VcvtRoundMode:
     C = "C"
     Z = "Z"
     O = "O"
+    H = "H"
 
 
 class VcvtSatMode:
@@ -265,6 +266,7 @@ class VcvtPartMode:
 
 
 AlignType = _pto.AlignType
+RoundMode = _pto.RoundMode
 DivPrecision = _pto.DivPrecision
 ExpPrecision = _pto.ExpPrecision
 LogPrecision = _pto.LogPrecision
@@ -311,6 +313,7 @@ __all__ = [
     "VcvtSatMode",
     "VcvtPartMode",
     "AlignType",
+    "RoundMode",
     "DivPrecision",
     "ExpPrecision",
     "LogPrecision",

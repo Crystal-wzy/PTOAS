@@ -173,6 +173,37 @@ def run_ptoas_frontend_verify_whole(ptoas_bin: Path, mlir_text: str, label: str)
     expect(result.stdout.strip(), f"{label} should emit non-empty PTO IR after PTOAS frontend passes")
     return result.stdout
 
+
+def run_ptoas_frontend_expect_failure(
+    ptoas_bin: Path,
+    mlir_text: str,
+    label: str,
+    expected_stderr_substring: str,
+) -> str:
+    with tempfile.NamedTemporaryFile("w", suffix=".mlir", delete=False, encoding="utf-8") as handle:
+        handle.write(mlir_text)
+        input_path = Path(handle.name)
+
+    try:
+        result = subprocess.run(
+            [str(ptoas_bin), str(input_path), "--emit-pto-ir", "-o", "-"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        input_path.unlink(missing_ok=True)
+
+    expect(
+        result.returncode != 0,
+        f"{label} should fail PTOAS frontend verification.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+    expect(
+        expected_stderr_substring in result.stderr,
+        f"{label} should report {expected_stderr_substring!r}.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+    return result.stderr
+
 @pto.jit(target="a5")
 def host_vec_copy(
     A_ptr: pto.ptr(pto.f32, "gm"),
@@ -262,6 +293,26 @@ module attributes {pto.backend = "emitc", pto.target_arch = "a5"} {
   }
 }
 """
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vcvt_frontend():
+    zero = pto.const(0, dtype=pto.ui64)
+    src_ptr = pto.castptr(zero, pto.ptr(pto.f32, "ub"))
+    dst_ptr = pto.castptr(zero, pto.ptr(pto.f32, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    mask_b32 = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(src_ptr, pto.const(0))
+    vec_f8 = pto.vcvt(
+        vec_f32,
+        pto.f8e4m3,
+        mask_b32,
+        rnd=pto.VcvtRoundMode.R,
+        sat=pto.VcvtSatMode.NOSAT,
+        part=pto.VcvtPartMode.P0,
+    )
+    roundtrip = pto.vcvt(vec_f8, pto.f32, mask_b8, part=pto.VcvtPartMode.P0)
+    pto.vsts(roundtrip, dst_ptr, pto.const(0), mask_b32)
 
 
 def main() -> None:
@@ -498,6 +549,51 @@ def main() -> None:
         and cv_split_frontend_text.count("pto.tpush_to_aic") >= 2
         and "pto.tpop_from_aic" in cv_split_frontend_text,
         "cv-split frontend verification should keep the vector helper pipe init, push, and receive paths intact",
+    )
+
+    lowp_text = low_precision_vcvt_frontend.compile().mlir_text()
+    expect(
+        "pto.vcvt" in lowp_text,
+        "low_precision_vcvt_frontend source MLIR should include vcvt ops before frontend verification",
+    )
+    expect(
+        "f8E4M3FN" in lowp_text,
+        "low_precision_vcvt_frontend source MLIR should preserve f8e4m3 type information before frontend verification",
+    )
+    lowp_frontend_texts = run_ptoas_frontend_verify(
+        ptoas_bin,
+        lowp_text,
+        "low_precision_vcvt_frontend PTODSL artifact",
+    )
+    expect(
+        len(lowp_frontend_texts) == 1,
+        "low_precision_vcvt_frontend PTODSL artifact should lower to exactly one backend child module",
+    )
+    lowp_frontend_text = lowp_frontend_texts[0]
+    expect(
+        lowp_frontend_text == "",
+        "low_precision_vcvt_frontend should continue to compile through the VPTO fallback object path when --emit-pto-ir is unavailable",
+    )
+
+    invalid_lowp_vcvt_mlir = """
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @invalid_low_precision_vcvt(%src: !pto.vreg<256xf8E4M3FN>, %mask: !pto.mask<b8>) {
+    pto.vecscope {
+      %0 = pto.vcvt %src, %mask {part = "P0"} : !pto.vreg<256xf8E4M3FN>, !pto.mask<b8> -> !pto.vreg<128xbf16>
+    }
+    return
+  }
+}
+""".strip()
+    invalid_lowp_stderr = run_ptoas_frontend_expect_failure(
+        ptoas_bin,
+        invalid_lowp_vcvt_mlir,
+        "invalid low-precision vcvt artifact",
+        "unsupported vcvt source/result element type pair",
+    )
+    expect(
+        "'pto.vcvt' op unsupported vcvt source/result element type pair" in invalid_lowp_stderr,
+        "invalid low-precision vcvt artifact should fail specifically on vcvt pair verification",
     )
     print("ptodsl_ptoas_frontend_verify: PASS")
 

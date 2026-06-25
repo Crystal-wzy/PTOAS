@@ -69,6 +69,8 @@ FRAGMENT_FIXTURES = {
             BLOCK: pto.const_expr = 128,
         ):
             {SNIPPET_PLACEHOLDER}
+            _ = lp_ptr
+            _ = lp_vreg_ty
         """
     ),
     "type_system.tensor_view": _fixture(
@@ -1073,6 +1075,17 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "data_movement.low_precision_vector_memory": _fixture(
+        f"""
+        @pto.jit(target="a5", mode="explicit")
+        def data_movement_low_precision_vector_memory_probe():
+            f8_src = pto.castptr(pto.ui64(0), pto.ptr(pto.f8e4m3, "ub"))
+            f8_dst = pto.castptr(pto.ui64(0), pto.ptr(pto.f8e4m3, "ub"))
+            fp4_src = pto.castptr(pto.ui64(0), pto.ptr(pto.f4e1m2x2, "ub"))
+            fp4_dst = pto.castptr(pto.ui64(0), pto.ptr(pto.f4e1m2x2, "ub"))
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "data_movement.tile_slice_2d": _fixture(
         f"""
         @pto.jit(target="a5")
@@ -1154,6 +1167,13 @@ FRAGMENT_FIXTURES = {
                 compute_ops_vector_helper(inp_tile, out_tile, row)
         """
     ),
+    "compute_ops.tile_low_precision_cvt": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def compute_ops_tile_low_precision_cvt_probe():
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "compute_ops.tile_window_matmul": _fixture(
         f"""
         @pto.jit(target="a5")
@@ -1201,6 +1221,13 @@ FRAGMENT_FIXTURES = {
                 blayout="ColMajor",
                 slayout="RowMajor",
             )
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
+    "compute_ops.tile_mx_compute": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def compute_ops_tile_mx_compute_probe():
             {SNIPPET_PLACEHOLDER}
         """
     ),

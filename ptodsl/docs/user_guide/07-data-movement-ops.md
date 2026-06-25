@@ -351,6 +351,17 @@ The compiler automatically computes the byte offset from the tile's shape, eleme
 | `vec` | `VRegType` | Loaded vector register (when `post_update=OFF`) |
 | `(vec, updated_buf)` | `(VRegType, PtrType)` | Loaded vector and advanced pointer (when `post_update=ON`, pointer form only) |
 
+Low-precision element types use the same pointer/tile forms. Use `b8` masks for 8-bit storage formats, including packed FP4 storage types:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"data_movement.low_precision_vector_memory","symbol":"data_movement_low_precision_vector_memory_probe","compile":{}} -->
+```python
+mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+vec_f8 = pto.vlds(f8_src, pto.const(0))
+pto.vsts(vec_f8, f8_dst, pto.const(0), mask_b8)
+low, high = pto.vldsx2(fp4_src, pto.const(0), pto.DeinterleaveDist.DINTLV_B8)
+pto.vstsx2(low, high, fp4_dst, pto.const(0), pto.InterleaveDist.INTLV_B8, mask_b8)
+```
+
 
 #### `pto.vldsx2(tile[row, col:], dist: DeinterleaveDist) -> (VRegType, VRegType)`
 #### `pto.vldsx2(tile[start:], dist: DeinterleaveDist) -> (VRegType, VRegType)`

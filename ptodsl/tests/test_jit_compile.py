@@ -1669,6 +1669,8 @@ def public_cube_surface_probe(
     rhs_l0b_f32: pto.Tile,
     lhs_l0a_mx: pto.Tile,
     rhs_l0b_mx: pto.Tile,
+    lhs_scale_mx: pto.Tile,
+    rhs_scale_mx: pto.Tile,
     acc_tile: pto.Tile,
     bias_tile: pto.Tile,
     l1_out_tile: pto.Tile,
@@ -1744,7 +1746,29 @@ def public_cube_surface_probe(
     )
     pto.mte_l0c_ub(acc_tile.as_ptr(), out_tile.as_ptr(), m, n, n, n, 0)
     pto.mte_l0c_ub(acc_tile.as_ptr(), out_tile.as_ptr(), m, n, n, n, split=pto.SplitMode.M, layout="nz2nd")
-    pto.mte_l0c_ub(acc_tile.as_ptr(), out_tile.as_ptr(), m, n, n, n, 1, layout=("nz2nz", 1), sat=pto.SatMode.PRESERVE_NAN)
+
+
+@pto.cube
+def public_cube_tile_mx_probe(
+    mat_lhs: pto.Tile,
+    mat_lhs_scale: pto.Tile,
+    mat_rhs: pto.Tile,
+    mat_rhs_scale: pto.Tile,
+    mat_acc: pto.Tile,
+    mat_bias: pto.Tile,
+    gemv_lhs: pto.Tile,
+    gemv_lhs_scale: pto.Tile,
+    gemv_rhs: pto.Tile,
+    gemv_rhs_scale: pto.Tile,
+    gemv_acc: pto.Tile,
+    gemv_bias: pto.Tile,
+):
+    pto.tile.matmul_mx(mat_lhs, mat_lhs_scale, mat_rhs, mat_rhs_scale, mat_acc)
+    pto.tile.matmul_mx_acc(mat_acc, mat_lhs, mat_lhs_scale, mat_rhs, mat_rhs_scale, mat_acc)
+    pto.tile.matmul_mx_bias(mat_lhs, mat_lhs_scale, mat_rhs, mat_rhs_scale, mat_bias, mat_acc)
+    pto.tile.gemv_mx(gemv_lhs, gemv_lhs_scale, gemv_rhs, gemv_rhs_scale, gemv_acc)
+    pto.tile.gemv_mx_acc(gemv_acc, gemv_lhs, gemv_lhs_scale, gemv_rhs, gemv_rhs_scale, gemv_acc)
+    pto.tile.gemv_mx_bias(gemv_lhs, gemv_lhs_scale, gemv_rhs, gemv_rhs_scale, gemv_bias, gemv_acc)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -1824,18 +1848,138 @@ def public_surface_exports_probe(
         dtype=pto.f8e4m3,
         memory_space=pto.MemorySpace.LEFT,
         valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
     )
     rhs_l0b_mx = pto.alloc_tile(
-        shape=[16, 32],
+        shape=[32, 16],
         dtype=pto.f8e4m3,
         memory_space=pto.MemorySpace.RIGHT,
         valid_shape=[16, 16],
+        blayout="RowMajor",
+        slayout="ColMajor",
+    )
+    lhs_scale_mx = pto.alloc_tile(
+        shape=[16, 2],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[16, 2],
+        blayout="RowMajor",
+        slayout="RowMajor",
+        fractal_size=32,
+    )
+    rhs_scale_mx = pto.alloc_tile(
+        shape=[2, 16],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[2, 16],
+        blayout="ColMajor",
+        slayout="ColMajor",
+        fractal_size=32,
     )
     acc_tile = pto.alloc_tile(
         shape=[16, 16],
         dtype=pto.f32,
         memory_space=pto.MemorySpace.ACC,
         valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    mat_lhs_tile_mx = pto.alloc_tile(
+        shape=[16, 64],
+        dtype=pto.f8e4m3,
+        memory_space=pto.MemorySpace.LEFT,
+        valid_shape=[16, 64],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    mat_rhs_tile_mx = pto.alloc_tile(
+        shape=[64, 16],
+        dtype=pto.f8e4m3,
+        memory_space=pto.MemorySpace.RIGHT,
+        valid_shape=[64, 16],
+        blayout="RowMajor",
+        slayout="ColMajor",
+    )
+    mat_lhs_scale_tile_mx = pto.alloc_tile(
+        shape=[16, 2],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[16, 2],
+        blayout="RowMajor",
+        slayout="RowMajor",
+        fractal_size=32,
+    )
+    mat_rhs_scale_tile_mx = pto.alloc_tile(
+        shape=[2, 16],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[2, 16],
+        blayout="ColMajor",
+        slayout="ColMajor",
+        fractal_size=32,
+    )
+    mat_acc_tile_mx = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    mat_bias_tile_mx = pto.alloc_tile(
+        shape=[1, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.BIAS,
+        valid_shape=[1, 16],
+    )
+    gemv_lhs_tile_mx = pto.alloc_tile(
+        shape=[1, 64],
+        dtype=pto.f8e4m3,
+        memory_space=pto.MemorySpace.LEFT,
+        valid_shape=[1, 64],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    gemv_rhs_tile_mx = pto.alloc_tile(
+        shape=[64, 16],
+        dtype=pto.f8e4m3,
+        memory_space=pto.MemorySpace.RIGHT,
+        valid_shape=[64, 16],
+        blayout="RowMajor",
+        slayout="ColMajor",
+    )
+    gemv_lhs_scale_tile_mx = pto.alloc_tile(
+        shape=[1, 2],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[1, 2],
+        blayout="RowMajor",
+        slayout="RowMajor",
+        fractal_size=32,
+    )
+    gemv_rhs_scale_tile_mx = pto.alloc_tile(
+        shape=[2, 16],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[2, 16],
+        blayout="ColMajor",
+        slayout="ColMajor",
+        fractal_size=32,
+    )
+    gemv_acc_tile_mx = pto.alloc_tile(
+        shape=[1, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[1, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    gemv_bias_tile_mx = pto.alloc_tile(
+        shape=[1, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.BIAS,
+        valid_shape=[1, 16],
     )
     bias_tile = pto.alloc_tile(
         shape=[16, 16],
@@ -1861,6 +2005,8 @@ def public_surface_exports_probe(
         rhs_l0b_f32,
         lhs_l0a_mx,
         rhs_l0b_mx,
+        lhs_scale_mx,
+        rhs_scale_mx,
         acc_tile,
         bias_tile,
         l1_out,
@@ -1879,6 +2025,20 @@ def public_surface_exports_probe(
         loop3=(1, pto.const(16), pto.const(16)),
         sat=pto.SatMode.OFF,
         atomic=("f32", "add"),
+    )
+    public_cube_tile_mx_probe(
+        mat_lhs_tile_mx,
+        mat_lhs_scale_tile_mx,
+        mat_rhs_tile_mx,
+        mat_rhs_scale_tile_mx,
+        mat_acc_tile_mx,
+        mat_bias_tile_mx,
+        gemv_lhs_tile_mx,
+        gemv_lhs_scale_tile_mx,
+        gemv_rhs_tile_mx,
+        gemv_rhs_scale_tile_mx,
+        gemv_acc_tile_mx,
+        gemv_bias_tile_mx,
     )
 
 
@@ -2271,6 +2431,95 @@ def public_vector_conversion_surface_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def low_precision_vector_memory_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    f8_src = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    f8_dst = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    hif8_src = pto.castptr(zero_u64, pto.ptr(pto.hif8, "ub"))
+    hif8_dst = pto.castptr(zero_u64, pto.ptr(pto.hif8, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    f8 = pto.vlds(f8_src, pto.const(0))
+    hif8 = pto.vlds(hif8_src, pto.const(0))
+    pto.vsts(f8, f8_dst, pto.const(0), mask_b8)
+    pto.vsts(hif8, hif8_dst, pto.const(0), mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vcvt_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    ub_bf16 = pto.castptr(zero_u64, pto.ptr(pto.bf16, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    mask_b16 = pto.pset_b16(pto.MaskPattern.ALL)
+    mask_b32 = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    vec_bf16 = pto.vlds(ub_bf16, pto.const(0))
+
+    f8e4 = pto.vcvt(
+        vec_f32,
+        pto.f8e4m3,
+        mask_b32,
+        rnd=pto.VcvtRoundMode.R,
+        sat=pto.VcvtSatMode.NOSAT,
+        part=pto.VcvtPartMode.P0,
+    )
+    _ = pto.vcvt(f8e4, pto.f32, mask_b8, part=pto.VcvtPartMode.P0)
+    hif8 = pto.vcvt(
+        vec_f32,
+        pto.hif8,
+        mask_b32,
+        rnd=pto.VcvtRoundMode.H,
+        sat=pto.VcvtSatMode.NOSAT,
+        part=pto.VcvtPartMode.P0,
+    )
+    _ = pto.vcvt(hif8, pto.f32, mask_b8, part=pto.VcvtPartMode.P0)
+    f4e1 = pto.vcvt(
+        vec_bf16,
+        pto.f4e1m2x2,
+        mask_b16,
+        rnd=pto.VcvtRoundMode.R,
+        part=pto.VcvtPartMode.P0,
+    )
+    _ = pto.vcvt(f4e1, pto.bf16, mask_b8, part=pto.VcvtPartMode.P0)
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vadd_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    f8_src = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    f8 = pto.vlds(f8_src, pto.const(0))
+    _ = pto.vadd(f8, f8, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vexp_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    f8_src = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    f8 = pto.vlds(f8_src, pto.const(0))
+    _ = pto.vexp(f8, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vmuls_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    hif8_src = pto.castptr(zero_u64, pto.ptr(pto.hif8, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    hif8 = pto.vlds(hif8_src, pto.const(0))
+    _ = pto.vmuls(hif8, 1.0, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vsel_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    f8_src = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    f8 = pto.vlds(f8_src, pto.const(0))
+    _ = pto.vsel(f8, f8, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
 def vdup_surface_probe():
     zero_u64 = pto.const(0, dtype=pto.ui64)
     ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
@@ -2313,6 +2562,55 @@ def vcvt_surface_invalid_dtype_pair_probe():
     mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
     vec_f32 = pto.vlds(ub_f32, pto.const(0))
     _ = pto.vcvt(vec_f32, pto.ui16, mask32_full)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vcvt_low_precision_invalid_dtype_pair_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f8 = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    vec_f8 = pto.vlds(ub_f8, pto.const(0))
+    _ = pto.vcvt(vec_f8, pto.bf16, mask_b8, part=pto.VcvtPartMode.P0)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vcvt_low_precision_invalid_dtype_pair_probe_2():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vcvt(
+        vec_f32,
+        pto.f4e1m2x2,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.R,
+        part=pto.VcvtPartMode.P0,
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def vcvt_low_precision_invalid_part_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vcvt(
+        vec_f32,
+        pto.f8e4m3,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.R,
+        sat=pto.VcvtSatMode.NOSAT,
+        part=pto.VcvtPartMode.EVEN,
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def vcvt_low_precision_missing_attr_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vcvt(vec_f32, pto.f8e4m3, mask32_full, rnd=pto.VcvtRoundMode.R)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -2431,6 +2729,7 @@ def main() -> None:
         "VcvtRoundMode",
         "VcvtSatMode",
         "VcvtPartMode",
+        "RoundMode",
         "AlignType",
         "init_align",
         "plt_b8",
@@ -2533,6 +2832,12 @@ def main() -> None:
     expect(not hasattr(pto, "store_tile"), "pto.store_tile should not remain on the public pto namespace")
     expect(hasattr(pto.tile, "matmul"), "pto.tile.matmul should be exported from the public tile namespace")
     expect(hasattr(pto.tile, "matmul_acc"), "pto.tile.matmul_acc should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "matmul_mx"), "pto.tile.matmul_mx should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "matmul_mx_acc"), "pto.tile.matmul_mx_acc should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "matmul_mx_bias"), "pto.tile.matmul_mx_bias should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "gemv_mx"), "pto.tile.gemv_mx should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "gemv_mx_acc"), "pto.tile.gemv_mx_acc should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "gemv_mx_bias"), "pto.tile.gemv_mx_bias should be exported from the public tile namespace")
     expect(not hasattr(pto, "tload"), "legacy pto.tload should not remain on the public pto namespace")
     expect(not hasattr(pto, "tstore"), "legacy pto.tstore should not remain on the public pto namespace")
     expect(not hasattr(pto, "tadd"), "legacy pto.tadd should not remain on the public pto namespace")
@@ -2728,15 +3033,13 @@ def main() -> None:
             "internal partition tensor-view type helper should preserve low-precision element types",
         )
 
-        expect_raises(
-            TypeError,
-            lambda: pto.ptr(pto.hif8).resolve(),
-            "Tile / TensorView / PartitionTensorView construction",
+        expect(
+            "!pto.ptr<!pto.hif8, ub>" == str(pto.ptr(pto.hif8).resolve()),
+            "low-precision pointer types should be valid for device storage",
         )
-        expect_raises(
-            TypeError,
-            lambda: pto.vreg_type(64, pto.f8e4m3).resolve(),
-            "Tile / TensorView / PartitionTensorView construction",
+        expect(
+            str(pto.vreg_type(256, pto.f8e4m3).resolve()) == "!pto.vreg<256xf8E4M3FN>",
+            "low-precision vreg types should be valid for vector micro-ops",
         )
         expect_raises(
             TypeError,
@@ -4413,6 +4716,10 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(data_movement_surface_text, "public data movement surface specialization")
     vector_conversion_surface_text = public_vector_conversion_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vector_conversion_surface_text, "public vector conversion surface specialization")
+    low_precision_memory_surface_text = low_precision_vector_memory_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(low_precision_memory_surface_text, "low-precision vector memory surface specialization")
+    low_precision_vcvt_surface_text = low_precision_vcvt_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(low_precision_vcvt_surface_text, "low-precision vcvt surface specialization")
     vdup_surface_text = vdup_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vdup_surface_text, "public vdup surface specialization")
     vmulscvt_surface_text = vmulscvt_surface_probe.compile().mlir_text()
@@ -4523,6 +4830,14 @@ def main() -> None:
     expect('dist = "PK_B32"' in vector_conversion_surface_text, "vsts(..., dist=VStoreDist.PK_B32) should preserve the authored store distribution")
     expect("pto.vpack" in vector_conversion_surface_text, "vpack(...) should lower to pto.vpack")
     expect("!pto.vreg<128xui16>" in vector_conversion_surface_text, "vpack(i32/u32 -> u16) should infer the unsigned packed result type")
+    expect("!pto.vreg<256xf8E4M3FN>" in low_precision_memory_surface_text, "vlds/vsts should support f8e4m3 vreg storage")
+    expect("!pto.vreg<256x!pto.hif8>" in low_precision_memory_surface_text, "vlds/vsts should support hif8 vreg storage")
+    expect("!pto.ptr<f8E4M3FN, ub>" in low_precision_memory_surface_text, "low-precision f8 pointers should lower as UB pointers")
+    expect("!pto.vreg<256xf8E4M3FN>" in low_precision_vcvt_surface_text, "vcvt(f32 -> f8e4m3) should infer the packed low-precision result type")
+    expect("!pto.vreg<256x!pto.hif8>" in low_precision_vcvt_surface_text, "vcvt(f32 -> hif8) should infer the packed HiF8 result type")
+    expect("!pto.vreg<256x!pto.f4E1M2x2>" in low_precision_vcvt_surface_text, "vcvt(bf16 -> f4e1m2x2) should infer the packed 4-bit result type")
+    expect('rnd = "H"' in low_precision_vcvt_surface_text, "vcvt(..., rnd=VcvtRoundMode.H) should preserve the H rounding token")
+    expect(low_precision_vcvt_surface_text.count('part = "P0"') >= 6, "low-precision packed vcvt forms should preserve P0 part selectors")
     expect(vdup_surface_text.count("pto.vdup") == 3, "vdup(...) should lower once per authored scalar/vector duplication")
     expect("f32, !pto.mask<b32> -> !pto.vreg<64xf32>" in vdup_surface_text, "vdup(scalar_f32, mask_b32) should infer an f32 vector result type")
     expect(vdup_surface_text.count('position = "LOWEST"') >= 1, "vdup(vec, mask) should default position to LOWEST")
@@ -4536,6 +4851,12 @@ def main() -> None:
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
     expect("pto.mte_l1_l0a_mx" in public_surface_text, "mte_l1_l0a_mx(...) should lower to pto.mte_l1_l0a_mx")
     expect("pto.mte_l1_l0b_mx" in public_surface_text, "mte_l1_l0b_mx(...) should lower to pto.mte_l1_l0b_mx")
+    expect("pto.tmatmul.mx" in public_surface_text, "pto.tile.matmul_mx should lower to pto.tmatmul.mx")
+    expect("pto.tmatmul.mx.acc" in public_surface_text, "pto.tile.matmul_mx_acc should lower to pto.tmatmul.mx.acc")
+    expect("pto.tmatmul.mx.bias" in public_surface_text, "pto.tile.matmul_mx_bias should lower to pto.tmatmul.mx.bias")
+    expect("pto.tgemv.mx" in public_surface_text, "pto.tile.gemv_mx should lower to pto.tgemv.mx")
+    expect("pto.tgemv.mx.acc" in public_surface_text, "pto.tile.gemv_mx_acc should lower to pto.tgemv.mx.acc")
+    expect("pto.tgemv.mx.bias" in public_surface_text, "pto.tile.gemv_mx_bias should lower to pto.tgemv.mx.bias")
     expect("pto.mte_l0c_l1" in public_surface_text, "mte_l0c_l1(...) should lower to pto.mte_l0c_l1")
     expect("pto.mte_l0c_gm" in public_surface_text, "mte_l0c_gm(...) should lower to pto.mte_l0c_gm")
     expect(public_surface_text.count("pto.mte_l0c_ub") >= 2, "mte_l0c_ub(...) should lower sub-block and split modes")
@@ -4573,6 +4894,46 @@ def main() -> None:
         TypeError,
         lambda: vcvt_surface_invalid_dtype_pair_probe.compile(),
         "vcvt(src, to_dtype, mask) currently does not support the dtype pair f32 -> u16",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vadd_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vexp_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vmuls_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vsel_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vcvt_low_precision_invalid_dtype_pair_probe.compile(),
+        "vcvt(src, to_dtype, mask) currently does not support the dtype pair f8e4m3 -> bf16",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vcvt_low_precision_invalid_dtype_pair_probe_2.compile(),
+        "vcvt(src, to_dtype, mask) currently does not support the dtype pair f32 -> f4e1m2x2",
+    )
+    expect_raises(
+        ValueError,
+        lambda: vcvt_low_precision_invalid_part_probe.compile(),
+        "part must be P0, P1, P2, or P3",
+    )
+    expect_raises(
+        ValueError,
+        lambda: vcvt_low_precision_missing_attr_probe.compile(),
+        "requires sat for dtype pair f32 -> f8e4m3",
     )
     expect_raises(
         TypeError,
