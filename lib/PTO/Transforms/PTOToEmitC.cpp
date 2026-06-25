@@ -9968,8 +9968,20 @@ struct PTOQuantMxToEmitC : public OpConversionPattern<pto::TQuantMxOp> {
           op, "expected all operands to be emitc::OpaqueType");
 
     auto makePtr = [&](Value v, emitc::OpaqueType ot) -> Value {
+      if (auto lvalueTy = dyn_cast<emitc::LValueType>(v.getType()))
+        return rewriter.create<emitc::ApplyOp>(
+                           loc, emitc::PointerType::get(lvalueTy.getValueType()),
+                           "&", v)
+            .getResult();
+
+      Value tmp = rewriter
+                      .create<emitc::VariableOp>(
+                          loc, getEmitCVariableResultType(ot),
+                          emitc::OpaqueAttr::get(ctx, ""))
+                      .getResult();
+      rewriter.create<emitc::AssignOp>(loc, tmp, v);
       return rewriter.create<emitc::ApplyOp>(
-                         loc, emitc::PointerType::get(ot), "&", v)
+                         loc, emitc::PointerType::get(ot), "&", tmp)
           .getResult();
     };
 
