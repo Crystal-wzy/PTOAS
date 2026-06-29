@@ -170,14 +170,21 @@ static OwningOpRef<ModuleOp> decodePTOBCModule(llvm::StringRef buffer,
 static OwningOpRef<ModuleOp>
 parseTextualModule(std::unique_ptr<llvm::MemoryBuffer> inputBuffer,
                    MLIRContext &context, llvm::StringRef arch) {
+  // Capture the raw source text before the buffer is moved into the source
+  // manager. It is reused to recover SSA / arg / block-arg names as debug
+  // name hints (issue #337) attached to op Locations.
+  llvm::StringRef sourceText = inputBuffer->getBuffer();
   llvm::SourceMgr sourceMgr;
   sourceMgr.AddNewSourceBuffer(std::move(inputBuffer), llvm::SMLoc());
   mlir::pto::ScopedPTOParserTargetArch scopedParserArch(
       &context, arch == "a5" ? mlir::pto::PTOParserTargetArch::A5
                              : mlir::pto::PTOParserTargetArch::A3);
   OwningOpRef<ModuleOp> module = parseSourceFile<ModuleOp>(sourceMgr, &context);
-  if (!module)
+  if (!module) {
     llvm::errs() << "Error: Failed to parse MLIR.\n";
+    return module;
+  }
+  mlir::pto::applyTextualNameHintsToModule(*module, sourceText);
   return module;
 }
 

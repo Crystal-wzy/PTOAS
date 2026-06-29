@@ -52,9 +52,13 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Program.h"
+#include <algorithm>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <chrono>
@@ -597,6 +601,641 @@ static bool hasUnexpandedTileOps(ModuleOp module) {
   return found;
 }
 
+struct ParsedTextualNameHints {
+  llvm::SmallVector<llvm::SmallVector<std::string, 4>, 8> functionArgHints;
+  llvm::SmallVector<llvm::SmallVector<std::string, 4>, 8> blockArgHints;
+  llvm::SmallVector<llvm::SmallVector<std::string, 4>, 32> opResultHints;
+};
+
+using FunctionArgHintMap =
+    llvm::StringMap<llvm::SmallVector<std::string, 4>>;
+using FunctionBlockArgHintMap =
+    llvm::StringMap<llvm::SmallVector<llvm::SmallVector<std::string, 4>, 4>>;
+
+static bool isGeneratedValueName(llvm::StringRef name);
+static SmallVector<std::string, 4> getValueNameHints(Value value);
+
+static bool isMlirValueNameChar(char c) {
+  return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.' ||
+         c == '$' || c == '-';
+}
+
+static bool isCppIdentifierStart(char c) {
+  return std::isalpha(static_cast<unsigned char>(c)) || c == '_';
+}
+
+static bool isCppIdentifierChar(char c) {
+  return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+static bool parseMlirValueName(llvm::StringRef text, size_t &pos,
+                               std::string &name) {
+  if (pos >= text.size() || text[pos] != '%')
+    return false;
+  size_t begin = ++pos;
+  while (pos < text.size() && isMlirValueNameChar(text[pos]))
+    ++pos;
+  if (pos == begin)
+    return false;
+  name = text.slice(begin, pos).str();
+  return true;
+}
+
+static llvm::SmallVector<std::string, 4>
+parseMlirNamedArguments(llvm::StringRef text) {
+  llvm::SmallVector<std::string, 4> names;
+  for (size_t pos = 0; pos < text.size();) {
+    if (text[pos] != '%') {
+      ++pos;
+      continue;
+    }
+    std::string name;
+    size_t namePos = pos;
+    if (!parseMlirValueName(text, namePos, name)) {
+      ++pos;
+      continue;
+    }
+    while (namePos < text.size() &&
+           std::isspace(static_cast<unsigned char>(text[namePos])))
+      ++namePos;
+    if (namePos < text.size() && text[namePos] == ':')
+      names.push_back(std::move(name));
+    pos = namePos;
+  }
+  return names;
+}
+
+static bool parseLeadingOpResultNames(
+    llvm::StringRef line, llvm::SmallVectorImpl<std::string> &names) {
+  size_t pos = 0;
+  while (pos < line.size() &&
+         std::isspace(static_cast<unsigned char>(line[pos])))
+    ++pos;
+  if (pos >= line.size() || line[pos] != '%')
+    return false;
+
+  while (true) {
+    std::string name;
+    if (!parseMlirValueName(line, pos, name))
+      return false;
+    names.push_back(std::move(name));
+
+    while (pos < line.size() &&
+           std::isspace(static_cast<unsigned char>(line[pos])))
+      ++pos;
+    if (pos < line.size() && line[pos] == ',') {
+      ++pos;
+      while (pos < line.size() &&
+             std::isspace(static_cast<unsigned char>(line[pos])))
+        ++pos;
+      continue;
+    }
+    break;
+  }
+
+  while (pos < line.size() &&
+         std::isspace(static_cast<unsigned char>(line[pos])))
+    ++pos;
+  return pos < line.size() && line[pos] == '=';
+}
+
+static std::string stripMlirLineComments(llvm::StringRef text) {
+  std::string stripped;
+  stripped.reserve(text.size());
+  llvm::StringRef remaining = text;
+  while (!remaining.empty()) {
+    auto split = remaining.split('\n');
+    llvm::StringRef line = split.first;
+    llvm::StringRef rest = split.second;
+    llvm::StringRef body = line;
+    if (size_t commentPos = line.find("//"); commentPos != llvm::StringRef::npos)
+      body = line.take_front(commentPos);
+    stripped.append(body.begin(), body.end());
+    if (!rest.empty())
+      stripped.push_back('\n');
+    remaining = rest;
+  }
+  return stripped;
+}
+
+static ParsedTextualNameHints extractTextualNameHints(llvm::StringRef text) {
+  ParsedTextualNameHints hints;
+  std::string stripped = stripMlirLineComments(text);
+  llvm::StringRef source(stripped);
+
+  size_t searchPos = 0;
+  while (true) {
+    size_t funcPos = source.find("func.func", searchPos);
+    if (funcPos == llvm::StringRef::npos)
+      break;
+
+    size_t atPos = source.find('@', funcPos);
+    if (atPos == llvm::StringRef::npos)
+      break;
+    size_t lParenPos = source.find('(', atPos);
+    if (lParenPos == llvm::StringRef::npos)
+      break;
+
+    int depth = 0;
+    size_t rParenPos = llvm::StringRef::npos;
+    for (size_t i = lParenPos; i < source.size(); ++i) {
+      if (source[i] == '(') {
+        ++depth;
+      } else if (source[i] == ')') {
+        --depth;
+        if (depth == 0) {
+          rParenPos = i;
+          break;
+        }
+      }
+    }
+    if (rParenPos == llvm::StringRef::npos)
+      break;
+
+    hints.functionArgHints.push_back(
+        parseMlirNamedArguments(source.slice(lParenPos + 1, rParenPos)));
+    searchPos = rParenPos + 1;
+  }
+
+  llvm::StringRef remaining(source);
+  while (!remaining.empty()) {
+    auto split = remaining.split('\n');
+    llvm::StringRef line = split.first;
+    llvm::StringRef rest = split.second;
+    llvm::StringRef trimmed = line.ltrim();
+
+    if (trimmed.starts_with("^")) {
+      size_t lParenPos = trimmed.find('(');
+      size_t rParenPos = trimmed.rfind(')');
+      size_t colonPos = trimmed.rfind(':');
+      if (lParenPos != llvm::StringRef::npos &&
+          rParenPos != llvm::StringRef::npos && colonPos != llvm::StringRef::npos &&
+          lParenPos < rParenPos && rParenPos < colonPos) {
+        hints.blockArgHints.push_back(
+            parseMlirNamedArguments(trimmed.slice(lParenPos + 1, rParenPos)));
+      }
+    }
+
+    llvm::SmallVector<std::string, 4> resultNames;
+    if (parseLeadingOpResultNames(trimmed, resultNames))
+      hints.opResultHints.push_back(std::move(resultNames));
+
+    remaining = rest;
+  }
+
+  return hints;
+}
+
+static std::string sanitizeCppIdentifier(llvm::StringRef name) {
+  std::string sanitized;
+  sanitized.reserve(name.size() + 4);
+
+  auto appendUnderscore = [&]() {
+    if (sanitized.empty() || sanitized.back() != '_')
+      sanitized.push_back('_');
+  };
+
+  for (char c : name) {
+    if (isCppIdentifierChar(c))
+      sanitized.push_back(c);
+    else
+      appendUnderscore();
+  }
+
+  while (!sanitized.empty() && sanitized.back() == '_')
+    sanitized.pop_back();
+
+  if (sanitized.empty())
+    return {};
+  if (!isCppIdentifierStart(sanitized.front()))
+    sanitized.insert(sanitized.begin(), '_');
+  return sanitized;
+}
+
+static bool isReservedCppIdentifier(llvm::StringRef name) {
+  static const std::set<std::string> kReserved = {
+      "alignas",   "alignof",   "asm",       "auto",       "bool",
+      "break",     "case",      "catch",     "char",       "char8_t",
+      "char16_t",  "char32_t",  "class",     "const",      "consteval",
+      "constexpr", "constinit", "const_cast","continue",   "co_await",
+      "co_return", "co_yield",  "decltype",  "default",    "delete",
+      "do",        "double",    "dynamic_cast", "else",    "enum",
+      "explicit",  "export",    "extern",    "false",      "float",
+      "for",       "friend",    "goto",      "if",         "inline",
+      "int",       "long",      "mutable",   "namespace",  "new",
+      "noexcept",  "nullptr",   "operator",  "private",    "protected",
+      "public",    "register",  "reinterpret_cast", "requires",
+      "return",    "short",     "signed",    "sizeof",     "static",
+      "static_assert", "static_cast", "struct", "switch",  "template",
+      "this",      "thread_local", "throw",   "true",      "try",
+      "typedef",   "typeid",    "typename",  "union",      "unsigned",
+      "using",     "virtual",   "void",      "volatile",   "wchar_t",
+      "while"};
+  return kReserved.count(name.str()) != 0;
+}
+
+static std::string makeUniqueCppIdentifier(llvm::StringRef baseName,
+                                           std::set<std::string> &usedNames) {
+  std::string candidate = sanitizeCppIdentifier(baseName);
+  if (candidate.empty())
+    return {};
+  if (isReservedCppIdentifier(candidate))
+    candidate.append("_v");
+
+  std::string unique = candidate;
+  unsigned suffix = 1;
+  while (!usedNames.insert(unique).second) {
+    unique = candidate + "_" + std::to_string(suffix++);
+  }
+  return unique;
+}
+
+static void appendLocationNameHints(Location loc,
+                                    SmallVectorImpl<std::string> &hints) {
+  if (auto nameLoc = dyn_cast<NameLoc>(loc)) {
+    std::string sanitized = sanitizeCppIdentifier(nameLoc.getName().getValue());
+    if (!sanitized.empty())
+      hints.push_back(std::move(sanitized));
+    return;
+  }
+
+  if (auto fusedLoc = dyn_cast<FusedLoc>(loc)) {
+    if (Attribute metadata = fusedLoc.getMetadata()) {
+      if (auto strAttr = dyn_cast<StringAttr>(metadata)) {
+        std::string sanitized = sanitizeCppIdentifier(strAttr.getValue());
+        if (!sanitized.empty())
+          hints.push_back(std::move(sanitized));
+        return;
+      }
+      if (auto arrayAttr = dyn_cast<ArrayAttr>(metadata)) {
+        for (Attribute attr : arrayAttr) {
+          auto strAttr = dyn_cast<StringAttr>(attr);
+          if (!strAttr)
+            continue;
+          std::string sanitized = sanitizeCppIdentifier(strAttr.getValue());
+          if (!sanitized.empty())
+            hints.push_back(std::move(sanitized));
+        }
+        if (!hints.empty())
+          return;
+      }
+    }
+
+    for (Location childLoc : fusedLoc.getLocations())
+      appendLocationNameHints(childLoc, hints);
+    return;
+  }
+
+  if (auto callSiteLoc = dyn_cast<CallSiteLoc>(loc)) {
+    appendLocationNameHints(callSiteLoc.getCallee(), hints);
+    if (hints.empty())
+      appendLocationNameHints(callSiteLoc.getCaller(), hints);
+  }
+}
+
+static bool hasLocationNameHints(Location loc) {
+  SmallVector<std::string, 4> hints;
+  appendLocationNameHints(loc, hints);
+  return !hints.empty();
+}
+
+// Read the *raw* (unsanitized) source SSA name hints carried in the Location
+// metadata. Unlike appendLocationNameHints, this preserves the original textual
+// form (e.g. "0", "24", "query_tile") so that issue #337's "pto: %N" provenance
+// comments can map a generated C++ variable back to its input .pto SSA name,
+// even for pure-digit names that would otherwise be sanitized to "_0".
+static void appendRawLocationProvenance(Location loc,
+                                        SmallVectorImpl<std::string> &hints) {
+  if (auto nameLoc = dyn_cast<NameLoc>(loc)) {
+    std::string raw = nameLoc.getName().getValue().str();
+    if (!raw.empty())
+      hints.push_back(std::move(raw));
+    return;
+  }
+
+  if (auto fusedLoc = dyn_cast<FusedLoc>(loc)) {
+    if (Attribute metadata = fusedLoc.getMetadata()) {
+      if (auto strAttr = dyn_cast<StringAttr>(metadata)) {
+        std::string raw = strAttr.getValue().str();
+        if (!raw.empty())
+          hints.push_back(std::move(raw));
+        return;
+      }
+      if (auto arrayAttr = dyn_cast<ArrayAttr>(metadata)) {
+        for (Attribute attr : arrayAttr) {
+          auto strAttr = dyn_cast<StringAttr>(attr);
+          if (!strAttr)
+            continue;
+          std::string raw = strAttr.getValue().str();
+          if (!raw.empty())
+            hints.push_back(std::move(raw));
+        }
+        if (!hints.empty())
+          return;
+      }
+    }
+
+    for (Location childLoc : fusedLoc.getLocations())
+      appendRawLocationProvenance(childLoc, hints);
+    return;
+  }
+
+  if (auto callSiteLoc = dyn_cast<CallSiteLoc>(loc)) {
+    appendRawLocationProvenance(callSiteLoc.getCallee(), hints);
+    if (hints.empty())
+      appendRawLocationProvenance(callSiteLoc.getCaller(), hints);
+  }
+}
+
+// Recover the raw provenance (input .pto SSA name) for an op's results.
+// Returns one raw name per result when available, mirroring getResultNameHints
+// but without sanitization.
+static SmallVector<std::string, 4> getRawResultProvenance(Operation *op) {
+  SmallVector<std::string, 4> hints;
+  if (!op || op->getNumResults() == 0)
+    return hints;
+  appendRawLocationProvenance(op->getLoc(), hints);
+  if (hints.empty())
+    return hints;
+  hints.erase(std::remove_if(hints.begin(), hints.end(),
+                              [](const std::string &name) {
+                                return name.empty();
+                              }),
+              hints.end());
+  if (hints.empty())
+    return hints;
+  if (op->getNumResults() == 1) {
+    if (hints.size() > 1)
+      hints.resize(1);
+    return hints;
+  }
+  if (hints.size() > op->getNumResults())
+    hints.resize(op->getNumResults());
+  return hints;
+}
+
+static Location attachLocationNameHints(Location baseLoc,
+                                        llvm::ArrayRef<std::string> hints,
+                                        MLIRContext *context) {
+  SmallVector<Attribute, 4> attrs;
+  attrs.reserve(hints.size());
+  for (llvm::StringRef hint : hints) {
+    if (!hint.empty())
+      attrs.push_back(StringAttr::get(context, hint));
+  }
+  if (attrs.empty())
+    return baseLoc;
+  if (attrs.size() == 1)
+    return NameLoc::get(cast<StringAttr>(attrs.front()), baseLoc);
+  return FusedLoc::get(ArrayRef<Location>{baseLoc}, ArrayAttr::get(context, attrs),
+                       context);
+}
+
+static void applyValueNameHints(Value value, llvm::ArrayRef<std::string> hints) {
+  if (!value || hints.empty() || hasLocationNameHints(value.getLoc()))
+    return;
+  value.setLoc(attachLocationNameHints(value.getLoc(), hints, value.getContext()));
+}
+
+static void applyOperationResultNameHints(Operation *op,
+                                          llvm::ArrayRef<std::string> hints) {
+  if (!op || op->getNumResults() == 0 || hints.empty() ||
+      hasLocationNameHints(op->getLoc()))
+    return;
+
+  SmallVector<std::string, 4> limitedHints;
+  limitedHints.reserve(std::min<size_t>(op->getNumResults(), hints.size()));
+  for (size_t i = 0, e = std::min<size_t>(op->getNumResults(), hints.size());
+       i < e; ++i)
+    limitedHints.push_back(hints[i]);
+  if (limitedHints.empty())
+    return;
+
+  op->setLoc(attachLocationNameHints(op->getLoc(), limitedHints, op->getContext()));
+}
+
+static void collectNonEntryBlocksInSourceOrder(
+    Operation *op, SmallVectorImpl<Block *> &blocks) {
+  for (Region &region : op->getRegions()) {
+    bool isEntryBlock = true;
+    for (Block &block : region) {
+      if (!isEntryBlock && block.getNumArguments() != 0)
+        blocks.push_back(&block);
+      isEntryBlock = false;
+      for (Operation &nestedOp : block)
+        collectNonEntryBlocksInSourceOrder(&nestedOp, blocks);
+    }
+  }
+}
+
+static void applyParsedTextualNameHints(ModuleOp module,
+                                        const ParsedTextualNameHints &hints) {
+  size_t funcHintIndex = 0;
+  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+    if (funcHintIndex < hints.functionArgHints.size()) {
+      auto argHints = hints.functionArgHints[funcHintIndex];
+      for (auto [index, arg] : llvm::enumerate(func.getArguments())) {
+        if (index < argHints.size())
+          applyValueNameHints(arg, llvm::ArrayRef<std::string>{argHints[index]});
+      }
+    }
+    ++funcHintIndex;
+  }
+
+  SmallVector<Block *, 16> nonEntryBlocks;
+  collectNonEntryBlocksInSourceOrder(module.getOperation(), nonEntryBlocks);
+  for (auto [index, block] : llvm::enumerate(nonEntryBlocks)) {
+    if (index >= hints.blockArgHints.size())
+      break;
+    auto blockHints = hints.blockArgHints[index];
+    for (auto [argIndex, arg] : llvm::enumerate(block->getArguments())) {
+      if (argIndex < blockHints.size())
+        applyValueNameHints(arg,
+                            llvm::ArrayRef<std::string>{blockHints[argIndex]});
+    }
+  }
+
+  size_t opHintIndex = 0;
+  module.walk<WalkOrder::PreOrder>([&](Operation *op) {
+    if (op->getNumResults() == 0)
+      return WalkResult::advance();
+    if (opHintIndex < hints.opResultHints.size())
+      applyOperationResultNameHints(op, hints.opResultHints[opHintIndex]);
+    ++opHintIndex;
+    return WalkResult::advance();
+  });
+}
+
+void mlir::pto::applyTextualNameHintsToModule(ModuleOp module,
+                                              llvm::StringRef sourceText) {
+  if (!module)
+    return;
+  ParsedTextualNameHints hints = extractTextualNameHints(sourceText);
+  applyParsedTextualNameHints(module, hints);
+}
+
+static FunctionArgHintMap collectFunctionArgNameHints(ModuleOp module) {
+  FunctionArgHintMap hintsByFunction;
+  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+    SmallVector<std::string, 4> argHints;
+    bool hasAllHints = func.getNumArguments() != 0;
+    for (BlockArgument arg : func.getArguments()) {
+      SmallVector<std::string, 4> hints = getValueNameHints(arg);
+      if (hints.empty()) {
+        hasAllHints = false;
+        break;
+      }
+      argHints.push_back(std::move(hints.front()));
+    }
+    if (hasAllHints)
+      hintsByFunction[func.getSymNameAttr()] = std::move(argHints);
+  }
+  return hintsByFunction;
+}
+
+static FunctionBlockArgHintMap collectFunctionBlockArgNameHints(ModuleOp module) {
+  FunctionBlockArgHintMap hintsByFunction;
+  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+    SmallVector<Block *, 8> nonEntryBlocks;
+    collectNonEntryBlocksInSourceOrder(func.getOperation(), nonEntryBlocks);
+    if (nonEntryBlocks.empty())
+      continue;
+
+    SmallVector<SmallVector<std::string, 4>, 4> blockHints;
+    blockHints.reserve(nonEntryBlocks.size());
+    for (Block *block : nonEntryBlocks) {
+      SmallVector<std::string, 4> argHints;
+      bool hasAllHints = block->getNumArguments() != 0;
+      for (BlockArgument arg : block->getArguments()) {
+        SmallVector<std::string, 4> hints = getValueNameHints(arg);
+        if (hints.empty()) {
+          hasAllHints = false;
+          break;
+        }
+        argHints.push_back(std::move(hints.front()));
+      }
+      if (hasAllHints)
+        blockHints.push_back(std::move(argHints));
+    }
+
+    if (!blockHints.empty())
+      hintsByFunction[func.getSymNameAttr()] = std::move(blockHints);
+  }
+  return hintsByFunction;
+}
+
+static void applyFunctionBlockArgNameHintsToEmitC(
+    ModuleOp module, const FunctionBlockArgHintMap &blockArgHints) {
+  for (emitc::FuncOp func : module.getOps<emitc::FuncOp>()) {
+    auto it = blockArgHints.find(func.getSymNameAttr());
+    if (it == blockArgHints.end() || it->second.empty())
+      continue;
+
+    SmallVector<Block *, 8> nonEntryBlocks;
+    collectNonEntryBlocksInSourceOrder(func.getOperation(), nonEntryBlocks);
+    for (size_t blockIndex = 0,
+                e = std::min(nonEntryBlocks.size(), it->second.size());
+         blockIndex < e; ++blockIndex) {
+      Block *block = nonEntryBlocks[blockIndex];
+      auto argHints = it->second[blockIndex];
+      for (auto [argIndex, arg] : llvm::enumerate(block->getArguments())) {
+        if (argIndex < argHints.size())
+          applyValueNameHints(arg, llvm::ArrayRef<std::string>{argHints[argIndex]});
+      }
+    }
+  }
+}
+
+static SmallVector<std::string, 4>
+getResultNameHints(Operation *op) {
+  SmallVector<std::string, 4> hints;
+  if (!op || op->getNumResults() == 0)
+    return hints;
+
+  appendLocationNameHints(op->getLoc(), hints);
+  if (hints.empty())
+    return hints;
+
+  hints.erase(std::remove_if(hints.begin(), hints.end(),
+                             [](const std::string &name) {
+                               return name.empty();
+                             }),
+              hints.end());
+  if (hints.empty())
+    return hints;
+
+  if (op->getNumResults() == 1) {
+    if (hints.size() > 1)
+      hints.resize(1);
+    return hints;
+  }
+
+  if (hints.size() > op->getNumResults())
+    hints.resize(op->getNumResults());
+  return hints;
+}
+
+static SmallVector<std::string, 4> getValueNameHints(Value value) {
+  SmallVector<std::string, 4> hints;
+  if (!value)
+    return hints;
+  appendLocationNameHints(value.getLoc(), hints);
+  if (hints.size() > 1)
+    hints.resize(1);
+  return hints;
+}
+
+static std::string buildHintMarker(llvm::StringRef prefix,
+                                   llvm::ArrayRef<std::string> hints) {
+  std::string marker = ("/* " + prefix + ":").str();
+  for (size_t i = 0; i < hints.size(); ++i) {
+    if (i != 0)
+      marker.push_back(',');
+    marker.append(hints[i]);
+  }
+  marker.append(" */\n");
+  return marker;
+}
+
+static void annotateEmitCNameHints(ModuleOp module) {
+  llvm::SmallVector<Operation *, 32> opsToAnnotate;
+  module.walk<WalkOrder::PreOrder>([&](Operation *op) {
+    if (op->getNumResults() == 0 || isa<emitc::VerbatimOp>(op))
+      return WalkResult::advance();
+    if (op->getParentOfType<emitc::ExpressionOp>())
+      return WalkResult::advance();
+    // Annotate any op that has either a semantic name hint (for renaming) or a
+    // raw provenance (for the `// pto: %N` comment, which applies even to
+    // pure-digit SSA names like %0 that have no usable semantic name).
+    if (getResultNameHints(op).empty() && getRawResultProvenance(op).empty())
+      return WalkResult::advance();
+    opsToAnnotate.push_back(op);
+    return WalkResult::advance();
+  });
+
+  OpBuilder builder(module.getContext());
+  for (Operation *op : opsToAnnotate) {
+    SmallVector<std::string, 4> hints = getResultNameHints(op);
+    if (!hints.empty()) {
+      builder.setInsertionPoint(op);
+      builder.create<emitc::VerbatimOp>(
+          op->getLoc(),
+          builder.getStringAttr(buildHintMarker("PTOAS_NAME_HINTS", hints)));
+    }
+    // Emit a provenance marker carrying the raw input SSA name. This is
+    // consumed by the C++ post-processor to emit `// pto: %N` comments so a
+    // reader can map a generated variable back to its .pto source (issue #337
+    // point 1: locatability without strict number alignment).
+    SmallVector<std::string, 4> provenance = getRawResultProvenance(op);
+    if (!provenance.empty()) {
+      builder.setInsertionPoint(op);
+      builder.create<emitc::VerbatimOp>(
+          op->getLoc(),
+          builder.getStringAttr(buildHintMarker("PTOAS_PROVENANCE", provenance)));
+    }
+  }
+}
+
 // --------------------------------------------------------------------------
 // Post-process C++ output: rewrite marker calls into Tile member calls.
 // We emit marker calls in EmitC IR because EmitC currently does not provide a
@@ -866,11 +1505,13 @@ static void materializeControlFlowOperands(Operation *rootOp) {
       if (!initAttr)
         continue;
 
+      Location valueLoc = value.getLoc();
+
       Value tmp =
-          builder.create<emitc::VariableOp>(op->getLoc(), value.getType(),
+          builder.create<emitc::VariableOp>(valueLoc, value.getType(),
                                             initAttr)
               .getResult();
-      builder.create<emitc::AssignOp>(op->getLoc(), tmp, value);
+      builder.create<emitc::AssignOp>(valueLoc, tmp, value);
       operand.set(tmp);
     }
   }
@@ -1298,6 +1939,761 @@ static void rewriteHoistedGlobalTensorDecls(std::string &cpp) {
   cpp.swap(out);
 }
 
+static std::optional<llvm::SmallVector<std::string, 4>>
+parseNameHintMarker(llvm::StringRef markerBody) {
+  llvm::SmallVector<std::string, 4> hints;
+  markerBody = markerBody.trim();
+  if (markerBody.empty())
+    return std::nullopt;
+
+  size_t start = 0;
+  while (start <= markerBody.size()) {
+    size_t comma = markerBody.find(',', start);
+    llvm::StringRef token = markerBody.slice(
+        start, comma == llvm::StringRef::npos ? markerBody.size() : comma);
+    token = token.trim();
+    if (!token.empty())
+      hints.push_back(token.str());
+    if (comma == llvm::StringRef::npos)
+      break;
+    start = comma + 1;
+  }
+
+  if (hints.empty())
+    return std::nullopt;
+  return hints;
+}
+
+static std::optional<llvm::SmallVector<std::string, 4>>
+findNextHintedGeneratedParams(llvm::StringRef snippet) {
+  size_t lParenPos = snippet.find('(');
+  if (lParenPos == llvm::StringRef::npos)
+    return std::nullopt;
+
+  int parenDepth = 0;
+  size_t rParenPos = llvm::StringRef::npos;
+  for (size_t i = lParenPos; i < snippet.size(); ++i) {
+    char c = snippet[i];
+    if (c == '(') {
+      ++parenDepth;
+    } else if (c == ')') {
+      --parenDepth;
+      if (parenDepth == 0) {
+        rParenPos = i;
+        break;
+      }
+    }
+  }
+  if (rParenPos == llvm::StringRef::npos)
+    return std::nullopt;
+
+  llvm::StringRef params = snippet.slice(lParenPos + 1, rParenPos);
+  llvm::SmallVector<std::string, 4> names;
+  size_t partBegin = 0;
+  int angleDepth = 0;
+  int bracketDepth = 0;
+  parenDepth = 0;
+  for (size_t i = 0; i <= params.size(); ++i) {
+    char c = i < params.size() ? params[i] : ',';
+    if (c == '<') {
+      ++angleDepth;
+    } else if (c == '>' && angleDepth > 0) {
+      --angleDepth;
+    } else if (c == '[') {
+      ++bracketDepth;
+    } else if (c == ']' && bracketDepth > 0) {
+      --bracketDepth;
+    } else if (c == '(') {
+      ++parenDepth;
+    } else if (c == ')' && parenDepth > 0) {
+      --parenDepth;
+    }
+
+    bool atSeparator =
+        (i == params.size()) ||
+        (c == ',' && angleDepth == 0 && bracketDepth == 0 && parenDepth == 0);
+    if (!atSeparator)
+      continue;
+
+    llvm::StringRef param = params.slice(partBegin, i).trim();
+    partBegin = i + 1;
+    if (param.empty())
+      continue;
+
+    size_t end = param.size();
+    while (end > 0 && std::isspace(static_cast<unsigned char>(param[end - 1])))
+      --end;
+    size_t begin = end;
+    while (begin > 0 && isCppIdentifierChar(param[begin - 1]))
+      --begin;
+    llvm::StringRef token = param.slice(begin, end);
+    if (isGeneratedValueName(token))
+      names.push_back(token.str());
+  }
+
+  if (names.empty())
+    return std::nullopt;
+  return names;
+}
+
+static std::optional<llvm::SmallVector<std::string, 4>>
+findNextHintedGeneratedNames(llvm::StringRef snippet) {
+  static const llvm::Regex kTieRegex(
+      R"re(std::tie\(([[:space:]]*v[0-9]+([[:space:]]*,[[:space:]]*v[0-9]+)*)\)[[:space:]]*=)re");
+  static const llvm::Regex kSingleRegex(
+      R"re((^|[^[:alnum:]_])(v[0-9]+)[[:space:]]*(=|;))re");
+
+  llvm::SmallVector<llvm::StringRef, 4> matches;
+  if (kTieRegex.match(snippet, &matches) && matches.size() >= 2) {
+    llvm::SmallVector<std::string, 4> names;
+    llvm::StringRef tieNames = matches[1];
+    size_t start = 0;
+    while (start < tieNames.size()) {
+      size_t comma = tieNames.find(',', start);
+      llvm::StringRef token = tieNames.slice(
+          start, comma == llvm::StringRef::npos ? tieNames.size() : comma);
+      token = token.trim();
+      if (!token.empty())
+        names.push_back(token.str());
+      if (comma == llvm::StringRef::npos)
+        break;
+      start = comma + 1;
+    }
+    if (!names.empty())
+      return names;
+  }
+
+  matches.clear();
+  if (kSingleRegex.match(snippet, &matches) && matches.size() >= 3)
+    return llvm::SmallVector<std::string, 4>{matches[2].str()};
+
+  return std::nullopt;
+}
+
+static void rewriteIdentifiersWithMap(
+    std::string &cpp, const llvm::StringMap<std::string> &replacements) {
+  if (replacements.empty())
+    return;
+  std::string rewritten;
+  rewritten.reserve(cpp.size());
+  enum class LexState {
+    Normal,
+    LineComment,
+    BlockComment,
+    StringLiteral,
+    CharLiteral,
+  };
+  LexState state = LexState::Normal;
+
+  auto appendCurrent = [&](char c) { rewritten.push_back(c); };
+
+  for (size_t i = 0; i < cpp.size();) {
+    char c = cpp[i];
+    char next = i + 1 < cpp.size() ? cpp[i + 1] : '\0';
+
+    switch (state) {
+    case LexState::Normal:
+      if (c == '/' && next == '/') {
+        state = LexState::LineComment;
+        appendCurrent(c);
+        appendCurrent(next);
+        i += 2;
+        continue;
+      }
+      if (c == '/' && next == '*') {
+        state = LexState::BlockComment;
+        appendCurrent(c);
+        appendCurrent(next);
+        i += 2;
+        continue;
+      }
+      if (c == '"') {
+        state = LexState::StringLiteral;
+        appendCurrent(c);
+        ++i;
+        continue;
+      }
+      if (c == '\'') {
+        state = LexState::CharLiteral;
+        appendCurrent(c);
+        ++i;
+        continue;
+      }
+      if (isCppIdentifierStart(c)) {
+        size_t end = i + 1;
+        while (end < cpp.size() && isCppIdentifierChar(cpp[end]))
+          ++end;
+        llvm::StringRef token(cpp.data() + i, end - i);
+        auto it = replacements.find(token);
+        if (it != replacements.end())
+          rewritten.append(it->second);
+        else
+          rewritten.append(token.begin(), token.end());
+        i = end;
+        continue;
+      }
+      appendCurrent(c);
+      ++i;
+      continue;
+
+    case LexState::LineComment:
+      appendCurrent(c);
+      ++i;
+      if (c == '\n')
+        state = LexState::Normal;
+      continue;
+
+    case LexState::BlockComment:
+      appendCurrent(c);
+      ++i;
+      if (c == '*' && next == '/') {
+        appendCurrent(next);
+        ++i;
+        state = LexState::Normal;
+      }
+      continue;
+
+    case LexState::StringLiteral:
+      appendCurrent(c);
+      ++i;
+      if (c == '\\' && i < cpp.size()) {
+        appendCurrent(cpp[i]);
+        ++i;
+      } else if (c == '"') {
+        state = LexState::Normal;
+      }
+      continue;
+
+    case LexState::CharLiteral:
+      appendCurrent(c);
+      ++i;
+      if (c == '\\' && i < cpp.size()) {
+        appendCurrent(cpp[i]);
+        ++i;
+      } else if (c == '\'') {
+        state = LexState::Normal;
+      }
+      continue;
+    }
+  }
+
+  cpp.swap(rewritten);
+}
+
+static void stripHintMarkersWithPrefix(std::string &cpp,
+                                       llvm::StringRef markerPrefix) {
+  size_t searchPos = 0;
+  while (true) {
+    size_t markerPos = cpp.find(markerPrefix.str(), searchPos);
+    if (markerPos == std::string::npos)
+      break;
+
+    size_t markerEnd = cpp.find("*/", markerPos + markerPrefix.size());
+    if (markerEnd == std::string::npos)
+      break;
+    markerEnd += 2;
+    while (markerEnd < cpp.size() &&
+           (cpp[markerEnd] == '\r' || cpp[markerEnd] == '\n'))
+      ++markerEnd;
+
+    cpp.erase(markerPos, markerEnd - markerPos);
+    searchPos = markerPos;
+  }
+}
+
+static void stripAllHintMarkers(std::string &cpp) {
+  stripHintMarkersWithPrefix(cpp, "/* PTOAS_NAME_HINTS:");
+  stripHintMarkersWithPrefix(cpp, "/* PTOAS_PARAM_HINTS:");
+  stripHintMarkersWithPrefix(cpp, "/* PTOAS_PROVENANCE:");
+}
+
+static bool isHintMarkerLine(llvm::StringRef trimmed) {
+  return trimmed.starts_with("/* PTOAS_NAME_HINTS:") ||
+         trimmed.starts_with("/* PTOAS_PARAM_HINTS:") ||
+         trimmed.starts_with("/* PTOAS_PROVENANCE:");
+}
+
+static std::optional<std::string>
+extractFunctionNameFromSegment(llvm::StringRef segment) {
+  size_t lParenPos = segment.find('(');
+  if (lParenPos == llvm::StringRef::npos)
+    return std::nullopt;
+  size_t end = lParenPos;
+  while (end > 0 && std::isspace(static_cast<unsigned char>(segment[end - 1])))
+    --end;
+  size_t begin = end;
+  while (begin > 0 && isCppIdentifierChar(segment[begin - 1]))
+    --begin;
+  if (begin == end)
+    return std::nullopt;
+  return segment.slice(begin, end).str();
+}
+
+static bool isTopLevelFunctionStartLine(llvm::StringRef trimmed) {
+  if (trimmed.empty() || trimmed.starts_with("#") || !trimmed.ends_with("{"))
+    return false;
+  if (!trimmed.contains('(') || !trimmed.contains(')'))
+    return false;
+  if (trimmed.starts_with("if ") || trimmed.starts_with("if(") ||
+      trimmed.starts_with("for ") || trimmed.starts_with("for(") ||
+      trimmed.starts_with("while ") || trimmed.starts_with("while(") ||
+      trimmed.starts_with("switch ") || trimmed.starts_with("switch(") ||
+      trimmed.starts_with("catch ") || trimmed.starts_with("catch("))
+    return false;
+  return true;
+}
+
+static std::optional<std::string>
+parseAnyDeclaredIdentifierName(llvm::StringRef line);
+
+static llvm::SmallVector<std::string, 4>
+findTopLevelGeneratedDeclarations(llvm::StringRef segment);
+
+static std::optional<std::string>
+parseGeneratedDeclarationName(llvm::StringRef line) {
+  auto declaredName = parseAnyDeclaredIdentifierName(line);
+  if (!declaredName || !isGeneratedValueName(*declaredName))
+    return std::nullopt;
+  return declaredName;
+}
+
+static std::set<std::string> collectDeclaredIdentifiersInFunctionSegment(
+    llvm::StringRef segment) {
+  std::set<std::string> declaredNames;
+
+  if (size_t lParenPos = segment.find('('); lParenPos != llvm::StringRef::npos) {
+    int parenDepth = 0;
+    size_t rParenPos = llvm::StringRef::npos;
+    for (size_t i = lParenPos; i < segment.size(); ++i) {
+      char c = segment[i];
+      if (c == '(') {
+        ++parenDepth;
+      } else if (c == ')') {
+        --parenDepth;
+        if (parenDepth == 0) {
+          rParenPos = i;
+          break;
+        }
+      }
+    }
+    if (rParenPos != llvm::StringRef::npos) {
+      llvm::StringRef params = segment.slice(lParenPos + 1, rParenPos);
+      size_t partBegin = 0;
+      int angleDepth = 0;
+      int bracketDepth = 0;
+      parenDepth = 0;
+      for (size_t i = 0; i <= params.size(); ++i) {
+        char c = i < params.size() ? params[i] : ',';
+        if (c == '<') {
+          ++angleDepth;
+        } else if (c == '>' && angleDepth > 0) {
+          --angleDepth;
+        } else if (c == '[') {
+          ++bracketDepth;
+        } else if (c == ']' && bracketDepth > 0) {
+          --bracketDepth;
+        } else if (c == '(') {
+          ++parenDepth;
+        } else if (c == ')' && parenDepth > 0) {
+          --parenDepth;
+        }
+
+        bool atSeparator =
+            (i == params.size()) ||
+            (c == ',' && angleDepth == 0 && bracketDepth == 0 &&
+             parenDepth == 0);
+        if (!atSeparator)
+          continue;
+
+        llvm::StringRef param = params.slice(partBegin, i).trim();
+        partBegin = i + 1;
+        if (param.empty())
+          continue;
+
+        size_t end = param.size();
+        while (end > 0 &&
+               std::isspace(static_cast<unsigned char>(param[end - 1])))
+          --end;
+        size_t begin = end;
+        while (begin > 0 && isCppIdentifierChar(param[begin - 1]))
+          --begin;
+        llvm::StringRef name = param.slice(begin, end);
+        if (!name.empty() && isCppIdentifierStart(name.front()) &&
+            llvm::all_of(name, isCppIdentifierChar))
+          declaredNames.insert(name.str());
+      }
+    }
+  }
+
+  llvm::StringRef remaining = segment;
+  while (!remaining.empty()) {
+    auto split = remaining.split('\n');
+    llvm::StringRef line = split.first;
+    llvm::StringRef rest = split.second;
+    if (auto declaredName = parseAnyDeclaredIdentifierName(line))
+      declaredNames.insert(*declaredName);
+    remaining = rest;
+  }
+
+  return declaredNames;
+}
+
+struct PendingIdentifierRename {
+  std::string oldName;
+  std::string baseHint;
+};
+
+static llvm::SmallVector<PendingIdentifierRename, 8>
+collectPendingIdentifierRenames(
+    llvm::StringRef segment, llvm::ArrayRef<std::string> functionParamHints,
+    llvm::ArrayRef<llvm::SmallVector<std::string, 4>> blockArgHints) {
+  static constexpr llvm::StringLiteral kResultMarkerPrefix =
+      "/* PTOAS_NAME_HINTS:";
+  llvm::SmallVector<PendingIdentifierRename, 8> pendingRenames;
+
+  if (!functionParamHints.empty()) {
+    if (auto generatedParams = findNextHintedGeneratedParams(segment)) {
+      size_t pairCount =
+          std::min(functionParamHints.size(), generatedParams->size());
+      for (size_t i = 0; i < pairCount; ++i) {
+        pendingRenames.push_back(
+            PendingIdentifierRename{(*generatedParams)[i], functionParamHints[i]});
+      }
+    }
+  }
+
+  if (!blockArgHints.empty()) {
+    llvm::SmallVector<std::string, 4> generatedDecls =
+        findTopLevelGeneratedDeclarations(segment);
+    llvm::SmallVector<std::string, 4> flattenedBlockHints;
+    for (auto blockHints : blockArgHints)
+      flattenedBlockHints.append(blockHints.begin(), blockHints.end());
+    if (!flattenedBlockHints.empty() &&
+        generatedDecls.size() >= flattenedBlockHints.size()) {
+      size_t startIndex = generatedDecls.size() - flattenedBlockHints.size();
+      for (size_t i = 0; i < flattenedBlockHints.size(); ++i) {
+        pendingRenames.push_back(PendingIdentifierRename{
+            generatedDecls[startIndex + i], flattenedBlockHints[i]});
+      }
+    }
+  }
+
+  size_t searchPos = 0;
+  while (true) {
+    size_t markerPos = segment.find(kResultMarkerPrefix.str(), searchPos);
+    if (markerPos == std::string::npos)
+      break;
+
+    size_t bodyBegin = markerPos + kResultMarkerPrefix.size();
+    size_t markerEnd = segment.find("*/", bodyBegin);
+    if (markerEnd == std::string::npos)
+      break;
+
+    auto hints = parseNameHintMarker(
+        llvm::StringRef(segment).slice(bodyBegin, markerEnd));
+    searchPos = markerEnd + 2;
+    if (!hints)
+      continue;
+
+    size_t windowEnd =
+        std::min(searchPos + static_cast<size_t>(2048), segment.size());
+    llvm::StringRef searchWindow =
+        llvm::StringRef(segment).slice(searchPos, windowEnd);
+    auto generatedNames = findNextHintedGeneratedNames(searchWindow);
+    if (!generatedNames)
+      continue;
+
+    size_t pairCount = std::min(hints->size(), generatedNames->size());
+    for (size_t i = 0; i < pairCount; ++i) {
+      pendingRenames.push_back(
+          PendingIdentifierRename{(*generatedNames)[i], (*hints)[i]});
+    }
+  }
+
+  return pendingRenames;
+}
+
+static std::optional<std::string>
+parseAnyDeclaredIdentifierName(llvm::StringRef line) {
+  llvm::StringRef trimmed = line.trim();
+  if (trimmed.empty() || trimmed.starts_with("#") || trimmed.starts_with("//") ||
+      !trimmed.ends_with(";"))
+    return std::nullopt;
+  llvm::StringRef body = trimmed.drop_back().rtrim();
+  if (body.starts_with("return") || body.starts_with("goto ") ||
+      body.starts_with("if ") || body.starts_with("if(") ||
+      body.starts_with("switch ") || body.starts_with("switch(") ||
+      body.starts_with("for ") || body.starts_with("for(") ||
+      body.starts_with("while ") || body.starts_with("while(") ||
+      body.starts_with("using namespace "))
+    return std::nullopt;
+
+  llvm::StringRef lhs = body;
+  if (size_t eqPos = body.find('='); eqPos != llvm::StringRef::npos)
+    lhs = body.take_front(eqPos).rtrim();
+  size_t lastWs = lhs.find_last_of(" \t");
+  if (lastWs == llvm::StringRef::npos)
+    return std::nullopt;
+  llvm::StringRef name = lhs.drop_front(lastWs + 1).trim();
+  if (name.empty() || !isCppIdentifierStart(name.front()) ||
+      !llvm::all_of(name, isCppIdentifierChar))
+    return std::nullopt;
+  return name.str();
+}
+
+static llvm::SmallVector<std::string, 4>
+findTopLevelGeneratedDeclarations(llvm::StringRef segment) {
+  llvm::SmallVector<std::string, 4> names;
+  size_t lBracePos = segment.find('{');
+  if (lBracePos == llvm::StringRef::npos)
+    return names;
+
+  llvm::StringRef body = segment.drop_front(lBracePos + 1);
+  llvm::StringRef remaining = body;
+  while (!remaining.empty()) {
+    auto split = remaining.split('\n');
+    llvm::StringRef line = split.first;
+    llvm::StringRef rest = split.second;
+    llvm::StringRef trimmed = line.trim();
+    if (trimmed.empty()) {
+      remaining = rest;
+      continue;
+    }
+    if (trimmed.starts_with("using "))
+      break;
+    if (auto generatedName = parseGeneratedDeclarationName(trimmed))
+      names.push_back(*generatedName);
+    remaining = rest;
+  }
+  return names;
+}
+
+// Convert `/* PTOAS_PROVENANCE:rawname,... */` markers into trailing
+// `// pto: %rawname` comments on the next generated-value declaration line.
+// This gives issue #337 point 1 locatability: each generated C++ local that
+// traces back to an input .pto SSA value is annotated with its original name,
+// even when the identifier itself was renamed or sanitized (e.g. pure-digit
+// %0 -> _0 still carries `// pto: %0`). The marker is consumed (removed) here.
+static void emitProvenanceComments(std::string &segment) {
+  static constexpr llvm::StringLiteral kProvenancePrefix =
+      "/* PTOAS_PROVENANCE:";
+  size_t searchPos = 0;
+  llvm::SmallVector<std::pair<size_t, size_t>, 16> markers;
+  // First collect marker spans and their raw names.
+  struct ProvenanceMarker {
+    size_t begin;
+    size_t end; // exclusive of "*/"
+    llvm::SmallVector<std::string, 4> names;
+  };
+  llvm::SmallVector<ProvenanceMarker, 16> found;
+  while (true) {
+    size_t markerPos = segment.find(kProvenancePrefix.str(), searchPos);
+    if (markerPos == std::string::npos)
+      break;
+    size_t bodyBegin = markerPos + kProvenancePrefix.size();
+    size_t markerEnd = segment.find("*/", bodyBegin);
+    if (markerEnd == std::string::npos)
+      break;
+    auto names = parseNameHintMarker(
+        llvm::StringRef(segment).slice(bodyBegin, markerEnd));
+    size_t spanEnd = markerEnd + 2;
+    // consume trailing newline so the marker line disappears cleanly.
+    while (spanEnd < segment.size() &&
+           (segment[spanEnd] == '\r' || segment[spanEnd] == '\n'))
+      ++spanEnd;
+    if (names) {
+      found.push_back({markerPos, spanEnd, std::move(*names)});
+    } else {
+      // No recoverable names; just drop the marker.
+      markers.push_back({markerPos, spanEnd});
+    }
+    searchPos = spanEnd;
+  }
+
+  // For each provenance marker, locate the next generated declaration line
+  // and append a `// pto: %n` comment to it.
+  for (const auto &m : found) {
+    size_t windowEnd =
+        std::min(m.end + static_cast<size_t>(2048), segment.size());
+    llvm::StringRef searchWindow =
+        llvm::StringRef(segment).substr(m.end, windowEnd - m.end);
+    auto generatedNames = findNextHintedGeneratedNames(searchWindow);
+    if (!generatedNames)
+      continue;
+    size_t pairCount =
+        std::min(m.names.size(), generatedNames->size());
+    if (pairCount == 0)
+      continue;
+    // Build the comment text: `// pto: %n0[, %n1, ...]`.
+    std::string comment = " // pto: ";
+    for (size_t i = 0; i < pairCount; ++i) {
+      if (i != 0)
+        comment += ", ";
+      comment += "%";
+      comment += m.names[i];
+    }
+    // Find the end of the declaration line that mentions the first generated
+    // name, and insert the comment right before the newline.
+    std::string firstName = (*generatedNames)[0];
+    size_t namePos = segment.find(firstName, m.end);
+    if (namePos == std::string::npos || namePos >= windowEnd)
+      continue;
+    size_t lineEnd = segment.find('\n', namePos);
+    if (lineEnd == std::string::npos)
+      lineEnd = segment.size();
+    // Skip a trailing '\r'.
+    size_t insertAt = lineEnd;
+    // Avoid double-commenting if a provenance comment already sits there.
+    llvm::StringRef tail =
+        llvm::StringRef(segment).substr(namePos, lineEnd - namePos);
+    if (tail.contains("// pto:"))
+      continue;
+    segment.insert(insertAt, comment);
+  }
+
+  // Remove all provenance marker spans (offsets captured before insertions
+  // shifted; re-scan from scratch to be safe).
+  std::string out;
+  out.reserve(segment.size());
+  size_t i = 0;
+  while (i < segment.size()) {
+    size_t mp = segment.find(kProvenancePrefix.str(), i);
+    if (mp == std::string::npos) {
+      out.append(segment, i, std::string::npos);
+      break;
+    }
+    out.append(segment, i, mp - i);
+    size_t me = segment.find("*/", mp + kProvenancePrefix.size());
+    if (me == std::string::npos) {
+      out.append(segment, i, std::string::npos);
+      break;
+    }
+    me += 2;
+    while (me < segment.size() &&
+           (segment[me] == '\r' || segment[me] == '\n'))
+      ++me;
+    i = me;
+  }
+  segment.swap(out);
+}
+
+static void rewriteNameHintsInFunctionSegment(
+    std::string &segment, llvm::ArrayRef<std::string> functionParamHints,
+    llvm::ArrayRef<llvm::SmallVector<std::string, 4>> blockArgHints) {
+  llvm::StringMap<std::string> replacements;
+  llvm::SmallVector<PendingIdentifierRename, 8> pendingRenames =
+      collectPendingIdentifierRenames(segment, functionParamHints, blockArgHints);
+  std::set<std::string> usedNames =
+      collectDeclaredIdentifiersInFunctionSegment(segment);
+  for (const PendingIdentifierRename &rename : pendingRenames)
+    usedNames.erase(rename.oldName);
+
+  for (const PendingIdentifierRename &rename : pendingRenames) {
+    llvm::StringRef oldName = rename.oldName;
+    if (replacements.count(oldName))
+      continue;
+    std::string newName = makeUniqueCppIdentifier(rename.baseHint, usedNames);
+    if (newName.empty() || newName == oldName)
+      continue;
+    replacements[oldName] = std::move(newName);
+  }
+
+  // Emit `// pto: %N` provenance comments from PTOAS_PROVENANCE markers
+  // before the markers are stripped. Done before renaming so the comment is
+  // attached to the correct declaration line; the comment body uses raw input
+  // names and is unaffected by the vN->semantic rename below.
+  emitProvenanceComments(segment);
+  stripAllHintMarkers(segment);
+  rewriteIdentifiersWithMap(segment, replacements);
+}
+
+static void rewriteNameHintMarkers(std::string &cpp,
+                                   const FunctionArgHintMap &functionArgHints,
+                                   const FunctionBlockArgHintMap &functionBlockArgHints) {
+  llvm::SmallVector<std::string, 0> lines;
+  for (llvm::StringRef ref(cpp); !ref.empty();) {
+    auto split = ref.split('\n');
+    lines.push_back(split.first.str());
+    ref = split.second;
+  }
+
+  std::string rewritten;
+  rewritten.reserve(cpp.size());
+  size_t cursor = 0;
+  int topLevelBraceDepth = 0;
+
+  auto appendLines = [&](size_t begin, size_t end, bool stripMarkers) {
+    if (begin >= end)
+      return;
+    std::string chunk;
+    for (size_t i = begin; i < end; ++i) {
+      chunk.append(lines[i]);
+      if (i + 1 != end || end != lines.size())
+        chunk.push_back('\n');
+    }
+    if (stripMarkers)
+      stripAllHintMarkers(chunk);
+    rewritten.append(chunk);
+  };
+
+  size_t i = 0;
+  while (i < lines.size()) {
+    llvm::StringRef trimmed = llvm::StringRef(lines[i]).trim();
+    if (topLevelBraceDepth == 0 && isTopLevelFunctionStartLine(trimmed)) {
+      size_t segmentBegin = i;
+      while (segmentBegin > cursor &&
+             isHintMarkerLine(llvm::StringRef(lines[segmentBegin - 1]).trim()))
+        --segmentBegin;
+
+      appendLines(cursor, segmentBegin, true);
+
+      size_t segmentEnd = i;
+      int segmentBraceDepth = 0;
+      bool sawOpeningBrace = false;
+      for (; segmentEnd < lines.size(); ++segmentEnd) {
+        int lineDelta = countBraceDelta(lines[segmentEnd]);
+        if (lines[segmentEnd].find('{') != std::string::npos)
+          sawOpeningBrace = true;
+        segmentBraceDepth += lineDelta;
+        if (sawOpeningBrace && segmentBraceDepth == 0) {
+          ++segmentEnd;
+          break;
+        }
+      }
+
+      std::string segment;
+      for (size_t lineIndex = segmentBegin; lineIndex < segmentEnd; ++lineIndex) {
+        segment.append(lines[lineIndex]);
+        if (lineIndex + 1 != segmentEnd || segmentEnd != lines.size())
+          segment.push_back('\n');
+      }
+      llvm::SmallVector<std::string, 4> paramHints;
+      llvm::SmallVector<llvm::SmallVector<std::string, 4>, 4> blockHints;
+      if (auto functionName = extractFunctionNameFromSegment(segment)) {
+        auto it = functionArgHints.find(*functionName);
+        if (it != functionArgHints.end())
+          paramHints = it->second;
+        auto blockIt = functionBlockArgHints.find(*functionName);
+        if (blockIt != functionBlockArgHints.end())
+          blockHints = blockIt->second;
+      }
+      rewriteNameHintsInFunctionSegment(segment, paramHints, blockHints);
+      rewritten.append(segment);
+
+      cursor = segmentEnd;
+      i = segmentEnd;
+      topLevelBraceDepth = 0;
+      continue;
+    }
+
+    topLevelBraceDepth += countBraceDelta(lines[i]);
+    ++i;
+  }
+
+  appendLines(cursor, lines.size(), true);
+  cpp.swap(rewritten);
+}
+
 namespace {
 struct ConstantDeclCandidate {
   size_t declLine = 0;
@@ -1665,6 +3061,17 @@ int mlir::pto::compilePTOASModule(
   int argc = context.getArgc();
   char **argv = context.getArgv();
 
+  // Name-hint provenance: textual .pto inputs had their SSA/arg/block-arg names
+  // attached to op Locations by the driver right after parsing. Collect the
+  // function-level arg/block-arg hint maps now, before any lowering, so they
+  // survive CSE and emitc.variable hoisting.
+  FunctionArgHintMap functionArgHints;
+  FunctionBlockArgHintMap functionBlockArgHints;
+  if (module) {
+    functionArgHints = collectFunctionArgNameHints(*module);
+    functionBlockArgHints = collectFunctionBlockArgNameHints(*module);
+  }
+
   if (effectiveBackend != PTOBackend::VPTO &&
       (emitVPTO || emitVPTOLLVMDialect || ptoPrintSeamIR ||
        !ptoSeamIRFile.empty())) {
@@ -1953,12 +3360,14 @@ int mlir::pto::compilePTOASModule(
     return 1;
   }
 
+  applyFunctionBlockArgNameHintsToEmitC(*module, functionBlockArgHints);
   dropEmptyEmitCExpressions(module.get());
   materializeControlFlowOperands(module.get());
   if (failed(reorderEmitCFunctions(module.get()))) {
     llvm::errs() << "Error: Failed to order emitted functions for C++ emission.\n";
     return 1;
   }
+  annotateEmitCNameHints(*module);
 
   // Emit C++ to string, then post-process, then write to output file.
   std::string cppOutput;
@@ -1983,6 +3392,7 @@ int mlir::pto::compilePTOASModule(
   rewriteMalformedVerbatimSemicolons(cppOutput);
   rewriteScalarConstantDecls(cppOutput);
   rewriteHoistedGlobalTensorDecls(cppOutput);
+  rewriteNameHintMarkers(cppOutput, functionArgHints, functionBlockArgHints);
 
   result.kind = PTOASCompileResultKind::Text;
   result.textOutput = std::move(cppOutput);

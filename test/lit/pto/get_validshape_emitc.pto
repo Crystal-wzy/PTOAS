@@ -22,7 +22,7 @@ module attributes {pto.target_arch = "a5"} {
 }
 
 // CHECK-LABEL: AICORE void get_validshape_emitc()
-// CHECK: Tile<TileType::Vec, float, 16, 16, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[TILE:v[0-9]+]] = Tile
-// CHECK: int64_t [[ROW:v[0-9]+]] = [[TILE]].GetValidRow();
-// CHECK-NEXT: int64_t [[COL:v[0-9]+]] = [[TILE]].GetValidCol();
+// CHECK: Tile<TileType::Vec, float, 16, 16, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[TILE:[_A-Za-z][_A-Za-z0-9]*]] = Tile
+// CHECK: int64_t [[ROW:[_A-Za-z][_A-Za-z0-9]*]] = [[TILE]].GetValidRow();
+// CHECK-NEXT: int64_t [[COL:[_A-Za-z][_A-Za-z0-9]*]] = [[TILE]].GetValidCol();
 // CHECK-NEXT: [[TILE]].SetValidShape([[ROW]], [[COL]]);
