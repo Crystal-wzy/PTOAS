@@ -266,38 +266,6 @@ static std::optional<SmallVector<Value, 2>> lookupMGatherValidDims(Value value) 
   return std::nullopt;
 }
 
-static std::optional<pto::TileBufConfigAttr>
-lookupMGatherTileConfig(Value value) {
-  if (auto bind = value.getDefiningOp<pto::BindTileOp>())
-    return bind.getConfig();
-  if (auto pc = value.getDefiningOp<pto::PointerCastOp>()) {
-    if (auto config = pc.getConfig())
-      return *config;
-    return std::nullopt;
-  }
-  if (auto subview = value.getDefiningOp<memref::SubViewOp>())
-    return lookupMGatherTileConfig(subview.getSource());
-  if (auto cast = value.getDefiningOp<memref::ReinterpretCastOp>())
-    return lookupMGatherTileConfig(cast.getSource());
-  if (auto cast = value.getDefiningOp<memref::CastOp>())
-    return lookupMGatherTileConfig(cast.getSource());
-
-  if (auto regionResult = dyn_cast<OpResult>(value)) {
-    if (auto fusionRegion = dyn_cast<pto::FusionRegionOp>(regionResult.getOwner())) {
-      auto yieldOp =
-          dyn_cast<pto::YieldOp>(fusionRegion.getBody().front().getTerminator());
-      if (!yieldOp)
-        return std::nullopt;
-      unsigned resultIndex = regionResult.getResultNumber();
-      if (resultIndex >= yieldOp.getNumOperands())
-        return std::nullopt;
-      return lookupMGatherTileConfig(yieldOp.getOperand(resultIndex));
-    }
-  }
-
-  return std::nullopt;
-}
-
 static std::optional<SmallVector<int64_t>>
 getMGatherOperandShape(Value value, bool useValidShape = true) {
   auto shape = getMGatherOperandShapeFromType(value.getType(), useValidShape);
@@ -323,84 +291,6 @@ getMGatherOperandShape(Value value, bool useValidShape = true) {
   return shape;
 }
 
-struct MGatherShapeLayoutInfo {
-  SmallVector<int64_t, 2> shape;
-  bool rowMajor = false;
-  bool colMajor = false;
-};
-
-static std::optional<MGatherShapeLayoutInfo>
-getMGatherShapeLayoutInfo(Value value) {
-  auto shape = getMGatherOperandShape(value);
-  if (!shape || shape->size() != 2)
-    return std::nullopt;
-
-  MGatherShapeLayoutInfo info;
-  info.shape.assign(shape->begin(), shape->end());
-
-  if (auto tileTy = dyn_cast<pto::TileBufType>(value.getType())) {
-    int32_t blayout = tileTy.getBLayoutValueI32();
-    info.rowMajor = blayout == static_cast<int32_t>(pto::BLayout::RowMajor);
-    info.colMajor = blayout == static_cast<int32_t>(pto::BLayout::ColMajor);
-  }
-
-  if (auto config = lookupMGatherTileConfig(value)) {
-    auto blayoutAttr = dyn_cast<pto::BLayoutAttr>(config->getBLayout());
-    if (!blayoutAttr)
-      return info;
-    info.rowMajor = blayoutAttr.getValue() == pto::BLayout::RowMajor;
-    info.colMajor = blayoutAttr.getValue() == pto::BLayout::ColMajor;
-    return info;
-  }
-
-  if (auto memRefTy = dyn_cast<MemRefType>(value.getType())) {
-    SmallVector<int64_t, 4> strides;
-    int64_t offset = ShapedType::kDynamic;
-    if (failed(getStridesAndOffset(memRefTy, strides, offset)) ||
-        strides.size() != 2)
-      return std::nullopt;
-    info.rowMajor = strides[1] == 1;
-    info.colMajor = strides[0] == 1;
-  }
-
-  return info;
-}
-
-// Infer the effective Coalesce when the attribute is absent. Mirrors the
-// isRowCoalescedMGatherIndexType heuristic from PTOToEmitC: row gather has a
-// unit-extent index (valid [1,R] row-major or [R,1] col-major), otherwise Elem.
-// InsertSync runs after PTOViewToMemref / buffer materialization, where tile
-// valid_shape + layout metadata may live on pto.bind_tile/pointer_cast rather
-// than on the bare memref type. Recover that value-chain metadata first, and
-// only fall back to memref physical shape/strides when no PTO tile metadata is
-// available.
-static pto::Coalesce inferMGatherCoalesce(pto::MGatherOp op) {
-  if (auto coalesceAttr = op.getCoalesceAttr())
-    return coalesceAttr.getValue();
-
-  auto dataInfo = getMGatherShapeLayoutInfo(op.getDst());
-  auto idxInfo = getMGatherShapeLayoutInfo(op.getIdx());
-  if (!dataInfo || !idxInfo)
-    return pto::Coalesce::Elem;
-
-  auto isUnit = [](int64_t d) {
-    return d == 0 || d == 1;
-  };
-  auto compat = [](int64_t a, int64_t b) {
-    return a != ::mlir::ShapedType::kDynamic &&
-           b != ::mlir::ShapedType::kDynamic && a == b;
-  };
-
-  const bool rowCoalesce1xR =
-      idxInfo->rowMajor && isUnit(idxInfo->shape[0]) &&
-      compat(idxInfo->shape[1], dataInfo->shape[0]);
-  const bool rowCoalesceRx1 =
-      idxInfo->colMajor && compat(idxInfo->shape[0], dataInfo->shape[0]) &&
-      isUnit(idxInfo->shape[1]);
-  return (rowCoalesce1xR || rowCoalesceRx1) ? pto::Coalesce::Row
-                                            : pto::Coalesce::Elem;
-}
-
 // MGather is a macro-like library call whose internal pipe usage depends on the
 // destination address space, the coalesce mode, and the target arch. Model each
 // reachable lowering path as SyncMacroPhases so InsertSyncAnalysis can derive the
@@ -418,8 +308,12 @@ std::optional<SyncMacroModel> getMGatherSyncMacroModel(pto::MGatherOp op) {
   auto dstSpace = getMGatherOperandAddressSpace(op.getDst().getType());
   const bool isGm2L1 = dstSpace && *dstSpace == pto::AddressSpace::MAT;
 
+  auto coalesceAttr = op.getCoalesceAttr();
+  if (!coalesceAttr)
+    return std::nullopt;
+
   const PTOArch arch = getTargetArch(op.getOperation());
-  const pto::Coalesce coalesce = inferMGatherCoalesce(op);
+  const pto::Coalesce coalesce = coalesceAttr.getValue();
 
   SyncMacroModel model;
 

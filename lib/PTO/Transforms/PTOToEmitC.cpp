@@ -3268,17 +3268,15 @@ struct PTOMGatherToMGATHER : public OpConversionPattern<pto::MGatherOp> {
       llvm_unreachable("unknown Coalesce");
     };
 
+    auto coalesceAttr = op.getCoalesceAttr();
+    if (!coalesceAttr)
+      return op.emitError(
+          "expects mgather to specify an explicit coalesce attribute (row or "
+          "elem)");
+
     SmallVector<Attribute, 2> templateArgVec;
-    pto::Coalesce coalesce = pto::Coalesce::Elem;
-    if (auto coalesceAttr = op.getCoalesceAttr()) {
-      coalesce = coalesceAttr.getValue();
-    } else {
-      const bool rowCoalesce =
-          isRowCoalescedMGatherIndex(op.getDst(), op.getIdx());
-      coalesce = rowCoalesce ? pto::Coalesce::Row : pto::Coalesce::Elem;
-    }
     templateArgVec.push_back(
-        emitc::OpaqueAttr::get(ctx, coalesceTok(coalesce)));
+        emitc::OpaqueAttr::get(ctx, coalesceTok(coalesceAttr.getValue())));
     if (op.getGatherOob() != pto::GatherOOB::Undefined) {
       templateArgVec.push_back(
           emitc::OpaqueAttr::get(ctx, gatherOobTok(op.getGatherOob())));

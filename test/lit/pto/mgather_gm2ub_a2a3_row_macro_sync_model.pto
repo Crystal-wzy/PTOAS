@@ -6,10 +6,10 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// The default A2/A3 row-form mgather should expand into two macro phases even
+// Explicit A2/A3 row-form mgather should expand into two macro phases even
 // after the index tile is lowered to a memref: phase 0 on PIPE_S (read idx),
-// phase 1 on PIPE_MTE2 (GM->UB row DMA). This debug test guards the lowered
-// coalesce inference used by InsertSync.
+// phase 1 on PIPE_MTE2 (GM->UB row DMA). This debug test guards InsertSync
+// macro modeling without relying on coalesce inference.
 //
 // RUN: ptoas --pto-arch=a3 --pto-level=level3 --enable-insert-sync --pto-insert-sync-debug=2 %s -o - 2>&1 | FileCheck %s
 
@@ -36,6 +36,7 @@ module attributes {pto.target_arch = "a2a3"} {
         : !pto.partition_tensor_view<64x32xf16>,
           !pto.tile_buf<loc=vec, dtype=i32, rows=1, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
       outs(%dst : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      {coalesce = #pto<coalesce row>}
     %out_pview = pto.partition_view %out_view, offsets = [%c0_index, %c0_index], sizes = [%c16_index, %c32_index] : !pto.tensor_view<?x?xf16> -> !pto.partition_tensor_view<16x32xf16>
     pto.tstore ins(%dst : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
                outs(%out_pview : !pto.partition_tensor_view<16x32xf16>)

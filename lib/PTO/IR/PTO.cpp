@@ -8499,12 +8499,14 @@ LogicalResult MGatherOp::verify() {
                                              "dst")))
     return failure();
 
-  std::optional<pto::Coalesce> explicitCoalesce;
-  if (auto coalesceAttr = getCoalesceAttr())
-    explicitCoalesce = coalesceAttr.getValue();
+  auto coalesceAttr = getCoalesceAttr();
+  if (!coalesceAttr)
+    return emitOpError(
+        "expects mgather to specify an explicit coalesce attribute (row or "
+        "elem)");
 
   if (failed(verifyMGatherMScatterTileShape(getOperation(), dstTy, idxTy, "dst",
-                                            explicitCoalesce)))
+                                            coalesceAttr.getValue())))
     return failure();
 
   return success();
