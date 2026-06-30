@@ -826,23 +826,30 @@ static std::string sanitizeCppIdentifier(llvm::StringRef name) {
 
 static bool isReservedCppIdentifier(llvm::StringRef name) {
   static const std::set<std::string> kReserved = {
-      "alignas",   "alignof",   "asm",       "auto",       "bool",
-      "break",     "case",      "catch",     "char",       "char8_t",
-      "char16_t",  "char32_t",  "class",     "const",      "consteval",
-      "constexpr", "constinit", "const_cast","continue",   "co_await",
-      "co_return", "co_yield",  "decltype",  "default",    "delete",
-      "do",        "double",    "dynamic_cast", "else",    "enum",
-      "explicit",  "export",    "extern",    "false",      "float",
-      "for",       "friend",    "goto",      "if",         "inline",
-      "int",       "long",      "mutable",   "namespace",  "new",
-      "noexcept",  "nullptr",   "operator",  "private",    "protected",
-      "public",    "register",  "reinterpret_cast", "requires",
-      "return",    "short",     "signed",    "sizeof",     "static",
-      "static_assert", "static_cast", "struct", "switch",  "template",
-      "this",      "thread_local", "throw",   "true",      "try",
-      "typedef",   "typeid",    "typename",  "union",      "unsigned",
-      "using",     "virtual",   "void",      "volatile",   "wchar_t",
-      "while"};
+      "alignas",         "alignof",        "and",            "and_eq",
+      "asm",             "auto",           "bitand",         "bitor",
+      "bool",            "break",          "case",           "catch",
+      "char",            "char8_t",        "char16_t",       "char32_t",
+      "class",           "co_await",       "co_return",      "co_yield",
+      "compl",           "concept",        "const",          "const_cast",
+      "consteval",       "constexpr",      "constinit",      "continue",
+      "decltype",        "default",        "delete",         "do",
+      "double",          "dynamic_cast",   "else",           "enum",
+      "explicit",        "export",         "extern",         "false",
+      "float",           "for",            "friend",         "goto",
+      "if",              "import",         "inline",         "int",
+      "long",            "module",         "mutable",        "namespace",
+      "new",             "noexcept",       "not",            "not_eq",
+      "nullptr",         "operator",       "or",             "or_eq",
+      "private",         "protected",      "public",         "register",
+      "reinterpret_cast","requires",       "return",         "short",
+      "signed",          "sizeof",         "static",         "static_assert",
+      "static_cast",     "struct",         "switch",         "template",
+      "this",            "thread_local",   "throw",          "true",
+      "try",             "typedef",        "typeid",         "typename",
+      "union",           "unsigned",       "using",          "virtual",
+      "void",            "volatile",       "wchar_t",        "while",
+      "xor",             "xor_eq"};
   return kReserved.count(name.str()) != 0;
 }
 
@@ -2374,22 +2381,6 @@ collectPendingIdentifierRenames(
     }
   }
 
-  if (!blockArgHints.empty()) {
-    llvm::SmallVector<std::string, 4> generatedDecls =
-        findTopLevelGeneratedDeclarations(segment);
-    llvm::SmallVector<std::string, 4> flattenedBlockHints;
-    for (auto blockHints : blockArgHints)
-      flattenedBlockHints.append(blockHints.begin(), blockHints.end());
-    if (!flattenedBlockHints.empty() &&
-        generatedDecls.size() >= flattenedBlockHints.size()) {
-      size_t startIndex = generatedDecls.size() - flattenedBlockHints.size();
-      for (size_t i = 0; i < flattenedBlockHints.size(); ++i) {
-        pendingRenames.push_back(PendingIdentifierRename{
-            generatedDecls[startIndex + i], flattenedBlockHints[i]});
-      }
-    }
-  }
-
   size_t searchPos = 0;
   while (true) {
     size_t markerPos = segment.find(kResultMarkerPrefix.str(), searchPos);
@@ -2419,6 +2410,22 @@ collectPendingIdentifierRenames(
     for (size_t i = 0; i < pairCount; ++i) {
       pendingRenames.push_back(
           PendingIdentifierRename{(*generatedNames)[i], (*hints)[i]});
+    }
+  }
+
+  if (!blockArgHints.empty()) {
+    llvm::SmallVector<std::string, 4> generatedDecls =
+        findTopLevelGeneratedDeclarations(segment);
+    llvm::SmallVector<std::string, 4> flattenedBlockHints;
+    for (auto blockHints : blockArgHints)
+      flattenedBlockHints.append(blockHints.begin(), blockHints.end());
+    if (!flattenedBlockHints.empty() &&
+        generatedDecls.size() >= flattenedBlockHints.size()) {
+      size_t startIndex = generatedDecls.size() - flattenedBlockHints.size();
+      for (size_t i = 0; i < flattenedBlockHints.size(); ++i) {
+        pendingRenames.push_back(PendingIdentifierRename{
+            generatedDecls[startIndex + i], flattenedBlockHints[i]});
+      }
     }
   }
 
@@ -2467,14 +2474,20 @@ findTopLevelGeneratedDeclarations(llvm::StringRef segment) {
     llvm::StringRef line = split.first;
     llvm::StringRef rest = split.second;
     llvm::StringRef trimmed = line.trim();
-    if (trimmed.empty()) {
+    if (trimmed.empty() || trimmed.starts_with("#") || trimmed.starts_with("//") ||
+        isHintMarkerLine(trimmed)) {
       remaining = rest;
       continue;
     }
-    if (trimmed.starts_with("using "))
-      break;
+    if (trimmed.starts_with("using ") || trimmed.starts_with("constexpr ") ||
+        trimmed.starts_with("typedef ")) {
+      remaining = rest;
+      continue;
+    }
     if (auto generatedName = parseGeneratedDeclarationName(trimmed))
       names.push_back(*generatedName);
+    else if (!parseAnyDeclaredIdentifierName(trimmed))
+      break;
     remaining = rest;
   }
   return names;
