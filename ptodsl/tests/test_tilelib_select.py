@@ -8,11 +8,14 @@
 """TileLib selection test: metadata-driven legality and descriptor metadata."""
 
 import unittest
+from types import SimpleNamespace
 
 from ptodsl.tilelib import (
     AmbiguousTemplate,
     ScalarType,
+    TemplateMetadata,
     TileSpec,
+    TileTemplateRegistry,
     legal_candidates,
     select,
 )
@@ -31,6 +34,37 @@ def _f32_single_row_specs():
 
 
 class TileLibSelectTest(unittest.TestCase):
+    def test_context_attributes_are_available_to_constraints(self):
+        registry = TileTemplateRegistry()
+        registry.register(SimpleNamespace(
+            op="pto.test_context",
+            target="a5",
+            name="context_candidate",
+            param_names=("src0", "src1", "dst"),
+            metadata=TemplateMetadata.build(
+                op="pto.test_context",
+                target="a5",
+                name="context_candidate",
+                constraints=(lambda mode: mode == "enabled",),
+            ),
+        ))
+
+        legal = registry.legal_candidates(
+            "pto.test_context",
+            "a5",
+            _f32_specs(),
+            context_attrs={"mode": "enabled"},
+        )
+        self.assertEqual([candidate.name for candidate in legal], ["context_candidate"])
+
+        with self.assertRaises(NoMatchingTemplate):
+            registry.legal_candidates(
+                "pto.test_context",
+                "a5",
+                _f32_specs(),
+                context_attrs={"mode": "disabled"},
+            )
+
     def test_four_tadd_versions_registered(self):
         names = {
             candidate.name

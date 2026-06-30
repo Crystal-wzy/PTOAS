@@ -64,6 +64,8 @@ class TileTemplateRegistry:
 
         # Hard legality constraints (e.g. layout / valid-shape rules).
         context = _constraints.build_context(tile_specs, target, op)
+        if context_attrs:
+            context.update(context_attrs)
         legal = [d for d in legal if _constraints.passes(d.metadata.constraints, context)]
         if not legal:
             raise NoMatchingTemplate(
