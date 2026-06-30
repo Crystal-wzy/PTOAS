@@ -361,9 +361,19 @@ def AllocMultiTileOp : PTO_Op<"alloc_multi_tile", [AttrSizedOperandSegments]> {
   let summary = "Allocate an N-slot multi-buffer tile";
   let description = [{
     Produces a `!pto.multi_tile_buf<S, count=N>` value owning N physical
-    slots of the inner tile shape `S`. The physical addresses of the N
-    slots are decided by PTOPlanMemory; an explicit address operand is
-    intentionally not supported.
+    slots of the inner tile shape `S`.
+
+    In the default pipeline (`--pto-level=level1|level2`) no `addr` operand
+    is given and the physical addresses of the N slots are decided by
+    PTOPlanMemory.
+
+    Under `--pto-level=level3` the local memory is owned by the upper-level
+    caller and PTOPlanMemory does not run, so an explicit base address
+    operand `$addr` is required (mirroring `pto.alloc_tile`). The N slots
+    are laid out contiguously as the region `[addr, addr + N * slotBytes)`
+    with slot `k` at `addr + k * slotBytes`, where `slotBytes` is the byte
+    footprint of one slot tile (`product(shape) * element_size`). The caller
+    is responsible for having reserved `N * slotBytes` bytes at `addr`.
 
     `valid_row` / `valid_col` operands follow the same semantics as
     `pto.alloc_tile`: required when the inner tile's valid shape is `?`,
@@ -371,6 +381,7 @@ def AllocMultiTileOp : PTO_Op<"alloc_multi_tile", [AttrSizedOperandSegments]> {
   }];
 
   let arguments = (ins
+    Optional<I64>:$addr,
     Optional<Index>:$valid_row,
     Optional<Index>:$valid_col
   );
@@ -378,6 +389,7 @@ def AllocMultiTileOp : PTO_Op<"alloc_multi_tile", [AttrSizedOperandSegments]> {
   let results = (outs MultiTileBufType:$result);
 
   let assemblyFormat = [{
+    (`addr` `=` $addr^)?
     (`valid_row` `=` $valid_row^)?
     (`valid_col` `=` $valid_col^)?
     attr-dict `:` qualified(type($result))

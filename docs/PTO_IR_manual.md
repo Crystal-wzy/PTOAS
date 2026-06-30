@@ -744,18 +744,19 @@ result = alloc_tile(base_addr, valid_row, valid_col)   // operands are optional
 
 ##### `pto.alloc_multi_tile` - Allocate N-Slot Multi-Buffer Tile
 
-**Summary:** Declares the lifetime of an N-slot multi-buffer tile. Each slot has the same `tile_buf` shape; only the underlying physical address differs. The N physical slots are reserved by `PTOPlanMemory` from the `pto.multi_buffer = N` attribute written onto the lowered `memref.alloc`. An explicit `addr` operand is intentionally NOT supported -- multi-buffer addresses are always compiler-decided.
+**Summary:** Declares the lifetime of an N-slot multi-buffer tile. Each slot has the same `tile_buf` shape; only the underlying physical address differs. In the default pipeline (`--pto-level=level1|level2`) the N physical slots are reserved by `PTOPlanMemory` from the `pto.multi_buffer = N` attribute written onto the lowered `memref.alloc`. Under `--pto-level=level3` the caller owns local memory and PlanMemory does not run, so an explicit base `addr` operand is required (mirroring `pto.alloc_tile`); the lowering then fans the base out into the multi-address `pto.pointer_cast` PlanMemory would otherwise produce.
 
 **Semantics:**
 
 ```
-result = alloc_multi_tile(valid_row, valid_col)   // operands are optional
+result = alloc_multi_tile(addr, valid_row, valid_col)   // operands are optional
 ```
 
 **Arguments:**
 
 | Name | Type | Description |
 |------|------|-------------|
+| `addr` | `Optional<I64>` | Base physical byte address of the contiguous N-slot region. Required under `--pto-level=level3`, rejected otherwise. Slot `k` lives at `addr + k * slotBytes` where `slotBytes = product(shape) * element_size`; the caller must reserve `N * slotBytes` bytes at `addr`. |
 | `valid_row` | `Optional<Index>` | Dynamic valid row count (required when slot `v_row` is `?`) |
 | `valid_col` | `Optional<Index>` | Dynamic valid column count (required when slot `v_col` is `?`) |
 
@@ -765,17 +766,22 @@ result = alloc_multi_tile(valid_row, valid_col)   // operands are optional
 
 - The result type must have `count` in `[2, 16]`.
 - The slot tile type (rank, valid shape, dtype, memory space, config) is verified the same way as `pto.alloc_tile` for a single slot.
-- No `addr` operand: the user cannot pin physical addresses on a multi-buffer alloc.
+- `addr` is gated by build level: required under `--pto-level=level3`, rejected under level1/level2 (the same rule `pto.alloc_tile` follows). With an explicit `addr` the slot shape and element size must be static so `slotBytes` is known.
 
 **Hardware Mapping:**
 
-- No hardware pipeline (allocation/metadata op). N-way physical fan-out is realized by PlanMemory.
+- No hardware pipeline (allocation/metadata op). In the default pipeline the N-way physical fan-out is realized by PlanMemory; under level3 it is realized directly from the base `addr` during view lowering.
 
 **Basic Example:**
 
 ```mlir
+// level1/level2: addresses chosen by PlanMemory.
 %mb = pto.alloc_multi_tile : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
 %mb2 = pto.alloc_multi_tile : !pto.multi_tile_buf<!pto.tile_buf<vec, 16x16xf16>, count=3>
+
+// level3: caller-owned memory; slot 0 at %base, slot 1 at %base + 512 bytes.
+%base = arith.constant 0 : i64
+%mb3 = pto.alloc_multi_tile addr = %base : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
 ```
 
 ##### `pto.multi_tile_get` - Select One Slot Of A Multi-Buffer Tile

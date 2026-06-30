@@ -1647,6 +1647,59 @@ struct PTOViewToMemrefPass
         if (!configAttr)
           configAttr = pto::TileBufConfigAttr::getDefault(ctx);
 
+        // Level3 (caller-owned memory): an explicit base address is given and
+        // PlanMemory is skipped. Lay the N slots out contiguously as
+        // [addr, addr + slotBytes, ..., addr + (N-1)*slotBytes] and emit the
+        // multi-address `pto.pointer_cast` alloc anchor directly -- the same
+        // shape PlanMemory produces in the default pipeline (addrs are kept in
+        // slot order so PTOResolveBufferSelect can pick addrs[slot]). Sync and
+        // buffer-select then run unchanged.
+        if (Value addr = op.getAddr()) {
+          uint32_t n = mtbTy.getCount();
+          int64_t elemBytes = getElemBytes(elemTy);
+          int64_t numElems = 1;
+          bool staticShape = true;
+          for (int64_t d : shape) {
+            if (d == ShapedType::kDynamic) {
+              staticShape = false;
+              break;
+            }
+            numElems *= d;
+          }
+          if (!staticShape || elemBytes <= 0) {
+            op.emitError("pto.alloc_multi_tile with explicit addr requires a "
+                         "static slot shape and known element byte size");
+            signalPassFailure();
+            return;
+          }
+          int64_t slotBytes = numElems * elemBytes;
+
+          SmallVector<Value, 8> slotAddrs;
+          slotAddrs.reserve(n);
+          slotAddrs.push_back(addr);
+          for (uint32_t slot = 1; slot < n; ++slot) {
+            Value off = rewriter.create<arith::ConstantOp>(
+                loc, rewriter.getI64Type(),
+                rewriter.getI64IntegerAttr(static_cast<int64_t>(slot) *
+                                           slotBytes));
+            slotAddrs.push_back(
+                rewriter.create<arith::AddIOp>(loc, addr, off).getResult());
+          }
+
+          auto pc = rewriter.create<pto::PointerCastOp>(
+              loc, targetType, slotAddrs, vRow ? vRow : Value(),
+              vCol ? vCol : Value(), configAttr);
+          markForceDynamicValidShape(pc, tbTy.hasDynamicValid(), ctx);
+
+          auto bindOp = rewriter.create<pto::BindTileOp>(
+              loc, targetType, pc.getResult(), vRow ? vRow : Value(),
+              vCol ? vCol : Value(), configAttr);
+          markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
+
+          rewriter.replaceOp(op, bindOp.getResult());
+          continue;
+        }
+
         // memref.alloc with N-slot annotation. The actual N-way address
         // expansion happens in PlanMemory.
         auto allocLayout = StridedLayoutAttr::get(ctx, 0, strides);

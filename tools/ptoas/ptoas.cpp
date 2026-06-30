@@ -1798,10 +1798,22 @@ int main(int argc, char **argv) {
   }
 
   if (effectiveLevel == PTOBuildLevel::Level3) {
+    // In level3 the caller owns local memory and PTOPlanMemory is skipped, so
+    // every allocation must carry an explicit physical address. For
+    // multi-buffer, `addr` is the base of the contiguous N-slot region; the
+    // alloc lowering fans it out into the multi-address `pto.pointer_cast`
+    // PlanMemory would otherwise produce.
     bool missing = false;
     module->walk([&](pto::AllocTileOp op) {
       if (!op.getAddr()) {
         op.emitError("requires 'addr' operand when --pto-level=level3");
+        missing = true;
+      }
+    });
+    module->walk([&](pto::AllocMultiTileOp op) {
+      if (!op.getAddr()) {
+        op.emitError("pto.alloc_multi_tile requires a base 'addr' operand when "
+                     "--pto-level=level3");
         missing = true;
       }
     });
@@ -1813,6 +1825,13 @@ int main(int argc, char **argv) {
       if (op.getAddr()) {
         op.emitError(
             "unexpected 'addr' operand: only supported when --pto-level=level3");
+        hasAddr = true;
+      }
+    });
+    module->walk([&](pto::AllocMultiTileOp op) {
+      if (op.getAddr()) {
+        op.emitError("unexpected 'addr' operand on pto.alloc_multi_tile: only "
+                     "supported when --pto-level=level3");
         hasAddr = true;
       }
     });

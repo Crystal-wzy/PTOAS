@@ -233,15 +233,29 @@ dyn event id 分配 + `set_flag_dyn` / `wait_flag_dyn` 生成留作 follow-up（
 
 资源不足回退（沿 PR615 思路）：N → 偶数 → 2 → 1 → `PIPE_ALL` barrier。
 
-### 5.5 CLI
+### 5.5 CLI 与构建层级（level3）
 
 不需新开关。`alloc_multi_tile` 存在即驱动 `PTOResolveBufferSelect`。
+
+默认流水（`--pto-level=level1|level2`）由 `PTOPlanMemory` 决定 N 个槽位地址。
+`--pto-level=level3` 下本地内存由上层调用方拥有、`PTOPlanMemory` 不运行，故
+`alloc_multi_tile` 必须带显式基址 `addr`（与 `alloc_tile` 同规则）：N 个槽位
+连续排布为 `[addr, addr + N*slotBytes)`，槽位 k 落在 `addr + k*slotBytes`，其中
+`slotBytes = product(shape) * 元素字节数`，上层需自行预留 `N*slotBytes` 字节。
+`PTOViewToMemref` 在此情形下直接发射多地址
+`pto.pointer_cast(addr, addr+slotBytes, ..., addr+(N-1)*slotBytes)` 锚点（与
+PlanMemory 在默认流水产出的形状、槽位顺序一致），其后 sync /
+`PTOResolveBufferSelect` 逻辑保持不变。ptoas 在 level3 入口校验：
+`alloc_multi_tile` 缺 `addr` 报错；非 level3 带 `addr` 报错。
 
 ## 6. 验证规则
 
 `AllocMultiTileOp::verify`：
 - `2 ≤ count ≤ 16`；
 - valid_row/valid_col 操作数与 slotType 的 valid_shape 一致（沿用 alloc_tile 逻辑）。
+- `addr` 为可选 I64 基址；其“level3 必需 / 非 level3 禁止”由 ptoas 入口按层级校验
+  （与 `alloc_tile` 一致，不在 verifier 内做层级判断）。带 `addr` 时槽位 shape 与
+  元素字节数须为静态，以便确定 `slotBytes`。
 
 `MultiTileGetOp::verify`：
 - 结果 = `source.slotType`；
