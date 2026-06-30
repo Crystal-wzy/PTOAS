@@ -140,24 +140,16 @@ static bool isGmScalarMemory(Type type) {
   return false;
 }
 
-static TNotifyReleaseState getReleaseStateForPipe(pto::PIPE pipe) {
+static TNotifyReleaseState getMte2PayloadReadReleaseState() {
   TNotifyReleaseState state;
-  switch (pipe) {
-  case pto::PIPE::PIPE_MTE2:
-    state.drainMte2 = true;
-    break;
-  case pto::PIPE::PIPE_MTE3:
-    state.drainMte3 = true;
-    state.needsDsbDdr = true;
-    break;
-  case pto::PIPE::PIPE_ALL:
-    state.drainMte2 = true;
-    state.drainMte3 = true;
-    state.needsDsbDdr = true;
-    break;
-  default:
-    break;
-  }
+  state.drainMte2 = true;
+  return state;
+}
+
+static TNotifyReleaseState getMte3GmWriteReleaseState() {
+  TNotifyReleaseState state;
+  state.drainMte3 = true;
+  state.needsDsbDdr = true;
   return state;
 }
 
@@ -199,9 +191,16 @@ static TNotifyReleaseState getDirectTNotifyReleaseState(Operation *op) {
     }
   }
 
-  if (auto tstore = dyn_cast<pto::TStoreOp>(op);
-      tstore && tstore.getPipe() == pto::PIPE::PIPE_FIX)
-    return getFixGmWriteReleaseState();
+  if (isa<pto::TLoadOp, pto::TPrefetchOp>(op))
+    return getMte2PayloadReadReleaseState();
+
+  if (auto tstore = dyn_cast<pto::TStoreOp>(op)) {
+    if (tstore.getPipe() == pto::PIPE::PIPE_MTE3)
+      return getMte3GmWriteReleaseState();
+    if (tstore.getPipe() == pto::PIPE::PIPE_FIX)
+      return getFixGmWriteReleaseState();
+    return {};
+  }
 
   if (isa<pto::TStoreFPOp>(op))
     return getFixGmWriteReleaseState();
@@ -212,8 +211,6 @@ static TNotifyReleaseState getDirectTNotifyReleaseState(Operation *op) {
       macroState.needsDsbDdr)
     return macroState;
 
-  if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op))
-    return getReleaseStateForPipe(pipeOp.getPipe());
   return {};
 }
 

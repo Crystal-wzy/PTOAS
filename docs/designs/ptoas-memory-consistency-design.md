@@ -183,6 +183,10 @@ pipe。`pto.fence.release` lower 出来的 `dsb(DSB_DDR)` 用来保证这些 GM 
 ACC 到 MAT 或 ACC 到 VEC 的搬运，不需要 DDR release。PTOAS 只对确认写 GM payload 的
 FIX 路径补 release drain。
 
+同理，也不能把所有 `PIPE_MTE3` op 都当成 release payload write。例如 A5 的
+Vec 到 Mat `TInsert` 是本地 UB 到 L1 的搬运，不发布 GM payload。PTOAS 只对
+`TStore`、comm macro MTE3 phase 等确认写 GM payload 的路径补 release drain。
+
 如果缺少 `pto.fence.release`，PTOAS 会报错。因为 PTOAS 可以推导 pipe drain，但不会凭空
 猜测 payload publish 的语义边界。
 
