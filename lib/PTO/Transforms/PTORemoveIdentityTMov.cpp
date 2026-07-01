@@ -36,11 +36,6 @@ using namespace mlir::pto;
 
 namespace {
 
-struct AddressToken {
-  Value value;
-  std::optional<int64_t> constant;
-};
-
 static std::optional<unsigned> getIntegerLikeBitWidth(Type type) {
   if (auto intTy = dyn_cast<IntegerType>(type))
     return intTy.getWidth();
@@ -110,43 +105,6 @@ static std::optional<int64_t> tryEvalI64Constant(Value value) {
   if (!apInt || apInt->getBitWidth() > 64)
     return std::nullopt;
   return apInt->getSExtValue();
-}
-
-static Value peelMetadata(Value value) {
-  while (true) {
-    if (auto bind = value.getDefiningOp<BindTileOp>()) {
-      value = bind.getSource();
-      continue;
-    }
-    if (auto cast = value.getDefiningOp<memref::CastOp>()) {
-      value = cast.getSource();
-      continue;
-    }
-    return value;
-  }
-}
-
-static std::optional<AddressToken> getExplicitAddressToken(Value value) {
-  value = peelMetadata(value);
-
-  if (auto tassign = value.getDefiningOp<TAssignOp>())
-    return AddressToken{tassign.getAddr(),
-                        tryEvalI64Constant(tassign.getAddr())};
-
-  auto pointerCast = value.getDefiningOp<PointerCastOp>();
-  if (!pointerCast || pointerCast.getAddrs().size() != 1)
-    return std::nullopt;
-
-  Value addr = pointerCast.getAddrs().front();
-  return AddressToken{addr, tryEvalI64Constant(addr)};
-}
-
-static bool sameAddressToken(const AddressToken &lhs, const AddressToken &rhs) {
-  if (lhs.value == rhs.value)
-    return true;
-  if (lhs.constant && rhs.constant)
-    return *lhs.constant == *rhs.constant;
-  return false;
 }
 
 static bool hasOnlyCurrentOpUses(Value value, Operation *currentOp) {
@@ -262,6 +220,56 @@ static bool hasExactSameAddressRange(const BaseMemInfo *srcInfo,
   return true;
 }
 
+static bool hasSameConcreteAddressRange(const BaseMemInfo *srcInfo,
+                                        const BaseMemInfo *dstInfo) {
+  if (!hasExactSameAddressRange(srcInfo, dstInfo))
+    return false;
+  if (srcInfo->rootBuffer == dstInfo->rootBuffer)
+    return true;
+  auto srcRootAddr = tryGetConcreteRootAddress(srcInfo);
+  auto dstRootAddr = tryGetConcreteRootAddress(dstInfo);
+  return srcRootAddr && dstRootAddr && *srcRootAddr == *dstRootAddr;
+}
+
+static Operation *getAncestorInBlock(Operation *op, Block *block) {
+  for (Operation *cur = op; cur; cur = cur->getParentOp()) {
+    if (cur->getBlock() == block)
+      return cur;
+  }
+  return nullptr;
+}
+
+static bool hasUseAfterOp(Value value, Operation *currentOp) {
+  Block *block = currentOp->getBlock();
+  for (OpOperand &use : value.getUses()) {
+    Operation *owner = use.getOwner();
+    if (owner == currentOp)
+      continue;
+    Operation *ancestor = getAncestorInBlock(owner, block);
+    if (!ancestor)
+      return true;
+    if (ancestor != currentOp && currentOp->isBeforeInBlock(ancestor))
+      return true;
+  }
+  return false;
+}
+
+static bool hasLaterUseOfSameAddressRange(
+    TMovOp op, const BaseMemInfo *dstInfo,
+    const Buffer2MemInfoMap &buffer2MemInfoMap) {
+  for (const auto &entry : buffer2MemInfoMap) {
+    // Later reads of the source itself do not make this no-op TMOV a bridge.
+    if (entry.first == op.getSrc())
+      continue;
+    bool sameRange = llvm::any_of(entry.second, [&](const auto &info) {
+      return hasSameConcreteAddressRange(info.get(), dstInfo);
+    });
+    if (sameRange && hasUseAfterOp(entry.first, op))
+      return true;
+  }
+  return false;
+}
+
 static bool hasPlainTMovSemantics(TMovOp op) {
   return !op.getFp() && !op.getPreQuantScalar() && !op.getAccToVecModeAttr() &&
          op.getReluPreMode() == ReluPreMode::NoRelu;
@@ -297,17 +305,6 @@ static bool touchesLowPrecisionElement(TMovOp op) {
   });
 }
 
-static bool isIdentityTMovByExplicitAddress(TMovOp op) {
-  if (op.getSrc() == op.getDst())
-    return true;
-
-  std::optional<AddressToken> src = getExplicitAddressToken(op.getSrc());
-  std::optional<AddressToken> dst = getExplicitAddressToken(op.getDst());
-  if (!src || !dst)
-    return false;
-  return sameAddressToken(*src, *dst) && isDeadDstTMov(op);
-}
-
 static bool
 isIdentityTMovByMemInfo(TMovOp op, const Buffer2MemInfoMap &buffer2MemInfoMap) {
   Value src = op.getSrc();
@@ -318,16 +315,11 @@ isIdentityTMovByMemInfo(TMovOp op, const Buffer2MemInfoMap &buffer2MemInfoMap) {
 
   const BaseMemInfo *srcInfo = getSingleMemInfo(buffer2MemInfoMap, src);
   const BaseMemInfo *dstInfo = getSingleMemInfo(buffer2MemInfoMap, dst);
-  if (!hasExactSameAddressRange(srcInfo, dstInfo))
+  if (!hasSameConcreteAddressRange(srcInfo, dstInfo))
     return false;
 
-  if (srcInfo->rootBuffer == dstInfo->rootBuffer)
-    return true;
-
-  auto srcRootAddr = tryGetConcreteRootAddress(srcInfo);
-  auto dstRootAddr = tryGetConcreteRootAddress(dstInfo);
-  return srcRootAddr && dstRootAddr && *srcRootAddr == *dstRootAddr &&
-         isDeadDstTMov(op);
+  return isDeadDstTMov(op) &&
+         !hasLaterUseOfSameAddressRange(op, dstInfo, buffer2MemInfoMap);
 }
 
 struct PTORemoveIdentityTMovPass
@@ -342,7 +334,7 @@ struct PTORemoveIdentityTMovPass
       if (!hasPlainTMovSemantics(op) || !hasCompatibleIdentityTypes(op) ||
           touchesLowPrecisionElement(op))
         return;
-      if (isIdentityTMovByExplicitAddress(op)) {
+      if (op.getSrc() == op.getDst()) {
         identityMoves.push_back(op);
         return;
       }
