@@ -256,6 +256,12 @@ PlanMemory 在默认流水产出的形状、槽位顺序一致），其后 sync 
 - `addr` 为可选 I64 基址；其“level3 必需 / 非 level3 禁止”由 ptoas 入口按层级校验
   （与 `alloc_tile` 一致，不在 verifier 内做层级判断）。带 `addr` 时槽位 shape 与
   元素字节数须为静态，以便确定 `slotBytes`。
+- 槽位布局须为 storage-compact：N 个物理槽位按 `product(shape) * 元素字节数` 间隔排布
+  （level3 lowering 与 PlanMemory 均如此定尺寸）。`row_plus_one` compact 会把 major
+  stride 每行加 1，使槽位物理 strided footprint 超过 `product(shape)`，相邻槽位会静默
+  重叠，故 verifier 拒绝 `compact = row_plus_one` 的 slotType。非 `row_plus_one` 的
+  compact 布局与 boxed 分形 slayout 为紧密排布（footprint == product(shape)），仍支持。
+  （待 slotBytes 改由真实 strided footprint 推导后可放开此限制。）
 
 `MultiTileGetOp::verify`：
 - 结果 = `source.slotType`；

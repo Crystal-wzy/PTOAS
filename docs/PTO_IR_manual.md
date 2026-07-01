@@ -767,6 +767,7 @@ result = alloc_multi_tile(addr, valid_row, valid_col)   // operands are optional
 - The result type must have `count` in `[2, 16]`.
 - The slot tile type (rank, valid shape, dtype, memory space, config) is verified the same way as `pto.alloc_tile` for a single slot.
 - `addr` is gated by build level: required under `--pto-level=level3`, rejected under level1/level2 (the same rule `pto.alloc_tile` follows). With an explicit `addr` the slot shape and element size must be static so `slotBytes` is known.
+- **Storage-compact slot layout required.** The N physical slots are placed at `product(shape) * element_size` byte intervals (both the level3 lowering and PlanMemory size them this way). A `row_plus_one` compact mode inflates the major stride by one element per row, so the slot's physical strided footprint exceeds `product(shape)` and adjacent slots would silently overlap. `pto.alloc_multi_tile` therefore rejects `compact = row_plus_one` slot layouts. Non-`row_plus_one` compact layouts and boxed fractal `slayout`s pack densely (footprint equals `product(shape)`) and are supported. (This limit can be lifted once the slot stride is derived from the true strided footprint instead of `product(shape)`.)
 
 **Hardware Mapping:**
 

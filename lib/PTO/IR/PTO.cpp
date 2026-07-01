@@ -2871,6 +2871,22 @@ LogicalResult AllocMultiTileOp::verify() {
   if (failed(verifyTileBufLayoutConstraints(*this, slotTy, "slot")))
     return failure();
 
+  // Multi-buffer slots are placed at product(shape) * element_size byte
+  // intervals -- both the --pto-level=level3 lowering (PTOViewToMemref) and
+  // PTOPlanMemory size them that way. `row_plus_one` compaction inflates the
+  // major stride by one element per row, so the slot's physical strided
+  // footprint exceeds product(shape) and adjacent slots would silently overlap
+  // (data corruption). Reject it until the slot stride is derived from the true
+  // strided footprint. Non-boxed compact/`normal` and boxed fractal slayouts
+  // pack densely (footprint == product(shape)), so they stay supported.
+  if (slotTy.getCompactModeI32() ==
+      static_cast<int32_t>(mlir::pto::CompactMode::RowPlusOne))
+    return emitOpError()
+           << "multi_tile_buf slot uses row_plus_one compaction, whose padded "
+              "storage footprint exceeds product(shape) and would overlap "
+              "adjacent multi-buffer slots; use a compact (non-row_plus_one) "
+              "slot layout or a single pto.alloc_tile";
+
   bool hasVR = getValidRow() != nullptr;
   bool hasVC = getValidCol() != nullptr;
   auto vs = slotTy.getValidShape();
