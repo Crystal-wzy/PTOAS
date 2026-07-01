@@ -139,6 +139,12 @@ VPTO backend 都会先经过这一步。
 region 暂不做 path-sensitive 数据流，但只在当前 region 内收集 pending state，不把同一个
 parent op 的其他 sibling region 状态混入。外部函数声明没有函数体，pass 会直接跳过。
 
+`func.call` 边界不做上下文敏感的数据流传播。若 same-module 非内联 callee 的传递调用闭包
+中包含 payload 访问、CMO、fence 或 signal 相关 PTO op，pass 会报错并要求在
+`pto-memory-consistency` 前完成 inline。这样可以避免 caller 在 `TNotify` 前看不到 callee
+内部 pending payload write，或者 callee 内部 cacheable payload read 看不到 caller 侧
+`TWait` acquire state。
+
 这个 pass 不负责分配 event id，也不属于 InsertSync 自动同步流水线。
 
 ## 6. 场景规则

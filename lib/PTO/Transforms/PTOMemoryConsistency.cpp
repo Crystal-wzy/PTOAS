@@ -13,7 +13,9 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/DenseSet.h"
 
 namespace mlir {
 namespace pto {
@@ -289,6 +291,83 @@ static TNotifyReleaseState getTNotifyReleaseExitStateForBlock(
 
 static bool isLoopLikeOp(Operation *op) {
   return isa<scf::ForOp, scf::WhileOp, scf::ParallelOp, scf::ForallOp>(op);
+}
+
+static func::FuncOp lookupCallee(func::CallOp call) {
+  return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      call.getOperation(), call.getCalleeAttr());
+}
+
+static bool isMemoryConsistencyRelevantDirectOp(Operation *op) {
+  if (isa<pto::BarrierOp, pto::CmoCleanOp, pto::CmoInvalidateOp,
+          pto::FenceReleaseOp, pto::FenceAcquireOp, pto::TNotifyOp,
+          pto::TWaitOp, pto::TTestOp, pto::TLoadOp, pto::TPrefetchOp,
+          pto::TStoreOp, pto::TStoreFPOp>(op))
+    return true;
+
+  if (auto load = dyn_cast<pto::LoadScalarOp>(op))
+    return isGmScalarMemory(load.getPtr().getType());
+  if (auto store = dyn_cast<pto::StoreScalarOp>(op))
+    return isGmScalarMemory(store.getPtr().getType());
+
+  TNotifyReleaseState macroState = getReleaseStateForMacroModel(op);
+  return macroState.drainMte2 || macroState.drainMte3 ||
+         macroState.drainFix || macroState.cleanGmCache ||
+         macroState.needsDsbDdr;
+}
+
+static bool calleeContainsMemoryConsistencyRelevantOps(
+    func::FuncOp callee, llvm::DenseSet<Operation *> &activeCallees) {
+  if (!callee || callee.isExternal())
+    return false;
+  if (!activeCallees.insert(callee.getOperation()).second)
+    return false;
+
+  WalkResult result = callee.walk([&](Operation *op) -> WalkResult {
+    if (op == callee.getOperation())
+      return WalkResult::advance();
+
+    if (auto nestedCall = dyn_cast<func::CallOp>(op)) {
+      func::FuncOp nestedCallee = lookupCallee(nestedCall);
+      if (calleeContainsMemoryConsistencyRelevantOps(nestedCallee,
+                                                     activeCallees))
+        return WalkResult::interrupt();
+      return WalkResult::advance();
+    }
+
+    if (isMemoryConsistencyRelevantDirectOp(op))
+      return WalkResult::interrupt();
+    return WalkResult::advance();
+  });
+
+  activeCallees.erase(callee.getOperation());
+  return result.wasInterrupted();
+}
+
+static bool diagnoseNonInlinedMemoryConsistencyCalls(ModuleOp module) {
+  bool hasFailure = false;
+  for (auto func : module.getOps<func::FuncOp>()) {
+    if (func.isExternal())
+      continue;
+
+    func.walk([&](func::CallOp call) {
+      func::FuncOp callee = lookupCallee(call);
+      if (!callee || callee.isExternal())
+        return;
+
+      llvm::DenseSet<Operation *> activeCallees;
+      if (!calleeContainsMemoryConsistencyRelevantOps(callee, activeCallees))
+        return;
+
+      call.emitOpError()
+          << "calls @" << callee.getSymName()
+          << ", which contains PTO memory consistency relevant operations; "
+             "inline the callee before `pto-memory-consistency` or keep "
+             "payload, CMO, fence, and signal operations in the caller";
+      hasFailure = true;
+    });
+  }
+  return hasFailure;
 }
 
 static void setTNotifyReleaseAttrs(pto::TNotifyOp op,
@@ -608,9 +687,10 @@ struct PTOMemoryConsistencyPass
           PTOMemoryConsistencyPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    bool callFailed = diagnoseNonInlinedMemoryConsistencyCalls(module);
     bool releaseFailed = annotateTNotifyRelease(module);
     bool acquireFailed = annotateSignalAcquire(module);
-    if (releaseFailed || acquireFailed)
+    if (callFailed || releaseFailed || acquireFailed)
       signalPassFailure();
   }
 };
