@@ -2637,6 +2637,13 @@ static FailureOr<StringRef> buildL1CacheLoadCallee(MLIRContext *context,
   } else if (pto::isPTOFloat8Type(resultType) ||
              pto::isPTOHiFloat8Type(resultType)) {
     elem = "s8";
+  } else if (auto vecType = dyn_cast<VectorType>(resultType)) {
+    unsigned totalBits =
+        vecType.getNumElements() * vecType.getElementTypeBitWidth();
+    if (totalBits == 32)
+      elem = "s32";
+    else if (totalBits == 64)
+      elem = "s64";
   }
   if (elem.empty())
     return failure();
@@ -2669,6 +2676,13 @@ static FailureOr<StringRef> buildL1CacheStoreCallee(MLIRContext *context,
   } else if (pto::isPTOFloat8Type(valueType) ||
              pto::isPTOHiFloat8Type(valueType)) {
     elem = "b8";
+  } else if (auto vecType = dyn_cast<VectorType>(valueType)) {
+    unsigned totalBits =
+        vecType.getNumElements() * vecType.getElementTypeBitWidth();
+    if (totalBits == 32)
+      elem = "b32";
+    else if (totalBits == 64)
+      elem = "b64";
   }
   if (elem.empty())
     return failure();
@@ -9501,6 +9515,14 @@ static Type getLdgCallResultType(Type valueType, Type convertedValueType,
     return rewriter.getI64Type();
   if (pto::isPTOFloat8Type(valueType) || pto::isPTOHiFloat8Type(valueType))
     return rewriter.getI32Type();
+  if (auto vecType = dyn_cast<VectorType>(valueType)) {
+    unsigned totalBits =
+        vecType.getNumElements() * vecType.getElementTypeBitWidth();
+    if (totalBits == 32)
+      return rewriter.getI32Type();
+    if (totalBits == 64)
+      return rewriter.getI64Type();
+  }
   return convertedValueType;
 }
 
@@ -9528,6 +9550,9 @@ static Value convertLdgCallResult(Location loc, Type valueType,
         rewriter.create<arith::TruncIOp>(loc, rewriter.getI8Type(), callResult);
     return rewriter.create<LLVM::BitcastOp>(loc, convertedValueType, payload);
   }
+  if (isa<VectorType>(valueType))
+    return rewriter.create<LLVM::BitcastOp>(loc, convertedValueType,
+                                            callResult);
   return callResult;
 }
 
@@ -9659,6 +9684,16 @@ static Value convertStgValue(Location loc, Type valueType, Value value,
     return rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI32Type(), value);
   if (valueType.isF64())
     return rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI64Type(), value);
+  if (auto vecType = dyn_cast<VectorType>(valueType)) {
+    unsigned totalBits =
+        vecType.getNumElements() * vecType.getElementTypeBitWidth();
+    if (totalBits == 32)
+      return rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI32Type(),
+                                              value);
+    if (totalBits == 64)
+      return rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI64Type(),
+                                              value);
+  }
   return value;
 }
 
