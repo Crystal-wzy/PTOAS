@@ -1,7 +1,5 @@
-# A3 VPTO e2e tests
-
-End-to-end numerical-correctness tests for PTODSL vector ops on A3 hardware
-using the VPTO backend.
+# e2e tests
+End-to-end numerical-correctness tests for PTODSL vector ops.
 
 ## Quick start
 
@@ -18,6 +16,16 @@ python3 -m pytest ptodsl/tests/e2e/test_binary_elementwise.py -v -k "float32"
 # Run only div tests
 python3 -m pytest ptodsl/tests/e2e/test_binary_elementwise.py -v -k "div"
 ```
+
+## Hardware and backend selection
+### A3 vpto backend
+This is the default, or can be selected with `--backend vpto --vpto-target a3`.
+
+### A3 emitc backend
+This can be selected with  `--backend emitc --vpto-target a3`.
+
+### A5 vpto backend
+This can be selected with  `--backend vpto --vpto-target a5`.
 
 ## Test matrix
 
@@ -74,4 +82,3 @@ python3 -m pytest ptodsl/tests/e2e/test_binary_elementwise.py -v -k "div"
 - NPU device with torch_npu installed
 - ptoas and bisheng on PATH
 - Properly built PTOAS with Python bindings (MLIR 19.1)
-- Docker image: `cce-mlir-dev-npu-aarch64-llvm19-cann900`
