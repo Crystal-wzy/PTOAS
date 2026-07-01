@@ -851,6 +851,17 @@ def simt_invalid_atomic_signedness_probe(gm: pto.ptr(pto.f32, "gm")):
     pto.atomic_add(gm, value, signedness="signed")
 
 
+@pto.simt
+def simt_gm_vector_ldst_probe(
+    src: pto.ptr(pto.f32x2, "gm"),
+    dst: pto.ptr(pto.f32x2, "gm"),
+    offset: pto.i64,
+):
+    idx = scalar.index_cast(offset)
+    value = pto.ldg(src, idx)
+    pto.stg(value, dst, idx)
+
+
 @pto.simd
 def ast_subkernel_runtime_for_helper(rows: pto.i32):
     for row in range(0, rows, 1):
@@ -930,6 +941,17 @@ def simt_invalid_atomic_signedness_launch(
     TRACE_TOKEN: pto.const_expr = 0,
 ):
     pto.simt_launch(simt_invalid_atomic_signedness_probe, gm, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5")
+def simt_gm_vector_ldst_launch(
+    src: pto.ptr(pto.f32x2, "gm"),
+    dst: pto.ptr(pto.f32x2, "gm"),
+    offset: pto.i64,
+    *,
+    TRACE_TOKEN: pto.const_expr = 0,
+):
+    pto.simt_launch(simt_gm_vector_ldst_probe, src, dst, offset, dims=(32, 1, 1))
 
 
 @pto.jit(target="a5")
@@ -4108,6 +4130,24 @@ def main() -> None:
         TypeError,
         lambda: simt_invalid_atomic_signedness_launch.compile(TRACE_TOKEN=1).mlir_text(),
         "does not accept signedness",
+    )
+
+    # ── GM vector ldg/stg with f32x2 + i64 dynamic offset ──
+    gm_vector_ldst_text = simt_gm_vector_ldst_launch.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(gm_vector_ldst_text, "GM vector ldg/stg specialization")
+    expect(
+        "arith.index_cast %" in gm_vector_ldst_text and " : i64 to index" in gm_vector_ldst_text,
+        "dynamic i64 offset must be cast to index before ldg/stg",
+    )
+    expect(
+        "pto.ldg" in gm_vector_ldst_text and "!pto.ptr<vector<2xf32>, gm>" in gm_vector_ldst_text
+        and "vector<2xf32>" in gm_vector_ldst_text,
+        "GM vector ldg should produce !pto.ptr<vector<2xf32>, gm> -> vector<2xf32>",
+    )
+    expect(
+        "pto.stg" in gm_vector_ldst_text and "!pto.ptr<vector<2xf32>, gm>" in gm_vector_ldst_text
+        and "vector<2xf32>" in gm_vector_ldst_text,
+        "GM vector stg should produce !pto.ptr<vector<2xf32>, gm>, vector<2xf32>",
     )
 
     ast_subkernel_runtime_for_text = ast_subkernel_runtime_for_probe.compile().mlir_text()

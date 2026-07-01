@@ -493,18 +493,23 @@ memory[effective_element] = value
 %value = pto.ldg %gm[%offset] l1cache(uncache) l2cache(nmpref) : !pto.ptr<T, gm> -> T
 ```
 
-- **semantics:** Load one scalar element from GM at `%ptr + %offset` using the
+- **semantics:** Load one element from GM at `%ptr + %offset` using the
   selected cache controls.
 - **inputs:** `%ptr` is a `!pto.ptr<T, gm>`. `%offset` is an `index` element
-  offset, not a byte offset.
+  offset, not a byte offset.  For ``!pto.ptr<vector<2xf32>, gm>``, offset 1
+  advances by 8 bytes (2 × sizeof(f32)).
 - **attributes:** `l1cache` may be `l1cache(cache)` or `l1cache(uncache)` and
   defaults to `cache`. `l2cache(...)` uses the load L2 cache table and defaults
   to `nmfv`.
-- **outputs:** One scalar value of type `T`.
+- **outputs:** One value of type `T`.
 - **constraints and limitations:** `pto.ldg` supports 8/16/32/64-bit integer
-  values and `f16`, `bf16`, `f32`, and `f64` floating values. The floating
-  forms use the target's same-width GM load path and reinterpret the loaded
-  bits as the requested floating type.
+  values, `f16`, `bf16`, `f32`, `f64`, `fp8`, `hif8`, and packed vectors
+  `vector<2xf16>`, `vector<2xbf16>`, `vector<2xf32>`.  Vector loads from GM
+  use the same-width load path as scalars (e.g. ``vector<2xf32>`` uses a 64-bit
+  GM load) and reinterpret the loaded bits as the requested vector type.  The
+  effective address for ``vector<2xf32>`` must satisfy 8-byte alignment
+  (enforced by the call-site contract; the op does not carry an alignment
+  operand).
 
 ### `pto.stg`
 
@@ -522,17 +527,18 @@ pto.stg %value, %gm[%offset] l1cache(cache) : !pto.ptr<T, gm>, T
 pto.stg %value, %gm[%offset] l1cache(uncache) l2cache(wtsred) : !pto.ptr<T, gm>, T
 ```
 
-- **semantics:** Store one scalar element to GM at `%ptr + %offset` using the
+- **semantics:** Store one element to GM at `%ptr + %offset` using the
   selected cache controls.
-- **inputs:** `%value` is the scalar element to write. `%ptr` is a
-  `!pto.ptr<T, gm>`. `%offset` is an `index` element offset.
+- **inputs:** `%value` is the element to write. `%ptr` is a
+  `!pto.ptr<T, gm>`. `%offset` is an `index` element offset
+  (same element-level semantics as `pto.ldg`).
 - **attributes:** `l1cache` may be `l1cache(cache)` or `l1cache(uncache)` and
   defaults to `cache`. `l2cache(...)` uses the store/atomic L2 cache table and
   defaults to `nmfv`.
 - **outputs:** None.
 - **constraints and limitations:** `%value` type must match the pointer element
-  type. `pto.stg` supports 8/16/32/64-bit integer values and `f16`, `bf16`,
-  `f32`, and `f64` floating values.
+  type.  Supported types and alignment requirements are the same as `pto.ldg`
+  (see above).
 
 Example:
 

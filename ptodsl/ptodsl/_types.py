@@ -35,6 +35,7 @@ from mlir.ir import (
     IntegerType,
     ShapedType,
     Type,
+    VectorType,
 )
 
 # ── Address-space name → AddressSpace enum ───────────────────────────────────
@@ -382,6 +383,10 @@ ui16    = _int_descriptor(16, "unsigned")
 ui32    = _int_descriptor(32, "unsigned")
 ui64    = _int_descriptor(64, "unsigned")
 index   = _DType(IndexType.get)
+
+# ── Packed vector type descriptors ──────────────────────────────────────────
+
+f32x2 = _DType(lambda: VectorType.get([2], F32Type.get()))
 
 
 # ── Type constructor functions ────────────────────────────────────────────────
