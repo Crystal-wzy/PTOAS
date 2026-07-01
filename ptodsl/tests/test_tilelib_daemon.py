@@ -8,12 +8,18 @@
 """End-to-end tests for the PTODSL TileLib daemon's Unix-socket RPC."""
 
 import os
+import socket
+import stat
 import tempfile
 import threading
 import unittest
 
 from ptodsl.tilelib.serving.client import DaemonClient, DaemonError
-from ptodsl.tilelib.serving.daemon import TileLibDaemonServer
+from ptodsl.tilelib.serving.daemon import (
+    TileLibDaemonServer,
+    _remove_socket_path,
+)
+from ptodsl.tilelib.serving.wire import MAX_MESSAGE_SIZE, recv_message
 
 
 def _tile_spec(dtype="f32", shape=(8, 64)):
@@ -61,6 +67,10 @@ class TileLibDaemonTest(unittest.TestCase):
 
     def test_ping(self):
         self.assertEqual(self.client.ping(), "pong")
+
+    def test_socket_is_accessible_only_by_owner(self):
+        mode = stat.S_IMODE(os.stat(self.socket_path).st_mode)
+        self.assertEqual(mode, 0o600)
 
     def test_instantiate_named_candidate_returns_structured_mlir(self):
         mlir = self.client.instantiate(
@@ -158,6 +168,30 @@ class TileLibDaemonTest(unittest.TestCase):
             candidate_id=TADD_2D_NO_POST_UPDATE,
         )
         self.assertEqual(self.client.get_stats()["misses"], 2)
+
+    def test_oversized_wire_message_is_rejected_before_payload_read(self):
+        receiver, sender = socket.socketpair()
+        self.addCleanup(receiver.close)
+        self.addCleanup(sender.close)
+        sender.sendall((MAX_MESSAGE_SIZE + 1).to_bytes(4, byteorder="big"))
+
+        with self.assertRaisesRegex(ValueError, "exceeds limit"):
+            recv_message(receiver)
+
+    def test_socket_cleanup_removes_broken_symlink(self):
+        missing_target = os.path.join(
+            self._temporary_directory.name,
+            "missing.sock",
+        )
+        broken_link = os.path.join(
+            self._temporary_directory.name,
+            "broken.sock",
+        )
+        os.symlink(missing_target, broken_link)
+
+        _remove_socket_path(broken_link)
+
+        self.assertFalse(os.path.lexists(broken_link))
 
     def test_non_tile_operand_is_rejected_explicitly(self):
         operands = list(TADD_OPERANDS)

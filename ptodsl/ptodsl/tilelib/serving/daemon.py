@@ -32,6 +32,14 @@ from ..templates import load_template
 from .wire import recv_message, send_message
 
 
+def _remove_socket_path(socket_path: str) -> None:
+    """Remove an existing socket entry, including a broken symlink."""
+    try:
+        os.unlink(socket_path)
+    except FileNotFoundError:
+        pass
+
+
 def _build_tile_specs(descriptor, operand_specs: list) -> dict:
     """Map positional daemon operands onto a template's parameter names."""
     if not isinstance(operand_specs, list):
@@ -174,26 +182,24 @@ def render_request(
     return descriptor.specialize(**tile_specs).mlir_text()
 
 
-class TileLibDaemonServer(socketserver.ThreadingUnixStreamServer):
-    """Threaded Unix-socket RPC server with an in-memory render cache."""
+class TileLibDaemonServer(socketserver.UnixStreamServer):
+    """Sequential Unix-socket RPC server with an in-memory render cache."""
 
     allow_reuse_address = True
-    daemon_threads = True
 
     def __init__(self, socket_path: str, max_entries: int = 1000):
         if max_entries <= 0:
             raise ValueError("max_entries must be greater than zero")
         super().__init__(socket_path, _Handler)
+        os.chmod(socket_path, 0o600)
         self._cache: dict[str, str] = {}
-        self._state_lock = threading.Lock()
         self._max_entries = max_entries
         self._stats = {"hits": 0, "misses": 0, "evictions": 0}
 
     @property
     def stats(self) -> dict:
         """Return a snapshot of cache counters for diagnostics and tests."""
-        with self._state_lock:
-            return dict(self._stats)
+        return dict(self._stats)
 
     def dispatch(self, request: dict) -> dict:
         if not isinstance(request, dict):
@@ -228,20 +234,18 @@ class TileLibDaemonServer(socketserver.ThreadingUnixStreamServer):
         return metadata_request(target, op, operand_specs, context_attrs)
 
     def _get_stats(self):
-        with self._state_lock:
-            requests = self._stats["hits"] + self._stats["misses"]
-            total_entries = len(self._cache)
-            return {
-                **self._stats,
-                "entries": total_entries,
-                "total_entries": total_entries,
-                "max_entries": self._max_entries,
-                "hit_rate": self._stats["hits"] / requests if requests else 0.0,
-            }
+        requests = self._stats["hits"] + self._stats["misses"]
+        total_entries = len(self._cache)
+        return {
+            **self._stats,
+            "entries": total_entries,
+            "total_entries": total_entries,
+            "max_entries": self._max_entries,
+            "hit_rate": self._stats["hits"] / requests if requests else 0.0,
+        }
 
     def _clear(self):
-        with self._state_lock:
-            self._cache.clear()
+        self._cache.clear()
         return {"cleared": True}
 
     def _instantiate(
@@ -264,12 +268,11 @@ class TileLibDaemonServer(socketserver.ThreadingUnixStreamServer):
             separators=(",", ":"),
         )
 
-        with self._state_lock:
-            cached = self._cache.get(key)
-            if cached is not None:
-                self._stats["hits"] += 1
-                return cached
-            self._stats["misses"] += 1
+        cached = self._cache.get(key)
+        if cached is not None:
+            self._stats["hits"] += 1
+            return cached
+        self._stats["misses"] += 1
 
         mlir_text = render_request(
             target,
@@ -279,11 +282,10 @@ class TileLibDaemonServer(socketserver.ThreadingUnixStreamServer):
             candidate_id,
         )
 
-        with self._state_lock:
-            if len(self._cache) >= self._max_entries:
-                self._cache.pop(next(iter(self._cache)))
-                self._stats["evictions"] += 1
-            self._cache[key] = mlir_text
+        if len(self._cache) >= self._max_entries:
+            self._cache.pop(next(iter(self._cache)))
+            self._stats["evictions"] += 1
+        self._cache[key] = mlir_text
         return mlir_text
 
 
@@ -312,8 +314,7 @@ def _parse_args(argv):
 def main(argv=None):
     args = _parse_args(argv)
 
-    if os.path.exists(args.socket):
-        os.unlink(args.socket)
+    _remove_socket_path(args.socket)
 
     server = TileLibDaemonServer(args.socket, max_entries=args.max_entries)
     stop = threading.Event()
@@ -334,8 +335,7 @@ def main(argv=None):
     finally:
         server.shutdown()
         server.server_close()
-        if os.path.exists(args.socket):
-            os.unlink(args.socket)
+        _remove_socket_path(args.socket)
 
 
 if __name__ == "__main__":

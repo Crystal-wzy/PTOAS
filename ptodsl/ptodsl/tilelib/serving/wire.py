@@ -12,6 +12,9 @@ from __future__ import annotations
 import json
 
 
+MAX_MESSAGE_SIZE = 64 * 1024 * 1024
+
+
 def recv_exactly(sock, length: int) -> bytes:
     """Read exactly ``length`` bytes or fail if the peer closes early."""
     chunks = []
@@ -28,6 +31,10 @@ def recv_exactly(sock, length: int) -> bytes:
 def send_message(sock, message: dict) -> None:
     """Send one UTF-8 JSON message with a 4-byte big-endian length prefix."""
     payload = json.dumps(message).encode("utf-8")
+    if len(payload) > MAX_MESSAGE_SIZE:
+        raise ValueError(
+            f"message length {len(payload)} exceeds limit {MAX_MESSAGE_SIZE}"
+        )
     sock.sendall(len(payload).to_bytes(4, byteorder="big"))
     sock.sendall(payload)
 
@@ -35,7 +42,16 @@ def send_message(sock, message: dict) -> None:
 def recv_message(sock) -> dict:
     """Receive one length-prefixed UTF-8 JSON message."""
     length = int.from_bytes(recv_exactly(sock, 4), byteorder="big")
+    if length > MAX_MESSAGE_SIZE:
+        raise ValueError(
+            f"message length {length} exceeds limit {MAX_MESSAGE_SIZE}"
+        )
     return json.loads(recv_exactly(sock, length).decode("utf-8"))
 
 
-__all__ = ["recv_exactly", "recv_message", "send_message"]
+__all__ = [
+    "MAX_MESSAGE_SIZE",
+    "recv_exactly",
+    "recv_message",
+    "send_message",
+]
