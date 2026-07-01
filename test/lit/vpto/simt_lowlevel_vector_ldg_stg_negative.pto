@@ -1,0 +1,43 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: not ptoas --pto-arch=a5 --pto-backend=vpto %s -o %t 2>&1 | FileCheck %s
+
+// Test that pto.ldg / pto.stg reject unsupported vector types:
+//   - Wrong element count (vector<4xf32>, vector<3xf16>)
+//   - Wrong element type (vector<2xi32>)
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  // CHECK: vector<2xf16>/vector<2xbf16>/vector<2xf32> value type
+  func.func @bad_v4f32(%gm: !pto.ptr<vector<4xf32>, gm>) attributes {pto.aicore} {
+    %c0 = arith.constant 0 : index
+    %v = pto.ldg %gm[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<vector<4xf32>, gm> -> vector<4xf32>
+    return
+  }
+
+  // CHECK: vector<2xf16>/vector<2xbf16>/vector<2xf32> value type
+  func.func @bad_v3f16(%gm: !pto.ptr<vector<3xf16>, gm>) attributes {pto.aicore} {
+    %c0 = arith.constant 0 : index
+    %v = pto.ldg %gm[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<vector<3xf16>, gm> -> vector<3xf16>
+    return
+  }
+
+  // CHECK: vector<2xf16>/vector<2xbf16>/vector<2xf32> value type
+  func.func @bad_v2i32(%gm: !pto.ptr<vector<2xi32>, gm>) attributes {pto.aicore} {
+    %c0 = arith.constant 0 : index
+    %v = pto.ldg %gm[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<vector<2xi32>, gm> -> vector<2xi32>
+    return
+  }
+
+  // CHECK: vector<2xf16>/vector<2xbf16>/vector<2xf32> value type
+  func.func @bad_stg_v2i32(%v: vector<2xi32>, %gm: !pto.ptr<vector<2xi32>, gm>) attributes {pto.aicore} {
+    %c0 = arith.constant 0 : index
+    pto.stg %v, %gm[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<vector<2xi32>, gm>, vector<2xi32>
+    return
+  }
+}

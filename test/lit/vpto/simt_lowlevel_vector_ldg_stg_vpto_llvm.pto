@@ -19,11 +19,11 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     %gm_v2f16: !pto.ptr<vector<2xf16>, gm>,
     %gm_v2bf16: !pto.ptr<vector<2xbf16>, gm>,
     %gm_v2f32: !pto.ptr<vector<2xf32>, gm>,
-    %dyn_offset: i32
+    %dyn_offset: i64
   ) attributes {pto.aicore} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %dyn_idx = arith.index_castui %dyn_offset : i32 to index
+    %dyn_idx = arith.index_cast %dyn_offset : i64 to index
 
     // ── vector<2xf16> static offset ──
     %v2f16_load = pto.ldg %gm_v2f16[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<vector<2xf16>, gm> -> vector<2xf16>
@@ -68,8 +68,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // CHECK-DAG: llvm.bitcast {{%.*}} : i32 to vector<2xbf16>
 // CHECK-DAG: llvm.bitcast {{%.*}} : i64 to vector<2xf32>
 
-// ── dynamic offset: runtime i32 zero-extended to i64 for GEP ──
-// CHECK-DAG: llvm.zext {{%.*}} : i32 to i64
+// ── dynamic offset: runtime i64 index flows directly into vector GEP ──
 // CHECK-DAG: llvm.getelementptr {{%.*}}[{{%.*}}] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, vector<2xf32>
 
 // ── L2 cache constants ──
