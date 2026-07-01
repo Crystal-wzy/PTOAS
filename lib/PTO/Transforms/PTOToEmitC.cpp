@@ -3296,6 +3296,9 @@ struct FuncToEmitC : public OpConversionPattern<func::FuncOp> {
     if (pto::isPTOEntryFunction(op)) {
       emitcFunc.setSpecifiersAttr(
           rewriter.getStrArrayAttr({"extern \"C\"", "__global__ AICORE"}));
+    } else if (op.isPrivate()) {
+      emitcFunc.setSpecifiersAttr(
+          rewriter.getStrArrayAttr({"static", "AICORE"}));
     } else if (pto::hasExternalArtifactVisibility(op)) {
       emitcFunc.setSpecifiersAttr(
           rewriter.getStrArrayAttr({"extern \"C\"", "AICORE"}));
