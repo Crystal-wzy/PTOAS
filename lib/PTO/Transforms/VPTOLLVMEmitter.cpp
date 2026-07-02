@@ -74,10 +74,9 @@ static Type getLowPrecisionLLVMType(Type type, MLIRContext *context) {
     return LLVM::LLVMFloat4E1M2x2Type::get(context);
   if (isa<pto::F4E2M1x2Type>(type))
     return LLVM::LLVMFloat4E2M1x2Type::get(context);
-  if (type.isFloat8E4M3() || type.isFloat8E4M3FN() ||
-      type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ())
+  if (pto::isPTOFloat8E4M3LikeType(type))
     return LLVM::LLVMFloat8E4M3Type::get(context);
-  if (type.isFloat8E5M2() || type.isFloat8E5M2FNUZ())
+  if (pto::isPTOFloat8E5M2LikeType(type))
     return LLVM::LLVMFloat8E5M2Type::get(context);
   return {};
 }
@@ -85,15 +84,13 @@ static Type getLowPrecisionLLVMType(Type type, MLIRContext *context) {
 static Type getLLVMCompatibleVectorType(ArrayRef<int64_t> shape,
                                         Type elementType,
                                         ArrayRef<bool> scalableDims = {}) {
-  if (shape.size() == 1 && !elementType.isIntOrIndexOrFloat())
-    return LLVM::LLVMFixedVectorType::get(elementType, shape.front());
   return VectorType::get(shape, elementType, scalableDims);
 }
 
 static Type normalizePayloadTypeForLLVMLowering(Type type, Builder &builder) {
   if (pto::isPTOHiFloat8x2Type(type))
-    return LLVM::LLVMFixedVectorType::get(
-        LLVM::LLVMHiFloat8Type::get(builder.getContext()), 2);
+    return getLLVMCompatibleVectorType(
+        {2}, LLVM::LLVMHiFloat8Type::get(builder.getContext()));
   if (Type lowpType = getLowPrecisionLLVMType(type, builder.getContext()))
     return lowpType;
 
@@ -136,16 +133,6 @@ static Type normalizeGEPElementTypeForLLVMLowering(Type type,
                                        vecType.getScalableDims());
   }
 
-  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type)) {
-    Type normalizedElement =
-        normalizeGEPElementTypeForLLVMLowering(vecType.getElementType(),
-                                               builder);
-    if (normalizedElement == vecType.getElementType())
-      return normalizePayloadTypeForLLVMLowering(type, builder);
-    return LLVM::LLVMFixedVectorType::get(normalizedElement,
-                                         vecType.getNumElements());
-  }
-
   return normalizePayloadTypeForLLVMLowering(type, builder);
 }
 
@@ -177,12 +164,6 @@ static unsigned getNaturalByteAlignment(Type type) {
     for (int64_t dim : vecType.getShape())
       elems *= dim;
     return elemAlign * static_cast<unsigned>(elems);
-  }
-  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type)) {
-    unsigned elemAlign = getNaturalByteAlignment(vecType.getElementType());
-    if (!elemAlign)
-      return 0;
-    return elemAlign * vecType.getNumElements();
   }
   if (auto intType = dyn_cast<IntegerType>(type))
     return llvm::divideCeil(unsigned(intType.getWidth()), 8u);
@@ -228,7 +209,6 @@ public:
     });
     addSourceMaterialization(materializeVPTOCast);
     addTargetMaterialization(materializeVPTOCast);
-    addArgumentMaterialization(materializeVPTOCast);
   }
 };
 
@@ -365,12 +345,11 @@ static std::string getMadRhsFragment(Type type) {
 }
 
 static bool isMadE4M3ElementType(Type type) {
-  return type.isFloat8E4M3() || type.isFloat8E4M3FN() ||
-         type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ();
+  return pto::isPTOFloat8E4M3LikeType(type);
 }
 
 static bool isMadE5M2ElementType(Type type) {
-  return type.isFloat8E5M2() || type.isFloat8E5M2FNUZ();
+  return pto::isPTOFloat8E5M2LikeType(type);
 }
 
 static std::string getMadDstFragment(Type type) {
@@ -498,10 +477,9 @@ static std::string getLowPrecisionElementFragment(Type type) {
     return "f4e1m2x2";
   if (isa<pto::F4E2M1x2Type>(type))
     return "f4e2m1x2";
-  if (type.isFloat8E4M3() || type.isFloat8E4M3FN() ||
-      type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ())
+  if (pto::isPTOFloat8E4M3LikeType(type))
     return "f8e4m3";
-  if (type.isFloat8E5M2() || type.isFloat8E5M2FNUZ())
+  if (pto::isPTOFloat8E5M2LikeType(type))
     return "f8e5m2";
   return {};
 }
@@ -679,8 +657,6 @@ static Type getElementTypeFromVectorLike(Type type) {
     return vecType.getElementType();
   if (auto vecType = dyn_cast<VectorType>(type))
     return vecType.getElementType();
-  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type))
-    return vecType.getElementType();
   return {};
 }
 
@@ -692,8 +668,6 @@ static std::optional<int64_t> getElementCountFromVectorLike(Type type) {
       return std::nullopt;
     return vecType.getShape().front();
   }
-  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type))
-    return vecType.getNumElements();
   return std::nullopt;
 }
 
@@ -1047,10 +1021,9 @@ static VcvtElemKind classifyVcvtElemType(Type type) {
     return VcvtElemKind::BF16;
   if (type.isF32())
     return VcvtElemKind::F32;
-  if (type.isFloat8E4M3() || type.isFloat8E4M3FN() ||
-      type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ())
+  if (pto::isPTOFloat8E4M3LikeType(type))
     return VcvtElemKind::F8E4M3;
-  if (type.isFloat8E5M2() || type.isFloat8E5M2FNUZ())
+  if (pto::isPTOFloat8E5M2LikeType(type))
     return VcvtElemKind::F8E5M2;
   if (pto::isPTOHiFloat8Type(type))
     return VcvtElemKind::HiF8;
@@ -8228,7 +8201,7 @@ public:
         op.getLoc(), TypeRange{}, payloads, asmString,
         appendSimtKeepResumeClobbers(
             buildRepeatedInlineAsmConstraints("R", payloads.size()), clobbers),
-        true, false,
+        true, false, LLVM::tailcallkind::TailCallKind::None,
         LLVM::AsmDialectAttr::get(op.getContext(), LLVM::AsmDialect::AD_ATT),
         ArrayAttr{});
     for (pto::KeepOp keep : llvm::reverse(keepOps))
@@ -8302,7 +8275,7 @@ public:
         op.getLoc(), TypeRange{asmResultType}, ValueRange{}, asmString,
         appendSimtKeepResumeClobbers(
             buildRepeatedInlineAsmConstraints("=R", resumeOps.size()), clobbers),
-        true, false,
+        true, false, LLVM::tailcallkind::TailCallKind::None,
         LLVM::AsmDialectAttr::get(op.getContext(), LLVM::AsmDialect::AD_ATT),
         ArrayAttr{});
 
@@ -10513,7 +10486,7 @@ static LogicalResult runPipeline(ModuleOp module, llvm::raw_ostream &diagOS,
   kernelModulePM.addPass(
       std::make_unique<NormalizeFuncSignaturesForLLVMLoweringPass>());
   kernelModulePM.addPass(arith::createArithExpandOpsPass());
-  kernelModulePM.addPass(createConvertSCFToCFPass());
+  kernelModulePM.addPass(createSCFToControlFlowPass());
   kernelModulePM.addPass(createArithToLLVMConversionPass());
   kernelModulePM.addPass(createConvertIndexToLLVMPass());
   kernelModulePM.addPass(createFinalizeMemRefToLLVMConversionPass());
