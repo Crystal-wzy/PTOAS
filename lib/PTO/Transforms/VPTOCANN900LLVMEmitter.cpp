@@ -2676,9 +2676,6 @@ static FailureOr<StringRef> buildL1CacheLoadCallee(MLIRContext *context,
              pto::isPTOHiFloat8Type(resultType)) {
     elem = "s8";
   } else if (auto vecType = dyn_cast<VectorType>(resultType)) {
-    // Packed vector loads from GM: map total bit width to intrinsic suffix.
-    // vector<2xf16>/vector<2xbf16> → 32-bit → s32
-    // vector<2xf32> → 64-bit → s64
     unsigned totalBits =
         vecType.getNumElements() * vecType.getElementTypeBitWidth();
     if (totalBits == 32)
@@ -2718,9 +2715,6 @@ static FailureOr<StringRef> buildL1CacheStoreCallee(MLIRContext *context,
              pto::isPTOHiFloat8Type(valueType)) {
     elem = "b8";
   } else if (auto vecType = dyn_cast<VectorType>(valueType)) {
-    // Packed vector stores to GM: map total bit width to intrinsic suffix.
-    // vector<2xf16>/vector<2xbf16> → 32-bit → b32
-    // vector<2xf32> → 64-bit → b64
     unsigned totalBits =
         vecType.getNumElements() * vecType.getElementTypeBitWidth();
     if (totalBits == 32)

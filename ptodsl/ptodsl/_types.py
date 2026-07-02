@@ -185,9 +185,6 @@ def _classify_storage_dtype(type_obj):
         return "storage_only"
     if any(_isinstance_pto_type(type_obj, name) for name in ("HiF8Type", "F4E1M2x2Type", "F4E2M1x2Type")):
         return "storage_only"
-    # Packed vector types (vector<2xf16>, vector<2xbf16>, vector<2xf32>) are
-    # compute-capable — they can appear as the element type of !pto.ptr and
-    # are loaded/stored via pto.ldg/pto.stg.
     if VectorType.isinstance(type_obj):
         vec_elem = VectorType(type_obj).element_type
         if _classify_scalar_type(vec_elem) is not None:
