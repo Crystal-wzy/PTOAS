@@ -14,10 +14,11 @@ par with the legacy tilelang-dsl render (``tile_buf_addr`` -> memref, ``memref.s
 
 Control flow is handled by the engine's AST rewrite (``rewrite_jit_function``): plain
 ``for x in range(...)`` in the template body is rewritten at trace time to
-``pto.for_(...).carry(...)`` (the ``_control_flow`` surface, re-exported via :mod:`author`),
-with loop-carried variables detected by liveness. This module therefore owns only the
-entry tile_buf typing and the golden-shaped module/func container; loops, slicing,
-valid-shape, mask and vector ops all come from the existing ptodsl engine.
+``pto.for_(...).carry(...)`` on the public PTODSL control-flow surface, with
+loop-carried variables detected by liveness. This module therefore owns only
+the entry tile_buf typing and the golden-shaped module/func container; loops,
+slicing, valid-shape, mask and vector ops all come from the existing PTODSL
+engine.
 """
 
 from __future__ import annotations

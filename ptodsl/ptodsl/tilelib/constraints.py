@@ -56,6 +56,7 @@ def build_context(tile_specs: dict, target: str, op: str) -> dict:
     operand_sizes = []
     operand_valid_cols = []
     operand_b_layouts = []
+    operand_s_layouts = []
     for name, spec in tile_specs.items():
         shape = tuple(spec.shape)
         valid = tuple(spec.valid_shape) if getattr(spec, "valid_shape", None) else shape
@@ -67,6 +68,7 @@ def build_context(tile_specs: dict, target: str, op: str) -> dict:
         operand_memory_spaces.append(memory_space)
         operand_sizes.append(_shape_size(shape))
         operand_b_layouts.append(b_layout)
+        operand_s_layouts.append(s_layout)
         context[f"{name}_shape"] = shape
         context[f"{name}_valid_shape"] = valid
         context[f"{name}_dtype"] = dtype
@@ -88,6 +90,7 @@ def build_context(tile_specs: dict, target: str, op: str) -> dict:
     context["operand_sizes"] = tuple(operand_sizes)
     context["operand_valid_cols"] = tuple(operand_valid_cols)
     context["operand_b_layouts"] = tuple(operand_b_layouts)
+    context["operand_s_layouts"] = tuple(operand_s_layouts)
     return context
 
 
@@ -119,6 +122,25 @@ def check_layout(expected):
         return all(layout == expected for layout in operand_b_layouts)
 
     return _check_layout
+
+
+def check_s_layout(expected):
+    def _check_s_layout(operand_s_layouts, **_):
+        return all(layout == expected for layout in operand_s_layouts)
+
+    return _check_s_layout
+
+
+def require_same_valid_shape(*operand_names):
+    def _require_same_valid_shape(**context):
+        shapes = [context.get(f"{name}_valid_shape") for name in operand_names]
+        return (
+            bool(shapes)
+            and None not in shapes
+            and all(shape == shapes[0] for shape in shapes[1:])
+        )
+
+    return _require_same_valid_shape
 
 
 def require_contiguous(required=True):
@@ -168,7 +190,9 @@ __all__ = [
     "build_context",
     "check_layout",
     "check_memory_space",
+    "check_s_layout",
     "check_type",
     "passes",
     "require_contiguous",
+    "require_same_valid_shape",
 ]
