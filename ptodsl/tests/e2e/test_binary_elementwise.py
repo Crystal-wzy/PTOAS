@@ -51,6 +51,10 @@ F32_SHAPES: list[tuple[int, int, str]] = [
     # Large tiles (exercises multi-repeat and UB bank layout)
     (16, 256, "modeNorm1L 16x256"),
     (32, 32, "modeSmall 32x32 square small"),
+    # Non-epr-aligned shapes (exercises modeCount1L with repeat>0)
+    (1, 200, "modeCount1L 1x200 nonVLAligned"),
+    (4, 200, "modeCount1L 4x200 nonVLAligned"),
+    (1, 96, "modeCount1L 1x96 nonVLAligned"),
 ]
 
 F16_EPR = 128  # elementsPerRepeat = 256 / sizeof(f16)

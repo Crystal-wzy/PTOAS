@@ -28,6 +28,8 @@
 
 #include "llvm/ADT/SmallVector.h"
 
+#include <algorithm>
+
 using namespace mlir;
 
 namespace mlir {
@@ -575,7 +577,7 @@ private:
     int64_t headRepeats = totalV / epr;
     int64_t tailElements = totalV % epr;
 
-    if (headRepeats > 1) {
+    if (headRepeats > 1 || tailElements > 0) {
       auto forOp = b.create<scf::ForOp>(loc, idxc0(loc, b),
                                           idxc(headRepeats, loc, b), idxc1(loc, b));
       b.setInsertionPointToStart(forOp.getBody());
@@ -858,10 +860,8 @@ private:
     if (vCols == cols || vRows == 1) {
       int64_t totalV = vRows * vCols;
       int64_t totalRpts = (totalV + epr - 1) / epr;
-      bool nonVLAligned =
-          (vCols > static_cast<int64_t>(epr)) && ((vCols % epr) != 0);
 
-      if (nonVLAligned || totalRpts > kRepeatMax)
+      if (totalRpts > kRepeatMax)
         modeCount1L<UBop>(loc, b, dst, s0, s1, ptrTy, info);
       else
         modeNorm1L<UBop>(loc, b, dst, s0, s1, ptrTy, info);
@@ -922,10 +922,12 @@ private:
   template <typename UBop>
   void modeCount1L(Location loc, OpBuilder &b, Value dst, Value s0, Value s1,
                    pto::PtrType ptrTy, const TileShapeInfo &info) {
+    int64_t epr = info.elementsPerRepeat;
     int64_t totalV = info.vRows * info.vCols;
+    int64_t totalRpts = (totalV + epr - 1) / epr;
     b.create<pto::UBSetMaskCountOp>(loc);
     b.create<pto::UBSetMaskOp>(loc, i64c(totalV, loc, b), i64c0(loc, b));
-    emitUBBinOp<UBop>(loc, b, dst, s0, s1, i64c0(loc, b), i64c8(loc, b));
+    emitUBBinOp<UBop>(loc, b, dst, s0, s1, i64c(totalRpts, loc, b), i64c8(loc, b));
     b.create<pto::UBSetMaskNormOp>(loc);
     fullMask(loc, b);
   }
@@ -961,7 +963,9 @@ private:
   template <typename UBop>
   void modeCount2L(Location loc, OpBuilder &b, Value dst, Value s0, Value s1,
                    pto::PtrType ptrTy, const TileShapeInfo &info) {
+    int64_t epr = info.elementsPerRepeat;
     int64_t rowStride = info.cols;
+    int64_t colRpts = (info.vCols + epr - 1) / epr;
     b.create<pto::UBSetMaskCountOp>(loc);
     b.create<pto::UBSetMaskOp>(loc, i64c(info.vCols, loc, b),
                                i64c0(loc, b));
@@ -975,7 +979,7 @@ private:
     Value rd = addPtr(loc, b, dst, ptrTy, off);
     Value rs0 = addPtr(loc, b, s0, ptrTy, off);
     Value rs1 = addPtr(loc, b, s1, ptrTy, off);
-    emitUBBinOp<UBop>(loc, b, rd, rs0, rs1, i64c0(loc, b), i64c8(loc, b));
+    emitUBBinOp<UBop>(loc, b, rd, rs0, rs1, i64c(colRpts, loc, b), i64c8(loc, b));
     b.setInsertionPointAfter(forOp);
 
     b.create<pto::UBSetMaskNormOp>(loc);

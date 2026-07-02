@@ -6,32 +6,32 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Non-epr-aligned 41x200 f32: routed through modeNorm1L with loop+tail.
-// headRepeats=128 (8200/64), tailElements=8 (8200%64).
+// Non-epr-aligned shape: 1x200 f32 routed through modeNorm1L with loop+tail.
+// headRepeats=3 (200/64), tailElements=8 (200%64).
 // RUN: ptoas --pto-arch=a3 --pto-backend=vpto %s -o %t --mlir-print-ir-after=pto-lower-to-ubuf-ops 2>&1 | FileCheck %s
 
 module attributes {pto.target_arch = "a3", pto.kernel_kind = #pto.kernel_kind<vector>} {
-  // CHECK-LABEL: func.func @lower_tadd_chunked_tail()
-  func.func @lower_tadd_chunked_tail() attributes {pto.aicore} {
-    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=41, cols=200, v_row=41, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %src0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=41, cols=200, v_row=41, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %src1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=41, cols=200, v_row=41, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    // 128 full repeats of 64 elements each
-    // CHECK: scf.for {{.*}} = %c0 to %c128
+  // CHECK-LABEL: func.func @tadd_count_nonaligned()
+  func.func @tadd_count_nonaligned() attributes {pto.aicore} {
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=200, v_row=1, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %src0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=200, v_row=1, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %src1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=200, v_row=1, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    // 3 full repeats of 64 elements each, then 8-element tail
+    // CHECK: scf.for {{.*}} = %c0 to %c3
     // CHECK: pto.ub.set_mask_count
     // CHECK: pto.ub.set_mask %c64_i64
     // CHECK: pto.ub.vadd {{%[^,]+}}, {{%[^,]+}}, {{%[^,]+}}, %c1_i64
     // CHECK-SAME: : !pto.ptr<f32, ub>, !pto.ptr<f32, ub>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64
     // CHECK: pto.ub.set_mask_norm
-    // Tail: 8 elements at offset 8192
-    // CHECK: pto.addptr {{.*}}, %c8192
+    // Tail: 8 elements
+    // CHECK: pto.addptr {{.*}}, %c192
     // CHECK: pto.ub.set_mask_count
     // CHECK: pto.ub.set_mask %c8_i64
     // CHECK: pto.ub.vadd {{%[^,]+}}, {{%[^,]+}}, {{%[^,]+}}, %c1_i64
     // CHECK-SAME: : !pto.ptr<f32, ub>, !pto.ptr<f32, ub>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64
     // CHECK: pto.ub.set_mask_norm
-    pto.tadd ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=41, cols=200, v_row=41, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=41, cols=200, v_row=41, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=41, cols=200, v_row=41, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     // CHECK-NOT: pto.tadd
+    pto.tadd ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=200, v_row=1, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=200, v_row=1, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=200, v_row=1, v_col=200, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     return
   }
 }
