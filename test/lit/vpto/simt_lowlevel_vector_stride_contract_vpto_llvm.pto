@@ -1,0 +1,73 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ( mkdir -p %T && ptoas --pto-arch=a5 --pto-backend=vpto %s -o %t --mlir-print-ir-after=convert-func-to-llvm 2>&1 || true ) | FileCheck %s
+
+// Test the addptr + castptr + ldg/stg stride contract lowering.
+//
+// Contract: when the original stride is in scalar-f32 units:
+//   %scalar_addr = pto.addptr %base, %scalar_offset   // advance scalar ptr
+//   %vector_addr = pto.castptr %scalar_addr            // reinterpret as vector ptr
+//   %value = pto.ldg %vector_addr[%c0]                 // load at offset 0
+//
+// The dynamic offset is applied ONCE via addptr (in f32 units).  The ldg
+// receives offset 0, avoiding a double-multiplication that would happen
+// if the scalar offset were applied directly to a vector pointer.
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  // ── static stride ──
+  func.func @stride_vector_ldg_stg_static(
+    %base_f32: !pto.ptr<f32, gm>,
+    %dst_v2f32: !pto.ptr<vector<2xf32>, gm>
+  ) attributes {pto.aicore} {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+
+    %scalar_addr = pto.addptr %base_f32, %c2 : !pto.ptr<f32, gm> -> !pto.ptr<f32, gm>
+    %vector_addr = pto.castptr %scalar_addr : !pto.ptr<f32, gm> -> !pto.ptr<vector<2xf32>, gm>
+    %v = pto.ldg %vector_addr[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<vector<2xf32>, gm> -> vector<2xf32>
+    pto.stg %v, %dst_v2f32[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<vector<2xf32>, gm>, vector<2xf32>
+    return
+  }
+
+  // ── dynamic stride: runtime i64 offset ──
+  func.func @stride_vector_ldg_stg_dynamic(
+    %base_f32: !pto.ptr<f32, gm>,
+    %dst_v2f32: !pto.ptr<vector<2xf32>, gm>,
+    %dyn_offset: i64
+  ) attributes {pto.aicore} {
+    %c0 = arith.constant 0 : index
+    %dyn_idx = arith.index_cast %dyn_offset : i64 to index
+
+    %scalar_addr = pto.addptr %base_f32, %dyn_idx : !pto.ptr<f32, gm> -> !pto.ptr<f32, gm>
+    %vector_addr = pto.castptr %scalar_addr : !pto.ptr<f32, gm> -> !pto.ptr<vector<2xf32>, gm>
+    %v = pto.ldg %vector_addr[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<vector<2xf32>, gm> -> vector<2xf32>
+    pto.stg %v, %dst_v2f32[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<vector<2xf32>, gm>, vector<2xf32>
+    return
+  }
+}
+
+// CHECK-LABEL: llvm.func @stride_vector_ldg_stg_static
+// The addptr offset (2) appears as a GEP on f32, then castptr is a GEP from
+// f32 to vector<2xf32> with offset 0.  The ldg consumes the vector ptr directly.
+// CHECK: llvm.getelementptr {{%.*}}[{{%.*}}] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f32
+// CHECK: llvm.getelementptr {{%.*}}[{{%.*}}] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, vector<2xf32>
+// CHECK: llvm.call @llvm.hivm.ldg.cache.s64
+// CHECK: llvm.bitcast {{%.*}} : i64 to vector<2xf32>
+// CHECK: llvm.call @llvm.hivm.stg.cache.b64
+
+// CHECK-LABEL: llvm.func @stride_vector_ldg_stg_dynamic
+// The dynamic i64 offset (%arg2) flows directly into the addptr GEP on f32.
+// castptr adds a zero-offset GEP to reinterpret the pointer type.
+// ldg consumes the resulting vector ptr — the runtime offset is NOT applied
+// again inside ldg (no second GEP with a runtime index).
+// CHECK: llvm.getelementptr {{%.*}}[%arg{{[0-9]+}}] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f32
+// CHECK: llvm.getelementptr {{%.*}}[{{%.*}}] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, vector<2xf32>
+// CHECK: llvm.call @llvm.hivm.ldg.cache.s64
+// CHECK: llvm.bitcast {{%.*}} : i64 to vector<2xf32>
+// CHECK: llvm.call @llvm.hivm.stg.cache.b64
