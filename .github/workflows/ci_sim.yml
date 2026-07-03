@@ -439,7 +439,6 @@ jobs:
           # They are split into separate pytest processes to avoid backend global-state conflicts.
           run_pypto_core_smoke() {
             local platform="$1"
-            local dyn_valid_shape="tests/st/runtime/control_flow/test_dyn_orch_shape.py::TestDynOrchShapeOperations::test_dyn_orch_valid_shape_add[shape0-valid_shape0-${platform}]"
             local cross_core="tests/st/runtime/cross_core/test_cross_core.py::TestCrossCore::test_tpush_tpop_v2c_updown[${platform}]"
             local pypto_smoke_tests=(
               tests/st/examples/00_hello_world/test_hello_world.py
@@ -450,9 +449,15 @@ jobs:
               tests/st/runtime/framework_and_models/test_jit.py::TestJITExecution::test_cache_hit_reuses_compiled_program
               tests/st/runtime/framework_and_models/test_jit.py::TestJITDynamicBatch::test_one_artifact_serves_multiple_batches
               tests/st/runtime/framework_and_models/test_compiled_program.py::TestManualWorkerExtraction::test_block_dim_override_runs
-              "${dyn_valid_shape}"
               "${cross_core}"
             )
+            # The a5sim self-hosted environment does not ship the PyPTO
+            # tensormap_and_ringbuffer runtime required by this dyn-orch case.
+            # Keep the coverage on a2a3sim instead of failing unrelated PTOAS PRs.
+            if [[ "${platform}" != "a5sim" ]]; then
+              local dyn_valid_shape="tests/st/runtime/control_flow/test_dyn_orch_shape.py::TestDynOrchShapeOperations::test_dyn_orch_valid_shape_add[shape0-valid_shape0-${platform}]"
+              pypto_smoke_tests+=("${dyn_valid_shape}")
+            fi
             run_pypto_pytest "${platform}" core_ptoas "${pypto_smoke_tests[@]}"
           }
 
