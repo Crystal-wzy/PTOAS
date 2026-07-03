@@ -11,8 +11,6 @@ import numpy as np
 
 from common import assert_close, auto_main
 from ptodsl import pto
-from ptodsl._surface_values import unwrap_surface_value
-from mlir.dialects import pto as _pto
 
 
 M = 1
@@ -171,17 +169,6 @@ def _alloc_common_tiles():
     return lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile
 
 
-def _bind_mx_scale_tiles(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile):
-    _pto.TGetScaleAddrOp(
-        unwrap_surface_value(lhs_tile),
-        unwrap_surface_value(lhs_scale_tile),
-    )
-    _pto.TGetScaleAddrOp(
-        unwrap_surface_value(rhs_tile),
-        unwrap_surface_value(rhs_scale_tile),
-    )
-
-
 def _alloc_bias_tile():
     return pto.alloc_tile(
         shape=[M, N_STORAGE],
@@ -265,7 +252,6 @@ def gemv_mx_fp8_pipeline_kernel(
 ):
     lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile = _alloc_common_tiles()
     _stage_fp8_tiles(a_ptr, b_ptr, a_scale_ptr, b_scale_ptr, lhs_tile, rhs_tile)
-    _bind_mx_scale_tiles(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile)
     pto.tile.gemv_mx(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile)
     _writeback_output(dst_tile, out_ptr)
 
@@ -286,7 +272,6 @@ def gemv_mx_acc_fp8_pipeline_kernel(
 ):
     lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile = _alloc_common_tiles()
     _stage_fp8_tiles(a_ptr, b_ptr, a_scale_ptr, b_scale_ptr, lhs_tile, rhs_tile)
-    _bind_mx_scale_tiles(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile)
     pto.tile.gemv_mx(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile)
     pto.tile.gemv_mx_acc(dst_tile, lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, dst_tile)
     _writeback_output(dst_tile, out_ptr)
@@ -319,7 +304,6 @@ def gemv_mx_bias_fp8_pipeline_kernel(
         bias_ptr=bias_ptr,
         bias_tile=bias_tile,
     )
-    _bind_mx_scale_tiles(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile)
     pto.tile.gemv_mx_bias(lhs_tile, lhs_scale_tile, rhs_tile, rhs_scale_tile, bias_tile, dst_tile)
     _writeback_output(dst_tile, out_ptr)
 

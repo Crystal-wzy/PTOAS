@@ -7,7 +7,17 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+# Minimal PTODSL cube/tmatmul pilot for A5.
+# Goal: validate plain cube tile.matmul lowering/runtime first, without mixing
+# MX-specific scale/bias handling or @pto.cube helper boundaries.
+
+from pathlib import Path
+import sys
+
 import numpy as np
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
@@ -24,18 +34,52 @@ L0A_ADDR = 0
 L0B_ADDR = 0
 L0C_ADDR = 0
 
+# This case keeps explicit L1/L0 addresses because the current GM->L1 fractal
+# path passes raw MAT pointers into mte_gm_l1_frac. Vector tile cases in this
+# directory use automatic tile address allocation.
+
+
+@pto.cube
+def cube_matmul_tile(
+    a_mat: pto.Tile,
+    b_mat: pto.Tile,
+    o_tile: pto.Tile,
+    a_l0a: pto.Tile,
+    b_l0b: pto.Tile,
+    c_acc: pto.Tile,
+):
+    m = a_mat.valid_shape[0]
+    k = a_mat.valid_shape[1]
+    n = b_mat.valid_shape[1]
+
+    pto.mte_l1_l0a(a_mat.as_ptr(), a_l0a.as_ptr(), m, k)
+    pto.mte_l1_l0b(b_mat.as_ptr(), b_l0b.as_ptr(), k, n, transpose=True)
+    pto.set_flag(pto.Pipe.MTE1, pto.Pipe.M, event_id=1)
+    pto.wait_flag(pto.Pipe.MTE1, pto.Pipe.M, event_id=1)
+    pto.tile.matmul(a_l0a, b_l0b, c_acc)
+    pto.set_flag(pto.Pipe.M, pto.Pipe.FIX, event_id=2)
+    pto.wait_flag(pto.Pipe.M, pto.Pipe.FIX, event_id=2)
+    pto.mte_l0c_ub(
+        c_acc.as_ptr(),
+        o_tile.as_ptr(),
+        m,
+        n,
+        n,
+        n,
+    )
+
 
 @pto.jit(
-    name="cube_matrix_pipeline_kernel",
+    name="tmatmul_f32_16x32x64",
     kernel_kind="cube",
     target="a5",
     mode="explicit",
     insert_sync=False,
 )
-def cube_matrix_pipeline_kernel(
+def _tmatmul_kernel(
     a_ptr: pto.ptr(pto.f32, "gm"),
     b_ptr: pto.ptr(pto.f32, "gm"),
-    o_ptr: pto.ptr(pto.f32, "gm"),
+    c_ptr: pto.ptr(pto.f32, "gm"),
 ):
     a_mat = pto.alloc_tile(
         shape=[M, K],
@@ -73,7 +117,7 @@ def cube_matrix_pipeline_kernel(
         blayout="RowMajor",
         slayout="ColMajor",
     )
-    o_acc = pto.alloc_tile(
+    c_acc = pto.alloc_tile(
         shape=[M, N],
         dtype=pto.f32,
         memory_space=pto.MemorySpace.ACC,
@@ -115,13 +159,13 @@ def cube_matrix_pipeline_kernel(
 
     pto.set_flag(pto.Pipe.MTE1, pto.Pipe.M, event_id=0)
     pto.wait_flag(pto.Pipe.MTE1, pto.Pipe.M, event_id=0)
-    pto.tile.matmul(a_l0a, b_l0b, o_acc)
+    pto.tile.matmul(a_l0a, b_l0b, c_acc)
 
     pto.set_flag(pto.Pipe.M, pto.Pipe.FIX, event_id=1)
     pto.wait_flag(pto.Pipe.M, pto.Pipe.FIX, event_id=1)
     pto.mte_l0c_gm(
-        o_acc.as_ptr(),
-        o_ptr,
+        c_acc.as_ptr(),
+        c_ptr,
         M,
         N,
         M,
@@ -133,22 +177,23 @@ def cube_matrix_pipeline_kernel(
     pto.pipe_barrier(pto.Pipe.ALL)
 
 
-def make_inputs():
-    a = (np.arange(M * K, dtype=np.float32).reshape(M, K) % 7) - 3.0
-    b = (np.arange(K * N, dtype=np.float32).reshape(K, N) % 5) - 2.0
+def _make_inputs():
+    rng = np.random.default_rng(0x7A7A7A71)
+    a = rng.uniform(-2.0, 2.0, size=(M, K)).astype(np.float32)
+    b = rng.uniform(-2.0, 2.0, size=(K, N)).astype(np.float32)
     return [a, b]
 
 
-def make_expected(a, b):
-    return a @ b
+def _make_expected(a, b):
+    return (a @ b).astype(np.float32)
 
 
 CASES = [
     golden_output_case(
-        "cube_matrix_pipeline_gemm",
-        cube_matrix_pipeline_kernel,
-        inputs=make_inputs,
-        expected=make_expected,
+        "tmatmul_f32_16x32x64",
+        _tmatmul_kernel,
+        inputs=_make_inputs,
+        expected=_make_expected,
         rtol=1e-4,
         atol=1e-4,
     ),
