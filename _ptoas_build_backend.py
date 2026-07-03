@@ -49,6 +49,19 @@ _MLIR_PY_PKG = (
 _WHEEL_DIST_DIR = _BUILD_DIR / "wheel-dist"
 
 
+def _assert_installed_ptodsl_payload() -> None:
+    """Fail fast if the root install tree did not stage the PTODSL package."""
+    installed_init = _PTO_INSTALL_DIR / "ptodsl" / "__init__.py"
+    if installed_init.exists():
+        return
+    raise RuntimeError(
+        "PTODSL is missing from the PTOAS install tree. "
+        f"Expected to find {installed_init}. "
+        "Root CMake install rules must stage the public 'ptodsl' package "
+        "before wheel assembly or installed-environment validation."
+    )
+
+
 def get_requires_for_build_wheel(config_settings=None):
     return ["setuptools>=68", "wheel", "pybind11<3"]
 
@@ -136,6 +149,7 @@ def _cmake_configure_and_build():
     subprocess.check_call(cmake_cmd)
     subprocess.check_call(["ninja", "-C", str(_BUILD_DIR)])
     subprocess.check_call(["ninja", "-C", str(_BUILD_DIR), "install"])
+    _assert_installed_ptodsl_payload()
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
