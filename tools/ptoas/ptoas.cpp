@@ -1160,7 +1160,7 @@ static void appendScalarGMFlush(std::string &out, llvm::StringRef indent) {
   out.append(indent.str());
   out.append("pipe_barrier(PIPE_ALL);\n");
   out.append(indent.str());
-  out.append("dcci((__gm__ void*)0, ENTIRE_DATA_CACHE, CACHELINE_OUT);\n");
+  out.append("dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE, dcci_dst_t::CACHELINE_OUT);\n");
   out.append(indent.str());
   out.append("dsb((mem_dsb_t)0);\n");
 }

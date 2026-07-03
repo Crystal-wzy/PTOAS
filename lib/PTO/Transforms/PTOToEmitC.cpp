@@ -6508,7 +6508,7 @@ static void emitInvalidateGmCache(ConversionPatternRewriter &rewriter,
   auto *ctx = rewriter.getContext();
   auto args = rewriter.getArrayAttr({
       emitc::OpaqueAttr::get(ctx, "(__gm__ void*)0"),
-      emitc::OpaqueAttr::get(ctx, "ENTIRE_DATA_CACHE"),
+      emitc::OpaqueAttr::get(ctx, "cache_line_t::ENTIRE_DATA_CACHE"),
   });
   rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "dcci", args,
                                        ArrayAttr{}, ValueRange{});

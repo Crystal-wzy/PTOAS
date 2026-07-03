@@ -70,10 +70,10 @@ module {
 
 // CHECK-LABEL: AICORE void twait_load_scalar_acquire(
 // CHECK:      pto::comm::TWAIT(
-// CHECK:      dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
+// CHECK:      dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE);
 // CHECK:      {{.*}} = {{.*}}[{{.*}}];
 
 // CHECK-LABEL: AICORE void ttest_load_scalar_conservative_acquire(
 // CHECK:      pto::comm::TTEST(
-// CHECK:      dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
+// CHECK:      dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE);
 // CHECK:      {{.*}} = {{.*}}[{{.*}}];

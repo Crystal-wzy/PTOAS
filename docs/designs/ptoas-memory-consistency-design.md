@@ -26,7 +26,7 @@ signal ready 不等价于 payload 一定已经可见。原因是 signal 和 payl
 | PTO IR | 语义 | EmitC lowering |
 | --- | --- | --- |
 | `pto.fence.barrier_all #pto.fence_scope<gm>` | GM visibility barrier，可用于 publish 或 acquire 边界 | `dsb(DSB_DDR)` |
-| `pto.cmo.cacheinvalid all #pto.address_space<gm>` | 失效 GM 相关 stale cache line | `dcci((__gm__ void*)0, ENTIRE_DATA_CACHE)` |
+| `pto.cmo.cacheinvalid all #pto.address_space<gm>` | 失效 GM 相关 stale cache line | `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)` |
 
 对应 PyPTO 写法：
 
@@ -57,19 +57,36 @@ pto.cmo.cacheinvalid %partition_view
 
 `dcci` 是 cache maintenance 指令，不是 pipe drain，也不是 GM visibility fence。
 
-本 PR 只使用公开 CCE 支持的 two-argument 形式：
+当前 CCE `dcci` 有两个常用参数维度：
+
+- 第二个参数表示处理粒度，常见值是 `cache_line_t::SINGLE_CACHE_LINE` 或
+  `cache_line_t::ENTIRE_DATA_CACHE`。旧写法中的 `SINGLE_CACHE_LINE` 和
+  `ENTIRE_DATA_CACHE` 是同一组枚举值的未限定名称。
+- 第三个参数表示处理目标，常见值是 `dcci_dst_t::CACHELINE_ALL`、
+  `dcci_dst_t::CACHELINE_OUT` 或 `dcci_dst_t::CACHELINE_ATOMIC`。旧写法中的
+  `CACHELINE_OUT` 是这组枚举值的未限定名称。
+
+当前 public IR `pto.cmo.cacheinvalid all #pto.address_space<gm>` 使用 two-argument
+whole-cache invalidate 形式：
 
 ```cpp
-dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
+dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE);
 ```
 
 它用于 `cmo.cacheinvalid all #pto.address_space<gm>`，让后续 cacheable GM load 不再使用本地
 stale cache line。
 
 本 PR 不暴露 `pto.cmo.clean`。原因是当前没有在 PTOAS 中确认可靠的 clean/writeback
-lowering ABI。历史代码里存在 `dcci(..., CACHELINE_OUT)` 字符串，但公开 CCE `dcci`
-文档不能支撑把它作为新的 public IR lowering 契约。因此 cacheable scalar GM store publish
-场景暂不在本 PR 支持范围内，pass 会报错而不是静默生成不可靠代码。
+IR 语义和精确作用范围。历史 scalar GM store flush 路径会生成 whole-cache OUT 操作，
+现在对齐为 CCE 接口层常用写法：
+
+```cpp
+dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE, dcci_dst_t::CACHELINE_OUT);
+```
+
+这条路径是已有 EmitC scalar store flush 行为，不作为新的 public `pto.cmo.clean`
+契约暴露。因此 cacheable scalar GM store publish 场景暂不在本 PR 支持范围内，pass
+会报错而不是静默生成新的 clean IR。
 
 ## 4. MemoryConsistency Pass
 
@@ -249,7 +266,7 @@ pto.LoadScalarOp(...)
 
 EmitC backend 当前支持：
 
-- `pto.cmo.cacheinvalid` lower 到 `dcci((__gm__ void*)0, ENTIRE_DATA_CACHE)`。
+- `pto.cmo.cacheinvalid` lower 到 `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)`。
 - `pto.fence.barrier_all #pto.fence_scope<gm>` lower 到 `dsb(DSB_DDR)`。
 
 ### 7.2 VPTO

@@ -2821,7 +2821,7 @@ def CmoCacheInvalidOp : PTO_Op<"cmo.cacheinvalid"> {
   let description = [{
     Cache maintenance operation that invalidates cache lines for the specified
     memory space. The first version supports whole-cache GM invalidate and
-    lowers to `dcci((__gm__ void*)0, ENTIRE_DATA_CACHE)`.
+    lowers to `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)`.
   }];
 
   let arguments = (ins PTO_AddressSpaceAttr:$space);
