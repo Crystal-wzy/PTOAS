@@ -1526,6 +1526,10 @@ def PointerCastOp : PTO_Op<"pointer_cast", [AttrSizedOperandSegments, Pure]> {
         $_builder.getDenseI32ArrayAttr({addrsSize, vRowSize, vColSize}));
     }]>
   ];
+
+  let extraClassDeclaration = [{
+    ::mlir::LogicalResult verify();
+  }];
 }
 
 def SlotMarkerOp : PTO_Op<"slot_marker", [

@@ -2835,10 +2835,75 @@ void mlir::pto::annotatePTOEntryFunctions(ModuleOp module) {
   return success();
 }
 
+static std::optional<uint64_t>
+getLocalAddressAlignmentBytes(Attribute memorySpace) {
+  auto addrSpace = dyn_cast_or_null<AddressSpaceAttr>(memorySpace);
+  if (!addrSpace)
+    return std::nullopt;
+
+  // Keep this verifier as a conservative front-line guard for explicit local
+  // tile addresses. PTO-ISA's buffer_limits.hpp defines the baseline
+  // TASSIGN<Addr> alignment as 32 bytes for local tile memories. For L0 tile
+  // bases, PTOAS level3/manual IR historically uses a 4096-bit (512-byte)
+  // granularity; fuller per-arch/per-layout bounds checks belong in PTO-ISA.
+  switch (addrSpace.getAddressSpace()) {
+  case AddressSpace::VEC:
+  case AddressSpace::MAT:
+  case AddressSpace::BIAS:
+  case AddressSpace::SCALING:
+    return 32;
+  case AddressSpace::LEFT:
+  case AddressSpace::RIGHT:
+  case AddressSpace::ACC:
+    return 512;
+  case AddressSpace::GM:
+  case AddressSpace::Zero:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+static LogicalResult verifyConstantLocalAddress(Operation *op, Value addr,
+                                                Attribute memorySpace,
+                                                int addrIndex = -1) {
+  std::optional<uint64_t> alignment =
+      getLocalAddressAlignmentBytes(memorySpace);
+  if (!alignment || *alignment == 0)
+    return success();
+
+  std::optional<int64_t> constantAddr = mlir::getConstantIntValue(addr);
+  if (!constantAddr)
+    return success();
+
+  auto emitAddrError = [&]() {
+    InFlightDiagnostic diag = op->emitOpError();
+    if (addrIndex >= 0)
+      diag << "addr[" << addrIndex << "]";
+    else
+      diag << "addr";
+    return diag;
+  };
+
+  if (*constantAddr < 0)
+    return emitAddrError() << " must be non-negative, got " << *constantAddr;
+
+  uint64_t unsignedAddr = static_cast<uint64_t>(*constantAddr);
+  if ((unsignedAddr % *alignment) != 0)
+    return emitAddrError()
+           << " must be aligned to " << *alignment
+           << " bytes for local tile memory space, got " << unsignedAddr;
+
+  return success();
+}
+
 LogicalResult AllocTileOp::verify() {
   auto ty = getResult().getType(); // TileBufType
 
   if (failed(verifyTileBufLayoutConstraints(*this, ty, "result")))
+    return failure();
+
+  if (failed(verifyConstantLocalAddress(getOperation(), getAddr(),
+                                        ty.getMemorySpace())))
     return failure();
 
   // op 上有没有传 operands
@@ -2969,6 +3034,21 @@ LogicalResult MultiTileGetOp::verify() {
   return success();
 }
 
+LogicalResult PointerCastOp::verify() {
+  auto memRefTy = dyn_cast<BaseMemRefType>(getResult().getType());
+  if (!memRefTy)
+    return emitOpError("result must be a memref type");
+
+  for (auto [idx, addr] : llvm::enumerate(getAddrs())) {
+    if (failed(verifyConstantLocalAddress(getOperation(), addr,
+                                          memRefTy.getMemorySpace(),
+                                          static_cast<int>(idx))))
+      return failure();
+  }
+
+  return success();
+}
+
 LogicalResult MaterializeTileOp::verify() {
   auto sourceTy = cast<MemRefType>(getSource().getType());
   auto resultTy = cast<TileBufType>(getResult().getType());
@@ -3016,6 +3096,18 @@ LogicalResult TAssignOp::verify() {
   if (getTile().getType() != getResult().getType()) {
     return emitOpError("result type must match tile operand type");
   }
+
+  Type tileType = getTile().getType();
+  if (auto tileTy = dyn_cast<TileBufType>(tileType)) {
+    if (failed(verifyConstantLocalAddress(getOperation(), getAddr(),
+                                          tileTy.getMemorySpace())))
+      return failure();
+  } else if (auto memRefTy = dyn_cast<BaseMemRefType>(tileType)) {
+    if (failed(verifyConstantLocalAddress(getOperation(), getAddr(),
+                                          memRefTy.getMemorySpace())))
+      return failure();
+  }
+
   return success();
 }
 

@@ -57,13 +57,13 @@ module attributes {pto.target_arch = "a2a3", pto.kernel_kind = #pto.kernel_kind<
     return
   }
 
-  func.func @non_identity_tmov_extui_negative_addr() {
-    %cm1_i8 = arith.constant -1 : i8
-    %c255_i64 = arith.extui %cm1_i8 : i8 to i64
-    %cm1_i64 = arith.constant -1 : i64
-    %src = pto.alloc_tile addr = %c255_i64
+  func.func @non_identity_tmov_extui_addr() {
+    %c32_i8 = arith.constant 32 : i8
+    %c32_i64 = arith.extui %c32_i8 : i8 to i64
+    %c64_i64 = arith.constant 64 : i64
+    %src = pto.alloc_tile addr = %c32_i64
       : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %dst = pto.alloc_tile addr = %cm1_i64
+    %dst = pto.alloc_tile addr = %c64_i64
       : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     pto.tmov ins(%src
       : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
@@ -72,12 +72,13 @@ module attributes {pto.target_arch = "a2a3", pto.kernel_kind = #pto.kernel_kind<
   }
 
   func.func @non_identity_tmov_trunc_then_extsi_addr() {
-    %c255_i64 = arith.constant 255 : i64
-    %trunc_i8 = arith.trunci %c255_i64 : i64 to i8
-    %cm1_i64 = arith.extsi %trunc_i8 : i8 to i64
-    %src = pto.alloc_tile addr = %cm1_i64
+    %c32_i64 = arith.constant 32 : i64
+    %trunc_i8 = arith.trunci %c32_i64 : i64 to i8
+    %c32_alt_i64 = arith.extsi %trunc_i8 : i8 to i64
+    %c64_i64 = arith.constant 64 : i64
+    %src = pto.alloc_tile addr = %c32_alt_i64
       : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %dst = pto.alloc_tile addr = %c255_i64
+    %dst = pto.alloc_tile addr = %c64_i64
       : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     pto.tmov ins(%src
       : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
@@ -110,7 +111,7 @@ module attributes {pto.target_arch = "a2a3", pto.kernel_kind = #pto.kernel_kind<
 // CPP-NOT: TMOV(
 // CPP: return;
 
-// CPP-LABEL: AICORE void non_identity_tmov_extui_negative_addr
+// CPP-LABEL: AICORE void non_identity_tmov_extui_addr
 // CPP: TMOV(
 
 // CPP-LABEL: AICORE void non_identity_tmov_trunc_then_extsi_addr
