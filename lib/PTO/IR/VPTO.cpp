@@ -536,7 +536,7 @@ static LogicalResult verifyLdgStgAccess(Operation *op, Type ptrType,
   if (pto::isPTOFloat8Type(valueType) || pto::isPTOHiFloat8Type(valueType))
     return success();
   if (auto vecType = dyn_cast<VectorType>(valueType)) {
-    if (vecType.getRank() == 1 && vecType.getDimSize(0) == 2) {
+    if (!vecType.isScalable() && vecType.getRank() == 1 && vecType.getDimSize(0) == 2) {
       Type elemType = vecType.getElementType();
       if (elemType.isF16() || elemType.isBF16() || elemType.isF32())
         return success();
