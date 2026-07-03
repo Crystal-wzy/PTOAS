@@ -12,10 +12,18 @@ import ptodsl.tilelib as tilelib
 
 
 _DTYPES = [
+    ("f16", "f16"),
+    ("bf16", "bf16"),
     ("f32", "f32"),
-    ("i16", "i16"),
-    ("i32", "i32"),
+    ("ui8", "ui8"),
+    ("si8", "si8"),
     ("i8", "i8"),
+    ("ui16", "ui16"),
+    ("si16", "si16"),
+    ("i16", "i16"),
+    ("ui32", "ui32"),
+    ("si32", "si32"),
+    ("i32", "i32"),
 ]
 
 
@@ -37,23 +45,18 @@ def _zero(dtype):
         return pto.f16(0.0)
     if name == "bf16":
         return pto.bf16(0.0)
-    if name == "ui32":
-        return pto.ui32(0)
-    if name == "si32":
-        return pto.si32(0)
-    if name == "i32":
+    if name in {"ui32", "si32", "i32"}:
         return pto.i32(0)
-    if name == "ui16":
-        return pto.ui16(0)
-    if name == "si16":
-        return pto.si16(0)
-    if name == "i16":
+    if name in {"ui16", "si16", "i16"}:
         return pto.i16(0)
-    if name == "ui8":
-        return pto.ui8(0)
-    if name == "si8":
-        return pto.si8(0)
     return pto.i8(0)
+
+
+def _fill_scalar(dst):
+    dtype = dst.dtype
+    if str(dtype) == "f32" and str(getattr(dst, "pad_value", "Null")).lower() == "zero":
+        return pto.f32(-1.0)
+    return _zero(dtype)
 
 
 def _copy_valid(src, dst):
@@ -74,7 +77,7 @@ def _copy_valid(src, dst):
 def _fill(dst, row_start, row_stop, col_start, col_stop):
     dtype = dst.dtype
     lanes = pto.elements_per_vreg(dtype)
-    fill_scalar = _zero(dtype)
+    fill_scalar = _fill_scalar(dst)
     with pto.for_(row_start, row_stop, step=1) as row:
         remained = col_stop - col_start
         col_loop = pto.for_(col_start, col_stop, step=lanes).carry(remained=remained)

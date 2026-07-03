@@ -185,6 +185,12 @@ def evaluate_candidate(
             False,
             f"missing operand specifications for {', '.join(missing)}",
         )
+    extra = [name for name in tile_specs if name not in descriptor.param_names]
+    if extra:
+        return CandidateLegality(
+            False,
+            f"unexpected operand specifications for {', '.join(extra)}",
+        )
 
     ordered_specs = {
         name: tile_specs[name]

@@ -13,9 +13,16 @@ import ptodsl.tilelib as tilelib
 from ptodsl.tilelib import ScalarSpec, ScalarType, TileSpec, select
 
 
-# op -> (template name, rendered vector op, parameter names, representative dtype)
+# op -> (template name, rendered op, parameter names, representative dtype[, candidate id])
 CATALOG = {
     "pto.tabs": ("template_tabs", "pto.vabs", ("src", "dst"), "f32"),
+    "pto.tadd": (
+        "template_tadd_2d_no_post_update",
+        "pto.vadd",
+        ("src0", "src1", "dst"),
+        "f32",
+        "template_tadd_2d_no_post_update",
+    ),
     "pto.tand": ("template_tand", "pto.vand", ("src0", "src1", "dst"), "i32"),
     "pto.tands": ("template_tands", "pto.vand", ("src", "scalar", "dst"), "i32"),
     "pto.tcmp": ("template_tcmp", "pto.vcmp", ("src0", "src1", "dst"), "f32"),
@@ -43,6 +50,7 @@ CATALOG = {
     "pto.textract": ("template_textract_vec2vec_nd", "pto.vlds", ("src", "index_row", "index_col", "dst"), "f32"),
     "pto.tlrelu": ("template_tlrelu", "pto.vlrelu", ("src", "slope", "dst"), "f32"),
     "pto.tlog": ("template_tlog", "pto.vln", ("src", "dst"), "f32"),
+    "pto.tdiv": ("template_tdiv", "pto.vdiv", ("src0", "src1", "dst"), "f32"),
     "pto.tdivs": ("template_tdivs", "pto.vdiv", ("src", "scalar", "dst"), "f32"),
     "pto.tcvt": ("template_tcvt_f32_to_i32", "pto.vcvt", ("src", "dst"), "f32"),
     "pto.texp": ("template_texp", "pto.vexp", ("src", "dst"), "f32"),
@@ -51,8 +59,53 @@ CATALOG = {
     "pto.tfillpad": ("template_tfillpad", "pto.vsts", ("src", "dst"), "f32"),
     "pto.tfillpad_expand": ("template_tfillpad_expand", "pto.vsts", ("src", "dst"), "f32"),
     "pto.tfillpad_inplace": ("template_tfillpad_inplace", "pto.vdup", ("src", "dst"), "f32"),
+    "pto.tgemv": ("template_tgemv", "pto.mad", ("lhs", "rhs", "acc"), "f16"),
+    "pto.tgemv.acc": ("template_tgemv_acc", "pto.mad_acc", ("acc_in", "lhs", "rhs", "dst"), "f16"),
+    "pto.tgemv.bias": ("template_tgemv_bias", "pto.mad_bias", ("lhs", "rhs", "bias", "dst"), "f16"),
+    "pto.tgemv.mx": (
+        "template_tgemv_mx",
+        "pto.mad_mx",
+        ("lhs", "lhs_scale", "rhs", "rhs_scale", "dst"),
+        "f8e4m3",
+    ),
+    "pto.tgemv.mx.acc": (
+        "template_tgemv_mx_acc",
+        "pto.mad_mx_acc",
+        ("acc_in", "lhs", "lhs_scale", "rhs", "rhs_scale", "dst"),
+        "f8e4m3",
+    ),
+    "pto.tgemv.mx.bias": (
+        "template_tgemv_mx_bias",
+        "pto.mad_mx_bias",
+        ("lhs", "lhs_scale", "rhs", "rhs_scale", "bias", "dst"),
+        "f8e4m3",
+    ),
     "pto.tinsert": ("template_tinsert_vec_to_vec_nd_basic", "pto.vsts", ("src", "index_row", "index_col", "dst"), "f32"),
+    "pto.tmatmul": ("template_tmatmul", "pto.mad", ("lhs", "rhs", "acc"), "f16"),
+    "pto.tmatmul.acc": ("template_tmatmul_acc", "pto.mad_acc", ("acc_in", "lhs", "rhs", "dst"), "f16"),
+    "pto.tmatmul.bias": ("template_tmatmul_bias", "pto.mad_bias", ("lhs", "rhs", "bias", "dst"), "f16"),
+    "pto.tmatmul.mx": (
+        "template_tmatmul_mx",
+        "pto.mad_mx",
+        ("lhs", "lhs_scale", "rhs", "rhs_scale", "dst"),
+        "f8e4m3",
+    ),
+    "pto.tmatmul.mx.acc": (
+        "template_tmatmul_mx_acc",
+        "pto.mad_mx_acc",
+        ("acc_in", "lhs", "lhs_scale", "rhs", "rhs_scale", "dst"),
+        "f8e4m3",
+    ),
+    "pto.tmatmul.mx.bias": (
+        "template_tmatmul_mx_bias",
+        "pto.mad_mx_bias",
+        ("lhs", "lhs_scale", "rhs", "rhs_scale", "bias", "dst"),
+        "f8e4m3",
+    ),
+    "pto.tmax": ("template_tmax", "pto.vmax", ("src0", "src1", "dst"), "f32"),
     "pto.tneg": ("template_tneg", "pto.vneg", ("src", "dst"), "f32"),
+    "pto.tmin": ("template_tmin", "pto.vmin", ("src0", "src1", "dst"), "f32"),
+    "pto.tmov": ("template_tmov_basic", "pto.vsts", ("src", "dst"), "f32"),
     "pto.tnot": ("template_tnot", "pto.vnot", ("src", "dst"), "i32"),
     "pto.tor": ("template_tor", "pto.vor", ("src0", "src1", "dst"), "i32"),
     "pto.tors": ("template_tors", "pto.vor", ("src", "scalar", "dst"), "i32"),
@@ -98,6 +151,13 @@ CATALOG = {
     "pto.tmaxs": ("template_tmaxs", "pto.vmaxs", ("src", "scalar", "dst"), "f32"),
     "pto.tmins": ("template_tmins", "pto.vmins", ("src", "scalar", "dst"), "f32"),
     "pto.tmuls": ("template_tmuls", "pto.vmuls", ("src", "scalar", "dst"), "f32"),
+    "pto.tmul": (
+        "template_tmul_2d_no_post_update",
+        "pto.vmul",
+        ("src0", "src1", "dst"),
+        "f32",
+        "template_tmul_2d_no_post_update",
+    ),
     "pto.txor": (
         "template_txor",
         "pto.vxor",
@@ -106,7 +166,23 @@ CATALOG = {
     ),
     "pto.txors": ("template_txors", "pto.vxor", ("src", "scalar", "tmp", "dst"), "i32"),
     "pto.tsubs": ("template_tsubs", "pto.vadds", ("src", "scalar", "dst"), "f32"),
+    "pto.tsub": ("template_tsub", "pto.vsub", ("src0", "src1", "dst"), "f32"),
     "pto.tsqrt": ("template_tsqrt", "pto.vsqrt", ("src", "dst"), "f32"),
+}
+
+CUBE_OPS = {
+    "pto.tgemv",
+    "pto.tgemv.acc",
+    "pto.tgemv.bias",
+    "pto.tgemv.mx",
+    "pto.tgemv.mx.acc",
+    "pto.tgemv.mx.bias",
+    "pto.tmatmul",
+    "pto.tmatmul.acc",
+    "pto.tmatmul.bias",
+    "pto.tmatmul.mx",
+    "pto.tmatmul.mx.acc",
+    "pto.tmatmul.mx.bias",
 }
 
 COLUMN_REDUCTIONS = {"pto.tcolmax", "pto.tcolmin", "pto.tcolprod", "pto.tcolsum"}
@@ -153,9 +229,13 @@ SHARED_RENDERED_OPS = (
 OPS_WITHOUT_TILE_LOAD = {"pto.texpands"}
 OPS_WITHOUT_TILE_LOAD = OPS_WITHOUT_TILE_LOAD | {"pto.trandom", "pto.tsort32"}
 OPS_WITHOUT_TILE_LOAD = OPS_WITHOUT_TILE_LOAD | {"pto.tfillpad_inplace"}
+OPS_WITHOUT_TILE_LOAD = OPS_WITHOUT_TILE_LOAD | CUBE_OPS
 OPS_WITHOUT_VECTOR_STORE = {"pto.tcmp", "pto.tcmps", "pto.tsort32"}
+OPS_WITHOUT_VECTOR_STORE = OPS_WITHOUT_VECTOR_STORE | CUBE_OPS
 OPS_WITHOUT_MEMREF_SUBVIEW = {"pto.tsort32"}
+OPS_WITHOUT_MEMREF_SUBVIEW = OPS_WITHOUT_MEMREF_SUBVIEW | CUBE_OPS
 OPS_WITHOUT_LOOP = {"pto.tmrgsort"}
+OPS_WITHOUT_LOOP = OPS_WITHOUT_LOOP | CUBE_OPS
 OPS_ALLOWING_CASTPTR = {"pto.tsel", "pto.tsels"}
 SCALAR_OPERANDS = {
     "scalar",
@@ -194,12 +274,63 @@ SPECIAL_OPERAND_DTYPES = {
     ("pto.trowargmax", "dst"): "i32",
     ("pto.trowargmin", "dst"): "i32",
 }
+for _op in CUBE_OPS:
+    SPECIAL_OPERAND_DTYPES[(_op, "acc")] = "f32"
+    SPECIAL_OPERAND_DTYPES[(_op, "acc_in")] = "f32"
+    SPECIAL_OPERAND_DTYPES[(_op, "bias")] = "f32"
+    SPECIAL_OPERAND_DTYPES[(_op, "dst")] = "f32"
+    SPECIAL_OPERAND_DTYPES[(_op, "lhs_scale")] = "f16"
+    SPECIAL_OPERAND_DTYPES[(_op, "rhs_scale")] = "f16"
+for _op in ("pto.tgemv", "pto.tgemv.acc", "pto.tgemv.bias", "pto.tmatmul", "pto.tmatmul.acc", "pto.tmatmul.bias"):
+    SPECIAL_OPERAND_DTYPES[(_op, "lhs")] = "f16"
+    SPECIAL_OPERAND_DTYPES[(_op, "rhs")] = "f16"
+for _op in (
+    "pto.tgemv.mx",
+    "pto.tgemv.mx.acc",
+    "pto.tgemv.mx.bias",
+    "pto.tmatmul.mx",
+    "pto.tmatmul.mx.acc",
+    "pto.tmatmul.mx.bias",
+):
+    SPECIAL_OPERAND_DTYPES[(_op, "lhs")] = "f8e4m3"
+    SPECIAL_OPERAND_DTYPES[(_op, "rhs")] = "f8e4m3"
+
+SPECIAL_MEMORY_SPACES = {}
+for _op in CUBE_OPS:
+    SPECIAL_MEMORY_SPACES[(_op, "lhs")] = "left"
+    SPECIAL_MEMORY_SPACES[(_op, "rhs")] = "right"
+    SPECIAL_MEMORY_SPACES[(_op, "acc")] = "acc"
+    SPECIAL_MEMORY_SPACES[(_op, "acc_in")] = "acc"
+    SPECIAL_MEMORY_SPACES[(_op, "dst")] = "acc"
+    SPECIAL_MEMORY_SPACES[(_op, "bias")] = "bias"
+    SPECIAL_MEMORY_SPACES[(_op, "lhs_scale")] = "scaling"
+    SPECIAL_MEMORY_SPACES[(_op, "rhs_scale")] = "scaling"
+
+for _op in ("pto.tgemv", "pto.tgemv.acc", "pto.tgemv.bias", "pto.tgemv.mx", "pto.tgemv.mx.acc", "pto.tgemv.mx.bias"):
+    SPECIAL_VALID_SHAPES[(_op, "lhs")] = (1, 64)
 FLOAT_REMAINDER_OPS = {"pto.tfmod", "pto.tfmods", "pto.trem", "pto.trems"}
 FLOAT_REMAINDER_DTYPES = {"f16", "bf16", "f32"}
 
 
+def _entry_parts(entry):
+    if len(entry) == 4:
+        name, rendered_op, parameter_names, dtype_name = entry
+        return name, rendered_op, parameter_names, dtype_name, None
+    name, rendered_op, parameter_names, dtype_name, candidate_id = entry
+    return name, rendered_op, parameter_names, dtype_name, candidate_id
+
+
+def _tile_spec_for(op, operand, dtype_name):
+    valid_shape = SPECIAL_VALID_SHAPES.get((op, operand), (8, 64))
+    return TileSpec(
+        shape=(8, 64),
+        dtype=ScalarType(dtype_name),
+        memory_space=SPECIAL_MEMORY_SPACES.get((op, operand), "ub"),
+        valid_shape=valid_shape,
+    )
+
+
 def _specs(op, parameter_names, dtype_name):
-    dtype = ScalarType(dtype_name)
     specs = {}
     for name in parameter_names:
         if name in SCALAR_OPERANDS:
@@ -220,11 +351,14 @@ def _specs(op, parameter_names, dtype_name):
             operand_dtype = "i32"
         if op in ROW_REDUCTIONS and name == "dst":
             valid_shape = (8, 1)
-        specs[name] = TileSpec(
-            shape=(8, 64),
-            dtype=ScalarType(operand_dtype),
-            valid_shape=valid_shape,
-        )
+        specs[name] = _tile_spec_for(op, name, operand_dtype)
+        if valid_shape != specs[name].valid_shape:
+            specs[name] = TileSpec(
+                shape=(8, 64),
+                dtype=ScalarType(operand_dtype),
+                memory_space=SPECIAL_MEMORY_SPACES.get((op, name), "ub"),
+                valid_shape=valid_shape,
+            )
     return specs
 
 
@@ -251,10 +385,11 @@ class TileLibCatalogTest(unittest.TestCase):
                 self.assertFalse(hasattr(tilelib, name))
 
     def test_each_catalog_entry_selects_and_renders(self):
-        for op, (name, vector_op, parameter_names, dtype_name) in CATALOG.items():
+        for op, entry in CATALOG.items():
             with self.subTest(op=op):
+                name, vector_op, parameter_names, dtype_name, candidate_id = _entry_parts(entry)
                 specs = _specs(op, parameter_names, dtype_name)
-                descriptor = select(op, "a5", specs)
+                descriptor = select(op, "a5", specs, candidate_id=candidate_id)
                 self.assertEqual(descriptor.name, name)
 
                 mlir = descriptor.specialize(**specs).mlir_text()
@@ -283,9 +418,10 @@ class TileLibCatalogTest(unittest.TestCase):
                     self.assertNotIn("pto.castptr", mlir)
 
     def test_declared_dtype_signatures_are_selectable(self):
-        for op, (_, _, parameter_names, representative_dtype) in CATALOG.items():
+        for op, entry in CATALOG.items():
+            _, _, parameter_names, representative_dtype, candidate_id = _entry_parts(entry)
             first_specs = _specs(op, parameter_names, representative_dtype)
-            descriptor = select(op, "a5", first_specs)
+            descriptor = select(op, "a5", first_specs, candidate_id=candidate_id)
             for signature in descriptor.metadata.dtypes:
                 with self.subTest(op=op, signature=signature):
                     specs = {}
@@ -306,17 +442,84 @@ class TileLibCatalogTest(unittest.TestCase):
                             valid_shape = (1, 64)
                         if op in ROW_REDUCTIONS and operand == "dst":
                             valid_shape = (8, 1)
-                        specs[operand] = TileSpec(
-                            shape=(8, 64),
-                            dtype=ScalarType(dtype_name),
-                            valid_shape=valid_shape,
-                        )
-                    selected = select(op, "a5", specs)
+                        specs[operand] = _tile_spec_for(op, operand, dtype_name)
+                        if valid_shape != specs[operand].valid_shape:
+                            specs[operand] = TileSpec(
+                                shape=(8, 64),
+                                dtype=ScalarType(dtype_name),
+                                memory_space=SPECIAL_MEMORY_SPACES.get((op, operand), "ub"),
+                                valid_shape=valid_shape,
+                            )
+                    selected = select(op, "a5", specs, candidate_id=candidate_id)
                     self.assertEqual(selected.name, descriptor.name)
                     self.assertIn(
                         _expected_rendered_op(op, signature),
                         selected.specialize(**specs).mlir_text(),
                     )
+
+    def test_tcvt_additional_rowwise_versions_render(self):
+        signatures = {
+            ("i32", "f32"): "template_tcvt_i32_to_f32",
+            ("i16", "f16"): "template_tcvt_i16_to_f16",
+            ("f16", "i16"): "template_tcvt_f16_to_i16",
+            ("bf16", "f16"): "template_tcvt_bf16_to_f16",
+            ("f32", "f16"): "template_tcvt_f32_to_f16",
+            ("f32", "bf16"): "template_tcvt_f32_to_bf16",
+            ("f16", "i32"): "template_tcvt_f16_to_i32",
+        }
+        for (src_dtype, dst_dtype), expected_name in signatures.items():
+            with self.subTest(signature=(src_dtype, dst_dtype)):
+                specs = {
+                    "src": TileSpec(shape=(8, 64), dtype=ScalarType(src_dtype)),
+                    "dst": TileSpec(shape=(8, 64), dtype=ScalarType(dst_dtype)),
+                }
+                selected = select("pto.tcvt", "a5", specs)
+                self.assertEqual(selected.name, expected_name)
+                self.assertIn("pto.vcvt", selected.specialize(**specs).mlir_text())
+
+    def test_tmrgsort_multi_list3_and_4_render(self):
+        cases = (
+            (
+                ("src0", "src1", "src2", "tmp", "dst", "ex_vec"),
+                "template_tmrgsort_multi_list3",
+            ),
+            (
+                ("src0", "src1", "src2", "src3", "tmp", "dst", "ex_vec"),
+                "template_tmrgsort_multi_list4",
+            ),
+        )
+        for parameter_names, expected_name in cases:
+            with self.subTest(expected_name=expected_name):
+                specs = _specs("pto.tmrgsort", parameter_names, "f32")
+                selected = select("pto.tmrgsort", "a5", specs)
+                self.assertEqual(selected.name, expected_name)
+                self.assertIn("pto.vmrgsort4", selected.specialize(**specs).mlir_text())
+
+    def test_tsort32_unaligned_tmp_version_renders(self):
+        specs = {
+            "src": TileSpec(shape=(8, 64), dtype=ScalarType("f32"), valid_shape=(8, 63)),
+            "idx": TileSpec(shape=(8, 64), dtype=ScalarType("i32"), valid_shape=(8, 63)),
+            "tmp": TileSpec(shape=(1, 64), dtype=ScalarType("f32"), valid_shape=(1, 64)),
+            "dst": TileSpec(shape=(8, 64), dtype=ScalarType("f32"), valid_shape=(8, 63)),
+        }
+        selected = select("pto.tsort32", "a5", specs)
+        self.assertEqual(selected.name, "template_tsort32_with_tmp")
+        mlir = selected.specialize(**specs).mlir_text()
+        self.assertIn("pto.copy_ubuf_to_ubuf", mlir)
+        self.assertIn("pto.vbitsort", mlir)
+
+    def test_colarg_additional_dtype_versions_render(self):
+        for op in ("pto.tcolargmax", "pto.tcolargmin"):
+            for dtype in ("f16", "ui16", "i8", "ui8"):
+                with self.subTest(op=op, dtype=dtype):
+                    specs = {
+                        "src": TileSpec(shape=(8, 64), dtype=ScalarType(dtype)),
+                        "tmp": TileSpec(shape=(8, 64), dtype=ScalarType(dtype)),
+                        "dst": TileSpec(shape=(8, 64), dtype=ScalarType("i32"), valid_shape=(1, 64)),
+                    }
+                    selected = select(op, "a5", specs)
+                    self.assertIn(dtype, selected.name)
+                    self.assertIn("pto.vcmp", selected.specialize(**specs).mlir_text())
 
 
 if __name__ == "__main__":

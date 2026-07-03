@@ -84,3 +84,75 @@ def template_tmrgsort_multi_list2(src0: pto.Tile, src1: pto.Tile, tmp: pto.Tile,
     config = 1 | (0b0011 << 8) | (exhausted << 12)
     pto.vmrgsort4(tmp.as_ptr(), src0.as_ptr(), src1.as_ptr(), src0.as_ptr(), src0.as_ptr(), count, config)
     _copy_tmp_to_dst(tmp, dst)
+
+
+@tilelib.tile_template(
+    op="pto.tmrgsort",
+    target="a5",
+    name="template_tmrgsort_multi_list3",
+    dtypes=[("f32", "f32", "f32", "f32", "f32", "i32"), ("f16", "f16", "f16", "f16", "f16", "i32")],
+    memory_spaces=("ub",),
+    layouts=("row_major",),
+    id=2,
+    loop_depth=1,
+    is_post_update=False,
+    tags=("sort", "merge", "multi-list"),
+)
+def template_tmrgsort_multi_list3(
+    src0: pto.Tile,
+    src1: pto.Tile,
+    src2: pto.Tile,
+    tmp: pto.Tile,
+    dst: pto.Tile,
+    ex_vec: pto.i32,
+):
+    _ = ex_vec
+    src0_structures = _structures(src0.shape[1], dst.dtype)
+    src1_structures = _structures(src1.shape[1], dst.dtype)
+    src2_structures = _structures(src2.shape[1], dst.dtype)
+    count = src0_structures | (src1_structures << 16) | (src2_structures << 32)
+    exhausted = int(pto.get_op_attr("exhausted", "0"))
+    config = 1 | (0b0111 << 8) | (exhausted << 12)
+    pto.vmrgsort4(tmp.as_ptr(), src0.as_ptr(), src1.as_ptr(), src2.as_ptr(), src0.as_ptr(), count, config)
+    _copy_tmp_to_dst(tmp, dst)
+
+
+@tilelib.tile_template(
+    op="pto.tmrgsort",
+    target="a5",
+    name="template_tmrgsort_multi_list4",
+    dtypes=[
+        ("f32", "f32", "f32", "f32", "f32", "f32", "i32"),
+        ("f16", "f16", "f16", "f16", "f16", "f16", "i32"),
+    ],
+    memory_spaces=("ub",),
+    layouts=("row_major",),
+    id=3,
+    loop_depth=1,
+    is_post_update=False,
+    tags=("sort", "merge", "multi-list"),
+)
+def template_tmrgsort_multi_list4(
+    src0: pto.Tile,
+    src1: pto.Tile,
+    src2: pto.Tile,
+    src3: pto.Tile,
+    tmp: pto.Tile,
+    dst: pto.Tile,
+    ex_vec: pto.i32,
+):
+    _ = ex_vec
+    src0_structures = _structures(src0.shape[1], dst.dtype)
+    src1_structures = _structures(src1.shape[1], dst.dtype)
+    src2_structures = _structures(src2.shape[1], dst.dtype)
+    src3_structures = _structures(src3.shape[1], dst.dtype)
+    count = (
+        src0_structures
+        | (src1_structures << 16)
+        | (src2_structures << 32)
+        | (src3_structures << 48)
+    )
+    exhausted = int(pto.get_op_attr("exhausted", "0"))
+    config = 1 | (0b1111 << 8) | (exhausted << 12)
+    pto.vmrgsort4(tmp.as_ptr(), src0.as_ptr(), src1.as_ptr(), src2.as_ptr(), src3.as_ptr(), count, config)
+    _copy_tmp_to_dst(tmp, dst)

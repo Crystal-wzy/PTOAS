@@ -39,7 +39,7 @@ def _vec_to_vec_nd_scalar(src_memory_space, dst_memory_space, src_config, dst_co
     )
 
 
-_DTYPES = [("f16", "i32", "i32", "f16"), ("bf16", "i32", "i32", "bf16"), ("f32", "i32", "i32", "f32"), ("i32", "i32", "i32", "i32"), ("i8", "i32", "i32", "i8")]
+_DTYPES = [(dtype, "i32", "i32", dtype) for dtype in NUMERIC_DTYPES]
 
 
 @tilelib.tile_template(
