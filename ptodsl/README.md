@@ -35,28 +35,48 @@ ptodsl/
 
 ---
 
-## Prerequisites
+## Supported install flows
+
+PTODSL is shipped through the repository-root `ptoas` package. Supported ways
+to make `import ptodsl` available are:
 
 ```bash
-# Install ptoas (first time only)
-cd $PTOAS_REPO_ROOT          # e.g. export PTOAS_REPO_ROOT=/workdir/ptoas_a5
-bash quick_install.sh
+# 1) Released or CI-built wheel: installs PTOAS + PTODSL together
+pip install /path/to/ptoas-*.whl
 
-# Set up environment in every new shell
-source scripts/ptoas_env.sh
-```
+# 2) Non-editable source install from the repository root
+cd $PTOAS_REPO_ROOT
+pip install . --no-build-isolation
 
----
-
-## Install the package
-
-```bash
+# 3) Editable install for PTOAS / PTODSL developers
 cd $PTOAS_REPO_ROOT
 pip install -e . --no-build-isolation
 ```
 
-Use `pip install . --no-build-isolation` from the repository root when you
-want a non-editable source install.
+Install verification:
+
+```bash
+python3 -c "import ptodsl; from ptodsl import pto, scalar; print(ptodsl.__file__)"
+```
+
+Not supported:
+
+- `cd ptodsl && pip install -e .`
+- repo-walk / `PYTHONPATH` / `sys.path` repair just to locate the `ptodsl` package
+
+Artifact boundary:
+
+- `ptoas` wheel: PTODSL-capable Python distribution
+- `ptoas-bin-*.tar.gz`: compiler-only artifact, does **not** imply `import ptodsl`
+
+If you are working from a source checkout and want the repository helper
+scripts (`scripts/sim_dsl.sh`, sample runners, direct CLI debugging) to pick up
+the local build/install tree, you may still source:
+
+```bash
+cd $PTOAS_REPO_ROOT
+source scripts/ptoas_env.sh
+```
 
 ---
 
@@ -64,6 +84,10 @@ want a non-editable source install.
 
 `ptodsl/examples/` contains self-contained `@pto.jit` examples that cover
 both compile-only and end-to-end launch flows.
+
+All examples below assume you already prepared one of the supported install
+flows above. They should not require manual `PYTHONPATH` edits or example-local
+`sys.path` bootstrap.
 
 ### Prerequisites for launch examples
 
@@ -76,6 +100,7 @@ Set up the environment in each new shell:
 
 ```bash
 cd $PTOAS_REPO_ROOT
+pip install -e . --no-build-isolation
 source scripts/ptoas_env.sh
 source "${ASCEND_HOME_PATH}/bin/setenv.bash"
 ```
@@ -87,7 +112,7 @@ setup above is still required.
 ### `tadd_launch.py`
 
 Single script: kernel definition, compile, launch, and accuracy check.
-Equivalent IR to the TileLang ST `tadd.pto` testcase.
+Equivalent IR to the bundled `tadd.pto` regression testcase.
 
 Compile-only:
 
@@ -166,6 +191,9 @@ python3 ptodsl/examples/flash_attention_softmax_launch.py
 
 ## Running regression checks
 
+Run these checks from an environment where `import ptodsl` already works via a
+supported `ptoas` install flow.
+
 ```bash
 cd $PTOAS_REPO_ROOT
 python3 ptodsl/tests/test_jit_compile.py
@@ -221,7 +249,7 @@ These PTODSL regressions are intentionally complementary:
 - `test_jit_compile.py` protects canonical authored compile probes and
   lowering contracts for the public PTODSL surface.
 - `test_flash_attention_demo_compile.py` protects the bundled
-  `ptodsl/examplesflash_attention_sketch.py` authored demo as a stable end-to-end
+  `ptodsl/examples/flash_attention_sketch.py` authored demo as a stable end-to-end
   contract.
 - `test_ptoas_frontend_verify.py` protects the handoff from PTODSL-emitted
   MLIR into standalone `ptoas` frontend verification.
