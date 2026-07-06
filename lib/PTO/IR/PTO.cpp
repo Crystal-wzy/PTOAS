@@ -15195,6 +15195,11 @@ LogicalResult ImportReservedBufferOp::verify() {
 }
 
 constexpr llvm::StringLiteral kFrontendPipeIdAttrName = "__pto.frontend_id";
+constexpr llvm::StringLiteral kPipePeerOwnerFuncAttrName =
+    "__pto.peer_owner_func";
+constexpr llvm::StringLiteral kPipePeerReserveNameAttrName =
+    "__pto.peer_reserve_name";
+constexpr llvm::StringLiteral kPipePeerDirMaskAttrName = "__pto.peer_dir_mask";
 
 struct FixpipeQuantStateResource
     : public SideEffects::Resource::Base<FixpipeQuantStateResource> {
@@ -15267,6 +15272,29 @@ static pto::AccPushEpilogueAttr getAccPushEpilogueFromInitOp(Operation *initOp) 
   return {};
 }
 
+static bool matchesLoweredFixpipePeerContract(Operation *initOp,
+                                              func::FuncOp expectedOwnerFunc,
+                                              StringRef expectedReserveName) {
+  if (!initOp || !isa<InitializeL2LPipeOp, InitializeL2G2LPipeOp>(initOp))
+    return false;
+
+  auto ownerAttr =
+      initOp->getAttrOfType<FlatSymbolRefAttr>(kPipePeerOwnerFuncAttrName);
+  auto reserveAttr =
+      initOp->getAttrOfType<StringAttr>(kPipePeerReserveNameAttrName);
+  auto dirMaskAttr =
+      initOp->getAttrOfType<IntegerAttr>(kPipePeerDirMaskAttrName);
+  if (!ownerAttr || !reserveAttr || !dirMaskAttr)
+    return false;
+
+  if (ownerAttr.getValue() != expectedOwnerFunc.getSymName() ||
+      reserveAttr.getValue() != expectedReserveName ||
+      dirMaskAttr.getInt() != 1)
+    return false;
+
+  return static_cast<bool>(getAccPushEpilogueFromInitOp(initOp));
+}
+
 static FailureOr<Operation *> lookupFrontendOrLoweredInitOpById(
     Operation *op, func::FuncOp funcOp, int32_t id);
 
@@ -15286,24 +15314,33 @@ lookupFixpipePeerConsumerInit(AicInitializePipeOp producerInit) {
     return failure();
 
   StringRef bufferName = importOp.getName();
-  AivInitializePipeOp matchedFrontendInit;
-  unsigned matchedFrontendInitCount = 0;
-  peerConsumerFunc.walk([&](AivInitializePipeOp candidate) {
-    if (!candidate.getC2vConsumerBuf())
-      return WalkResult::advance();
-    auto reserveOp = dyn_cast_or_null<ReserveBufferOp>(
-        candidate.getC2vConsumerBuf().getDefiningOp());
-    if (!reserveOp || reserveOp.getName() != bufferName) {
+  Operation *matchedInit = nullptr;
+  unsigned matchedInitCount = 0;
+  peerConsumerFunc.walk([&](Operation *candidate) {
+    if (auto aivInit = dyn_cast<AivInitializePipeOp>(candidate)) {
+      if (!aivInit.getC2vConsumerBuf())
+        return WalkResult::advance();
+      auto reserveOp = dyn_cast_or_null<ReserveBufferOp>(
+          aivInit.getC2vConsumerBuf().getDefiningOp());
+      if (!reserveOp || reserveOp.getName() != bufferName)
+        return WalkResult::advance();
+      matchedInit = candidate;
+      ++matchedInitCount;
       return WalkResult::advance();
     }
-    matchedFrontendInit = candidate;
-    ++matchedFrontendInitCount;
+
+    if (!matchesLoweredFixpipePeerContract(candidate, peerConsumerFunc,
+                                           bufferName))
+      return WalkResult::advance();
+
+    matchedInit = candidate;
+    ++matchedInitCount;
     return WalkResult::advance();
   });
 
-  if (matchedFrontendInitCount != 1)
+  if (matchedInitCount != 1)
     return failure();
-  return matchedFrontendInit.getOperation();
+  return matchedInit;
 }
 
 static FailureOr<Operation *>
@@ -15311,36 +15348,47 @@ lookupFixpipePeerProducerInit(AivInitializePipeOp consumerInit,
                               func::FuncOp peerProducerFunc,
                               StringRef bufferName,
                               func::FuncOp currentConsumerFunc) {
-  AicInitializePipeOp matchedFrontendInit;
-  unsigned matchedFrontendInitCount = 0;
-  peerProducerFunc.walk([&](AicInitializePipeOp candidate) {
-    if (!candidate.getC2vConsumerBuf())
+  Operation *matchedInit = nullptr;
+  unsigned matchedInitCount = 0;
+  peerProducerFunc.walk([&](Operation *candidate) {
+    if (auto aicInit = dyn_cast<AicInitializePipeOp>(candidate)) {
+      if (!aicInit.getC2vConsumerBuf())
+        return WalkResult::advance();
+
+      auto importOp = dyn_cast_or_null<ImportReservedBufferOp>(
+          aicInit.getC2vConsumerBuf().getDefiningOp());
+      if (!importOp)
+        return WalkResult::advance();
+
+      auto peerConsumerFunc =
+          lookupPeerFuncAcrossContainer(importOp.getOperation(),
+                                        importOp.getPeerFuncAttr());
+      if (importOp.getName() != bufferName ||
+          peerConsumerFunc != currentConsumerFunc)
+        return WalkResult::advance();
+
+      matchedInit = candidate;
+      ++matchedInitCount;
+      return WalkResult::advance();
+    }
+
+    if (!matchesLoweredFixpipePeerContract(candidate, currentConsumerFunc,
+                                           bufferName))
       return WalkResult::advance();
 
-    auto importOp = dyn_cast_or_null<ImportReservedBufferOp>(
-        candidate.getC2vConsumerBuf().getDefiningOp());
-    if (!importOp)
-      return WalkResult::advance();
-
-    auto peerConsumerFunc =
-        lookupPeerFuncAcrossContainer(importOp.getOperation(),
-                                      importOp.getPeerFuncAttr());
-    if (importOp.getName() != bufferName || peerConsumerFunc != currentConsumerFunc)
-      return WalkResult::advance();
-
-    matchedFrontendInit = candidate;
-    ++matchedFrontendInitCount;
+    matchedInit = candidate;
+    ++matchedInitCount;
     return WalkResult::advance();
   });
 
-  if (matchedFrontendInitCount != 1) {
+  if (matchedInitCount != 1) {
     consumerInit.emitOpError()
         << "expects peer producer function to contain a matching "
            "aic_initialize_pipe with the same consumer buffer contract";
     return failure();
   }
 
-  return matchedFrontendInit.getOperation();
+  return matchedInit;
 }
 
 static FailureOr<Operation *> lookupFrontendOrLoweredInitOpById(
@@ -16398,6 +16446,7 @@ LogicalResult AivInitializePipeOp::verify() {
     Operation *peerProducerInitOp = *peerProducerInitOr;
     auto peerProducerFrontendInit =
         dyn_cast<AicInitializePipeOp>(peerProducerInitOp);
+    std::optional<uint32_t> peerProducerId;
     if (peerProducerFrontendInit) {
       if (!peerProducerFrontendInit.getC2vConsumerBuf()) {
         return emitOpError()
@@ -16422,13 +16471,23 @@ LogicalResult AivInitializePipeOp::verify() {
                << "cannot find matching producer aic_initialize_pipe for buffer '"
                << bufferName << "' in peer function";
       }
+      peerProducerId = peerProducerFrontendInit.getId();
+    } else if (isa<InitializeL2LPipeOp, InitializeL2G2LPipeOp>(
+                   peerProducerInitOp)) {
+      auto frontendIdAttr =
+          peerProducerInitOp->getAttrOfType<IntegerAttr>(kFrontendPipeIdAttrName);
+      if (!frontendIdAttr) {
+        return emitOpError()
+               << "expects lowered peer producer fixpipe pipe to retain "
+               << kFrontendPipeIdAttrName;
+      }
+      peerProducerId = static_cast<uint32_t>(frontendIdAttr.getInt());
     }
-    if (!peerProducerFrontendInit) {
+    if (!peerProducerId) {
       return emitOpError()
              << "expects peer producer fixpipe contract to resolve to "
-                "frontend aic_initialize_pipe";
+                "frontend or lowered aic_initialize_pipe";
     }
-    uint32_t peerProducerId = peerProducerFrontendInit.getId();
 
     // Verify peer producer also has acc_push_epilogue
     auto peerAccPushEpilogue = getAccPushEpilogueFromInitOp(peerProducerInitOp);
@@ -16537,7 +16596,7 @@ LogicalResult AivInitializePipeOp::verify() {
 
     bool producerConsumerTypeMismatch = false;
     peerProducerFunc.walk([&](TPushToAivOp push) {
-      if (push.getId() != peerProducerId)
+      if (push.getId() != *peerProducerId)
         return WalkResult::advance();
       auto srcTileTy = dyn_cast<pto::TileBufType>(push.getTile().getType());
       if (!srcTileTy)
