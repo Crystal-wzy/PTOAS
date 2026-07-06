@@ -177,4 +177,8 @@ See `docs/designs/a2a3-allocator.md` for details.
 - **192 binary e2e** (f32/f16/i16 binary + bitwise + shift across dispatch-shape matrix, including `taddrelu`)
 - **60 unary e2e** (abs/relu/neg/exp/sqrt/rsqrt across 5 shapes × 2 dtypes)
 - **120 scalar binary e2e** (adds/muls/maxs/mins across 5 shapes × 3 scalars × 2 dtypes)
-- **Total confirmed elementwise hardware e2e tests: 426**
+- **Total confirmed elementwise hardware e2e tests: 372**
+
+The PTODSL hardware e2e suite runs the A3 target by default. A2 and A3 share
+the VPTO lowering pipeline, so this validates the A2/A3 lowering path unless
+future lowering behavior diverges between the targets.
