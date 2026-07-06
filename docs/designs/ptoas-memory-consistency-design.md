@@ -57,26 +57,22 @@ pto.cmo.cacheinvalid %partition_view
 
 `dcci` 是 cache maintenance 指令，不是 pipe drain，也不是 GM visibility fence。
 
-公开 AscendC 手册说明的 cache maintenance 接口是
-`DataCacheCleanAndInvalid<T, CacheLine, DcciDst>(...)`。其中：
+PTOAS 当前对齐 PTO-ISA 的写法，只生成 two-argument CCE builtin：
 
-- `CacheLine::SINGLE_CACHE_LINE` 表示只处理传入地址所在 cache line。
-- `CacheLine::ENTIRE_DATA_CACHE` 表示处理整个 Data Cache。
-- `DcciDst::CACHELINE_OUT` 表示保证 Data Cache 与 Global Memory 的一致性。
+```cpp
+dcci(addr, cache_line);
+```
 
-PTOAS EmitC 目前没有通过 AscendC tensor API 生成 `DataCacheCleanAndInvalid`，而是直接
-生成 CCE 低层 builtin `dcci(...)`。CANN 随包的 CCE builtin header 中对应的低层枚举是
-`cache_line_t` 和 `dcci_dst_t`，因此当前生成代码使用：
+其中 `cache_line_t::SINGLE_CACHE_LINE` 表示处理传入地址所在 cache line，
+`cache_line_t::ENTIRE_DATA_CACHE` 表示处理整个 Data Cache。
 
-- `cache_line_t::ENTIRE_DATA_CACHE` 表达 whole-cache 粒度。
-- `dcci_dst_t::CACHELINE_OUT` 表达 OUT 目标。
-
-也就是说，`DcciDst::CACHELINE_OUT` 是公开 AscendC API 层的手册名称，
-`dcci_dst_t::CACHELINE_OUT` 是 PTOAS 当前直接调用 CCE builtin 时使用的低层实现名称，
-不是对外暴露的 PTO IR 契约。
+公开 AscendC API 和部分底层 CCE 头文件还存在带 destination 参数的形式，例如
+`CACHELINE_OUT`。但是 PTO-ISA 主线的 `TNotify`、`TWait`、`TTest` 和 ready-queue
+实现都使用 two-argument `dcci`。因此本 PR 不把三参数 `dcci(..., CACHELINE_OUT)`
+作为 PTOAS 的生成代码契约，也不在 PTO IR 中暴露 destination 选择。
 
 当前 public IR `pto.cmo.cacheinvalid all #pto.address_space<gm>` 使用 two-argument
-whole-cache invalidate 形式：
+whole-cache 形式：
 
 ```cpp
 dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE);
@@ -86,11 +82,12 @@ dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE);
 stale cache line。
 
 本 PR 不暴露 `pto.cmo.clean`。原因是当前没有在 PTOAS 中确认可靠的 clean/writeback
-IR 语义和精确作用范围。历史 scalar GM store flush 路径会生成 whole-cache OUT 操作，
-现在对齐为 CCE 接口层常用写法：
+IR 语义和精确作用范围。历史 scalar GM store flush 路径保留已有 release 序列，
+但同样对齐 PTO-ISA，只使用 two-argument whole-cache `dcci`：
 
 ```cpp
-dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE, dcci_dst_t::CACHELINE_OUT);
+dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE);
+dsb((mem_dsb_t)0);
 ```
 
 这条路径是已有 EmitC scalar store flush 行为，不作为新的 public `pto.cmo.clean`
