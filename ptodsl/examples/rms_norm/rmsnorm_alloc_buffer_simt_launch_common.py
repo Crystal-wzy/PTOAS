@@ -11,23 +11,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-import sys
 
 import numpy as np
-
-
-if __package__ in {None, ""}:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        if (candidate / "ptodsl" / "__init__.py").exists():
-            sys.path.insert(0, str(candidate))
-            break
-    else:
-        raise RuntimeError(
-            "Unable to locate the PTODSL Python package root from "
-            "rmsnorm_alloc_buffer_simt_launch_common.py"
-        )
 
 
 from rmsnorm_alloc_buffer_simt import rmsnorm_4096_alloc_buffer_simt_context_kernel
