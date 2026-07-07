@@ -228,6 +228,45 @@ def TileBufType : TypeDef<PTO_Dialect, "TileBuf"> {
   }];
 }
 
+// =============================================================================
+// MultiTileBufType
+// =============================================================================
+// 对应 IR: !pto.multi_tile_buf<<slotType>, count=N>
+//
+// 表达一个"由 N 个物理 slot 组成"的逻辑 tile buffer。每个 slot 与
+// `slotType` 完全同构（同 shape / dtype / loc / valid / config）。该类型只
+// 能通过 `pto.alloc_multi_tile` 产生，通过 `pto.multi_tile_get [%k]` 取出
+// 第 k 个 slot 后转回普通 `tile_buf`，下游所有 op 仍然只见到 `tile_buf`。
+// =============================================================================
+def MultiTileBufType : TypeDef<PTO_Dialect, "MultiTileBuf"> {
+  let mnemonic = "multi_tile_buf";
+  let summary = "An array of N physical slots sharing one tile_buf shape";
+  let description = [{
+    A `multi_tile_buf` value owns `count` physically-distinct slots of an
+    inner `tile_buf` shape. The slot type is identical across all N slots;
+    only the underlying physical address differs.
+
+    Multi-buffer is opaque to all existing `tile_buf` ops: extracting a slot
+    via `pto.multi_tile_get` yields a regular `tile_buf` that can be passed
+    to any DMA / compute / view op unchanged. The slot index expression is
+    user-provided (constant or any SSA `index`); ptoas does not synthesize
+    `iv mod N` for users.
+  }];
+
+  let parameters = (ins
+    "mlir::pto::TileBufType":$slotType,
+    "uint32_t":$count
+  );
+
+  let hasCustomAssemblyFormat = 1;
+  let genVerifyDecl = 1;
+
+  let extraClassDeclaration = [{
+    /// Return the inner per-slot tile_buf type.
+    mlir::pto::TileBufType getTileBufType() const { return getSlotType(); }
+  }];
+}
+
 def EventIdArrayType : TypeDef<PTO_Dialect, "EventIdArray"> {
   let mnemonic = "eventid_array";
   let summary = "Manual-only local array for dynamic event ids";

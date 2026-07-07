@@ -329,13 +329,114 @@ def AllocTileOp : PTO_Op<"alloc_tile", [AttrSizedOperandSegments]> {
 
   let assemblyFormat = [{
     (`addr` `=` $addr^)?
-    (`valid_row` `=` $valid_row^)? 
+    (`valid_row` `=` $valid_row^)?
     (`valid_col` `=` $valid_col^)?
      attr-dict `:` qualified(type($result))
   }];
 
   let extraClassDeclaration = [{
     ::mlir::LogicalResult verify();
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// Multi-buffer tile allocation and slot selection
+//===----------------------------------------------------------------------===//
+//
+// `pto.alloc_multi_tile` declares an N-slot logical tile buffer. The actual
+// physical allocation of N slots is performed by PTOPlanMemory once the op
+// has been lowered to `memref.alloc {pto.multi_buffer = N : i32}` by
+// PTOViewToMemref.
+//
+// `pto.multi_tile_get` is the *only* way to consume a `multi_tile_buf`: it
+// returns a regular `tile_buf` view onto the chosen slot. The slot index
+// may be a constant or any SSA `index` value; PTOAS does not synthesize
+// `iv mod N` automatically -- the user expression IS the slot selector.
+//
+// `pto.slot_marker` is an internal op materialized by PTOViewToMemref to
+// thread the slot SSA from `multi_tile_get` through the memref layer down
+// to PlanMemory / sync analysis. It is not intended for direct frontend
+// use.
+
+def AllocMultiTileOp : PTO_Op<"alloc_multi_tile", [AttrSizedOperandSegments]> {
+  let summary = "Allocate an N-slot multi-buffer tile";
+  let description = [{
+    Produces a `!pto.multi_tile_buf<S, count=N>` value owning N physical
+    slots of the inner tile shape `S`.
+
+    In the default pipeline (`--pto-level=level1|level2`) no `addr` operand
+    is given and the physical addresses of the N slots are decided by
+    PTOPlanMemory.
+
+    Under `--pto-level=level3` the local memory is owned by the upper-level
+    caller and PTOPlanMemory does not run, so an explicit base address
+    operand `$addr` is required (mirroring `pto.alloc_tile`). The N slots
+    are laid out contiguously as the region `[addr, addr + N * slotBytes)`
+    with slot `k` at `addr + k * slotBytes`, where `slotBytes` is the byte
+    footprint of one slot tile (`product(shape) * element_size`). The caller
+    is responsible for having reserved `N * slotBytes` bytes at `addr`.
+
+    `valid_row` / `valid_col` operands follow the same semantics as
+    `pto.alloc_tile`: required when the inner tile's valid shape is `?`,
+    absent when both valid dims are static.
+  }];
+
+  let arguments = (ins
+    Optional<I64>:$addr,
+    Optional<Index>:$valid_row,
+    Optional<Index>:$valid_col
+  );
+
+  let results = (outs MultiTileBufType:$result);
+
+  let assemblyFormat = [{
+    (`addr` `=` $addr^)?
+    (`valid_row` `=` $valid_row^)?
+    (`valid_col` `=` $valid_col^)?
+    attr-dict `:` qualified(type($result))
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::LogicalResult verify();
+  }];
+}
+
+def MultiTileGetOp : PTO_Op<"multi_tile_get", [
+    Pure,
+    ViewLikeOpInterface
+  ]> {
+  let summary = "Pick one physical slot of a multi_tile_buf";
+  let description = [{
+    Returns a single-slot view of a `multi_tile_buf`. The result `tile_buf`
+    must equal the source's per-slot type; the only thing this op selects
+    is which of the N physical slots is referred to.
+
+    The slot index is an `index` value in `[0, count)`. If it is a constant,
+    the verifier checks the range. If it is a runtime SSA value, downstream
+    sync analysis treats this use as a slot-indexed dynamic access; ptoas
+    does NOT rewrite the user expression into `iv mod N`.
+
+    This op is metadata-only (no data movement); the lowering merely
+    annotates the underlying memref view with the slot index for PlanMemory
+    / sync / EnableBufferSelect to consume.
+  }];
+
+  let arguments = (ins
+    MultiTileBufType:$source,
+    Index:$slot
+  );
+
+  let results = (outs TileBufType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source `[` $slot `]` attr-dict
+    `:` qualified(type($source)) `->` qualified(type($result))
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::Value getViewSource() { return getSource(); }
   }];
 }
 
@@ -1418,14 +1519,53 @@ def PointerCastOp : PTO_Op<"pointer_cast", [AttrSizedOperandSegments, Pure]> {
       if (vRow) $_state.addOperands(vRow);
       if (vCol) $_state.addOperands(vCol);
       if (config) $_state.addAttribute("config", config);
-      
+
       int32_t addrsSize = addrs.size();
       int32_t vRowSize = vRow ? 1 : 0;
       int32_t vColSize = vCol ? 1 : 0;
-      $_state.addAttribute("operandSegmentSizes", 
+      $_state.addAttribute("operandSegmentSizes",
         $_builder.getDenseI32ArrayAttr({addrsSize, vRowSize, vColSize}));
     }]>
   ];
+
+  let extraClassDeclaration = [{
+    ::mlir::LogicalResult verify();
+  }];
+}
+
+def SlotMarkerOp : PTO_Op<"slot_marker", [
+    Pure,
+    ViewLikeOpInterface,
+    AllTypesMatch<["source", "result"]>
+  ]> {
+  let summary = "Tag a memref view as referring to one slot of a multi_tile_buf";
+  let description = [{
+    Internal op materialized by `PTOViewToMemref` while lowering
+    `pto.multi_tile_get`. It carries the slot SSA index through the memref
+    layer so that PlanMemory, sync analysis (InsertSync / GraphSyncSolver),
+    and the buffer-select lowering pass can identify which physical slot
+    this memref reference touches.
+
+    The op is metadata-only (no data movement, no extra address arithmetic);
+    its result memref aliases the source memref byte-for-byte. Frontends do
+    not produce this op directly -- use `pto.multi_tile_get` instead.
+  }];
+
+  let arguments = (ins
+    AnyMemRef:$source,
+    Index:$slot
+  );
+
+  let results = (outs AnyMemRef:$result);
+
+  let assemblyFormat = [{
+    $source `[` $slot `]` attr-dict
+    `:` qualified(type($source)) `->` qualified(type($result))
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::Value getViewSource() { return getSource(); }
+  }];
 }
 
 // =============================================================================
@@ -2862,13 +3002,7 @@ def MGatherOp : PTO_TOp<"mgather", [
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $mem `,` $idx (`,` $scratch^)? `:`
-        type($mem) `,` type($idx) (`,` type($scratch)^)? `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     static StringRef getIntrinsicName() { return "MGATHER"; }
@@ -3076,12 +3210,7 @@ def MScatterOp : PTO_TOp<"mscatter", [
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `,` $idx `:` qualified(type($src)) `,` type($idx) `)`
-    `outs` `(` $mem `:` type($mem) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     static StringRef getIntrinsicName() { return "MSCATTER"; }
@@ -4321,7 +4450,10 @@ def TExtractOp : PTO_TOp<"textract", [
     PTODpsType:$src,
     Index:$indexRow,
     Index:$indexCol,
-    PTODpsType:$dst
+    Optional<I64>:$preQuantScalar,
+    PTODpsType:$dst,
+    OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
+    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode
   );
 
   let results = (outs);
@@ -4329,7 +4461,7 @@ def TExtractOp : PTO_TOp<"textract", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $src `,` $indexRow `,` $indexCol `:` qualified(type($src)) `,` type($indexRow) `,` type($indexCol) `)`
+    `ins` `(` $src `,` $indexRow `,` $indexCol (`,` $preQuantScalar^)? `:` qualified(type($src)) `,` type($indexRow) `,` type($indexCol) (`,` type($preQuantScalar)^)? `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
@@ -4407,7 +4539,9 @@ def TExtractFPOp : PTO_TOp<"textract_fp", [
     PTODpsType:$fp,
     Index:$indexRow,
     Index:$indexCol,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
+    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode
   );
 
   let results = (outs);
@@ -4452,8 +4586,8 @@ def TInsertOp : PTO_TOp<"tinsert", [
 
   let assemblyFormat = [{
     `ins` `(` $src `,` $indexRow `,` $indexCol `:` qualified(type($src)) `,` type($indexRow) `,` type($indexCol)
-    (`,` $fp^ `:` qualified(type($fp)))?
-    (`,` $preQuantScalar^ `:` type($preQuantScalar))?
+    (`fp` $fp^ `:` qualified(type($fp)))?
+    (`pre_quant` $preQuantScalar^ `:` type($preQuantScalar))?
     `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
@@ -5446,7 +5580,6 @@ def TQuantOp : PTO_TOp<"tquant", [
   let results = (outs);
 
   let hasVerifier = 1;
-
   let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
@@ -5471,6 +5604,9 @@ def TQuantMxOp : PTO_TOp<"tquant.mx", [
       pto.tquant.mx ins(%src : <src_type>)
                     outs(%dst, %exp, %max, %scaling : <dst_type>, <exp_type>, <max_type>, <scaling_type>)
                     {quant_type = #pto<quant_type MXFP8>}
+      pto.tquant.mx ins(%src : <src_type>)
+                    outs(%dst, %exp, %max, %scaling, %exp_zz : <dst_type>, <exp_type>, <max_type>, <scaling_type>, <exp_type>)
+                    {quant_type = #pto<quant_type MXFP8>, storeMode = #pto<vec_store_mode nz>}
   }];
 
   let arguments = (ins
@@ -5479,24 +5615,21 @@ def TQuantMxOp : PTO_TOp<"tquant.mx", [
     PTODpsType:$exp,
     PTODpsType:$max,
     PTODpsType:$scaling,
-    PTO_QuantTypeAttr:$quant_type
+    Optional<PTODpsType>:$exp_zz,
+    PTO_QuantTypeAttr:$quant_type,
+    DefaultValuedAttr<PTO_QuantScaleAlgAttr, "::mlir::pto::QuantScaleAlg::OCP">:$quantScaleAlg,
+    OptionalAttr<PTO_VecStoreModeAttr>:$storeMode
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `:` qualified(type($src)) `)`
-    `outs` `(` $dst `,` $exp `,` $max `,` $scaling `:` qualified(type($dst)) `,`
-                  qualified(type($exp)) `,` qualified(type($max)) `,` qualified(type($scaling)) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() {
-      return ::mlir::MutableOperandRange(getOperation(), 1, 4);
+      return ::mlir::MutableOperandRange(getOperation(), 1, getExpZz() ? 5 : 4);
     }
   }];
 }
@@ -5856,6 +5989,7 @@ def TRowExpandAddOp: PTO_TOp<"trowexpandadd", [
   let results = (outs);
 
   let hasVerifier = 1;
+
   let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
@@ -6504,8 +6638,6 @@ def TStoreFPOp: PTO_TOp<"tstore_fp", [
     attr-dict
   }];
   let extraClassDeclaration = [{
-    // TStoreFPOp always transfers ACC data to GM through the FIXPIPE
-    // write-back path (same pipe used by other ACC-store variants).
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_FIX; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
@@ -6729,21 +6861,24 @@ def TPrintOp: PTO_TOp<"tprint", [
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
-  let summary = "TPRINT: Print the contents of a Tile or GlobalTensor for debugging purposes directly from device code..";
+  let summary = "TPRINT: Print the contents of a Tile or GlobalTensor for debugging purposes directly from device code.";
+  let description = [{
+    pto-isa overloads support `TPRINT(src)` and `TPRINT<Format>(src, tmp)`.
+    The optional tmp operand is used when printing Mat/Acc tiles through a
+    scratch GlobalTensor, while Vec tiles and GlobalTensors can be printed
+    without tmp.
+  }];
 
   let arguments = (ins
     PTODpsType:$src,
-    DefaultValuedOptionalAttr<I32Attr, "0">:$printFormat
+    Optional<PTODpsType>:$tmp,
+    OptionalAttr<PTO_PrintFormatAttr>:$printFormat
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `:` qualified(type($src)) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }

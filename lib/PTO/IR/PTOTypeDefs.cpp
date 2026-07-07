@@ -8,6 +8,7 @@
 
 //===- PTOTypeDefs.cpp --------------------------------------------*- C++ -*-===//
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOMultiBuffer.h"
 #include "mlir/IR/DialectImplementation.h"
 #include <limits>
 #include <mutex>
@@ -294,9 +295,16 @@ static LogicalResult parseLegacyTileBufFields(AsmParser &parser,
   return success();
 }
 
+// When `outMultiCount` is non-null, the parser is willing to consume an
+// optional trailing `, count=N` clause as belonging to a wrapping
+// `multi_tile_buf` instead of treating it as an unknown tile_buf field. The
+// extracted N is written into `*outMultiCount` and the loop exits without
+// consuming additional fields. When `outMultiCount` is null, `count` is
+// treated as an unknown key (preserving the original tile_buf semantics).
 static LogicalResult parseCompactTileBufFields(AsmParser &parser,
                                                StringRef firstToken,
-                                               ParsedTileBufFields &fields) {
+                                               ParsedTileBufFields &fields,
+                                               uint32_t *outMultiCount = nullptr) {
   fields.locStr = firstToken.str();
 
   if (failed(parser.parseComma()))
@@ -428,6 +436,14 @@ static LogicalResult parseCompactTileBufFields(AsmParser &parser,
       if (failed(parseTileBufUInt32Value(parser, key, fields.compactInt)))
         return failure();
       continue;
+    }
+
+    if (outMultiCount && key == "count") {
+      // Tail field belonging to a wrapping multi_tile_buf<...>. Consume the
+      // integer and return success; the wrapper finishes the parse.
+      if (failed(parseTileBufUInt32Value(parser, key, *outMultiCount)))
+        return failure();
+      return success();
     }
 
     parser.emitError(parser.getCurrentLocation(),
@@ -682,4 +698,113 @@ void mlir::pto::TileBufType::print(mlir::AsmPrinter &printer) const {
     printer << ", compact=" << stringifyCompactModeInt(cfg.getCompactMode());
 
   printer << ">";
+}
+
+// ---- MultiTileBufType custom asm ----
+//
+// Syntax:
+//
+//   Verbose form:
+//     !pto.multi_tile_buf<!pto.tile_buf<...>, count=N>
+//
+//   Compact (sugar) form:
+//     !pto.multi_tile_buf<vec, 16x16xf16, count=N>
+//
+// In the compact form the per-slot tile_buf is built from the same compact
+// syntax as `!pto.tile_buf<vec, ...>`, followed by a mandatory `count=N`.
+
+LogicalResult MultiTileBufType::verify(
+    function_ref<InFlightDiagnostic()> emitError,
+    mlir::pto::TileBufType slotType, uint32_t count) {
+  if (!slotType) {
+    return emitError() << "multi_tile_buf slot type must be non-null";
+  }
+  if (count < kPtoMultiBufferMinNum) {
+    return emitError() << "multi_tile_buf count must be >= "
+                       << kPtoMultiBufferMinNum << " (got " << count << ")";
+  }
+  if (count > kPtoMultiBufferMaxNum) {
+    return emitError() << "multi_tile_buf count must be <= "
+                       << kPtoMultiBufferMaxNum << " (got " << count << ")";
+  }
+  return success();
+}
+
+namespace {
+// Parse a trailing `, count = N` clause. The caller has already parsed the
+// per-slot tile_buf description; we must now consume the count and the
+// closing `>`.
+static LogicalResult parseMultiTileBufCount(AsmParser &parser,
+                                            uint32_t &count) {
+  if (failed(parser.parseComma()))
+    return failure();
+  if (failed(parser.parseKeyword("count")))
+    return failure();
+  if (failed(parser.parseEqual()))
+    return failure();
+  uint32_t parsed = 0;
+  if (failed(parseTileBufUInt32Value(parser, "count", parsed)))
+    return failure();
+  count = parsed;
+  return success();
+}
+} // namespace
+
+Type MultiTileBufType::parse(AsmParser &parser) {
+  if (failed(parser.parseLess()))
+    return Type();
+
+  MLIRContext *ctx = parser.getContext();
+  TileBufType slotType;
+  uint32_t count = 0;
+  bool countConsumedByCompact = false;
+
+  // Verbose form: an explicit `!pto.tile_buf<...>` type token comes next.
+  // Compact form: a bare keyword (loc such as `vec`/`mat`/...) comes next.
+  Type maybeType;
+  OptionalParseResult typeRes = parser.parseOptionalType(maybeType);
+  if (typeRes.has_value()) {
+    if (failed(*typeRes))
+      return Type();
+    slotType = llvm::dyn_cast<TileBufType>(maybeType);
+    if (!slotType) {
+      parser.emitError(parser.getCurrentLocation(),
+                       "multi_tile_buf slot type must be `!pto.tile_buf<...>`");
+      return Type();
+    }
+  } else {
+    // Compact form: parse via the same compact path used by tile_buf, but
+    // tell it to consume the trailing `, count=N` on our behalf.
+    std::string firstToken;
+    if (failed(parser.parseKeywordOrString(&firstToken)))
+      return Type();
+
+    ParsedTileBufFields fields;
+    if (failed(parseCompactTileBufFields(parser, firstToken, fields, &count)))
+      return Type();
+
+    Type built = buildTileBufType(parser, fields);
+    if (!built)
+      return Type();
+    slotType = llvm::cast<TileBufType>(built);
+    countConsumedByCompact = (count != 0);
+  }
+
+  if (!countConsumedByCompact) {
+    if (failed(parseMultiTileBufCount(parser, count)))
+      return Type();
+  }
+
+  if (failed(parser.parseGreater()))
+    return Type();
+
+  return getChecked(
+      [&]() { return parser.emitError(parser.getNameLoc()); }, ctx, slotType,
+      count);
+}
+
+void MultiTileBufType::print(AsmPrinter &printer) const {
+  printer << "<";
+  printer.printType(getSlotType());
+  printer << ", count=" << getCount() << ">";
 }

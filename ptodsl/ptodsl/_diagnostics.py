@@ -164,6 +164,75 @@ def kernel_module_launch_error(function_name: str | None = None) -> RuntimeError
     )
 
 
+def jit_source_entry_false_error(
+    source: object,
+    *,
+    function_name: str | None = None,
+) -> TypeError:
+    """Return one diagnostic for unsupported ``@pto.jit(entry=False, source=...)``."""
+    target = "@pto.jit(source=...) kernel"
+    if function_name:
+        target = f"@pto.jit(source=...) kernel {function_name!r}"
+    return TypeError(
+        f"{target} does not support entry=False while source={source!r}. "
+        "Source-backed JIT is currently limited to launchable entry kernels."
+    )
+
+
+def jit_source_constexpr_error(
+    name: str,
+    source: object,
+    *,
+    function_name: str | None = None,
+) -> TypeError:
+    """Return one diagnostic for unsupported source-backed ``pto.const_expr`` params."""
+    target = "@pto.jit(source=...) kernel"
+    if function_name:
+        target = f"@pto.jit(source=...) kernel {function_name!r}"
+    return TypeError(
+        f"{target} does not support keyword-only pto.const_expr parameter '{name}' while source={source!r}. "
+        "Source-backed JIT currently loads a fixed PTO IR file and does not template or specialize source text."
+    )
+
+
+def jit_source_compile_constexpr_error(
+    names: list[str] | tuple[str, ...],
+    source: object,
+    *,
+    function_name: str | None = None,
+) -> TypeError:
+    """Return one diagnostic for ``.compile(...)`` constexpr bindings in source mode."""
+    target = "@pto.jit(source=...) kernel"
+    if function_name:
+        target = f"@pto.jit(source=...) kernel {function_name!r}"
+    joined = ", ".join(names)
+    return TypeError(
+        f"{target} does not accept .compile(...) constexpr binding(s) {joined} while source={source!r}. "
+        "Source-backed JIT currently loads a fixed PTO IR file and does not template or specialize source text."
+    )
+
+
+def jit_source_file_error(source: object, resolved_path: object, reason: str) -> FileNotFoundError:
+    """Return one diagnostic for source path resolution/loading failures."""
+    return FileNotFoundError(
+        f"@pto.jit(source={source!r}) could not load PTO IR source file {str(resolved_path)!r}: {reason}"
+    )
+
+
+def jit_source_entry_error(source_path: object, entry_name: str, reason: str) -> TypeError:
+    """Return one diagnostic for source entry selection failures."""
+    return TypeError(
+        f"@pto.jit(source=...) could not bind entry {entry_name!r} in {str(source_path)!r}: {reason}"
+    )
+
+
+def jit_source_abi_error(source_path: object, entry_name: str, reason: str) -> TypeError:
+    """Return one diagnostic for source ABI verification failures."""
+    return TypeError(
+        f"@pto.jit(source=...) ABI mismatch for entry {entry_name!r} in {str(source_path)!r}: {reason}"
+    )
+
+
 def jit_keyword_only_non_constexpr_error(name: str, annotation: object) -> TypeError:
     """Return one diagnostic for keyword-only params that are not ``pto.const_expr``."""
     return TypeError(
@@ -269,6 +338,15 @@ def illegal_inline_subkernel_placement_error(role: str, outer_role: str | None) 
     return RuntimeError(
         f"inline pto.{role}() may only be used from the top-level @pto.jit body; "
         f"nested use inside @pto.{outer_role} is not part of the PTODSL layer contract."
+    )
+
+
+def subkernel_kernel_kind_mismatch_error(role: str, kernel_kind: str) -> RuntimeError:
+    """Return one diagnostic for mixing explicit @pto.jit kernel kind with the opposite subkernel kind."""
+    return RuntimeError(
+        f"@pto.{role} cannot be lowered inside an explicit @pto.jit(kernel_kind={kernel_kind!r}) "
+        "module. Remove the explicit kernel_kind so PTOAS can split cube/vector sections, "
+        "or keep subkernel scopes in the same physical kind."
     )
 
 
@@ -419,6 +497,12 @@ __all__ = [
     "kernel_module_compile_error",
     "kernel_module_launch_error",
     "kernel_module_return_value_error",
+    "jit_source_abi_error",
+    "jit_source_compile_constexpr_error",
+    "jit_source_constexpr_error",
+    "jit_source_entry_false_error",
+    "jit_source_entry_error",
+    "jit_source_file_error",
     "invalid_jit_mode_error",
     "invalid_jit_backend_error",
     "jit_legacy_tensor_spec_helper_error",
@@ -428,6 +512,7 @@ __all__ = [
     "subkernel_host_tensor_boundary_error",
     "subkernel_illegal_annotation_error",
     "subkernel_illegal_parameter_kind_error",
+    "subkernel_kernel_kind_mismatch_error",
     "subkernel_missing_annotation_error",
     "subkernel_signature_boundary_error",
     "tile_row_alignment_error",

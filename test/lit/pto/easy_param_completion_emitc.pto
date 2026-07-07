@@ -44,9 +44,9 @@ module {
     return
   }
 
-  func.func @tprint_with_format() attributes {pto.entry} {
+  func.func @tprint_basic() attributes {pto.entry} {
     %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    pto.tprint ins(%src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) {printFormat = 1 : i32}
+    pto.tprint ins(%src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     return
   }
 
@@ -56,4 +56,4 @@ module {
 // A3: TROWEXPANDADD({{.*}}, {{.*}}, {{.*}}, {{.*}})
 // A3: MGATHER<pto::Coalesce::Elem, pto::GatherOOB::Zero>({{.*}}, {{.*}}, {{.*}})
 // A3: MSCATTER<pto::Coalesce::Elem, pto::ScatterAtomicOp::Add, pto::ScatterOOB::Skip>({{.*}}, {{.*}}, {{.*}})
-// A3: TPRINT<pto::PrintFormat::Width8_Precision2>({{.*}})
+// A3: TPRINT({{.*}})

@@ -12,8 +12,13 @@ from __future__ import annotations
 import inspect
 
 from ._ast_rewrite import rewrite_jit_function
-from ._diagnostics import kernel_module_compile_error, kernel_module_launch_error
+from ._diagnostics import (
+    jit_source_compile_constexpr_error,
+    kernel_module_compile_error,
+    kernel_module_launch_error,
+)
 from ._runtime.launch import LaunchHandle, parse_launch_spec
+from ._source_loader import SourceModuleLoader
 from ._tracing import ModuleArtifact, SignatureTracingRuntime
 
 
@@ -89,6 +94,8 @@ class KernelCompiler:
     def compile(self, **constexpr_bindings):
         if self._module_spec.entry is False:
             raise kernel_module_compile_error(self._py_name)
+        if self._module_spec.jit_source is not None:
+            return self._compile_source_backed(**constexpr_bindings)
         normalized_bindings = self._kernel_signature.bind_constexpr_bindings(constexpr_bindings)
         kernel_identity = self._kernel_identity
         if self._ast_rewrite:
@@ -117,6 +124,36 @@ class KernelCompiler:
             specialization_key=specialization_key,
             constexpr_bindings=normalized_bindings,
             module_factory=runtime.build_module,
+            module_spec=self._module_spec,
+            kernel_signature=self._kernel_signature,
+        )
+        compiled.build()
+        self._compiled_cache[specialization_key] = compiled
+        return compiled
+
+    def _compile_source_backed(self, **constexpr_bindings):
+        if constexpr_bindings:
+            raise jit_source_compile_constexpr_error(
+                tuple(sorted(constexpr_bindings)),
+                self._module_spec.jit_source,
+                function_name=self._module_spec.function_name,
+            )
+
+        loader = SourceModuleLoader(self._module_spec, self._kernel_signature)
+        specialization_key = self._kernel_signature.specialization_key(
+            loader.cache_identity(),
+            {},
+        )
+
+        cached = self._compiled_cache.get(specialization_key)
+        if cached is not None:
+            return cached
+
+        compiled = CompiledKernelHandle(
+            self._py_name,
+            specialization_key=specialization_key,
+            constexpr_bindings={},
+            module_factory=loader.build_module,
             module_spec=self._module_spec,
             kernel_signature=self._kernel_signature,
         )

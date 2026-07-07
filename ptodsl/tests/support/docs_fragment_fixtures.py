@@ -369,6 +369,27 @@ FRAGMENT_FIXTURES = {
         assert record.marshaled_arg_count == 4
         """
     ),
+    "launch.source_backed_tadd": _fixture(
+        f"""
+        grid = 2
+        stream = object()
+        A = 0x1000
+        B = 0x2000
+        O = 0x3000
+        numel = 128
+
+        {SNIPPET_PLACEHOLDER}
+
+        assert compiled.ir_function_name == "tadd_entry"
+        assert compiled.build_metadata()["source_path"].endswith("kernels/tadd_entry.pto")
+        assert len(PTODSL_DOC_LAUNCH_RECORDS) == 1
+        record = PTODSL_DOC_LAUNCH_RECORDS[0]
+        assert record.grid == grid
+        assert record.stream is stream
+        assert record.args == (A, B, O, numel)
+        assert record.marshaled_arg_count == 4
+        """
+    ),
     "launch.mat_add_wrapper": _fixture(
         f"""
         import numpy as np

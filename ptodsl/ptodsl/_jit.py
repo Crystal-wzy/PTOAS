@@ -15,6 +15,8 @@ from collections.abc import Mapping
 from ._diagnostics import (
     invalid_jit_backend_error,
     invalid_jit_mode_error,
+    jit_source_constexpr_error,
+    jit_source_entry_false_error,
     kernel_module_launch_error,
 )
 from ._kernel_compilation import CompiledKernelHandle, KernelCompiler
@@ -32,6 +34,15 @@ from mlir.ir import InsertionPoint
 _MODULE_ATTRS = ("pto.target_arch",)
 _SUPPORTED_FRONTEND_OPTION_KEYS = {"ast_rewrite", "rewrite_part", "dump_rewritten_source"}
 _SUPPORTED_REWRITE_PARTS = {"control_flow"}
+_DEFAULT_KERNEL_KIND = "vector"
+
+
+class _DefaultKernelKindSentinel:
+    def __repr__(self) -> str:
+        return repr(_DEFAULT_KERNEL_KIND)
+
+
+_DEFAULT_KERNEL_KIND_SENTINEL = _DefaultKernelKindSentinel()
 
 
 def _normalize_mode(mode: str, *, fn=None) -> str:
@@ -162,13 +173,14 @@ def jit(
     name=None,
     *,
     target: str = "a5",
-    kernel_kind: str = "vector",
+    kernel_kind: str = _DEFAULT_KERNEL_KIND_SENTINEL,
     backend: str = "vpto",
     entry: bool = True,
     mode: str = "auto",
     insert_sync: bool | None = None,
     ast_rewrite: bool | None = None,
     frontend_options: Mapping | None = None,
+    source: str | None = None,
 ):
     """
     Decorator that wraps a Python function as a PTODSL JIT kernel template.
@@ -177,10 +189,10 @@ def jit(
     ----------
     name:        IR function name (defaults to the Python function name).
     target:      Target architecture string, e.g. ``"a5"``.
-    kernel_kind: authored default physical kind, used for native build selection
-                 and VPTO authoring intent. PTODSL now expresses physical regions
-                 through ``pto.section.vector/cube`` instead of child-module
-                 ``pto.kernel_kind`` attributes.
+    kernel_kind: optional authored physical kind, used for native build selection
+                 and explicit single-kind VPTO authoring intent. When omitted,
+                 PTODSL keeps the historical vector default while allowing
+                 subkernel sections to express mixed cube/vector regions.
     backend:     ``"vpto"`` or ``"emitc"`` – records the intended backend.
     entry:       ``True`` for launchable kernel entries, ``False`` for helpers.
     mode:        ``"auto"`` or ``"explicit"`` – feeds child compile policy.
@@ -195,6 +207,11 @@ def jit(
     frontend_options:
                  Reserved structured frontend options. Currently supports
                  ``ast_rewrite`` and ``rewrite_part={"control_flow"}``.
+    source:
+                 Optional filesystem path to a PTO IR source file. When
+                 provided, PTODSL keeps the Python signature as the host ABI
+                 declaration but loads the kernel implementation from the
+                 source file instead of tracing the Python body.
 
     The decorated function is replaced by a :class:`KernelHandle` that:
 
@@ -214,17 +231,31 @@ def jit(
         kernel_signature = parse_jit_kernel_signature(fn, entry=entry)
         normalized_mode = _normalize_mode(mode, fn=fn)
         normalized_backend = _normalize_backend(backend, fn=fn)
+        if source is not None:
+            if not isinstance(source, str):
+                raise TypeError("@pto.jit source must be a filesystem path string when provided")
+            if entry is False:
+                raise jit_source_entry_false_error(source, function_name=fn_name)
+            if kernel_signature.constexpr_parameters:
+                raise jit_source_constexpr_error(
+                    kernel_signature.constexpr_parameters[0].name,
+                    source,
+                    function_name=fn_name,
+                )
         source_file = None
         try:
             source_file = inspect.getsourcefile(fn) or inspect.getfile(fn)
         except (OSError, TypeError):
             source_file = None
+        kernel_kind_explicit = kernel_kind is not _DEFAULT_KERNEL_KIND_SENTINEL
+        effective_kernel_kind = kernel_kind if kernel_kind_explicit else _DEFAULT_KERNEL_KIND
         compiler = KernelCompiler(
             fn.__name__,
             KernelModuleSpec(
                 function_name=fn_name,
                 target_arch=target,
-                kernel_kind=kernel_kind,
+                kernel_kind=effective_kernel_kind,
+                kernel_kind_explicit=kernel_kind_explicit,
                 backend=normalized_backend,
                 entry=entry,
                 mode=normalized_mode,
@@ -232,6 +263,7 @@ def jit(
                 module_style=ModuleStyle.BACKEND_PARTITIONED,
                 source_file=source_file,
                 source_line=getattr(fn.__code__, "co_firstlineno", None),
+                jit_source=source,
             ),
             kernel_signature,
             fn,
@@ -287,6 +319,10 @@ class KernelHandle(ModuleArtifact):
             self._compiler._kernel_identity,
             module_spec.function_name,
             module_spec.entry,
+            module_spec.backend,
+            module_spec.mode,
+            module_spec.kernel_kind,
+            module_spec.kernel_kind_explicit,
         )
 
     def _build_default_module(self):

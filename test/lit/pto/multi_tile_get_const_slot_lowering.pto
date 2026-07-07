@@ -1,0 +1,66 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --mlir-print-ir-after=pto-view-to-memref %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s --check-prefix=PLAN
+// RUN: ptoas --mlir-print-ir-after=pto-resolve-buffer-select %s 2>&1 1>/dev/null | FileCheck %s --check-prefix=SELECT
+
+// Verifies the full multi-buffer pipeline for constant slots:
+//   1. PTOViewToMemref lowers `alloc_multi_tile` to `memref.alloc` with the
+//      `pto.multi_buffer = N : i32` attribute, and `multi_tile_get [%k]` to
+//      `pto.slot_marker` carrying the constant slot SSA.
+//   2. PTOPlanMemory reserves N physical addresses and emits a multi-
+//      address `pto.pointer_cast(addr0, addr1)`.
+//   3. PTOResolveBufferSelect lowers each `slot_marker` to a single-
+//      address `pto.pointer_cast(addrK)` -- one per slot use.
+
+module {
+  func.func @const_slot_two_buffers(
+      %gm0 : memref<16x16xf16, #pto.address_space<gm>>,
+      %gm1 : memref<16x16xf16, #pto.address_space<gm>>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+
+    %mb = pto.alloc_multi_tile
+        : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+
+    %s0 = pto.multi_tile_get %mb[%c0]
+        : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+       -> !pto.tile_buf<vec, 16x16xf16>
+    %s1 = pto.multi_tile_get %mb[%c1]
+        : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+       -> !pto.tile_buf<vec, 16x16xf16>
+
+    pto.tload ins(%gm0 : memref<16x16xf16, #pto.address_space<gm>>)
+              outs(%s0  : !pto.tile_buf<vec, 16x16xf16>)
+    pto.tload ins(%gm1 : memref<16x16xf16, #pto.address_space<gm>>)
+              outs(%s1  : !pto.tile_buf<vec, 16x16xf16>)
+    return
+  }
+}
+
+// CHECK: IR Dump After PTOViewToMemref
+// CHECK-LABEL: func.func @const_slot_two_buffers
+// CHECK: memref.alloc() {pto.multi_buffer = 2 : i32}
+// CHECK: pto.slot_marker %{{.*}}[%c0
+// CHECK: pto.slot_marker %{{.*}}[%c1
+
+// Stage 2 -- PlanMemory: two physical slots reserved -> 2-addr pointer_cast.
+// PLAN: IR Dump After PlanMemory
+// PLAN-LABEL: func.func @const_slot_two_buffers
+// PLAN: pto.pointer_cast({{.*}}, {{.*}})
+// PLAN: pto.slot_marker
+
+// Stage 3 -- ResolveBufferSelect: each slot_marker becomes a single-addr
+// pointer_cast; original 2-addr pointer_cast remains as alloc anchor.
+// SELECT: IR Dump After PTOResolveBufferSelect
+// SELECT-LABEL: func.func @const_slot_two_buffers
+// SELECT: %[[ANCHOR:.*]] = pto.pointer_cast(%{{.*}}, %{{.*}})
+// SELECT-NOT: pto.slot_marker
+// SELECT: pto.pointer_cast(%[[ADDR0:.*]])
+// SELECT: pto.pointer_cast(%[[ADDR1:.*]])

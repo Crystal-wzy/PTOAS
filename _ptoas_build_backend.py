@@ -60,6 +60,7 @@ _PTO_INSTALL_DIR = Path(
     os.environ.get("PTO_INSTALL_DIR", str(_REPO / "install"))
 )
 _BUILD_DIR = Path(os.environ.get("PTO_BUILD_DIR", str(_REPO / "build")))
+_PTODSL_SOURCE_ROOT = _REPO / "ptodsl"
 _MLIR_PY_PKG = None
 if "MLIR_PYTHON_PACKAGE_DIR" in os.environ:
     _MLIR_PY_PKG = Path(os.environ["MLIR_PYTHON_PACKAGE_DIR"])
@@ -70,6 +71,31 @@ else:
     _build_tree = _LLVM_BUILD_DIR / "tools" / "mlir" / "python_packages" / "mlir_core"
     _MLIR_PY_PKG = _installed if _installed.exists() else _build_tree
 _WHEEL_DIST_DIR = _BUILD_DIR / "wheel-dist"
+
+
+def _assert_installed_ptodsl_payload() -> None:
+    """Fail fast if the root install tree did not stage the PTODSL package."""
+    installed_init = _PTO_INSTALL_DIR / "ptodsl" / "__init__.py"
+    if installed_init.exists():
+        return
+    raise RuntimeError(
+        "PTODSL is missing from the PTOAS install tree. "
+        f"Expected to find {installed_init}. "
+        "Root CMake install rules must stage the public 'ptodsl' package "
+        "before wheel assembly or installed-environment validation."
+    )
+
+
+def _assert_editable_ptodsl_source() -> None:
+    """Fail fast if the editable install cannot point at the PTODSL source."""
+    source_init = _PTODSL_SOURCE_ROOT / "ptodsl" / "__init__.py"
+    if source_init.exists():
+        return
+    raise RuntimeError(
+        "PTODSL editable source is missing from the repository checkout. "
+        f"Expected to find {source_init}. "
+        "Root editable installs must expose the in-repo PTODSL sources."
+    )
 
 
 def get_requires_for_build_wheel(config_settings=None):
@@ -161,6 +187,7 @@ def _cmake_configure_and_build(skip_install=False):
     subprocess.check_call(["ninja", "-C", str(_BUILD_DIR)])
     if not skip_install:
         subprocess.check_call(["ninja", "-C", str(_BUILD_DIR), "install"])
+        _assert_installed_ptodsl_payload()
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
@@ -201,10 +228,12 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
     """PEP 660 editable install.
 
     Builds the C++ extensions in-place, then produces a minimal wheel that
-    installs a .pth file pointing sys.path at the build tree.  No files are
-    copied into site-packages except the .pth file itself.
+    installs a .pth file pointing sys.path at the local PTODSL sources plus
+    the installed/runtime build outputs. No files are copied into
+    site-packages except the .pth file itself.
     """
     _cmake_configure_and_build(skip_install=True)
+    _assert_editable_ptodsl_source()
 
     version = os.environ.get("PTOAS_PYTHON_PACKAGE_VERSION", "0.1.0")
 
@@ -212,17 +241,26 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
     pth_paths = [
         # mlir.* namespace + _pto.so (installed there by CMake)
         str(_MLIR_PY_PKG),
-        # generated files (_pto.so, _pto_ops_gen.py) under mlir/ namespace
-        str(_BUILD_DIR / "python"),
-        # handwritten Python sources (pto/dialects/pto.py, etc.)
+        # Prefer the repository PTODSL sources so editable installs pick up
+        # local Python edits instead of staged/install-tree copies.
+        str(_PTODSL_SOURCE_ROOT),
+        # Handwritten Python sources (pto/dialects/pto.py, etc.).
         str(_REPO / "python"),
-        # ptodsl pure-Python sub-package
-        str(_REPO / "ptodsl"),
-        # runtime resources installed by CMake (tilelang_dsl, TileOps, etc.)
+        # Installed PTOAS runtime overlay (TileOps/resources when present).
         str(_PTO_INSTALL_DIR),
+        # Generated files (_pto.so, _pto_ops_gen.py) under mlir/ namespace.
+        str(_BUILD_DIR / "python"),
     ]
 
-    pth_content = "\n".join(pth_paths) + "\n"
+    # Use executable .pth content so editable installs can deterministically
+    # prepend the repository PTODSL sources ahead of pre-existing build-tree
+    # entries in the caller's Python environment.
+    pth_content = (
+        "import sys; "
+        f"pth_paths = {pth_paths!r}; "
+        "[sys.path.remove(path) for path in pth_paths if path in sys.path]; "
+        "sys.path[:0] = pth_paths\n"
+    )
     pth_filename = "ptoas-editable.pth"
 
     # ---- Build the editable wheel (a zip with .pth + dist-info) ----

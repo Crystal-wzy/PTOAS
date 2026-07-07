@@ -31,6 +31,7 @@ class KernelModuleSpec:
     function_name: str
     target_arch: str
     kernel_kind: str
+    kernel_kind_explicit: bool = False
     backend: str = "vpto"
     entry: bool = True
     mode: str = "auto"
@@ -38,6 +39,7 @@ class KernelModuleSpec:
     module_style: ModuleStyle = ModuleStyle.NESTED
     source_file: str | None = None
     source_line: int | None = None
+    jit_source: str | None = None
 
 
 def _build_flat_aicore_module(spec: KernelModuleSpec, arg_types):

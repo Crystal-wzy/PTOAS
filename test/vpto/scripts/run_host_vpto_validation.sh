@@ -25,6 +25,7 @@ CASE_NAME="${CASE_NAME:-}"
 DEVICE="${DEVICE:-SIM}"
 SIM_LIB_DIR="${SIM_LIB_DIR:-}"
 COMPILE_ONLY="${COMPILE_ONLY:-0}"
+PTODSL_SIM_SOC_VERSION="${PTODSL_SIM_SOC_VERSION:-Ascend950PR_9599}"
 
 log() {
   echo "[$(date +'%F %T')] $*"
@@ -94,8 +95,6 @@ resolve_sim_lib_dir() {
   die "SIM_LIB_DIR is required for DEVICE=SIM and no dav_3510 simulator lib dir was found under: ${ASCEND_HOME_PATH}"
 }
 
-resolve_sim_lib_dir
-
 BISHENG_BIN="${BISHENG_BIN:-${ASCEND_HOME_PATH}/bin/bisheng}"
 
 command -v "${BISHENG_BIN}" >/dev/null 2>&1 || die "bisheng not found: ${BISHENG_BIN}"
@@ -104,13 +103,54 @@ command -v python3 >/dev/null 2>&1 || die "python3 not found"
 mkdir -p "${WORK_SPACE}"
 WORK_SPACE="$(cd "${WORK_SPACE}" && pwd)"
 
+is_ptodsl_case_dir() {
+  [[ -f "$1/kernel.py" ]]
+}
+
+is_ptodsl_case_file() {
+  local case_path="$1"
+  local base_name
+  base_name="$(basename "${case_path}")"
+  [[ -f "${case_path}" ]] &&
+    [[ "${case_path}" == *.py ]] &&
+    [[ "${base_name}" != "golden.py" ]] &&
+    [[ "${base_name}" != "compare.py" ]] &&
+    [[ "${base_name}" != "kernel.py" ]] &&
+    [[ "${base_name}" != _* ]]
+}
+
+is_ptodsl_case_path() {
+  is_ptodsl_case_dir "$1" || is_ptodsl_case_file "$1"
+}
+
+ptodsl_case_script() {
+  local case_path="$1"
+  if is_ptodsl_case_dir "${case_path}"; then
+    printf '%s\n' "${case_path}/kernel.py"
+    return 0
+  fi
+  if is_ptodsl_case_file "${case_path}"; then
+    printf '%s\n' "${case_path}"
+    return 0
+  fi
+  die "path is not a PTODSL case: ${case_path}"
+}
+
+validate_case_path() {
+  local case_name="$1"
+  local case_path="$2"
+
+  if is_ptodsl_case_path "${case_path}"; then
+    return 0
+  fi
+  [[ -d "${case_path}" ]] || die "case ${case_name} is neither a directory nor a PTODSL case file"
+  for f in launch.cpp main.cpp golden.py compare.py; do
+    [[ -f "${case_path}/${f}" ]] || die "case ${case_name} is missing ${f}"
+  done
+  [[ -f "${case_path}/kernel.pto" ]] || die "case ${case_name} must provide kernel.pto"
+}
+
 discover_cases() {
-  local required_files=(
-    launch.cpp
-    main.cpp
-    golden.py
-    compare.py
-  )
   local onboard_only_prefix="onboard-only/"
 
   if [[ -n "${CASE_NAME}" ]]; then
@@ -119,28 +159,36 @@ discover_cases() {
           "${CASE_NAME}" == "${onboard_only_prefix}"* ]]; then
       die "case ${CASE_NAME} is onboard-only and cannot run with DEVICE=SIM"
     fi
-    local requested_dir="${CASES_ROOT}/${CASE_NAME}"
-    [[ -d "${requested_dir}" ]] || die "unknown case: ${CASE_NAME}"
-    for f in "${required_files[@]}"; do
-      [[ -f "${requested_dir}/${f}" ]] || die "case ${CASE_NAME} is missing ${f}"
-    done
-    [[ -f "${requested_dir}/kernel.pto" ]] ||
-      die "case ${CASE_NAME} must provide kernel.pto"
+    local requested_path="${CASES_ROOT}/${CASE_NAME}"
+    [[ -e "${requested_path}" ]] || die "unknown case: ${CASE_NAME}"
+    validate_case_path "${CASE_NAME}" "${requested_path}"
     printf "%s\n" "${CASE_NAME}"
     return 0
   fi
 
   find "${CASES_ROOT}" -mindepth 1 -type d | sort | while read -r dir; do
-    local ok=1
-    for f in "${required_files[@]}"; do
-      if [[ ! -f "${dir}/${f}" ]]; then
-        ok=0
-        break
-      fi
-    done
-    [[ "${ok}" -eq 1 ]] || continue
-    [[ -f "${dir}/kernel.pto" ]] || continue
+    [[ -f "${dir}/kernel.pto" || -f "${dir}/kernel.py" ]] || continue
     local rel="${dir#${CASES_ROOT}/}"
+    if ! is_ptodsl_case_dir "${dir}"; then
+      local ok=1
+      for f in launch.cpp main.cpp golden.py compare.py; do
+        if [[ ! -f "${dir}/${f}" ]]; then
+          ok=0
+          break
+        fi
+      done
+      [[ "${ok}" -eq 1 ]] || continue
+    fi
+    if [[ "${DEVICE}" == "SIM" && "${COMPILE_ONLY}" != "1" &&
+          "${rel}" == "${onboard_only_prefix}"* ]]; then
+      continue
+    fi
+    printf "%s\n" "${rel}"
+  done
+
+  find "${CASES_ROOT}" -type f -name '*.py' | sort | while read -r path; do
+    is_ptodsl_case_file "${path}" || continue
+    local rel="${path#${CASES_ROOT}/}"
     if [[ "${DEVICE}" == "SIM" && "${COMPILE_ONLY}" != "1" &&
           "${rel}" == "${onboard_only_prefix}"* ]]; then
       continue
@@ -156,6 +204,19 @@ fi
 
 readarray -t CASES < <(discover_cases)
 [[ "${#CASES[@]}" -gt 0 ]] || die "no cases found under ${CASES_ROOT}"
+
+needs_legacy_sim_lib=0
+if [[ "${DEVICE}" == "SIM" ]]; then
+  for case_name in "${CASES[@]}"; do
+    if ! is_ptodsl_case_path "${CASES_ROOT}/${case_name}"; then
+      needs_legacy_sim_lib=1
+      break
+    fi
+  done
+fi
+if [[ "${needs_legacy_sim_lib}" == "1" ]]; then
+  resolve_sim_lib_dir
+fi
 
 case_output_token() {
   printf '%s' "$1" | sed 's#[/[:space:]]#_#g'
@@ -246,9 +307,34 @@ build_host_executable() {
     -lstdc++ -lascendcl -lm -ltiling_api -lplatform -lc_sec -ldl -lnnopbase
 }
 
+run_ptodsl_case() {
+  local case_name="$1"
+  local case_path="$2"
+  local out_dir="$3"
+  local case_script
+  case_script="$(ptodsl_case_script "${case_path}")"
+
+  log "[$case_name] run PTODSL source-backed case"
+  (
+    cd "${out_dir}"
+    export PTODSL_CACHE_DIR="${out_dir}/ptodsl-cache"
+    export PATH="$(dirname "${PTOAS_BIN}"):${PATH}"
+    if [[ "${DEVICE}" == "SIM" ]]; then
+      "${ROOT_DIR}/scripts/sim_dsl.sh" \
+        --soc-version "${PTODSL_SIM_SOC_VERSION}" \
+        --output "${out_dir}/msprof" \
+        "${case_script}"
+    else
+      export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
+      python3 "${case_script}"
+    fi
+  )
+  log "[$case_name] output dir: ${out_dir}"
+}
+
 build_one_impl() {
   local case_name="$1"
-  local case_dir="${CASES_ROOT}/${case_name}"
+  local case_path="${CASES_ROOT}/${case_name}"
   local case_token
   case_token="$(case_output_token "${case_name}")"
   local out_dir="${WORK_SPACE}/${case_token}"
@@ -257,12 +343,18 @@ build_one_impl() {
   local kernel_so="${out_dir}/lib${case_token}_kernel.so"
   local -a ptoas_args=()
 
+  if is_ptodsl_case_path "${case_path}"; then
+    run_ptodsl_case "${case_name}" "${case_path}" "${out_dir}"
+    return 0
+  fi
+  local case_dir="${case_path}"
+
+  [[ -f "${case_dir}/kernel.pto" ]] || die "missing kernel.pto for ${case_name}"
+
   [[ -f "${case_dir}/main.cpp" ]] || die "missing main.cpp for ${case_name}"
   [[ -f "${case_dir}/launch.cpp" ]] || die "missing launch.cpp for ${case_name}"
   [[ -f "${case_dir}/golden.py" ]] || die "missing golden.py for ${case_name}"
   [[ -f "${case_dir}/compare.py" ]] || die "missing compare.py for ${case_name}"
-  [[ -f "${case_dir}/kernel.pto" ]] ||
-    die "missing kernel.pto for ${case_name}"
 
   if [[ -f "${case_dir}/ptoas.flags" ]]; then
     read -r -a ptoas_args < "${case_dir}/ptoas.flags"

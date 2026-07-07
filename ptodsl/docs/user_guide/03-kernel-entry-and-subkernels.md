@@ -50,8 +50,10 @@ The **`backend`** parameter selects the compilation target:
   rejected at decoration time with an actionable diagnostic.
 
 The **`mode`** parameter selects the programming model within the kernel body
-(see Section 3.4). `mode` only affects what you can write inside the function —
-it doesn't change how you compile or launch the kernel.
+(see Section 3.4). For native launch builds, `mode="auto"` keeps PTOAS default
+build level and enables sync insertion by default, while `mode="explicit"` uses
+`--pto-level=level3` and disables sync insertion by default. This matches the
+manual-address, user-managed staging contract of explicit kernels.
 
 `@pto.jit` owns compilation (tracing + lowering), caching, and — for
 `entry=True` — runtime launch binding. The compute-unit decorators
@@ -223,6 +225,113 @@ compiled[grid, stream](A.ctypes.data, O.ctypes.data, 4, 128)
 
 **Only `entry=True` kernels support `.compile()` and `[grid, stream]` launch.**
 Calling `.compile()` on an `entry=False` module raises an error.
+
+### Loading an existing PTO file
+
+Use `source=` when the kernel implementation already exists as hand-written PTO
+IR, but you still want PTODSL's Python compile and launch workflow. The
+decorated Python function declares the host-side ABI; `source=` provides the
+kernel body either as a PTO file path or as PTO text directly.
+
+<!-- ptodsl-doc-test: {"mode":"launch_fragment","fixture":"launch.source_backed_tadd","symbol":"tadd","files":{"kernels/tadd_entry.pto":"module {\n  func.func @tadd_entry(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f32, gm>, %arg2: !pto.ptr<f32, gm>, %arg3: i32) {\n    return\n  }\n}\n"}} -->
+```python
+@pto.jit(
+    name="tadd_entry",
+    target="a5",
+    backend="vpto",
+    source="kernels/tadd_entry.pto",
+)
+def tadd(
+    A_ptr: pto.ptr(pto.f32, "gm"),
+    B_ptr: pto.ptr(pto.f32, "gm"),
+    O_ptr: pto.ptr(pto.f32, "gm"),
+    numel: pto.i32,
+):
+    # The body is ignored when source= is provided.
+    pass
+
+
+compiled = tadd.compile()
+compiled[grid, stream](A, B, O, numel)
+```
+
+The Python function body is not traced in this form. Keep it empty, or leave a
+short comment for readers. Positional parameters still matter: PTODSL uses them
+to build the launch wrapper and marshal Python, NumPy, or torch-npu arguments.
+
+The PTO source must contain one non-declaration `func.func` whose symbol matches
+the JIT entry name. By default, the entry name is the Python function name. Use
+`name=` when the PTO symbol has a different name, or when the source contains more
+than one kernel:
+
+```mlir
+module {
+  func.func @tadd_entry(
+      %a: !pto.ptr<f32, gm>,
+      %b: !pto.ptr<f32, gm>,
+      %o: !pto.ptr<f32, gm>,
+      %numel: i32) {
+    // hand-written PTO body
+    return
+  }
+}
+```
+
+PTODSL checks the selected PTO function before compiling:
+
+- The number of PTO function arguments must match the Python positional
+  parameters.
+- Each argument type must match the Python annotation, position by position.
+- The PTO entry must return no values.
+- If the file or entry cannot be found, the diagnostic names the requested entry
+  and source path.
+
+When `source` is a filesystem path, relative paths are resolved from the Python
+file that declares the decorated function, so tests can keep the Python wrapper
+next to the PTO file:
+
+```text
+case.py
+kernels/tadd_entry.pto
+```
+
+```python
+# case.py
+@pto.jit(name="tadd_entry", source="kernels/tadd_entry.pto")
+def tadd(A_ptr: pto.ptr(pto.f32, "gm"), O_ptr: pto.ptr(pto.f32, "gm")):
+    pass
+```
+
+For short tests, `source` can also embed the PTO text directly:
+
+```python
+tadd_source = """module {
+  func.func @tadd_entry(%a: !pto.ptr<f32, gm>, %o: !pto.ptr<f32, gm>) {
+    return
+  }
+}
+"""
+
+@pto.jit(name="tadd_entry", source=tadd_source)
+def tadd(A_ptr: pto.ptr(pto.f32, "gm"), O_ptr: pto.ptr(pto.f32, "gm")):
+    pass
+```
+
+Source-backed entries use the same `.compile()` and `compiled[grid, stream](...)`
+launch syntax as ordinary traced entries. If the PTO file contents change,
+compiling the same declaration again rebuilds the cached artifact.
+
+Limitations:
+
+- `source=` is only supported for launchable `entry=True` kernels.
+- Keyword-only `pto.const_expr` parameters are not supported with `source=`.
+  Source files are loaded as fixed PTO IR text; PTODSL does not template or
+  specialize the source file.
+- `.compile(...)` does not accept constexpr bindings for source-backed kernels.
+- `backend=`, `mode=`, and `insert_sync=` still matter. For source-backed VPTO
+  files, set `backend="vpto"`. When `mode="explicit"`, PTODSL compiles the
+  source as explicit PTO; otherwise sync insertion follows the same policy as
+  ordinary `@pto.jit` entries.
 
 ### SPMD built-ins
 

@@ -247,6 +247,11 @@ static void bindPTOModule(pybind11::module &m) {
       .value("DualModeSplitN", mlir::pto::AccToVecMode::DualModeSplitN)
       .export_values();
 
+    py::enum_<mlir::pto::TInsertMode>(m, "TInsertMode")
+      .value("SPLIT2", mlir::pto::TInsertMode::SPLIT2)
+      .value("SPLIT4", mlir::pto::TInsertMode::SPLIT4)
+      .export_values();
+
     py::enum_<mlir::pto::ReluPreMode>(m, "ReluPreMode")
       .value("NoRelu", mlir::pto::ReluPreMode::NoRelu)
       .value("NormalRelu", mlir::pto::ReluPreMode::NormalRelu)
@@ -373,6 +378,19 @@ static void bindPTOModule(pybind11::module &m) {
             "get",
             [](py::object cls, mlir::pto::AccToVecMode value, MlirContext ctx) -> py::object {
             MlirAttribute a = mlirPTOAccToVecModeAttrGet(ctx, static_cast<int32_t>(value));
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls(a);
+            },
+            py::arg("cls"), py::arg("value"), py::arg("context") = py::none());
+
+    mlir_attribute_subclass(m, "TInsertModeAttr",
+                            [](MlirAttribute a) -> bool {
+                            return mlirPTOAttrIsATInsertModeAttr(a);
+                            })
+        .def_classmethod(
+            "get",
+            [](py::object cls, mlir::pto::TInsertMode value, MlirContext ctx) -> py::object {
+            MlirAttribute a = mlirPTOTInsertModeAttrGet(ctx, static_cast<int32_t>(value));
             if (mlirAttributeIsNull(a)) return py::none();
             return cls(a);
             },
@@ -670,11 +688,52 @@ static void bindPTOModule(pybind11::module &m) {
             return mlirPTOEventAttrGetValue(self);
           });
 
+    py::enum_<mlir::pto::Coalesce>(m, "Coalesce")
+      .value("Elem", mlir::pto::Coalesce::Elem)
+      .value("Row", mlir::pto::Coalesce::Row)
+      .export_values();
+
+    mlir_attribute_subclass(
+        m, "CoalesceAttr",
+        [](MlirAttribute a) { return mlirPTOAttrIsACoalesceAttr(a); })
+      .def_classmethod(
+          "get",
+          [](py::object cls, py::object value, MlirContext ctx) -> py::object {
+            int32_t v = 0;
+            if (py::isinstance<py::int_>(value)) {
+              v = py::cast<int32_t>(value);
+            } else if (py::hasattr(value, "value")) {
+              v = value.attr("value").cast<int32_t>();
+            } else {
+              throw std::runtime_error("CoalesceAttr.get expects int or Coalesce enum");
+            }
+            MlirAttribute a =
+                mlirPTOCoalesceAttrGet(ctx, static_cast<MlirPTOCoalesce>(v));
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls.attr("__call__")(a);
+          },
+          py::arg("cls"), py::arg("value"), py::arg("context") = py::none())
+      .def_property_readonly(
+          "value",
+          [](MlirAttribute self) -> int32_t {
+            return mlirPTOCoalesceAttrGetValue(self);
+          });
+
     py::enum_<mlir::pto::QuantType>(m, "QuantType")
       .value("INT8_SYM",  mlir::pto::QuantType::INT8_SYM)
       .value("INT8_ASYM", mlir::pto::QuantType::INT8_ASYM)
       .value("MXFP8",     mlir::pto::QuantType::MXFP8)
       .value("MXFP4_E2M1", mlir::pto::QuantType::MXFP4_E2M1)
+      .export_values();
+
+    py::enum_<mlir::pto::QuantScaleAlg>(m, "QuantScaleAlg")
+      .value("OCP", mlir::pto::QuantScaleAlg::OCP)
+      .value("NV", mlir::pto::QuantScaleAlg::NV)
+      .export_values();
+
+    py::enum_<mlir::pto::VecStoreMode>(m, "VecStoreMode")
+      .value("ND", mlir::pto::VecStoreMode::ND)
+      .value("NZ", mlir::pto::VecStoreMode::NZ)
       .export_values();
 
     mlir_attribute_subclass(
@@ -700,6 +759,56 @@ static void bindPTOModule(pybind11::module &m) {
           "value",
           [](MlirAttribute self) -> int32_t {
             return mlirPTOQuantTypeAttrGetValue(self);
+          });
+
+    mlir_attribute_subclass(
+        m, "QuantScaleAlgAttr",
+        [](MlirAttribute a) { return mlirPTOAttrIsAQuantScaleAlgAttr(a); })
+      .def_classmethod(
+          "get",
+          [](py::object cls, py::object value, MlirContext ctx) -> py::object {
+            int32_t v = 0;
+            if (py::isinstance<py::int_>(value)) {
+              v = py::cast<int32_t>(value);
+            } else if (py::hasattr(value, "value")) {
+              v = value.attr("value").cast<int32_t>();
+            } else {
+              throw std::runtime_error("QuantScaleAlgAttr.get expects int or QuantScaleAlg enum");
+            }
+            MlirAttribute a = mlirPTOQuantScaleAlgAttrGet(ctx, v);
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls.attr("__call__")(a);
+          },
+          py::arg("cls"), py::arg("value"), py::arg("context") = py::none())
+      .def_property_readonly(
+          "value",
+          [](MlirAttribute self) -> int32_t {
+            return mlirPTOQuantScaleAlgAttrGetValue(self);
+          });
+
+    mlir_attribute_subclass(
+        m, "VecStoreModeAttr",
+        [](MlirAttribute a) { return mlirPTOAttrIsAVecStoreModeAttr(a); })
+      .def_classmethod(
+          "get",
+          [](py::object cls, py::object value, MlirContext ctx) -> py::object {
+            int32_t v = 0;
+            if (py::isinstance<py::int_>(value)) {
+              v = py::cast<int32_t>(value);
+            } else if (py::hasattr(value, "value")) {
+              v = value.attr("value").cast<int32_t>();
+            } else {
+              throw std::runtime_error("VecStoreModeAttr.get expects int or VecStoreMode enum");
+            }
+            MlirAttribute a = mlirPTOVecStoreModeAttrGet(ctx, v);
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls.attr("__call__")(a);
+          },
+          py::arg("cls"), py::arg("value"), py::arg("context") = py::none())
+      .def_property_readonly(
+          "value",
+          [](MlirAttribute self) -> int32_t {
+            return mlirPTOVecStoreModeAttrGetValue(self);
           });
 
     mlir_attribute_subclass(

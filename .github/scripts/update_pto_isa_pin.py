@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
 
 import argparse
 import pathlib
@@ -32,6 +39,11 @@ def parse_args() -> argparse.Namespace:
         "--dockerfile",
         default="docker/Dockerfile",
         help="Path to the Dockerfile that vendors pto-isa.",
+    )
+    parser.add_argument(
+        "--remote-validation-script",
+        default="test/npu_validation/scripts/run_remote_npu_validation.sh",
+        help="Path to the remote NPU validation runner that falls back to a pinned pto-isa commit.",
     )
     parser.add_argument(
         "--check",
@@ -113,6 +125,20 @@ def update_dockerfile(path: pathlib.Path, commit: str) -> bool:
     return False
 
 
+def update_remote_validation_script(path: pathlib.Path, commit: str) -> bool:
+    original = read_text(path)
+    updated = replace_exactly_once(
+        original,
+        r'^(PTO_ISA_COMMIT="\$\{PTO_ISA_COMMIT:-)([0-9a-f]{40})(\}")$',
+        rf"\g<1>{commit}\g<3>",
+        path,
+    )
+    if updated != original:
+        write_text(path, updated)
+        return True
+    return False
+
+
 def extract_ci_commit(path: pathlib.Path) -> tuple[str, str]:
     text = read_text(path)
     default_match = re.search(
@@ -142,14 +168,35 @@ def extract_docker_commit(path: pathlib.Path) -> tuple[str, str]:
     return arg_match.group(1), comment_match.group(1)
 
 
-def verify(ci_path: pathlib.Path, docker_path: pathlib.Path, commit: str) -> None:
+def extract_remote_validation_commit(path: pathlib.Path) -> str:
+    text = read_text(path)
+    match = re.search(
+        r'^PTO_ISA_COMMIT="\$\{PTO_ISA_COMMIT:-([0-9a-f]{40})\}"$',
+        text,
+        flags=re.MULTILINE,
+    )
+    if not match:
+        raise RuntimeError(f"failed to read pinned pto-isa commit from {path}")
+    return match.group(1)
+
+
+def verify(
+    ci_path: pathlib.Path,
+    docker_path: pathlib.Path,
+    remote_validation_path: pathlib.Path,
+    commit: str,
+) -> None:
     ci_default, ci_env = extract_ci_commit(ci_path)
     docker_arg, docker_comment = extract_docker_commit(docker_path)
+    remote_validation_commit = extract_remote_validation_commit(
+        remote_validation_path
+    )
     values = {
         f"{ci_path}:workflow_dispatch_default": ci_default,
         f"{ci_path}:runtime_default": ci_env,
         f"{docker_path}:arg": docker_arg,
         f"{docker_path}:comment": docker_comment,
+        f"{remote_validation_path}:fallback": remote_validation_commit,
     }
     mismatches = {name: value for name, value in values.items() if value != commit}
     if mismatches:
@@ -162,15 +209,17 @@ def main() -> int:
     commit = args.commit or resolve_head_commit(args.repo_url)
     ci_path = pathlib.Path(args.ci_workflow)
     docker_path = pathlib.Path(args.dockerfile)
+    remote_validation_path = pathlib.Path(args.remote_validation_script)
 
     if args.check:
-        verify(ci_path, docker_path, commit)
+        verify(ci_path, docker_path, remote_validation_path, commit)
         print(commit)
         return 0
 
     update_ci_workflow(ci_path, commit)
     update_dockerfile(docker_path, commit)
-    verify(ci_path, docker_path, commit)
+    update_remote_validation_script(remote_validation_path, commit)
+    verify(ci_path, docker_path, remote_validation_path, commit)
     print(commit)
     return 0
 

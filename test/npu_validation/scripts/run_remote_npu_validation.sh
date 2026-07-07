@@ -14,7 +14,7 @@ RUN_MODE="${RUN_MODE:-npu}"   # npu|sim
 SOC_VERSION="${SOC_VERSION:-Ascend910}"
 GOLDEN_MODE="${GOLDEN_MODE:-npu}"  # sim|npu|skip
 PTO_ISA_REPO="${PTO_ISA_REPO:-https://gitcode.com/cann/pto-isa.git}"
-PTO_ISA_COMMIT="${PTO_ISA_COMMIT:-66c931430f08af80e598863fec68f55c39cbeb52}"
+PTO_ISA_COMMIT="${PTO_ISA_COMMIT:-7e879c4198939b506571f8769326b5a61e88da25}"
 DEVICE_ID="${DEVICE_ID:-0}"
 SKIP_CASES="${SKIP_CASES:-}"          # comma/space separated testcase names
 RUN_ONLY_CASES="${RUN_ONLY_CASES:-}"  # comma/space separated testcase names
@@ -393,10 +393,16 @@ log "PTOAS_BOARD_IS_A3=${PTOAS_BOARD_IS_A3}"
 export RUN_MODE
 export SOC_VERSION="${SIM_SOC_VERSION}"
 board_chip_lc="$(printf '%s' "${_board_chip}" | tr '[:upper:]' '[:lower:]')"
+export PTOAS_BOARD_IS_A5=0
+if [[ "${board_chip_lc}" == *950* || "${board_chip_lc}" == *a5* \
+   || "${SOC_VERSION,,}" == *950* || "${SOC_VERSION,,}" == *a5* ]]; then
+  export PTOAS_BOARD_IS_A5=1
+fi
+log "PTOAS_BOARD_IS_A5=${PTOAS_BOARD_IS_A5}"
 if [[ "${PTOAS_BOARD_IS_A3}" == "1" ]]; then
   export PTO_DISABLE_SDMA_WORKSPACE_INIT=1
   log "Export PTO_DISABLE_SDMA_WORKSPACE_INIT=1 for A3 TPREFETCH_ASYNC runtime fallback"
-elif [[ "${board_chip_lc}" == *950* || "${board_chip_lc}" == *a5* || "${SOC_VERSION,,}" == *950* || "${SOC_VERSION,,}" == *a5* ]]; then
+elif [[ "${PTOAS_BOARD_IS_A5}" == "1" ]]; then
   export PTO_DISABLE_SDMA_WORKSPACE_INIT=1
   log "Export PTO_DISABLE_SDMA_WORKSPACE_INIT=1 for A5 TPREFETCH_ASYNC runtime fallback"
 fi
@@ -478,6 +484,17 @@ while IFS= read -r -d '' cpp; do
     skip_count=$((skip_count + 1))
     printf "%s\tSKIP\t%s\truntime skip: async_comm\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (runtime skip)"
+    continue
+  fi
+
+  # TPREFETCH_ASYNC depends on SDMA workspace runtime support. Non-A5 board
+  # validation images can fail inside the workspace query path before the
+  # sample kernel runs, so keep it out of non-A5 runtime sweeps while still
+  # allowing build coverage and A5 runtime validation.
+  if [[ "${STAGE}" == "run" && "${testcase}" == "tprefetch_async_binding" && "${PTOAS_BOARD_IS_A5:-0}" != "1" ]]; then
+    skip_count=$((skip_count + 1))
+    printf "%s\tSKIP\t%s\trequires A5 SDMA workspace runtime support\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    log "SKIP: ${testcase} (requires A5 SDMA workspace runtime)"
     continue
   fi
 

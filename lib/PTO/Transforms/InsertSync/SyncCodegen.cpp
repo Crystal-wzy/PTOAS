@@ -350,15 +350,58 @@ void SyncCodegen::CreateSetWaitOpForMultiBuffer(IRRewriter &rewriter,
                                                 Operation *op,
                                                 SyncOperation *sync,
                                                 bool beforeInsert) {
-  Value bufferSelected = GetBufferSelected(rewriter, op, sync);
-  (void)bufferSelected;
-
   auto srcPipe = getPipeAttr(rewriter, sync->GetActualSrcPipe());
   auto dstPipe = getPipeAttr(rewriter, sync->GetActualDstPipe());
-  auto eventId = getEventAttr(rewriter, sync->eventIds[0]);
   setSyncInsertionPoint(rewriter, op,
                         beforeInsert || op->hasTrait<OpTrait::IsTerminator>());
-  createSetOrWaitFlagOp(rewriter, op, sync, srcPipe, dstPipe, eventId);
+  Location loc = op->getLoc();
+
+  // If the analysis did not plumb a slot SSA (e.g. multi-buffer alloc
+  // present but the access reads it through an unexpected view chain),
+  // fall back to a static set/wait on the first event id. This preserves
+  // correctness at the cost of forgoing per-slot pipelining.
+  if (!sync->slotSSAExpr || sync->eventIds.empty()) {
+    auto eventId = getEventAttr(rewriter, sync->eventIds[0]);
+    createSetOrWaitFlagOp(rewriter, op, sync, srcPipe, dstPipe, eventId);
+    return;
+  }
+
+  // Emit pto.set_flag_dyn / pto.wait_flag_dyn with a runtime event id chosen
+  // from the slot SSA. Specifically, build an N-way select chain over the
+  // allocated event ids so the hardware sees event id `eventIds[slot % N]`.
+  // For the common N == 2 case this collapses to a single arith.select.
+  uint32_t n = sync->slotCount;
+  assert(n >= 2 && "multi-buffer codegen requires slotCount >= 2");
+  assert(sync->eventIds.size() == n &&
+         "multi-buffer codegen expects N event ids");
+
+  // Compute `slot % N` once and reuse across the chain.
+  Value nConst = rewriter.create<arith::ConstantIndexOp>(loc, n);
+  Value slot = sync->slotSSAExpr;
+  if (slot.getType() != rewriter.getIndexType()) {
+    slot = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(),
+                                               slot);
+  }
+  Value slotMod = rewriter.create<arith::RemUIOp>(loc, slot, nConst);
+
+  // N-way select: start from eventIds[0] and chain `eq slotMod, i` picks
+  // through 1..N-1.
+  Value selected =
+      rewriter.create<arith::ConstantIndexOp>(loc, sync->eventIds[0]);
+  for (uint32_t i = 1; i < n; ++i) {
+    Value iIdx = rewriter.create<arith::ConstantIndexOp>(loc, i);
+    Value isThis = rewriter.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::eq, slotMod, iIdx);
+    Value idI =
+        rewriter.create<arith::ConstantIndexOp>(loc, sync->eventIds[i]);
+    selected = rewriter.create<arith::SelectOp>(loc, isThis, idI, selected);
+  }
+
+  if (sync->isSyncWaitType()) {
+    rewriter.create<pto::WaitFlagDynOp>(loc, srcPipe, dstPipe, selected);
+  } else {
+    rewriter.create<pto::SetFlagDynOp>(loc, srcPipe, dstPipe, selected);
+  }
 }
 
 Value SyncCodegen::GetBufferSelected(IRRewriter &rewriter, Operation *op,

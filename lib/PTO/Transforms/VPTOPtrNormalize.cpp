@@ -10,6 +10,7 @@
 #pragma GCC diagnostic ignored "-Woverloaded-virtual"
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -44,14 +45,6 @@ static pto::AddressSpaceAttr getPointerMemorySpace(Attribute memorySpace,
     return pto::AddressSpaceAttr::get(
         ctx, static_cast<pto::AddressSpace>(intAttr.getInt()));
   return {};
-}
-
-static Value buildIndexValue(OpBuilder &builder, Location loc,
-                             OpFoldResult ofr) {
-  if (auto value = dyn_cast<Value>(ofr))
-    return value;
-  auto attr = cast<IntegerAttr>(cast<Attribute>(ofr));
-  return builder.create<arith::ConstantIndexOp>(loc, attr.getInt());
 }
 
 static bool needsSubviewPtrConversion(memref::SubViewOp op) {
@@ -117,7 +110,8 @@ static LogicalResult computeSubviewElementOffset(memref::SubViewOp op,
 
   SmallVector<int64_t> strides;
   int64_t baseOffset = 0;
-  if (failed(getStridesAndOffset(sourceType, strides, baseOffset)))
+  if (failed(mlir::pto::getPTOMemRefStridesAndOffset(sourceType, strides,
+                                                     baseOffset)))
     return failure();
   // The SSA source already names the base address after bind_tile/pointer_cast
   // normalization. A dynamic memref layout offset here is metadata we can
@@ -127,17 +121,26 @@ static LogicalResult computeSubviewElementOffset(memref::SubViewOp op,
 
   Location loc = op.getLoc();
   Value total = rewriter.create<arith::ConstantIndexOp>(loc, baseOffset);
-  SmallVector<OpFoldResult> mixedOffsets = op.getMixedOffsets();
-  if (mixedOffsets.size() != strides.size())
+  ArrayRef<int64_t> staticOffsets = op.getStaticOffsets();
+  ValueRange dynamicOffsets = op.getOffsets();
+  if (staticOffsets.size() != strides.size())
     return failure();
 
-  for (auto [ofr, stride] : llvm::zip(mixedOffsets, strides)) {
+  unsigned dynamicIndex = 0;
+  for (auto [staticOffset, stride] : llvm::zip(staticOffsets, strides)) {
     if (stride == 0)
       continue;
     if (stride == ShapedType::kDynamic)
       return failure();
 
-    Value idx = buildIndexValue(rewriter, loc, ofr);
+    Value idx;
+    if (ShapedType::isDynamic(staticOffset)) {
+      if (dynamicIndex >= dynamicOffsets.size())
+        return failure();
+      idx = dynamicOffsets[dynamicIndex++];
+    } else {
+      idx = rewriter.create<arith::ConstantIndexOp>(loc, staticOffset);
+    }
     if (!idx.getType().isIndex())
       return failure();
 
@@ -148,6 +151,8 @@ static LogicalResult computeSubviewElementOffset(memref::SubViewOp op,
     }
     total = rewriter.create<arith::AddIOp>(loc, total, idx);
   }
+  if (dynamicIndex != dynamicOffsets.size())
+    return failure();
 
   offset = total;
   return success();
@@ -758,6 +763,38 @@ struct ConvertPtrNormalizeUnrealizedCastOp final
   }
 };
 
+struct ConvertPtrNormalizeMemRefCastOp final
+    : public OpConversionPattern<memref::CastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::CastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!hasPtrNormalizeConvertibleType(op.getSource().getType()) &&
+        !hasPtrNormalizeConvertibleType(op.getType()))
+      return failure();
+
+    Type convertedResultType = getTypeConverter()->convertType(op.getType());
+    if (!convertedResultType)
+      return failure();
+
+    Value source = adaptor.getSource();
+    if (source.getType() == convertedResultType) {
+      rewriter.replaceOp(op, source);
+      return success();
+    }
+
+    if (!isa<pto::PtrType, IntegerType>(source.getType()) ||
+        !isa<pto::PtrType, IntegerType>(convertedResultType))
+      return rewriter.notifyMatchFailure(
+          op, "expected ptr/int memref.cast after ptr normalization");
+
+    rewriter.replaceOpWithNewOp<pto::CastPtrOp>(op, convertedResultType,
+                                                source);
+    return success();
+  }
+};
+
 struct VPTOPtrNormalizePass
     : public pto::impl::VPTOPtrNormalizeBase<VPTOPtrNormalizePass> {
   using pto::impl::VPTOPtrNormalizeBase<
@@ -773,7 +810,6 @@ struct VPTOPtrNormalizePass
         [](Type type) { return convertSubviewResultType(type); });
     typeConverter.addTargetMaterialization(materializeUnrealizedCast);
     typeConverter.addSourceMaterialization(materializeUnrealizedCast);
-    typeConverter.addArgumentMaterialization(materializeUnrealizedCast);
 
     ConversionTarget target(*context);
     target.addLegalDialect<arith::ArithDialect, func::FuncDialect,
@@ -796,6 +832,10 @@ struct VPTOPtrNormalizePass
           return !hasPtrNormalizeConvertibleType(op->getOperandTypes()) &&
                  !hasPtrNormalizeConvertibleType(op->getResultTypes());
         });
+    target.addDynamicallyLegalOp<memref::CastOp>([&](memref::CastOp op) {
+      return !hasPtrNormalizeConvertibleType(op.getSource().getType()) &&
+             !hasPtrNormalizeConvertibleType(op.getType());
+    });
     target.addDynamicallyLegalOp<pto::TileBufAddrOp>([&](pto::TileBufAddrOp op) {
       return op.getDst().getType() ==
              typeConverter.convertType(op.getDst().getType());
@@ -926,7 +966,8 @@ struct VPTOPtrNormalizePass
                  ConvertMteUbGmOperandPattern,
                  ConvertLoadOperandToPtrPattern,
                  ConvertStoreOperandToPtrPattern,
-                 ConvertPtrNormalizeUnrealizedCastOp>(
+                 ConvertPtrNormalizeUnrealizedCastOp,
+                 ConvertPtrNormalizeMemRefCastOp>(
         typeConverter, context);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))

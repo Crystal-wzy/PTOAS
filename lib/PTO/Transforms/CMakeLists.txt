@@ -57,6 +57,7 @@ add_mlir_dialect_library(PTOTransforms
   PTORemoveRedundantBarrier.cpp
   InferPTOLayout.cpp
   PTOA5NormalizeTMovPass.cpp
+  PTORemoveIdentityTMov.cpp
   PTOCanonicalizeIR.cpp
   PTOMaterializeTileHandles.cpp
   BufferizableOpInterfaceImpl.cpp
@@ -64,7 +65,9 @@ add_mlir_dialect_library(PTOTransforms
   PTOAssignDefaultFrontendPipeIdPass.cpp
   PTOLowerFrontendPipeOpsPass.cpp
   PTOInferValidatePipeInitPass.cpp
+  PTOResolveBufferSelect.cpp
   PTOResolveReservedBuffersPass.cpp
+  SlotAffineAnalysis.cpp
   PTOWrapFunctionsInSectionsPass.cpp
   PTONormalizeUncoveredTileSections.cpp
   VPTONormalizeContainer.cpp

@@ -8,10 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 from pathlib import Path
-import sys
-
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ptodsl"))
+from tempfile import TemporaryDirectory
 
 from ptodsl import pto, scalar
 from ptodsl._ast_rewrite import PTODSLAstRewriteError
@@ -404,6 +401,31 @@ def define_kernel_module_return_value_probe():
     return bad_probe
 
 
+def define_source_non_string_probe():
+    @pto.jit(target="a5", source=123)
+    def bad_probe(rows: pto.i32):
+        _ = rows
+
+    return bad_probe
+
+
+def define_source_entry_false_probe():
+    @pto.jit(target="a5", entry=False, source="kernel.pto")
+    def bad_probe(tile: pto.Tile):
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+    return bad_probe
+
+
+def define_source_constexpr_probe():
+    @pto.jit(target="a5", source="kernel.pto")
+    def bad_probe(ptr: pto.ptr(pto.f32, "gm"), *, BLOCK: pto.const_expr = 8):
+        _ = ptr
+        _ = BLOCK
+
+    return bad_probe
+
+
 @pto.jit(target="a5")
 def regular_entry_probe(rows: pto.i32):
     _ = rows
@@ -788,6 +810,195 @@ def main() -> None:
         "mask",
         "do not belong at this kernel-module boundary",
     )
+    expect_raises(
+        define_source_non_string_probe,
+        TypeError,
+        "@pto.jit source must be a filesystem path string when provided",
+    )
+    expect_raises(
+        define_source_entry_false_probe,
+        TypeError,
+        "@pto.jit(source=...) kernel 'bad_probe' does not support entry=False while source='kernel.pto'",
+        "Source-backed JIT is currently limited to launchable entry kernels",
+    )
+    expect_raises(
+        define_source_constexpr_probe,
+        TypeError,
+        "@pto.jit(source=...) kernel 'bad_probe' does not support keyword-only pto.const_expr parameter 'BLOCK' while source='kernel.pto'",
+        "does not template or specialize source text",
+    )
+    with TemporaryDirectory() as tmpdir:
+        source_dir = Path(tmpdir)
+        missing_path = source_dir / "missing.pto"
+
+        @pto.jit(target="a5", source=str(missing_path))
+        def source_missing_file_probe(ptr: pto.ptr(pto.f32, "gm")):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        expect_raises(
+            source_missing_file_probe.compile,
+            FileNotFoundError,
+            "@pto.jit(source=",
+            "missing.pto",
+            "file does not exist",
+        )
+
+        missing_entry_path = source_dir / "missing_entry.pto"
+        missing_entry_path.write_text(
+            "module {\n"
+            "  func.func @other_entry(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        @pto.jit(name="wanted_entry", target="a5", source=str(missing_entry_path))
+        def source_missing_entry_probe(ptr: pto.ptr(pto.f32, "gm")):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        expect_raises(
+            source_missing_entry_probe.compile,
+            TypeError,
+            "could not bind entry 'wanted_entry'",
+            "missing non-declaration func.func",
+        )
+
+        ambiguous_entry_path = source_dir / "ambiguous_entry.pto"
+        ambiguous_entry_path.write_text(
+            "module {\n"
+            "  func.func @ambiguous_entry(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "  builtin.module {\n"
+            "    func.func @ambiguous_entry(%arg0: !pto.ptr<f32, gm>) {\n"
+            "      return\n"
+            "    }\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        @pto.jit(target="a5", source=str(ambiguous_entry_path))
+        def ambiguous_entry(ptr: pto.ptr(pto.f32, "gm")):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        expect_raises(
+            ambiguous_entry.compile,
+            TypeError,
+            "could not bind entry 'ambiguous_entry'",
+            "found 2 matching non-declaration func.func ops",
+        )
+
+        count_mismatch_path = source_dir / "count_mismatch.pto"
+        count_mismatch_path.write_text(
+            "module {\n"
+            "  func.func @count_mismatch(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        @pto.jit(target="a5", source=str(count_mismatch_path))
+        def count_mismatch(ptr: pto.ptr(pto.f32, "gm"), rows: pto.i32):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        expect_raises(
+            count_mismatch.compile,
+            TypeError,
+            "ABI mismatch for entry 'count_mismatch'",
+            "parameter count differs",
+            "expected (!pto.ptr<f32, gm>, i32)",
+            "got (!pto.ptr<f32, gm>)",
+        )
+
+        type_mismatch_path = source_dir / "type_mismatch.pto"
+        type_mismatch_path.write_text(
+            "module {\n"
+            "  func.func @type_mismatch(%arg0: !pto.ptr<f16, gm>, %arg1: i32) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        @pto.jit(target="a5", source=str(type_mismatch_path))
+        def type_mismatch(ptr: pto.ptr(pto.f32, "gm"), rows: pto.i32):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        expect_raises(
+            type_mismatch.compile,
+            TypeError,
+            "ABI mismatch for entry 'type_mismatch'",
+            "parameter 0 differs",
+            "expected !pto.ptr<f32, gm>",
+            "got !pto.ptr<f16, gm>",
+        )
+
+        non_void_path = source_dir / "non_void.pto"
+        non_void_path.write_text(
+            "module {\n"
+            "  func.func @non_void(%arg0: !pto.ptr<f32, gm>) -> i32 {\n"
+            "    %c0 = arith.constant 0 : i32\n"
+            "    return %c0 : i32\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        @pto.jit(target="a5", source=str(non_void_path))
+        def non_void(ptr: pto.ptr(pto.f32, "gm")):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        expect_raises(
+            non_void.compile,
+            TypeError,
+            "ABI mismatch for entry 'non_void'",
+            "source entry must return no values",
+            "i32",
+        )
+
+        compile_constexpr_path = source_dir / "compile_constexpr.pto"
+        compile_constexpr_path.write_text(
+            "module {\n"
+            "  func.func @compile_constexpr(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        @pto.jit(target="a5", source=str(compile_constexpr_path))
+        def compile_constexpr(ptr: pto.ptr(pto.f32, "gm")):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        expect_raises(
+            lambda: compile_constexpr.compile(BLOCK=8),
+            TypeError,
+            "@pto.jit(source=...) kernel 'compile_constexpr' does not accept .compile(...) constexpr binding(s) BLOCK",
+            "does not template or specialize source text",
+        )
+
+        inline_count_mismatch_source = (
+            "module {\n"
+            "  func.func @inline_count_mismatch(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+
+        @pto.jit(target="a5", source=inline_count_mismatch_source)
+        def inline_count_mismatch(ptr: pto.ptr(pto.f32, "gm"), rows: pto.i32):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        expect_raises(
+            inline_count_mismatch.compile,
+            TypeError,
+            "ABI mismatch for entry 'inline_count_mismatch'",
+            "parameter count differs",
+            "<inline pto source",
+        )
     kernel_module_return_value_probe = define_kernel_module_return_value_probe()
     expect_raises(
         kernel_module_return_value_probe.compile,

@@ -19,10 +19,11 @@ class ModuleArtifact:
     Subclasses may either pass an eager ``module`` or a lazy ``module_factory``.
     """
 
-    def __init__(self, py_name: str, *, module=None, module_factory=None):
+    def __init__(self, py_name: str, *, module=None, module_factory=None, mlir_text: str | None = None):
         self._py_name = py_name
         self._cached_module = module
         self._module_factory = module_factory
+        self._cached_mlir_text = mlir_text
         self._build_metadata = {}
 
     def build(self):
@@ -34,6 +35,8 @@ class ModuleArtifact:
             if isinstance(built, tuple):
                 self._cached_module, metadata = built
                 self._build_metadata = dict(metadata or {})
+                if "mlir_text" in self._build_metadata:
+                    self._cached_mlir_text = self._build_metadata["mlir_text"]
             else:
                 self._cached_module = built
                 self._build_metadata = {}
@@ -45,7 +48,10 @@ class ModuleArtifact:
 
     def mlir_text(self) -> str:
         """Return the textual MLIR form."""
-        return str(self.build())
+        self.build()
+        if self._cached_mlir_text is not None:
+            return self._cached_mlir_text
+        return str(self._cached_module)
 
     def verify(self) -> None:
         """Verify the cached module operation."""

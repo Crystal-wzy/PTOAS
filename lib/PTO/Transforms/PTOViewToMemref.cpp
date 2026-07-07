@@ -13,6 +13,7 @@
 // metadata through binding ops and SSA backtracking.
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 
@@ -138,6 +139,9 @@ static mlir::pto::TileBufConfigAttr lookupConfig(Value v) {
   if (auto cast = v.getDefiningOp<memref::CastOp>()) {
     return lookupConfig(cast.getSource());
   }
+  if (auto slot = v.getDefiningOp<mlir::pto::SlotMarkerOp>()) {
+    return lookupConfig(slot.getSource());
+  }
 
   // 3. pto.fusion_region result 本身不携带 config；作为兜底情况，沿着
   //    pto.yield 回溯到 region 内真正的 tile handle/memref 定义链继续查找。
@@ -154,9 +158,9 @@ static mlir::pto::TileBufConfigAttr lookupConfig(Value v) {
       return lookupConfig(yieldOp.getOperand(resultIndex));
     }
   }
-  
+
   // 如果追溯到 BlockArgument (函数参数) 或其他无法穿透的 Op，则返回空
-  return {}; 
+  return {};
 }
 
 // =============================================================================
@@ -188,6 +192,10 @@ static void lookupValidDims(Value v, Value &vRow, Value &vCol) {
   }
   if (auto cast = v.getDefiningOp<memref::CastOp>()) {
     lookupValidDims(cast.getSource(), vRow, vCol);
+    return;
+  }
+  if (auto slot = v.getDefiningOp<mlir::pto::SlotMarkerOp>()) {
+    lookupValidDims(slot.getSource(), vRow, vCol);
     return;
   }
 
@@ -745,10 +753,16 @@ static Type convertPTOTypeToMemRef(Type t) {
     return MemRefType::get({ShapedType::kDynamic}, pty.getElementType(),
                            MemRefLayoutAttrInterface(), pty.getMemorySpace());
   }
-  
+
   // 2. 处理 !pto.tile_buf<...>
   if (auto tbTy = dyn_cast<mlir::pto::TileBufType>(t))
     return convertTileBufTypeToMemRef(tbTy);
+  // 3. !pto.multi_tile_buf<S, count=N>: collapses to the slot memref shape;
+  //    the N-slot fan-out lives on the `pto.multi_buffer` attr written by
+  //    the alloc lowering, not in the type. This branch is defensive --
+  //    by design multi_tile_buf does not appear on function boundaries.
+  if (auto mtbTy = dyn_cast<mlir::pto::MultiTileBufType>(t))
+    return convertTileBufTypeToMemRef(mtbTy.getSlotType());
   if (auto tvTy = dyn_cast<mlir::pto::TensorViewType>(t))
     return MemRefType::get(tvTy.getShape(), tvTy.getElementType(),
                            MemRefLayoutAttrInterface(), Attribute());
@@ -1442,7 +1456,8 @@ static LogicalResult lowerSubViewOps(func::FuncOp func, MLIRContext *ctx) {
 
     SmallVector<int64_t> srcStrides;
     int64_t srcOffset = ShapedType::kDynamic;
-    if (failed(getStridesAndOffset(srcMrTy, srcStrides, srcOffset)))
+    if (failed(mlir::pto::getPTOMemRefStridesAndOffset(srcMrTy, srcStrides,
+                                                       srcOffset)))
       srcStrides = computeCompactStrides(srcMrTy.getShape());
 
     // Keep parent physical shape + strides for bound tile semantics.
@@ -1598,12 +1613,6 @@ struct PTOViewToMemrefPass
         return;
       }
 
-      if (!func.isExternal() &&
-          failed(synthesizeMissingTQuantTmpOps(func, ctx))) {
-        signalPassFailure();
-        return;
-      }
-
       auto fnTy = func.getFunctionType();
 
       // ------------------------------------------------------------------
@@ -1631,6 +1640,14 @@ struct PTOViewToMemrefPass
       // Stage 0.20: lower pto.inttoptr result types to GM memrefs.
       // ------------------------------------------------------------------
       if (failed(lowerIntToPtrOps(func, ctx))) {
+        signalPassFailure();
+        return;
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 0.25: synthesize missing A2/A3 tquant tmp tiles before type lowering.
+      // ------------------------------------------------------------------
+      if (failed(synthesizeMissingTQuantTmpOps(func, ctx))) {
         signalPassFailure();
         return;
       }
@@ -1766,6 +1783,243 @@ struct PTOViewToMemrefPass
         auto bindOp = rewriter.create<pto::BindTileOp>(
             loc, targetType, alloc, vRow ? vRow : Value(), vCol ? vCol : Value(),
             configAttr);
+        markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
+
+        rewriter.replaceOp(op, bindOp.getResult());
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 0.6: lower pto.alloc_multi_tile / pto.multi_tile_get
+      //
+      // alloc_multi_tile produces a `multi_tile_buf<S, count=N>`. We lower
+      // it into:
+      //   %a = memref.alloc() {pto.multi_buffer = N : i32} : memref<S>
+      //   %m = pto.bind_tile %a, ... : memref<S> -> memref<dyn-offset S>
+      // and replace all uses of the multi_tile_buf SSA with %m. The N-way
+      // physical fan-out lives on the `pto.multi_buffer` attr and is
+      // materialized later by PTOPlanMemory.
+      //
+      // multi_tile_get consumes that memref and wraps it in
+      //   %slot = pto.slot_marker %m[%k] : memref -> memref
+      //   %t    = pto.bind_tile %slot, ... : memref -> memref<dyn-offset>
+      // The slot_marker carries the user-supplied slot SSA forward so that
+      // PlanMemory / sync / EnableBufferSelect can identify which physical
+      // slot this use refers to.
+      //
+      // Ordering: alloc_multi_tile must be lowered before multi_tile_get so
+      // that the get's source SSA has already been rewired to a memref.
+      // ------------------------------------------------------------------
+      SmallVector<mlir::pto::AllocMultiTileOp, 8> allocMultiTiles;
+      func.walk(
+          [&](mlir::pto::AllocMultiTileOp op) { allocMultiTiles.push_back(op); });
+
+      for (auto op : allocMultiTiles) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Location loc = op.getLoc();
+
+        auto mtbTy = op.getResult().getType();
+        if (!mtbTy)
+          continue;
+        auto tbTy = mtbTy.getSlotType();
+        if (!tbTy)
+          continue;
+
+        SmallVector<int64_t, 4> shape(tbTy.getShape().begin(),
+                                      tbTy.getShape().end());
+        Type elemTy = tbTy.getElementType();
+
+        // Stride / layout reuse the same logic as alloc_tile.
+        SmallVector<int64_t> strides;
+        TileLayoutInfo info;
+        if (computeTileLayoutInfo(tbTy.getConfigAttr(), elemTy, shape, info)) {
+          strides = {info.rowStride, info.colStride};
+        } else {
+          strides.resize(shape.size());
+          int64_t s = 1;
+          for (int i = (int)shape.size() - 1; i >= 0; --i) {
+            strides[i] = s;
+            if (shape[i] != ShapedType::kDynamic)
+              s *= shape[i];
+          }
+        }
+
+        auto targetLayout =
+            StridedLayoutAttr::get(ctx, ShapedType::kDynamic, strides);
+        auto targetType =
+            MemRefType::get(shape, elemTy, targetLayout, tbTy.getMemorySpace());
+
+        Value vRow = op.getValidRow();
+        Value vCol = op.getValidCol();
+        ArrayRef<int64_t> validShape = tbTy.getValidShape();
+        if (!tbTy.hasDynamicValid()) {
+          if (validShape.size() >= 1 && validShape[0] >= 0) {
+            vRow = rewriter
+                       .create<arith::ConstantOp>(
+                           loc, rewriter.getIndexType(),
+                           rewriter.getIndexAttr(validShape[0]))
+                       .getResult();
+          }
+          if (validShape.size() >= 2 && validShape[1] >= 0) {
+            vCol = rewriter
+                       .create<arith::ConstantOp>(
+                           loc, rewriter.getIndexType(),
+                           rewriter.getIndexAttr(validShape[1]))
+                       .getResult();
+          }
+        }
+
+        auto configAttr = tbTy.getConfigAttr();
+        if (!configAttr)
+          configAttr = pto::TileBufConfigAttr::getDefault(ctx);
+
+        // Level3 (caller-owned memory): an explicit base address is given and
+        // PlanMemory is skipped. Lay the N slots out contiguously as
+        // [addr, addr + slotBytes, ..., addr + (N-1)*slotBytes] and emit the
+        // multi-address `pto.pointer_cast` alloc anchor directly -- the same
+        // shape PlanMemory produces in the default pipeline (addrs are kept in
+        // slot order so PTOResolveBufferSelect can pick addrs[slot]). Sync and
+        // buffer-select then run unchanged.
+        if (Value addr = op.getAddr()) {
+          uint32_t n = mtbTy.getCount();
+          int64_t elemBytes = getElemBytes(elemTy);
+          int64_t numElems = 1;
+          bool staticShape = true;
+          for (int64_t d : shape) {
+            if (d == ShapedType::kDynamic) {
+              staticShape = false;
+              break;
+            }
+            numElems *= d;
+          }
+          if (!staticShape || elemBytes <= 0) {
+            op.emitError("pto.alloc_multi_tile with explicit addr requires a "
+                         "static slot shape and known element byte size");
+            signalPassFailure();
+            return;
+          }
+          int64_t slotBytes = numElems * elemBytes;
+
+          SmallVector<Value, 8> slotAddrs;
+          slotAddrs.reserve(n);
+          slotAddrs.push_back(addr);
+          for (uint32_t slot = 1; slot < n; ++slot) {
+            Value off = rewriter.create<arith::ConstantOp>(
+                loc, rewriter.getI64Type(),
+                rewriter.getI64IntegerAttr(static_cast<int64_t>(slot) *
+                                           slotBytes));
+            slotAddrs.push_back(
+                rewriter.create<arith::AddIOp>(loc, addr, off).getResult());
+          }
+
+          auto pc = rewriter.create<pto::PointerCastOp>(
+              loc, targetType, slotAddrs, vRow ? vRow : Value(),
+              vCol ? vCol : Value(), configAttr);
+          markForceDynamicValidShape(pc, tbTy.hasDynamicValid(), ctx);
+
+          auto bindOp = rewriter.create<pto::BindTileOp>(
+              loc, targetType, pc.getResult(), vRow ? vRow : Value(),
+              vCol ? vCol : Value(), configAttr);
+          markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
+
+          rewriter.replaceOp(op, bindOp.getResult());
+          continue;
+        }
+
+        // memref.alloc with N-slot annotation. The actual N-way address
+        // expansion happens in PlanMemory.
+        auto allocLayout = StridedLayoutAttr::get(ctx, 0, strides);
+        auto allocType =
+            MemRefType::get(shape, elemTy, allocLayout, tbTy.getMemorySpace());
+        auto allocOp = rewriter.create<memref::AllocOp>(loc, allocType);
+        auto i32Ty = IntegerType::get(ctx, 32);
+        allocOp->setAttr(
+            mlir::pto::kPtoMultiBufferAttrName,
+            IntegerAttr::get(i32Ty, static_cast<int64_t>(mtbTy.getCount())));
+
+        auto bindOp = rewriter.create<pto::BindTileOp>(
+            loc, targetType, allocOp.getResult(), vRow ? vRow : Value(),
+            vCol ? vCol : Value(), configAttr);
+        markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
+
+        rewriter.replaceOp(op, bindOp.getResult());
+      }
+
+      SmallVector<mlir::pto::MultiTileGetOp, 8> multiTileGets;
+      func.walk(
+          [&](mlir::pto::MultiTileGetOp op) { multiTileGets.push_back(op); });
+
+      for (auto op : multiTileGets) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Location loc = op.getLoc();
+
+        // After alloc_multi_tile has been replaced, the source SSA value
+        // is a memref (no longer multi_tile_buf). We accept the raw Value.
+        Value srcMem = op->getOperand(0);
+        if (!llvm::isa<MemRefType>(srcMem.getType())) {
+          op.emitError(
+              "multi_tile_get expects its source to have been lowered to "
+              "memref by alloc_multi_tile rewriting; got ")
+              << srcMem.getType();
+          signalPassFailure();
+          return;
+        }
+        auto srcMemTy = llvm::cast<MemRefType>(srcMem.getType());
+
+        // Recover per-slot tile_buf info from the get op's result type
+        // (which still describes the per-slot tile shape, valid dims,
+        // config, etc.).
+        auto tbTy = llvm::dyn_cast<pto::TileBufType>(op.getResult().getType());
+        if (!tbTy) {
+          op.emitError("multi_tile_get result must be `!pto.tile_buf<...>`");
+          signalPassFailure();
+          return;
+        }
+
+        // The slot view aliases the source memref byte-for-byte.
+        auto slotMarker = rewriter.create<pto::SlotMarkerOp>(
+            loc, srcMemTy, srcMem, op.getSlot());
+
+        // Recover valid_row / valid_col from the per-slot tile type so
+        // downstream BindTile carries the same metadata as the alloc.
+        Value vRow;
+        Value vCol;
+        ArrayRef<int64_t> validShape = tbTy.getValidShape();
+        if (!tbTy.hasDynamicValid()) {
+          if (validShape.size() >= 1 && validShape[0] >= 0) {
+            vRow = rewriter
+                       .create<arith::ConstantOp>(
+                           loc, rewriter.getIndexType(),
+                           rewriter.getIndexAttr(validShape[0]))
+                       .getResult();
+          }
+          if (validShape.size() >= 2 && validShape[1] >= 0) {
+            vCol = rewriter
+                       .create<arith::ConstantOp>(
+                           loc, rewriter.getIndexType(),
+                           rewriter.getIndexAttr(validShape[1]))
+                       .getResult();
+          }
+        }
+
+        auto configAttr = tbTy.getConfigAttr();
+        if (!configAttr)
+          configAttr = pto::TileBufConfigAttr::getDefault(ctx);
+
+        // BindTile result type uses the same layout signature as in the
+        // alloc lowering, so subsequent subview / DMA ops see a consistent
+        // memref view.
+        SmallVector<int64_t> strides = buildTileMemRefStrides(tbTy);
+        auto targetLayout =
+            StridedLayoutAttr::get(ctx, ShapedType::kDynamic, strides);
+        auto targetType =
+            MemRefType::get(tbTy.getShape(), tbTy.getElementType(), targetLayout,
+                            tbTy.getMemorySpace());
+
+        auto bindOp = rewriter.create<pto::BindTileOp>(
+            loc, targetType, slotMarker.getResult(), vRow ? vRow : Value(),
+            vCol ? vCol : Value(), configAttr);
         markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
 
         rewriter.replaceOp(op, bindOp.getResult());
@@ -1996,7 +2250,8 @@ struct PTOViewToMemrefPass
 
         SmallVector<int64_t> staticStrides;
         int64_t offset = ShapedType::kDynamic;
-        if (succeeded(getStridesAndOffset(mrTy, staticStrides, offset)) &&
+        if (succeeded(mlir::pto::getPTOMemRefStridesAndOffset(
+                mrTy, staticStrides, offset)) &&
             dimIndex < (int64_t)staticStrides.size() &&
             staticStrides[dimIndex] != ShapedType::kDynamic) {
           rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(
@@ -3129,6 +3384,7 @@ struct PTOViewToMemrefPass
         Value src = op.getSrc();
         Value indexRow = op.getIndexRow();
         Value indexCol = op.getIndexCol();
+        Value preQuantScalar = op.getPreQuantScalar();
         Value dst = op.getDst();
 
         auto srcTy = dyn_cast<MemRefType>(src.getType());
@@ -3141,13 +3397,93 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TExtractOp>(
-            op,
-            TypeRange{},
-            src,
-            indexRow,
-            indexCol,
-            dst);
+        replaceOpWithClonedAttrs<pto::TExtractOp>(
+            rewriter, op, TypeRange{}, src, indexRow, indexCol,
+            preQuantScalar, dst, op.getAccToVecModeAttr(),
+            op.getReluPreModeAttr());
+      }
+
+      DefaultInlineVector<mlir::pto::TExtractFPOp> extractfpops;
+      func.walk([&](mlir::pto::TExtractFPOp op) { extractfpops.push_back(op); });
+      for (auto op : extractfpops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src = op.getSrc();
+        Value fp = op.getFp();
+        Value indexRow = op.getIndexRow();
+        Value indexCol = op.getIndexCol();
+        Value dst = op.getDst();
+
+        if (!dyn_cast<MemRefType>(src.getType()) ||
+            !dyn_cast<MemRefType>(fp.getType()) ||
+            !dyn_cast<IndexType>(indexRow.getType()) ||
+            !dyn_cast<IndexType>(indexCol.getType()) ||
+            !dyn_cast<MemRefType>(dst.getType())) {
+          op.emitError("ins/outs are not correct yet");
+          signalPassFailure();
+          return;
+        }
+
+        replaceOpWithClonedAttrs<pto::TExtractFPOp>(
+            rewriter, op, TypeRange{}, src, fp, indexRow, indexCol, dst,
+            op.getAccToVecModeAttr(), op.getReluPreModeAttr());
+      }
+
+      DefaultInlineVector<mlir::pto::TInsertOp> insertops;
+      func.walk([&](mlir::pto::TInsertOp op) { insertops.push_back(op); });
+      for (auto op : insertops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src = op.getSrc();
+        Value indexRow = op.getIndexRow();
+        Value indexCol = op.getIndexCol();
+        Value fp = op.getFp();
+        Value preQuantScalar = op.getPreQuantScalar();
+        Value dst = op.getDst();
+
+        if (!dyn_cast<MemRefType>(src.getType()) ||
+            !dyn_cast<IndexType>(indexRow.getType()) ||
+            !dyn_cast<IndexType>(indexCol.getType()) ||
+            !dyn_cast<MemRefType>(dst.getType()) ||
+            (fp && !dyn_cast<MemRefType>(fp.getType()))) {
+          op.emitError("ins/outs are not correct yet");
+          signalPassFailure();
+          return;
+        }
+
+        replaceOpWithClonedAttrs<pto::TInsertOp>(
+            rewriter, op, TypeRange{}, src, indexRow, indexCol, dst, fp,
+            preQuantScalar, op.getAccToVecModeAttr(), op.getReluPreModeAttr(),
+            op.getTinsertModeAttr());
+      }
+
+      DefaultInlineVector<mlir::pto::TInsertFPOp> insertfpops;
+      func.walk([&](mlir::pto::TInsertFPOp op) { insertfpops.push_back(op); });
+      for (auto op : insertfpops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src = op.getSrc();
+        Value fp = op.getFp();
+        Value indexRow = op.getIndexRow();
+        Value indexCol = op.getIndexCol();
+        Value dst = op.getDst();
+
+        if (!dyn_cast<MemRefType>(src.getType()) ||
+            !dyn_cast<MemRefType>(fp.getType()) ||
+            !dyn_cast<IndexType>(indexRow.getType()) ||
+            !dyn_cast<IndexType>(indexCol.getType()) ||
+            !dyn_cast<MemRefType>(dst.getType())) {
+          op.emitError("ins/outs are not correct yet");
+          signalPassFailure();
+          return;
+        }
+
+        replaceOpWithClonedAttrs<pto::TInsertFPOp>(
+            rewriter, op, TypeRange{}, src, fp, indexRow, indexCol, dst,
+            op.getAccToVecModeAttr(), op.getReluPreModeAttr());
       }
 
       DefaultInlineVector<mlir::pto::TFillPadOp> fillpadops;
@@ -3584,8 +3920,8 @@ struct PTOViewToMemrefPass
 
         Value src = op.getSrc();
         Value fp = op.getFp();
-        Value offset = op.getOffset();
         Value tmp = op.getTmp();
+        Value offset = op.getOffset();
         Value dst = op.getDst();
 
         auto srcTy = dyn_cast<MemRefType>(src.getType());
@@ -3596,23 +3932,13 @@ struct PTOViewToMemrefPass
           signalPassFailure();
           return;
         }
-        if (offset && !dyn_cast<MemRefType>(offset.getType())) {
-          op.emitError("offset is not memref yet");
+        if (tmp && !dyn_cast<MemRefType>(tmp.getType())) {
+          op.emitError("tmp is not memref yet");
           signalPassFailure();
           return;
         }
-        if (!tmp &&
-            mlir::pto::getTargetArch(op.getOperation()) !=
-                mlir::pto::PTOArch::A5) {
-          if (!srcTy.hasStaticShape()) {
-            op.emitError("cannot synthesize tquant tmp for dynamic memref src");
-            signalPassFailure();
-            return;
-          }
-          tmp = rewriter.create<memref::AllocOp>(op.getLoc(), srcTy).getResult();
-        }
-        if (tmp && !dyn_cast<MemRefType>(tmp.getType())) {
-          op.emitError("tmp is not memref yet");
+        if (offset && !dyn_cast<MemRefType>(offset.getType())) {
+          op.emitError("offset is not memref yet");
           signalPassFailure();
           return;
         }
@@ -3931,10 +4257,11 @@ struct PTOViewToMemrefPass
         rewriter.setInsertionPoint(op);
 
         Value src = op.getSrc();
-        auto printFormatAttr = op.getPrintFormatAttr();
+        Value tmp = op->getNumOperands() > 1 ? op->getOperand(1) : Value();
 
         auto srcTy = dyn_cast<MemRefType>(src.getType());
-        if (!srcTy) {
+        auto tmpTy = tmp ? dyn_cast<MemRefType>(tmp.getType()) : MemRefType();
+        if (!srcTy || (tmp && !tmpTy)) {
           op.emitError("ins/outs are not memref yet");
           signalPassFailure();
           return;
@@ -3944,7 +4271,9 @@ struct PTOViewToMemrefPass
             op,
             TypeRange{},
             src,
-            printFormatAttr);
+            tmp,
+            dyn_cast_or_null<pto::PrintFormatAttr>(
+                op.getProperties().printFormat));
       }
 
       // ------------------------------------------------------------------

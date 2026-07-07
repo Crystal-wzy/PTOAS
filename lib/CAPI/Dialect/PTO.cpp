@@ -508,6 +508,36 @@ int32_t mlirPTOQuantTypeAttrGetValue(MlirAttribute attr) {
   return static_cast<int32_t>(a.getValue());
 }
 
+MlirAttribute mlirPTOQuantScaleAlgAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  auto v = static_cast<mlir::pto::QuantScaleAlg>(value);
+  return wrap(mlir::pto::QuantScaleAlgAttr::get(c, v));
+}
+
+bool mlirPTOAttrIsAQuantScaleAlgAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::QuantScaleAlgAttr>(unwrap(attr));
+}
+
+int32_t mlirPTOQuantScaleAlgAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::QuantScaleAlgAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
+
+MlirAttribute mlirPTOVecStoreModeAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  auto v = static_cast<mlir::pto::VecStoreMode>(value);
+  return wrap(mlir::pto::VecStoreModeAttr::get(c, v));
+}
+
+bool mlirPTOAttrIsAVecStoreModeAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::VecStoreModeAttr>(unwrap(attr));
+}
+
+int32_t mlirPTOVecStoreModeAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::VecStoreModeAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
+
 bool mlirPTOAttrIsAEventAttr(MlirAttribute attr) {
   return mlir::isa<mlir::pto::EventAttr>(unwrap(attr));
 }
@@ -622,6 +652,21 @@ MlirPTOCmpMode mlirPTOCmpModeAttrGetValue(MlirAttribute attr) {
   return static_cast<MlirPTOCmpMode>(static_cast<uint32_t>(a.getValue()));
 }
 
+MlirAttribute mlirPTOCoalesceAttrGet(MlirContext ctx, MlirPTOCoalesce value) {
+  auto *c = unwrap(ctx);
+  auto coalesce = static_cast<mlir::pto::Coalesce>(value);
+  return wrap(mlir::pto::CoalesceAttr::get(c, coalesce));
+}
+
+bool mlirPTOAttrIsACoalesceAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::CoalesceAttr>(unwrap(attr));
+}
+
+MlirPTOCoalesce mlirPTOCoalesceAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::CoalesceAttr>(unwrap(attr));
+  return static_cast<MlirPTOCoalesce>(static_cast<uint32_t>(a.getValue()));
+}
+
 bool mlirPTOAttrIsATileBufConfigAttr(MlirAttribute attr) {
   return mlir::isa<mlir::pto::TileBufConfigAttr>(unwrap(attr));
 }
@@ -686,6 +731,21 @@ MlirAttribute mlirPTOAccToVecModeAttrGet(MlirContext ctx, int32_t value) {
 
 int32_t mlirPTOAccToVecModeAttrGetValue(MlirAttribute attr) {
   auto a = mlir::cast<mlir::pto::AccToVecModeAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
+
+bool mlirPTOAttrIsATInsertModeAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::TInsertModeAttr>(unwrap(attr));
+}
+
+MlirAttribute mlirPTOTInsertModeAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  return wrap(mlir::pto::TInsertModeAttr::get(
+      c, static_cast<mlir::pto::TInsertMode>(value)));
+}
+
+int32_t mlirPTOTInsertModeAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::TInsertModeAttr>(unwrap(attr));
   return static_cast<int32_t>(a.getValue());
 }
 

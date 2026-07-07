@@ -153,7 +153,8 @@ getMemrefSubViewBaseAddresses(memref::SubViewOp op, MemRefType sourceType,
 
   SmallVector<int64_t> strides;
   int64_t baseOffset = ShapedType::kDynamic;
-  if (failed(mlir::getStridesAndOffset(sourceType, strides, baseOffset)) ||
+  if (failed(mlir::pto::getPTOMemRefStridesAndOffset(sourceType, strides,
+                                                     baseOffset)) ||
       strides.size() != 2 ||
       llvm::is_contained(strides, ShapedType::kDynamic))
     return std::nullopt;
@@ -257,7 +258,8 @@ static std::pair<int64_t, int64_t> getStaticOffsetAndSize(Operation *op, Value s
   if (auto subView = dyn_cast<memref::SubViewOp>(op)) {
     int64_t baseOffset;
     StrideVector strides;
-    if (failed(mlir::getStridesAndOffset(srcType, strides, baseOffset))) {
+    if (failed(mlir::pto::getPTOMemRefStridesAndOffset(srcType, strides,
+                                                       baseOffset))) {
         return {-1, -1};
     }
 
@@ -385,6 +387,9 @@ void PTOIRTranslator::RecursionIR(Region *region) {
     else if (auto memrefSubView = dyn_cast<memref::SubViewOp>(op)) {
       UpdateMemrefSubViewAliasBufferInfo(memrefSubView);
     }
+    else if (auto slotMarker = dyn_cast<pto::SlotMarkerOp>(op)) {
+      UpdateSlotMarkerAliasBufferInfo(slotMarker);
+    }
     else if (auto castOp = dyn_cast<memref::ReinterpretCastOp>(op)) {
       UpdateAliasBufferInfo(castOp.getResult(), castOp.getSource());
     }
@@ -394,6 +399,21 @@ void PTOIRTranslator::RecursionIR(Region *region) {
     }
     else if (auto expandOp = dyn_cast<memref::ExpandShapeOp>(op)) {
       UpdateAliasBufferInfo(expandOp.getResult(), expandOp.getSrc());
+    }
+    // arith.select on memref values: emitted by `PTOResolveBufferSelect`
+    // for the dynamic-slot path of `pto.multi_tile_get`. The result
+    // conservatively aliases both branches so sync analysis cannot miss a
+    // dependency that arises through either possible slot. This preserves
+    // correctness for runtime slot indices; finer-grained "slot
+    // expressions are disjoint" reasoning is a future affine-analysis
+    // upgrade and would let sync emit fewer flags in prefetch idioms.
+    else if (auto selectOp = dyn_cast<arith::SelectOp>(op)) {
+      if (isa<MemRefType>(selectOp.getResult().getType())) {
+        UpdateConservativeAliasBufferInfo(selectOp.getResult(),
+                                          selectOp.getTrueValue());
+        UpdateConservativeAliasBufferInfo(selectOp.getResult(),
+                                          selectOp.getFalseValue());
+      }
     }
 
     // --- Case C: 控制流 (SCF) ---
@@ -500,7 +520,6 @@ LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op)
   if (op.getAddrs().empty()) {
     return op.emitError("PointerCast must have at least one address operand");
   }
-  Value rootSrc = op.getAddrs().front();
 
   uint64_t sizeInBytes = 0;
   if (memRefType.hasStaticShape()) {
@@ -520,14 +539,46 @@ LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op)
     }
   }
 
-  auto newMemInfo = std::make_unique<BaseMemInfo>(
-      res,
-      rootSrc,
-      space,
-      SmallVector<uint64_t>{0},
-      sizeInBytes
-  );
+  if (op.getAddrs().size() == 1) {
+    // Single-address path: keep the historical semantics where `rootBuffer`
+    // is the i64 address SSA and `baseAddresses` starts at {0}. Downstream
+    // view ops accumulate a delta into baseAddresses[0]; MemAlias gates on
+    // rootBuffer SSA identity for single-buffer allocations.
+    Value rootSrc = op.getAddrs().front();
+    auto newMemInfo = std::make_unique<BaseMemInfo>(
+        res, rootSrc, space, SmallVector<uint64_t>{0}, sizeInBytes);
+    buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
+    return success();
+  }
 
+  // Multi-address (multi-buffer) cast. Use the cast result as `rootBuffer`
+  // so every downstream `pto.slot_marker` from the same alloc shares one
+  // root, and populate `baseAddresses` with each slot's physical offset
+  // (extracted from the constant i64 operands emitted by
+  // AllocToPointerCast). `pto.slot_marker` then narrows or keeps these
+  // offsets according to its slot SSA; MemAlias's existing
+  // `isBufferAddressRangeOverlap` does the per-slot disambiguation.
+  SmallVector<uint64_t> slotOffsets;
+  slotOffsets.reserve(op.getAddrs().size());
+  for (Value a : op.getAddrs()) {
+    auto cst = a.getDefiningOp<arith::ConstantOp>();
+    IntegerAttr attr;
+    if (!cst || !(attr = dyn_cast<IntegerAttr>(cst.getValue()))) {
+      // Non-constant slot address: fall back to single-address semantics
+      // with the first operand as rootBuffer so existing non-multi-buffer
+      // codepaths that happen to feed non-constant i64s keep their
+      // historical behavior.
+      Value rootSrc = op.getAddrs().front();
+      auto newMemInfo = std::make_unique<BaseMemInfo>(
+          res, rootSrc, space, SmallVector<uint64_t>{0}, sizeInBytes);
+      buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
+      return success();
+    }
+    slotOffsets.push_back(attr.getValue().getZExtValue());
+  }
+
+  auto newMemInfo = std::make_unique<BaseMemInfo>(
+      res, res, space, std::move(slotOffsets), sizeInBytes);
   buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
   return success();
 }
@@ -920,6 +971,41 @@ void PTOIRTranslator::UpdateConservativeAliasBufferInfo(Value result,
     resultMemInfoVec.emplace_back(parentInfo->clone(result));
 }
 
+void PTOIRTranslator::UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op) {
+  Value result = op.getResult();
+  Value source = op.getSource();
+  if (!result || !source)
+    return;
+  if (!buffer2MemInfoMap_.contains(source))
+    return;
+
+  Value slot = op.getSlot();
+  IntegerAttr constAttr;
+  bool isConstSlot = matchPattern(slot, m_Constant(&constAttr));
+  int64_t constSlotIdx = isConstSlot ? constAttr.getValue().getSExtValue() : -1;
+
+  auto &resultMemInfoVec = buffer2MemInfoMap_[result];
+  for (auto &parentInfo : buffer2MemInfoMap_[source]) {
+    auto newInfo = parentInfo->clone(result);
+    // Multi-buffer parent: `baseAddresses` lists every physical slot's
+    // offset (populated by `UpdatePointerCastOpMemInfo` for multi-address
+    // casts). For a constant slot index, narrow `baseAddresses` to just
+    // that one slot so MemAlias's range-overlap check returns false when
+    // two const-slot uses pick different slots. For a dynamic slot index,
+    // keep all addresses -- the runtime SSA could resolve to any slot, so
+    // sync must conservatively treat the use as touching all of them.
+    if (isConstSlot && constSlotIdx >= 0 &&
+        constSlotIdx < static_cast<int64_t>(newInfo->baseAddresses.size()) &&
+        newInfo->baseAddresses.size() > 1) {
+      uint64_t pickAddr =
+          newInfo->baseAddresses[static_cast<size_t>(constSlotIdx)];
+      newInfo->baseAddresses.clear();
+      newInfo->baseAddresses.push_back(pickAddr);
+    }
+    resultMemInfoVec.emplace_back(std::move(newInfo));
+  }
+}
+
 void PTOIRTranslator::UpdateMemrefSubViewAliasBufferInfo(memref::SubViewOp op) {
   Value result = op.getResult();
   Value source = op.getSource();
@@ -944,7 +1030,8 @@ void PTOIRTranslator::UpdateMemrefSubViewAliasBufferInfo(memref::SubViewOp op) {
 
   SmallVector<int64_t> strides;
   int64_t baseOffset = ShapedType::kDynamic;
-  if (failed(mlir::getStridesAndOffset(sourceType, strides, baseOffset)) ||
+  if (failed(mlir::pto::getPTOMemRefStridesAndOffset(sourceType, strides,
+                                                     baseOffset)) ||
       strides.size() != 2) {
     UpdateConservativeAliasBufferInfo(result, source);
     return;

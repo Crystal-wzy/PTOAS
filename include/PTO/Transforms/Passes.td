@@ -147,6 +147,28 @@ def PTOA5NormalizeTMov : Pass<"pto-a5-normalize-tmov", "func::FuncOp"> {
   let dependentDialects = ["pto::PTODialect", "func::FuncDialect"];
 }
 
+def PTORemoveIdentityTMov : Pass<"pto-remove-identity-tmov", "func::FuncOp"> {
+  let summary = "Remove plain PTO TMOV operations that copy a tile onto itself";
+  let description = [{
+    Removes side-effect-free `pto.tmov` operations whose source and destination
+    are proven to refer to the same physical tile address/range. Except for
+    exact same-SSA self-copies, the proof goes through InsertSync's
+    `BaseMemInfo` exact-range analysis for statically addressable values.
+    Same-address copies are removed only when the TMOV destination/result is
+    dead and no later same-address alias use is visible, so a live copy cannot
+    be the sole synchronization bridge. This pass runs before InsertSync so
+    deleting the identity TMOV also prevents
+    synchronization from being generated only for that no-op copy.
+  }];
+  let constructor = "mlir::pto::createPTORemoveIdentityTMovPass()";
+  let dependentDialects = [
+    "pto::PTODialect",
+    "arith::ArithDialect",
+    "func::FuncDialect",
+    "memref::MemRefDialect"
+  ];
+}
+
 
 def InferPTOMemScope : Pass<"pto-infer-mem-scope"> {
   let summary = "Infer memory scope for PTO Ops";
@@ -178,6 +200,12 @@ def PlanMemory : Pass<"pto-plan-memory", "ModuleOp"> {
     Option<"restrictInplaceAsISA", "restrict-inplace-as-isa", "bool",
            /*default=*/"false",
            "restrict memory inplace as isa, default : false">,
+    Option<"orderBySize", "order-by-size", "bool",
+           /*default=*/"false",
+           "Process buffers largest-first (first-fit-decreasing order) during "
+           "local memory planning instead of the default DMA-first order. "
+           "Decreasing-size order packs heterogeneous-size buffers tighter "
+           "(matches XLA/TVM/SOMAS). default : false">,
   ];
 }
 def PTOLoweringSyncToPipe : Pass<"pto-lowering-sync-to-pipe", "func::FuncOp"> {
@@ -685,6 +713,37 @@ def PTOMaterializeTileHandles : Pass<"pto-materialize-tile-handles", "ModuleOp">
     "mlir::memref::MemRefDialect",
     "mlir::arith::ArithDialect",
     "mlir::func::FuncDialect"
+  ];
+}
+
+def PTOResolveBufferSelect : Pass<"pto-resolve-buffer-select", "ModuleOp"> {
+  let summary = "Lower pto.slot_marker to single-slot pointer_cast (multi-buffer)";
+  let description = [{
+    Consumes `pto.slot_marker %src[%k]` ops written by PTOViewToMemref to
+    thread multi-buffer slot selection through the memref layer.
+
+    The op is replaced by a fresh single-address `pto.pointer_cast` that
+    refers to the chosen physical slot:
+
+    - constant slot `k`: a single `pto.pointer_cast(addrK)` is emitted at
+      the use site, using slot k from the underlying multi-address
+      pointer_cast created by PTOPlanMemory / AllocToPointerCast.
+    - dynamic slot `%k`: per-slot single-address `pto.pointer_cast`s are
+      created and an N-way `arith.select` chain picks one according to the
+      user-supplied SSA. This pass does NOT rewrite `%k` into `iv mod N`;
+      the frontend expression is the slot selector.
+
+    The original multi-address `pto.pointer_cast` is kept in IR as the
+    "alloc anchor" so future sync passes can recognize the multi-buffer
+    geometry.
+  }];
+
+  let constructor = "mlir::pto::createPTOResolveBufferSelectPass()";
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::arith::ArithDialect"
   ];
 }
 

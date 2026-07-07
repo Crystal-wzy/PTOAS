@@ -1040,6 +1040,17 @@ def PTO_ScatterConflictAttr : EnumAttr<PTO_Dialect, PTO_ScatterConflictEnum, "sc
   let summary = "MSCATTER scatter conflict handling mode";
 }
 
+def PTO_PrintFormatEnum : PTO_I32Enum<
+  "PrintFormat", "PTO TPRINT format mode", [
+    I32EnumAttrCase<"Width8_Precision4", 0, "width8_precision4">,
+    I32EnumAttrCase<"Width8_Precision2", 1, "width8_precision2">,
+    I32EnumAttrCase<"Width10_Precision6", 2, "width10_precision6">
+  ]>;
+
+def PTO_PrintFormatAttr : EnumAttr<PTO_Dialect, PTO_PrintFormatEnum, "print_format"> {
+  let summary = "TPRINT output format mode";
+}
+
 def PTO_AccToVecMode_Enum : PTO_I32Enum<"AccToVecMode", "TMOV acc-to-vec mode", [
   I32EnumAttrCase<"SingleModeVec0", 0, "single_mode_vec0">,
   I32EnumAttrCase<"SingleModeVec1", 1, "single_mode_vec1">,
@@ -1051,6 +1062,7 @@ def PTO_AccToVecModeAttr : PTO_Attr<"AccToVecMode", "acc_to_vec_mode"> {
   let parameters = (ins EnumParameter<PTO_AccToVecMode_Enum>:$value);
   let assemblyFormat = "`<` params `>`";
 }
+
 //===----------------------------------------------------------------------===//
 // MaskPattern
 //===----------------------------------------------------------------------===//
@@ -1168,6 +1180,28 @@ def PTO_QuantTypeEnum : PTO_I32Enum<
 
 def PTO_QuantTypeAttr : EnumAttr<PTO_Dialect, PTO_QuantTypeEnum, "quant_type"> {
   let summary = "quantization type attribute";
+}
+
+def PTO_QuantScaleAlgEnum : PTO_I32Enum<
+  "QuantScaleAlg", "PTO MX quantization scale algorithm", [
+    I32EnumAttrCase<"OCP", 0, "ocp">,
+    I32EnumAttrCase<"NV", 1, "nv">
+  ]>;
+
+def PTO_QuantScaleAlgAttr
+    : EnumAttr<PTO_Dialect, PTO_QuantScaleAlgEnum, "quant_scale_alg"> {
+  let summary = "MX quantization scale algorithm attribute";
+}
+
+def PTO_VecStoreModeEnum : PTO_I32Enum<
+  "VecStoreMode", "PTO vector store mode", [
+    I32EnumAttrCase<"ND", 0, "nd">,
+    I32EnumAttrCase<"NZ", 1, "nz">
+  ]>;
+
+def PTO_VecStoreModeAttr
+    : EnumAttr<PTO_Dialect, PTO_VecStoreModeEnum, "vec_store_mode"> {
+  let summary = "MX quantization store mode attribute";
 }
 
 //===----------------------------------------------------------------------===//

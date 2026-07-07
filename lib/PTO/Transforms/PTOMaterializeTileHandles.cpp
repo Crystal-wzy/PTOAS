@@ -24,6 +24,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 
@@ -52,6 +53,11 @@ namespace {
 
 static constexpr llvm::StringLiteral kForceDynamicValidShapeAttrName =
     "__pto.force_dynamic_valid_shape";
+
+static int64_t getIntegerAttrSignedValue(IntegerAttr attr) {
+  const APInt &value = attr.getValue();
+  return value.getBitWidth() == 0 ? 0 : value.getSExtValue();
+}
 
 struct TileHandleMetadata {
   Value source;
@@ -269,13 +275,13 @@ static bool getTilePointerStrides(TileBufConfigAttr configAttr, Type elemTy,
   if (auto blAttr = dyn_cast<BLayoutAttr>(configAttr.getBLayout()))
     blVal = static_cast<int32_t>(blAttr.getValue());
   else if (auto intAttr = dyn_cast<IntegerAttr>(configAttr.getBLayout()))
-    blVal = static_cast<int32_t>(intAttr.getInt());
+    blVal = static_cast<int32_t>(getIntegerAttrSignedValue(intAttr));
 
   int32_t slVal = 0;
   if (auto slAttr = dyn_cast<SLayoutAttr>(configAttr.getSLayout()))
     slVal = static_cast<int32_t>(slAttr.getValue());
   else if (auto intAttr = dyn_cast<IntegerAttr>(configAttr.getSLayout()))
-    slVal = static_cast<int32_t>(intAttr.getInt());
+    slVal = static_cast<int32_t>(getIntegerAttrSignedValue(intAttr));
 
   bool boxed = slVal != 0;
   int64_t innerRows = 1;
@@ -283,7 +289,7 @@ static bool getTilePointerStrides(TileBufConfigAttr configAttr, Type elemTy,
   if (boxed) {
     int32_t fractal = 512;
     if (auto frAttr = dyn_cast<IntegerAttr>(configAttr.getSFractalSize()))
-      fractal = static_cast<int32_t>(frAttr.getInt());
+      fractal = static_cast<int32_t>(getIntegerAttrSignedValue(frAttr));
 
     unsigned elemBytes = pto::getPTOStorageElemByteSize(elemTy);
     if (elemBytes == 0)
@@ -360,8 +366,8 @@ getMaterializedTileShape(MemRefType memTy, const TileHandleMetadata &meta) {
 
   SmallVector<int64_t> inheritedStrides;
   int64_t inheritedOffset = ShapedType::kDynamic;
-  if (failed(getStridesAndOffset(sourceMrTy, inheritedStrides,
-                                 inheritedOffset)) ||
+  if (failed(mlir::pto::getPTOMemRefStridesAndOffset(
+          sourceMrTy, inheritedStrides, inheritedOffset)) ||
       inheritedStrides.size() < 2)
     return shape;
 
@@ -429,12 +435,13 @@ static Value ensureI64(Value value, OpBuilder &builder, Location loc) {
 
 static Value materializeOffset(OpFoldResult ofr, OpBuilder &builder,
                                Location loc) {
-  if (auto attr = ofr.dyn_cast<Attribute>()) {
+  if (isa<Attribute>(ofr)) {
+    Attribute attr = cast<Attribute>(ofr);
     if (auto intAttr = dyn_cast<IntegerAttr>(attr))
-      return makeI64Constant(builder, loc, intAttr.getInt());
+      return makeI64Constant(builder, loc, getIntegerAttrSignedValue(intAttr));
     return Value();
   }
-  return ensureI64(ofr.get<Value>(), builder, loc);
+  return ensureI64(cast<Value>(ofr), builder, loc);
 }
 
 static Value addI64(Value lhs, Value rhs, OpBuilder &builder, Location loc) {
@@ -474,7 +481,8 @@ static Value computeSubviewAddress(memref::SubViewOp subview,
 
   SmallVector<int64_t> sourceStrides;
   int64_t sourceOffset = ShapedType::kDynamic;
-  if (failed(getStridesAndOffset(sourceTy, sourceStrides, sourceOffset)))
+  if (failed(mlir::pto::getPTOMemRefStridesAndOffset(
+          sourceTy, sourceStrides, sourceOffset)))
     return Value();
 
   auto mixedOffsets = subview.getMixedOffsets();
@@ -513,6 +521,16 @@ static Value computeExplicitAddress(Value value, OpBuilder &builder,
 
   if (auto subview = value.getDefiningOp<memref::SubViewOp>())
     return computeSubviewAddress(subview, builder, loc);
+
+  if (auto select = value.getDefiningOp<arith::SelectOp>()) {
+    Value trueAddr = computeExplicitAddress(select.getTrueValue(), builder, loc);
+    Value falseAddr =
+        computeExplicitAddress(select.getFalseValue(), builder, loc);
+    if (!trueAddr || !falseAddr)
+      return Value();
+    return builder.create<arith::SelectOp>(loc, select.getCondition(),
+                                           trueAddr, falseAddr);
+  }
 
   if (auto cast = value.getDefiningOp<memref::CastOp>())
     return computeExplicitAddress(cast.getSource(), builder, loc);
@@ -603,6 +621,45 @@ static Value lookupMaterializedTileHandle(
   return it->second;
 }
 
+static void cloneBlockWithoutTerminator(Block *from, Block *to,
+                                        IRMapping &mapping) {
+  OpBuilder builder(to, to->end());
+  Operation *terminator = from->getTerminator();
+  for (Operation &op : *from) {
+    if (&op == terminator)
+      break;
+    builder.clone(op, mapping);
+  }
+}
+
+static bool isOperationNestedIn(Operation *op, Operation *ancestor) {
+  for (; op; op = op->getParentOp()) {
+    if (op == ancestor)
+      return true;
+  }
+  return false;
+}
+
+static bool isValueOwnedByOperation(Value value, Operation *owner) {
+  if (auto result = dyn_cast<OpResult>(value))
+    return isOperationNestedIn(result.getOwner(), owner);
+  if (auto arg = dyn_cast<BlockArgument>(value))
+    return isOperationNestedIn(arg.getOwner()->getParentOp(), owner);
+  return false;
+}
+
+static void eraseTileHandlesOwnedBy(Operation *owner,
+                                    DenseMap<Value, Value> &tileHandles) {
+  SmallVector<Value, 8> keysToErase;
+  for (auto &entry : tileHandles) {
+    if (isValueOwnedByOperation(entry.first, owner) ||
+        isValueOwnedByOperation(entry.second, owner))
+      keysToErase.push_back(entry.first);
+  }
+  for (Value key : keysToErase)
+    tileHandles.erase(key);
+}
+
 static FailureOr<bool>
 materializeSCFIfResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
   bool changed = false;
@@ -618,6 +675,19 @@ materializeSCFIfResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
     auto elseYield = dyn_cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
     if (!thenYield || !elseYield)
       continue;
+
+    if (thenYield.getNumOperands() != ifOp.getNumResults() ||
+        elseYield.getNumOperands() != ifOp.getNumResults()) {
+      ifOp.emitOpError("result count does not match branch yield operands");
+      return failure();
+    }
+
+    SmallVector<Type> resultTypes(ifOp->getResultTypes());
+    SmallVector<Value> thenYieldOperands(thenYield.getOperands().begin(),
+                                         thenYield.getOperands().end());
+    SmallVector<Value> elseYieldOperands(elseYield.getOperands().begin(),
+                                         elseYield.getOperands().end());
+    SmallVector<unsigned> materializedResults;
 
     for (auto [idx, result] : llvm::enumerate(ifOp.getResults())) {
       if (!isLocalTileMemRef(result.getType()))
@@ -639,12 +709,48 @@ materializeSCFIfResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
       }
 
       Type tileTy = thenTile.getType();
-      thenYield->setOperand(idx, thenTile);
-      elseYield->setOperand(idx, elseTile);
-      result.setType(tileTy);
-      tileHandles[result] = result;
-      changed = true;
+      resultTypes[idx] = tileTy;
+      thenYieldOperands[idx] = thenTile;
+      elseYieldOperands[idx] = elseTile;
+      materializedResults.push_back(idx);
     }
+
+    if (materializedResults.empty())
+      continue;
+
+    OpBuilder builder(ifOp);
+    auto newIf = builder.create<scf::IfOp>(
+        ifOp.getLoc(), TypeRange(resultTypes), ifOp.getCondition(),
+        /*addThenBlock=*/true, /*addElseBlock=*/true);
+    newIf->setAttrs(ifOp->getAttrs());
+
+    IRMapping thenMapping;
+    cloneBlockWithoutTerminator(ifOp.thenBlock(), newIf.thenBlock(),
+                                thenMapping);
+    builder.setInsertionPointToEnd(newIf.thenBlock());
+    for (Value &operand : thenYieldOperands)
+      operand = thenMapping.lookupOrDefault(operand);
+    builder.create<scf::YieldOp>(thenYield.getLoc(), thenYieldOperands);
+
+    IRMapping elseMapping;
+    cloneBlockWithoutTerminator(ifOp.elseBlock(), newIf.elseBlock(),
+                                elseMapping);
+    builder.setInsertionPointToEnd(newIf.elseBlock());
+    for (Value &operand : elseYieldOperands)
+      operand = elseMapping.lookupOrDefault(operand);
+    builder.create<scf::YieldOp>(elseYield.getLoc(), elseYieldOperands);
+
+    for (auto [oldResult, newResult] :
+         llvm::zip_equal(ifOp.getResults(), newIf.getResults()))
+      oldResult.replaceAllUsesWith(newResult);
+
+    for (unsigned idx : materializedResults) {
+      tileHandles[newIf.getResult(idx)] = newIf.getResult(idx);
+    }
+
+    eraseTileHandlesOwnedBy(ifOp, tileHandles);
+    ifOp.erase();
+    changed = true;
   }
 
   return changed;
@@ -664,6 +770,18 @@ materializeSCFForResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
     auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
     if (!yield)
       continue;
+
+    if (yield.getNumOperands() != forOp.getNumResults() ||
+        forOp.getInitArgs().size() != forOp.getNumResults()) {
+      forOp.emitOpError("result count does not match iter/yield operands");
+      return failure();
+    }
+
+    SmallVector<Value> initArgs(forOp.getInitArgs().begin(),
+                               forOp.getInitArgs().end());
+    SmallVector<Value> yieldOperands(yield.getOperands().begin(),
+                                     yield.getOperands().end());
+    SmallVector<unsigned> materializedResults;
 
     for (auto [idx, result] : llvm::enumerate(forOp.getResults())) {
       if (!isLocalTileMemRef(result.getType()))
@@ -692,15 +810,46 @@ materializeSCFForResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
         return failure();
       }
 
-      Type tileTy = initTile.getType();
-      forOp->setOperand(forOp.getNumControlOperands() + idx, initTile);
-      iterArg.setType(tileTy);
-      yield->setOperand(idx, yieldTile);
-      result.setType(tileTy);
-      tileHandles[iterArg] = iterArg;
-      tileHandles[result] = result;
-      changed = true;
+      initArgs[idx] = initTile;
+      yieldOperands[idx] = yieldTile;
+      materializedResults.push_back(idx);
     }
+
+    if (materializedResults.empty())
+      continue;
+
+    OpBuilder builder(forOp);
+    auto newFor = builder.create<scf::ForOp>(
+        forOp.getLoc(), forOp.getLowerBound(), forOp.getUpperBound(),
+        forOp.getStep(), initArgs);
+    newFor->setAttrs(forOp->getAttrs());
+
+    IRMapping mapping;
+    mapping.map(forOp.getInductionVar(), newFor.getInductionVar());
+    for (auto [oldArg, newArg] :
+         llvm::zip_equal(forOp.getBody()->getArguments().drop_front(),
+                         newFor.getBody()->getArguments().drop_front()))
+      mapping.map(oldArg, newArg);
+
+    cloneBlockWithoutTerminator(forOp.getBody(), newFor.getBody(), mapping);
+    builder.setInsertionPointToEnd(newFor.getBody());
+    for (Value &operand : yieldOperands)
+      operand = mapping.lookupOrDefault(operand);
+    builder.create<scf::YieldOp>(yield.getLoc(), yieldOperands);
+
+    for (auto [oldResult, newResult] :
+         llvm::zip_equal(forOp.getResults(), newFor.getResults()))
+      oldResult.replaceAllUsesWith(newResult);
+
+    for (unsigned idx : materializedResults) {
+      BlockArgument newIterArg = newFor.getRegionIterArg(idx);
+      tileHandles[newIterArg] = newIterArg;
+      tileHandles[newFor.getResult(idx)] = newFor.getResult(idx);
+    }
+
+    eraseTileHandlesOwnedBy(forOp, tileHandles);
+    forOp.erase();
+    changed = true;
   }
 
   return changed;

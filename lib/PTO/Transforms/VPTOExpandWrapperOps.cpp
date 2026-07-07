@@ -1941,7 +1941,7 @@ struct VPTOExpandWrapperOpsPass
                  ExpandMadSemanticPattern<pto::MadMxOp>,
                  ExpandMadSemanticPattern<pto::MadMxAccOp>,
                  ExpandMadSemanticPattern<pto::MadMxBiasOp>>(&getContext());
-    if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns))))
+    if (failed(applyPatternsGreedily(func, std::move(patterns))))
       signalPassFailure();
   }
 };

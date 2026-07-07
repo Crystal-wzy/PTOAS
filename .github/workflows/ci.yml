@@ -49,7 +49,7 @@ on:
         description: "pto-isa ref (commit/tag/branch; empty = repo-pinned weekly commit)"
         type: string
         # NOTE: Pin a known-good GitCode commit for deterministic runs.
-        default: 5d979cde785f04ab76f17c26f17cb5fb13ad9a51
+        default: 7e879c4198939b506571f8769326b5a61e88da25
       remote_host:
         description: "SSH host/IP for the NPU machine"
         type: string
@@ -98,13 +98,13 @@ jobs:
     env:
       PTOAS_CLANG_MAJOR: "15"
       LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
-      LLVM_REF: feature-vpto
+      LLVM_REF: feature-vpto-llvm21
       LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
       LLVM_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
       PTO_BUILD_DIR: ${{ github.workspace }}/build-assert
       PTO_INSTALL_DIR: ${{ github.workspace }}/install-assert
       MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core
-      LLVM_CACHE_FLAVOR: assert-shared-mlirpy-hardening-v2
+      LLVM_CACHE_FLAVOR: llvm21-assert-shared-mlirpy-hardening-v1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -114,6 +114,15 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # GitHub-hosted runners may include Microsoft apt sources unrelated to
+          # PTOAS; these can intermittently return 403 and break apt-get update.
+          sudo rm -f \
+            /etc/apt/sources.list.d/azure-cli*.list \
+            /etc/apt/sources.list.d/azure-cli*.sources \
+            /etc/apt/sources.list.d/microsoft-prod*.list \
+            /etc/apt/sources.list.d/microsoft-prod*.sources \
+            /etc/apt/sources.list.d/packages-microsoft-prod*.list \
+            /etc/apt/sources.list.d/packages-microsoft-prod*.sources
           sudo apt-get update
           sudo apt-get install -y \
             cmake git ninja-build \
@@ -122,7 +131,7 @@ jobs:
             libedit-dev zlib1g-dev libxml2-dev libzstd-dev
           python3 -m pip install --upgrade pip
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x.
-          python3 -m pip install setuptools wheel 'pybind11<3' numpy
+          python3 -m pip install setuptools wheel 'pybind11<3' nanobind numpy
 
       - name: Define payload paths
         shell: bash
@@ -200,6 +209,9 @@ jobs:
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
             -DPython3_EXECUTABLE=python3 \
+            -DPython_EXECUTABLE=python3 \
+            -Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)" \
+            -Dnanobind_DIR="$(python3 -m nanobind --cmake_dir)" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
             -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
@@ -216,6 +228,37 @@ jobs:
           path: |
             llvm-project/llvm/build-assert
           key: llvm-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
+
+      - name: Validate strict CMake 4 configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake4_pkg="${RUNNER_TEMP:-${GITHUB_WORKSPACE}/.tmp}/cmake-4.1.3-pkg"
+          cmake4_build="${RUNNER_TEMP:-${GITHUB_WORKSPACE}/.tmp}/ptoas-cmake4-strict"
+          rm -rf "${cmake4_pkg}" "${cmake4_build}"
+          python3 -m pip install --target "${cmake4_pkg}" "cmake==4.1.3"
+          cmake4_bin="$(
+            PYTHONPATH="${cmake4_pkg}" python3 -c 'import cmake; from pathlib import Path; print(Path(cmake.__file__).resolve().parent / "data" / "bin" / "cmake")'
+          )"
+          "${cmake4_bin}" --version
+          "${cmake4_bin}" -C "${GITHUB_WORKSPACE}/cmake/LinuxHardeningCache.cmake" \
+            -G Ninja \
+            -S "${GITHUB_WORKSPACE}" \
+            -B "${cmake4_build}" \
+            -DLLVM_DIR="${LLVM_DIR}/lib/cmake/llvm" \
+            -DMLIR_DIR="${LLVM_DIR}/lib/cmake/mlir" \
+            -DPython3_EXECUTABLE="$(command -v python3)" \
+            -DPython3_FIND_STRATEGY=LOCATION \
+            -Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)" \
+            -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+            -DMLIR_PYTHON_PACKAGE_DIR="${MLIR_PYTHONPATH}" \
+            -DPTO_ENABLE_PYTHON_BINDING=ON \
+            -DPTOAS_VALIDATE_CMAKE4_FETCHCONTENT_COMPAT=ON \
+            -DPTOAS_ENABLE_WERROR=OFF \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
+            -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
+            -Werror=dev
 
       - name: Build PTOAS
         run: |
@@ -340,7 +383,7 @@ jobs:
           SKIP_CASES: ${{ github.event.inputs.skip_cases || '' }}
           RUN_ONLY_CASES: ${{ github.event.inputs.run_only_cases || '' }}
           PTO_ISA_REPO: ${{ github.event.inputs.pto_isa_repo || 'https://gitcode.com/cann/pto-isa.git' }}
-          PTO_ISA_COMMIT: ${{ github.event.inputs.pto_isa_commit || '5d979cde785f04ab76f17c26f17cb5fb13ad9a51' }}
+          PTO_ISA_COMMIT: ${{ github.event.inputs.pto_isa_commit || '7e879c4198939b506571f8769326b5a61e88da25' }}
           REMOTE_HOST: ${{ github.event.inputs.remote_host || '101.245.68.6' }}
           REMOTE_USER: ${{ github.event.inputs.remote_user || 'zhongxuan' }}
           REMOTE_PORT: ${{ github.event.inputs.remote_port || '22' }}

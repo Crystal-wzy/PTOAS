@@ -80,6 +80,7 @@ private:
   void UpdateConservativeAliasBufferInfo(Value result, Value source);
   void UpdateMemrefSubViewAliasBufferInfo(memref::SubViewOp op);
   void UpdateTileSubViewAliasBufferInfo(pto::SubViewOp op);
+  void UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op);
  
   // --- 控制流处理 (SCF) ---
   void UpdateForOpInfo(scf::ForOp forOp);

@@ -14,6 +14,7 @@
 #include "PTO/Transforms/GraphSyncSolver/MemInfo.h"
 #include "PTO/Transforms/GraphSyncSolver/SyncSolverIR.h"
 #include "PTO/Transforms/GraphSyncSolver/Utility.h"
+#include "PTO/Transforms/SlotAffineAnalysis.h"
 
 #include "PTO/IR/PTO.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -30,6 +31,7 @@
 #include <algorithm>
 #include <climits>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <tuple>
@@ -39,6 +41,26 @@
 
 using namespace mlir;
 using namespace pto::syncsolver;
+
+namespace {
+mlir::pto::SlotRelation compareMemInfoSlotSSA(const MemInfo &memInfo1,
+                                              const MemInfo &memInfo2) {
+  size_t n = std::max<size_t>(memInfo1.getSz(), memInfo2.getSz());
+  if (n < 2 || n > std::numeric_limits<uint32_t>::max())
+    return mlir::pto::SlotRelation::kUnknown;
+  Value slot1 = mlir::pto::findSlotMarkerExpr(memInfo1.value);
+  Value slot2 = mlir::pto::findSlotMarkerExpr(memInfo2.value);
+  if (!slot1 || !slot2)
+    return mlir::pto::SlotRelation::kUnknown;
+  return mlir::pto::compareSlotSSA(slot1, slot2, static_cast<uint32_t>(n));
+}
+
+bool isForwardDepDroppableBySlotAffine(const MemInfo &memInfo1,
+                                       const MemInfo &memInfo2) {
+  return compareMemInfoSlotSSA(memInfo1, memInfo2) ==
+         mlir::pto::SlotRelation::kDisjoint;
+}
+} // namespace
 
 // Reset per-pass bookkeeping to start fresh.
 void Solver::reset(bool resetEventIdRanOutOpts) {
@@ -295,6 +317,63 @@ Solver::checkMemoryConflicts(RWOperation *rwOp1, RWOperation *rwOp2) {
   return it->second = collectedConflicts;
 }
 
+llvm::SmallVector<std::tuple<CorePipeInfo, CorePipeInfo>>
+Solver::checkMemoryConflictsForOcc(Occurrence *occ1, Occurrence *occ2,
+                                   RWOperation *rwOp1, RWOperation *rwOp2) {
+  assert(occ1 != nullptr && occ2 != nullptr);
+  assert(rwOp1 != nullptr && rwOp2 != nullptr);
+  if (isBackwardSync(occ1, occ2)) {
+    return checkMemoryConflicts(rwOp1, rwOp2);
+  }
+
+  auto coreSrc = rwOp1->coreType;
+  auto coreDst = rwOp2->coreType;
+  if (options.isCrossCoreMode()) {
+    if (coreDst == pto::TCoreType::CUBE_AND_VECTOR) {
+      coreDst = (coreSrc == pto::TCoreType::VECTOR) ? pto::TCoreType::CUBE
+                                                     : pto::TCoreType::VECTOR;
+    }
+    assert(coreSrc == pto::TCoreType::VECTOR ||
+           coreSrc == pto::TCoreType::CUBE);
+    assert(coreDst == pto::TCoreType::VECTOR ||
+           coreDst == pto::TCoreType::CUBE);
+  }
+
+  auto hasForwardConflict =
+      [&](const llvm::SmallVector<MemInfo> &memInfoList1,
+          const llvm::SmallVector<MemInfo> &memInfoList2) -> bool {
+    for (auto &memInfo1 : memInfoList1) {
+      for (auto &memInfo2 : memInfoList2) {
+        if (!checkMemInfoConflict(rwOp1, rwOp2, memInfo1, memInfo2)) {
+          continue;
+        }
+        if (isForwardDepDroppableBySlotAffine(memInfo1, memInfo2)) {
+          continue;
+        }
+        return true;
+      }
+    }
+    return false;
+  };
+
+  llvm::SetVector<std::tuple<CorePipeInfo, CorePipeInfo>> collectedConflictsSet;
+  if (hasForwardConflict(rwOp1->readMemInfo, rwOp2->writeMemInfo)) {
+    collectedConflictsSet.insert({CorePipeInfo(coreSrc, rwOp1->pipeRead),
+                                  CorePipeInfo(coreDst, rwOp2->pipeWrite)});
+  }
+  if (hasForwardConflict(rwOp1->writeMemInfo, rwOp2->readMemInfo)) {
+    collectedConflictsSet.insert({CorePipeInfo(coreSrc, rwOp1->pipeWrite),
+                                  CorePipeInfo(coreDst, rwOp2->pipeRead)});
+  }
+  if (hasForwardConflict(rwOp1->writeMemInfo, rwOp2->writeMemInfo)) {
+    collectedConflictsSet.insert({CorePipeInfo(coreSrc, rwOp1->pipeWrite),
+                                  CorePipeInfo(coreDst, rwOp2->pipeWrite)});
+  }
+  llvm::SmallVector<std::tuple<CorePipeInfo, CorePipeInfo>> collectedConflicts(
+      collectedConflictsSet.begin(), collectedConflictsSet.end());
+  return collectedConflicts;
+}
+
 bool Solver::checkMemoryConflictBetweenOccExclusive(
     Occurrence *occ1, Occurrence *occ2,
     std::function<bool(RWOperation *)> filter) {
@@ -419,12 +498,32 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
     }
   }
 
+  // Capture the slot SSA of the conflicting multi-buffer per side, so dyn
+  // event-id codegen keys the event lane off the *hazard* buffer rather than
+  // the op's first slot_marker memref. `slotOpN` is the slot as accessed by
+  // rwOpN; ambiguity (more than one distinct slot participating in this
+  // pair's conflicts) collapses to null, making codegen fall back to the
+  // safe N-static fanout.
+  Value slotOp1, slotOp2;
+  bool slotOp1Ambiguous = false, slotOp2Ambiguous = false;
+  auto collectSlot = [](const MemInfo &mi, Value &slot, bool &ambiguous) {
+    Value s = mlir::pto::findSlotMarkerExpr(mi.value);
+    if (!s)
+      return;
+    if (!slot)
+      slot = s;
+    else if (slot != s)
+      ambiguous = true;
+  };
+
   for (auto &memInfo1 : rwOp1->readMemInfo) {
     for (auto &memInfo2 : rwOp2->writeMemInfo) {
       if (checkMemInfoConflict(rwOp1, rwOp2, memInfo1, memInfo2)) {
         int64_t curLcm = std::lcm(memInfo1.getSz(), memInfo2.getSz());
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo2.getSz());
+        collectSlot(memInfo1, slotOp1, slotOp1Ambiguous);
+        collectSlot(memInfo2, slotOp2, slotOp2Ambiguous);
       }
     }
   }
@@ -434,6 +533,8 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
         int64_t curLcm = std::lcm(memInfo1.getSz(), memInfo2.getSz());
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo1.getSz());
+        collectSlot(memInfo1, slotOp1, slotOp1Ambiguous);
+        collectSlot(memInfo2, slotOp2, slotOp2Ambiguous);
       }
     }
   }
@@ -444,6 +545,8 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo1.getSz());
         minWriteSize = std::min(minWriteSize, memInfo2.getSz());
+        collectSlot(memInfo1, slotOp1, slotOp1Ambiguous);
+        collectSlot(memInfo2, slotOp2, slotOp2Ambiguous);
       }
     }
   }
@@ -453,6 +556,12 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
     minWriteSize = 1;
     return {};
   }
+  // (Same-SSA equal-slot accesses used to early-bail here, falling back to
+  // a single static event id. That diverged from InsertSync, which still
+  // allocates N dyn event ids for same-SSA prefetch so different
+  // iterations touching different physical slots can pipeline. The bail
+  // was removed for consistency; the standard N-way deduction below now
+  // also runs for same-SSA pairs.)
 
   int64_t eventIdNum = minWriteSize;
   for (; eventIdNum >= 1; eventIdNum--) {
@@ -473,6 +582,21 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   }
   EventIdInfo eventIdInfo(eventIdNum);
   eventIdInfo.multibufferLoop = multibufferLoop;
+  // A dyn flag is only valid when BOTH sides can key off their own slot of
+  // the shared hazard buffer. An op may have several inputs/outputs, so a
+  // side is dropped to null when it touches multiple multi-buffers at
+  // different slots (ambiguous) or none at all. If either side ends up
+  // without a slot, drop both: codegen then emits the symmetric N-static
+  // set_flag/wait_flag fanout on both sides. A mixed static-set / dyn-wait
+  // pair would not rendezvous on a consistent event lane.
+  Value s1 = slotOp1Ambiguous ? Value() : slotOp1;
+  Value s2 = slotOp2Ambiguous ? Value() : slotOp2;
+  if (!s1 || !s2) {
+    s1 = Value();
+    s2 = Value();
+  }
+  eventIdInfo.slotExprOp1 = s1;
+  eventIdInfo.slotExprOp2 = s2;
   return eventIdInfo;
 }
 
@@ -2259,6 +2383,29 @@ SyncBeforeAfterMap Solver::getBeforeAfterSyncMaps() {
       waitOp->eventIdInfo = conflictPair->eventIdInfo;
       setOp->checkLastIter = conflictPair->setOnLastIterOnly;
       waitOp->checkFirstIter = conflictPair->waitOnFirstIterOnly;
+      // For multi-buffer back-edge syncs, plumb each side's slot SSA so
+      // codegen can lower into `pto.set_flag_dyn` / `pto.wait_flag_dyn`.
+      // The slots were captured in `getMultiBufferEventIdInfo` from the
+      // actual conflicting MemInfo pair, so the dyn event lane is indexed by
+      // the *hazard* buffer's slot -- not the op's first slot_marker memref.
+      // `slotExprOp1/Op2` are keyed to op1(==rwOp1)/op2(==rwOp2); the set
+      // side may land on either op depending on the program order resolved
+      // by `getSetWaitOcc`, so map by op identity. A null slot (absent or
+      // ambiguous) leaves slotSSAExpr unset, so codegen degrades to the safe
+      // N-static fanout instead of selecting a wrong event lane.
+      if (conflictPair->eventIdInfo.eventIdNum > 1) {
+        Value slotOp1 = conflictPair->eventIdInfo.slotExprOp1;
+        Value slotOp2 = conflictPair->eventIdInfo.slotExprOp2;
+        if (conflictPair->setOp == conflictPair->op1) {
+          setOp->slotSSAExpr = slotOp1;
+          waitOp->slotSSAExpr = slotOp2;
+        } else if (conflictPair->setOp == conflictPair->op2) {
+          setOp->slotSSAExpr = slotOp2;
+          waitOp->slotSSAExpr = slotOp1;
+        }
+        // else: set/wait not aligned to op1/op2 (e.g. a transformed pair) --
+        // leave both null so codegen uses the safe N-static fanout.
+      }
       LLVM_DEBUG({
         setOp->debugId = conflictPair->id;
         waitOp->debugId = conflictPair->id;
@@ -2312,7 +2459,8 @@ SyncBeforeAfterMap Solver::getBeforeAfterSyncMaps() {
 void Solver::processConflict(Occurrence *occ1, Occurrence *occ2,
                              RWOperation *rwOp1, RWOperation *rwOp2,
                              bool isUseless) {
-  for (auto [corePipeSrc, corePipeDst] : checkMemoryConflicts(rwOp1, rwOp2)) {
+  for (auto [corePipeSrc, corePipeDst] :
+       checkMemoryConflictsForOcc(occ1, occ2, rwOp1, rwOp2)) {
     if (options.alwaysUsePipeSAsWaitingPipe) {
       corePipeDst.pipe = pto::PIPE::PIPE_S;
     }
