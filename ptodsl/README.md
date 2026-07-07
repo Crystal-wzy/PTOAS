@@ -194,7 +194,7 @@ The example exercises the PTODSL surfaces needed by this style of kernel:
 - hand-authored dynamic UB scratch layout with `pto.castptr` / `pto.addptr`
 - contiguous vector loads through `scalar.load(..., contiguous=N)` and vector
   stores through `scalar.store(vector, ...)`
-- `pto.vec(..., init=scalar)` for scalar-to-vector broadcast
+- `pto.Vec(..., init=scalar)` for scalar-to-vector broadcast
 - `pto.simt_allreduce_sum(...)` lowered inline through `pto.redux_add` and
   `pto.syncthreads`
 - explicit pipe `set_flag` / `wait_flag` synchronization, including dynamic
@@ -231,7 +231,6 @@ python3 ptodsl/tests/test_jit_compile.py
 python3 ptodsl/tests/test_jit_diagnostics.py
 python3 ptodsl/tests/test_subkernel_diagnostics.py
 python3 ptodsl/tests/test_flash_attention_demo_compile.py
-python3 ptodsl/tests/test_rmsnorm_example_compile.py
 python3 ptodsl/tests/test_ptoas_frontend_verify.py
 python3 ptodsl/tests/test_docs_as_test.py
 ```
@@ -243,14 +242,16 @@ ptodsl_jit_compile: PASS
 ptodsl_jit_diagnostics: PASS
 ptodsl_subkernel_diagnostics: PASS
 ptodsl_flash_attention_demo_compile: PASS
-ptodsl_rmsnorm_example_compile: PASS
 ptodsl_ptoas_frontend_verify: PASS
 ptodsl_docs_as_test: PASS
 ```
 
 `ptodsl/tests/` is the canonical home for PTODSL-specific regression scripts.
 The launchable sources under `ptodsl/examples/` remain examples; the
-regressions that protect them live here alongside compile-only and docs checks.
+regressions that protect compile-only behavior live here alongside docs checks.
+Runtime correctness coverage for PTODSL examples belongs under `test/dsl-st/`;
+for example, the RMSNorm alloc-buffer/SIMT example is covered by
+`test/dsl-st/rmsnorm_alloc_buffer_simt.py`.
 
 `test_docs_as_test.py` is the docs-as-test regression for the PTODSL user
 guide under `ptodsl/docs/user_guide/`. It scans every Python fenced code block

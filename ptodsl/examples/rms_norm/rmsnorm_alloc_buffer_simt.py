@@ -87,7 +87,7 @@ def rmsnorm_simt_token_body(
 
         x_vec = scalar.load(x_frag, frag_offset, contiguous=lanes)
         w_vec = scalar.load(w_ub, lane_base, contiguous=lanes)
-        rstd_vec = pto.vec(pto.f32, lanes, init=rstd)
+        rstd_vec = pto.Vec(pto.f32, lanes, init=rstd)
         y_vec = x_vec * rstd_vec * w_vec
         scalar.store(y_vec, y_ub, y_offset)
 
