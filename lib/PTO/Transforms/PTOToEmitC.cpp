@@ -6113,7 +6113,6 @@ struct PTOGetBufToEmitC : public OpConversionPattern<mlir::pto::GetBufOp> {
 
   LogicalResult matchAndRewrite(mlir::pto::GetBufOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    (void)adaptor;
     auto *ctx = rewriter.getContext();
 
     auto opTypeOr = parseSyncOpTypeLikeAttr(op.getOpTypeAttr());
@@ -6123,17 +6122,33 @@ struct PTOGetBufToEmitC : public OpConversionPattern<mlir::pto::GetBufOp> {
     if (!isConcreteSyncPipe(pipe))
       return rewriter.notifyMatchFailure(op, "get_buf op_type cannot map to a concrete pipe");
     std::string pipeTok = pipeTokFromPipeEnum(pipe);
-    auto argsAttr = rewriter.getArrayAttr({
-        emitc::OpaqueAttr::get(ctx, pipeTok),
-        op.getBufIdAttr(),
-        op.getModeAttr(),
-    });
 
-    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, TypeRange{}, "get_buf",
-        /*args=*/argsAttr,
-        /*templateArgs=*/ArrayAttr{},
-        /*operands=*/ValueRange{});
+    IntegerAttr bufIdAttr = op.getBufIdAttr();
+    Value bufIdDyn = adaptor.getBufIdDyn();
+
+    if (bufIdAttr) {
+      auto argsAttr = rewriter.getArrayAttr({
+          emitc::OpaqueAttr::get(ctx, pipeTok),
+          bufIdAttr,
+          op.getModeAttr(),
+      });
+      rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+          op, TypeRange{}, "get_buf",
+          /*args=*/argsAttr,
+          /*templateArgs=*/ArrayAttr{},
+          /*operands=*/ValueRange{});
+    } else {
+      auto argsAttr = rewriter.getArrayAttr({
+          emitc::OpaqueAttr::get(ctx, pipeTok),
+          IntegerAttr::get(IndexType::get(ctx), 0),
+          op.getModeAttr(),
+      });
+      rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+          op, TypeRange{}, "get_buf",
+          /*args=*/argsAttr,
+          /*templateArgs=*/ArrayAttr{},
+          /*operands=*/ValueRange{bufIdDyn});
+    }
     return success();
   }
 };
@@ -6143,7 +6158,6 @@ struct PTORlsBufToEmitC : public OpConversionPattern<mlir::pto::RlsBufOp> {
 
   LogicalResult matchAndRewrite(mlir::pto::RlsBufOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    (void)adaptor;
     auto *ctx = rewriter.getContext();
 
     auto opTypeOr = parseSyncOpTypeLikeAttr(op.getOpTypeAttr());
@@ -6153,17 +6167,33 @@ struct PTORlsBufToEmitC : public OpConversionPattern<mlir::pto::RlsBufOp> {
     if (!isConcreteSyncPipe(pipe))
       return rewriter.notifyMatchFailure(op, "rls_buf op_type cannot map to a concrete pipe");
     std::string pipeTok = pipeTokFromPipeEnum(pipe);
-    auto argsAttr = rewriter.getArrayAttr({
-        emitc::OpaqueAttr::get(ctx, pipeTok),
-        op.getBufIdAttr(),
-        op.getModeAttr(),
-    });
 
-    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, TypeRange{}, "rls_buf",
-        /*args=*/argsAttr,
-        /*templateArgs=*/ArrayAttr{},
-        /*operands=*/ValueRange{});
+    IntegerAttr bufIdAttr = op.getBufIdAttr();
+    Value bufIdDyn = adaptor.getBufIdDyn();
+
+    if (bufIdAttr) {
+      auto argsAttr = rewriter.getArrayAttr({
+          emitc::OpaqueAttr::get(ctx, pipeTok),
+          bufIdAttr,
+          op.getModeAttr(),
+      });
+      rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+          op, TypeRange{}, "rls_buf",
+          /*args=*/argsAttr,
+          /*templateArgs=*/ArrayAttr{},
+          /*operands=*/ValueRange{});
+    } else {
+      auto argsAttr = rewriter.getArrayAttr({
+          emitc::OpaqueAttr::get(ctx, pipeTok),
+          IntegerAttr::get(IndexType::get(ctx), 0),
+          op.getModeAttr(),
+      });
+      rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+          op, TypeRange{}, "rls_buf",
+          /*args=*/argsAttr,
+          /*templateArgs=*/ArrayAttr{},
+          /*operands=*/ValueRange{bufIdDyn});
+    }
     return success();
   }
 };

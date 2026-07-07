@@ -8149,7 +8149,8 @@ LogicalResult CmoCacheInvalidOp::verify() {
 
 // ---- GetBufOp / RlsBufOp ----
 static LogicalResult verifyBufSyncOp(Operation *op, Attribute opTypeAttr,
-                                     IntegerAttr bufIdAttr, IntegerAttr modeAttr) {
+                                     IntegerAttr bufIdAttr, Value bufIdDyn,
+                                     IntegerAttr modeAttr) {
   if (!opTypeAttr)
     return op->emitOpError("expects 'op_type' attribute");
 
@@ -8169,11 +8170,18 @@ static LogicalResult verifyBufSyncOp(Operation *op, Attribute opTypeAttr,
   if (!isConcreteSyncPipe(pipe))
     return op->emitOpError("expects 'op_type' to map to a concrete pipe, not PIPE_ALL/PIPE_UNASSIGNED");
 
-  if (!bufIdAttr)
-    return op->emitOpError("expects 'buf_id' attribute");
-  int64_t bufId = bufIdAttr.getInt();
-  if (bufId < 0 || bufId > 31)
-    return op->emitOpError("expects 'buf_id' in range [0, 31]");
+  bool hasStatic = (bufIdAttr != nullptr);
+  bool hasDynamic = static_cast<bool>(bufIdDyn);
+  if (hasStatic == hasDynamic)
+    return op->emitOpError()
+           << "expects exactly one buf-id form: static attribute or dynamic "
+              "index operand";
+
+  if (hasStatic) {
+    int64_t bufId = bufIdAttr.getInt();
+    if (bufId < 0 || bufId > 31)
+      return op->emitOpError("expects 'buf_id' in range [0, 31]");
+  }
 
   if (modeAttr) {
     int64_t mode = modeAttr.getInt();
@@ -8186,12 +8194,12 @@ static LogicalResult verifyBufSyncOp(Operation *op, Attribute opTypeAttr,
 
 LogicalResult GetBufOp::verify() {
   return verifyBufSyncOp(getOperation(), getOpTypeAttr(), getBufIdAttr(),
-                         getModeAttr());
+                         getBufIdDyn(), getModeAttr());
 }
 
 LogicalResult RlsBufOp::verify() {
   return verifyBufSyncOp(getOperation(), getOpTypeAttr(), getBufIdAttr(),
-                         getModeAttr());
+                         getBufIdDyn(), getModeAttr());
 }
 
 static ParseResult parseLegacyOrAttrMemBar(OpAsmParser &parser,
@@ -8466,7 +8474,6 @@ void MemBarOp::print(OpAsmPrinter &p) {
 
 static ParseResult parseBufSyncOp(OpAsmParser &parser, OperationState &result) {
   Attribute opTypeAttr;
-  IntegerAttr bufIdAttr;
   IntegerAttr modeAttr;
 
   auto loc = parser.getCurrentLocation();
@@ -8479,8 +8486,26 @@ static ParseResult parseBufSyncOp(OpAsmParser &parser, OperationState &result) {
     else
       return parser.emitError(loc) << "invalid get_buf/rls_buf token: " << token;
 
-    if (parser.parseComma() || parseI32LiteralAttr(parser, bufIdAttr))
+    if (parser.parseComma())
       return failure();
+
+    OpAsmParser::UnresolvedOperand bufOperand;
+    OptionalParseResult parseBufOperand =
+        parser.parseOptionalOperand(bufOperand);
+    if (parseBufOperand.has_value()) {
+      if (failed(*parseBufOperand))
+        return failure();
+      if (parser.resolveOperand(bufOperand,
+                                parser.getBuilder().getIndexType(),
+                                result.operands))
+        return failure();
+    } else {
+      IntegerAttr bufIdAttr;
+      if (parseI32LiteralAttr(parser, bufIdAttr))
+        return failure();
+      result.addAttribute("buf_id", bufIdAttr);
+    }
+
     if (succeeded(parser.parseOptionalComma())) {
       if (parseI32LiteralAttr(parser, modeAttr))
         return failure();
@@ -8488,9 +8513,26 @@ static ParseResult parseBufSyncOp(OpAsmParser &parser, OperationState &result) {
       modeAttr = IntegerAttr::get(IntegerType::get(parser.getContext(), 32), 0);
     }
   } else if (succeeded(parser.parseOptionalLSquare())) {
-    if (parser.parseAttribute(opTypeAttr) || parser.parseComma() ||
-        parseI32LiteralAttr(parser, bufIdAttr))
+    if (parser.parseAttribute(opTypeAttr) || parser.parseComma())
       return failure();
+
+    OpAsmParser::UnresolvedOperand bufOperand;
+    OptionalParseResult parseBufOperand =
+        parser.parseOptionalOperand(bufOperand);
+    if (parseBufOperand.has_value()) {
+      if (failed(*parseBufOperand))
+        return failure();
+      if (parser.resolveOperand(bufOperand,
+                                parser.getBuilder().getIndexType(),
+                                result.operands))
+        return failure();
+    } else {
+      IntegerAttr bufIdAttr;
+      if (parseI32LiteralAttr(parser, bufIdAttr))
+        return failure();
+      result.addAttribute("buf_id", bufIdAttr);
+    }
+
     if (succeeded(parser.parseOptionalComma())) {
       if (parseI32LiteralAttr(parser, modeAttr))
         return failure();
@@ -8506,26 +8548,42 @@ static ParseResult parseBufSyncOp(OpAsmParser &parser, OperationState &result) {
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
   result.addAttribute("op_type", opTypeAttr);
-  result.addAttribute("buf_id", bufIdAttr);
   result.addAttribute("mode", modeAttr);
   return success();
 }
 
 static void printBufSyncOp(OpAsmPrinter &p, Attribute opTypeAttr,
-                           IntegerAttr bufIdAttr, IntegerAttr modeAttr,
+                           IntegerAttr bufIdAttr, Value bufIdDyn,
+                           IntegerAttr modeAttr,
                            ArrayRef<NamedAttribute> attrs) {
   if (auto pipeAttr = dyn_cast<PipeAttr>(opTypeAttr)) {
-    p << " \"" << stringifyPIPE(pipeAttr.getPipe()) << "\", "
-      << bufIdAttr.getInt() << ", " << modeAttr.getInt();
+    p << " \"" << stringifyPIPE(pipeAttr.getPipe()) << "\", ";
+    if (bufIdAttr)
+      p << bufIdAttr.getInt();
+    else
+      p << bufIdDyn;
+    p << ", " << modeAttr.getInt();
   } else if (auto pipeEventType = dyn_cast<PipeEventTypeAttr>(opTypeAttr)) {
-    p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
-      << modeAttr.getInt() << "]";
+    p << "[" << opTypeAttr << ", ";
+    if (bufIdAttr)
+      p << bufIdAttr.getInt();
+    else
+      p << bufIdDyn;
+    p << ", " << modeAttr.getInt() << "]";
   } else if (auto syncOpType = dyn_cast<SyncOpTypeAttr>(opTypeAttr)) {
-    p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
-      << modeAttr.getInt() << "]";
+    p << "[" << opTypeAttr << ", ";
+    if (bufIdAttr)
+      p << bufIdAttr.getInt();
+    else
+      p << bufIdDyn;
+    p << ", " << modeAttr.getInt() << "]";
   } else {
-    p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
-      << modeAttr.getInt() << "]";
+    p << "[" << opTypeAttr << ", ";
+    if (bufIdAttr)
+      p << bufIdAttr.getInt();
+    else
+      p << bufIdDyn;
+    p << ", " << modeAttr.getInt() << "]";
   }
   p.printOptionalAttrDict(attrs, {"op_type", "buf_id", "mode"});
 }
@@ -8535,8 +8593,8 @@ ParseResult GetBufOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void GetBufOp::print(OpAsmPrinter &p) {
-  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getModeAttr(),
-                 (*this)->getAttrs());
+  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getBufIdDyn(),
+                 getModeAttr(), (*this)->getAttrs());
 }
 
 ParseResult RlsBufOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -8544,8 +8602,8 @@ ParseResult RlsBufOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void RlsBufOp::print(OpAsmPrinter &p) {
-  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getModeAttr(),
-                 (*this)->getAttrs());
+  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getBufIdDyn(),
+                 getModeAttr(), (*this)->getAttrs());
 }
 // ---- TOp ----
 LogicalResult TGemvBiasOp::verify() {

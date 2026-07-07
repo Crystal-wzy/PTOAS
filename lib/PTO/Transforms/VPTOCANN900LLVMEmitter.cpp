@@ -8881,10 +8881,28 @@ public:
     if (!pipeImm)
       return rewriter.notifyMatchFailure(op, "unsupported buffer sync pipe");
 
-    StringRef calleeName = buildSyncCallee<BufSyncOp>(op.getContext());
+    StringRef calleeName;
     Value pipeValue = getI64Constant(rewriter, op.getLoc(), *pipeImm);
-    Value bufIdValue =
-        getI64Constant(rewriter, op.getLoc(), op.getBufIdAttr().getInt());
+    Value bufIdValue;
+    if (IntegerAttr bufIdAttr = op.getBufIdAttr()) {
+      bufIdValue = getI64Constant(rewriter, op.getLoc(), bufIdAttr.getInt());
+      calleeName = buildSyncCallee<BufSyncOp>(op.getContext());
+    } else {
+      Value bufIdDyn = adaptor.getBufIdDyn();
+      if (!bufIdDyn)
+        return rewriter.notifyMatchFailure(
+            op, "expected static or dynamic buf-id operand");
+      bufIdValue = castIntegerLikeTo(op, bufIdDyn, rewriter.getI64Type());
+      if (!bufIdValue)
+        return rewriter.notifyMatchFailure(
+            op, "failed to cast dynamic buf-id to i64");
+      if constexpr (std::is_same_v<BufSyncOp, pto::GetBufOp>)
+        calleeName = StringAttr::get(op.getContext(), "llvm.hivm.GET.BUF.mode")
+                         .getValue();
+      else
+        calleeName = StringAttr::get(op.getContext(), "llvm.hivm.RLS.BUF.mode")
+                         .getValue();
+    }
     Value modeValue =
         getI64Constant(rewriter, op.getLoc(), op.getModeAttr().getInt());
     auto funcType = rewriter.getFunctionType(

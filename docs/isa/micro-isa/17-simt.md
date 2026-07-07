@@ -973,6 +973,64 @@ func.func @body(%ub: !pto.ptr<i32, ub>) attributes {pto.simt_entry} {
 }
 ```
 
+**Memory ordering contract:** `pto.syncthreads` provides **acquire+release** semantics on
+global and shared memory visible to all workitems in the SIMT entry. Any store
+executed by a workitem before `syncthreads` is visible to every workitem after
+`syncthreads`. This is a full workitem barrier, not a pipeline drain — use
+`pto.barrier` (see below) when a hardware pipe must be drained.
+
+### `pto.barrier` (Pipe Barrier)
+
+- **syntax:** `pto.barrier $pipe attr-dict`
+- **semantics:** Drains all outstanding operations on the specified hardware pipe.
+  Does **not** synchronize across SIMT workitems. In SIMT kernels, a common pattern
+  is to pair `pto.barrier` with `pto.syncthreads`: use `barrier` before
+  `syncthreads` to ensure DMA/MTE transfers have completed, then `syncthreads`
+  to make the results visible across workitems.
+- **pipe values:** `PIPE_MTE2`, `PIPE_V`, `PIPE_MTE3`, `PIPE_ALL`, etc.
+- **constraints:** `pto.barrier` can appear in both SIMT-entry and non-SIMT
+  functions. It drains at the hardware level; the workitems' view of memory may
+  not be consistent until a subsequent `syncthreads`.
+
+Example combining barrier and syncthreads:
+
+```mlir
+  pto.mte_ub_gm %ub, %gm, %len ... : !pto.ptr<i32, ub>, !pto.ptr<i32, gm>, i64
+  pto.barrier #pto.pipe<PIPE_MTE3>
+  pto.syncthreads
+  // Safe to load MTE result from UB
+```
+
+### Buffer-ID Synchronization (`pto.get_buf` / `pto.rls_buf`)
+
+- **syntax:**
+  - Static: `pto.get_buf "TLOAD", 3, 0`
+  - Dynamic: `pto.get_buf [TLOAD, %buf_id, 0]` or `pto.get_buf "TLOAD", %buf_id, 0`
+- **semantics:** Acquires (`get_buf`) or releases (`rls_buf`) a buffer-ID token
+  for the given operation type. Operations mapped to the same pipe and guarded by
+  the same buffer-id execute in program order relative to other mapped pipes using
+  the same buffer-id. This enables double-buffering and multi-buffering patterns.
+- **inputs:**
+  - `op_type`: a pipe-like attribute (`PIPE_*`, `sync_op_type`, or `pipe_event_type`)
+  - `buf_id`: either a **static** integer attribute (range `[0, 31]`) or a
+    **dynamic** SSA value of `index` type (e.g., `iter & 1` for ping-pong)
+  - `mode`: optional mode attribute (default `0`)
+- **constraints and limitations:** Exactly one of static `buf_id` attribute or
+  dynamic `buf_id` operand must be provided. The BufidSync auto-insertion pass
+  uses the static form. Dynamic `buf_id` enables SIMT patterns such as staged
+  double-buffering with `(iter & 1)`.
+
+Example (dynamic double-buffering):
+
+```mlir
+  %c1 = arith.constant 1 : index
+  %buf_id = arith.andi %iter, %c1 : index
+  pto.get_buf "TLOAD", %buf_id, 0
+  // ... tload to ubuf slot %buf_id ...
+  pto.rls_buf "TLOAD", %buf_id, 0
+  pto.syncthreads
+```
+
 ### `pto.threadfence` / `pto.threadfence_block`
 
 - **syntax:** `pto.threadfence attr-dict` or `pto.threadfence_block attr-dict`

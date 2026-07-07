@@ -2812,19 +2812,15 @@ def GetBufOp : PTO_Op<"get_buf"> {
 
   let arguments = (ins
     PTO_PipeLikeAttr:$op_type,
-    I32Attr:$buf_id,
-    DefaultValuedAttr<I32Attr, "0">:$mode
+    OptionalAttr<I32Attr>:$buf_id,
+    DefaultValuedAttr<I32Attr, "0">:$mode,
+    Optional<Index>:$buf_id_dyn
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let extraClassDeclaration = [{
-    void print(::mlir::OpAsmPrinter &p);
-    static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
-                                     ::mlir::OperationState &result);
-  }];
+  let hasCustomAssemblyFormat = 1;
 }
 
 def RlsBufOp : PTO_Op<"rls_buf"> {
@@ -2838,19 +2834,15 @@ def RlsBufOp : PTO_Op<"rls_buf"> {
 
   let arguments = (ins
     PTO_PipeLikeAttr:$op_type,
-    I32Attr:$buf_id,
-    DefaultValuedAttr<I32Attr, "0">:$mode
+    OptionalAttr<I32Attr>:$buf_id,
+    DefaultValuedAttr<I32Attr, "0">:$mode,
+    Optional<Index>:$buf_id_dyn
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let extraClassDeclaration = [{
-    void print(::mlir::OpAsmPrinter &p);
-    static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
-                                     ::mlir::OperationState &result);
-  }];
+  let hasCustomAssemblyFormat = 1;
 }
 
 def SyncSetOp : PTO_Op<"sync.set"> {
