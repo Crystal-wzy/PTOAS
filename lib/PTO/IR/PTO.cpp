@@ -5316,14 +5316,20 @@ LogicalResult pto::TAddOp::verify() {
 LogicalResult pto::TAddReluOp::verify() {
   if (shouldBypassDecodedMemrefVerifier(getOperation()))
     return success();
-  FailureOr<Type> elemOr = verifyMatchingRowMajorBinaryTileOpCommon(
-      getOperation(), getSrc0().getType(), getSrc1().getType(), getDst().getType());
-  if (failed(elemOr))
-    return failure();
-  Type elemTy = *elemOr;
-  if (elemTy.isInteger(16) || elemTy.isF16() || elemTy.isF32())
-    return success();
-  return emitOpError("expects element type to be i16/f16/f32");
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    FailureOr<Type> elemOr = verifyMatchingRowMajorBinaryTileOpCommon(
+        getOperation(), getSrc0().getType(), getSrc1().getType(), getDst().getType());
+    if (failed(elemOr))
+      return failure();
+    Type elemTy = *elemOr;
+    if (elemTy.isInteger(16) || elemTy.isF16() || elemTy.isF32())
+      return success();
+    return emitOpError("expects element type to be i16/f16/f32");
+  };
+  auto verifyA5 = [&]() -> LogicalResult {
+    return emitOpError("taddrelu is only supported on A2/A3 targets");
+  };
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
 LogicalResult pto::TAddCOp::verify() {

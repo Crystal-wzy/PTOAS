@@ -5147,10 +5147,8 @@ class LowerUBSetMaskCountOpPattern final
     : public OpConversionPattern<pto::UBSetMaskCountOp> {
 public:
   explicit LowerUBSetMaskCountOpPattern(TypeConverter &typeConverter,
-                                        MLIRContext *context,
-                                        LoweringState &state)
-      : OpConversionPattern<pto::UBSetMaskCountOp>(typeConverter, context),
-        state(state) {}
+                                        MLIRContext *context)
+      : OpConversionPattern<pto::UBSetMaskCountOp>(typeConverter, context) {}
 
   LogicalResult
   matchAndRewrite(pto::UBSetMaskCountOp op,
@@ -5168,19 +5166,14 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
-
-private:
-  LoweringState &state;
 };
 
 class LowerUBSetMaskNormOpPattern final
     : public OpConversionPattern<pto::UBSetMaskNormOp> {
 public:
   explicit LowerUBSetMaskNormOpPattern(TypeConverter &typeConverter,
-                                       MLIRContext *context,
-                                       LoweringState &state)
-      : OpConversionPattern<pto::UBSetMaskNormOp>(typeConverter, context),
-        state(state) {}
+                                       MLIRContext *context)
+      : OpConversionPattern<pto::UBSetMaskNormOp>(typeConverter, context) {}
 
   LogicalResult
   matchAndRewrite(pto::UBSetMaskNormOp op,
@@ -5198,9 +5191,6 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
-
-private:
-  LoweringState &state;
 };
 
 class LowerCopyUbufToUbufOpPattern final
@@ -10851,9 +10841,9 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
     patterns.add<LowerUBSetMaskOpPattern>(
         typeConverter, patterns.getContext(), state);
     patterns.add<LowerUBSetMaskCountOpPattern>(
-        typeConverter, patterns.getContext(), state);
+        typeConverter, patterns.getContext());
     patterns.add<LowerUBSetMaskNormOpPattern>(
-        typeConverter, patterns.getContext(), state);
+        typeConverter, patterns.getContext());
   }
 }
 

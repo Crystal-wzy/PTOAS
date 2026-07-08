@@ -158,6 +158,28 @@ def _require_explicit_mode(surface: str):
         raise explicit_mode_required_with_context_error(surface, current_module_spec)
 
 
+def _current_target_arch():
+    try:
+        from ._tracing.active import current_session
+        session = current_session()
+    except Exception:
+        return None
+    if session is None:
+        return None
+    current_module_spec = getattr(session, "current_function_module_spec", session.module_spec)
+    return getattr(current_module_spec, "target_arch", None)
+
+
+def _require_target_arch(surface: str, allowed: set[str]):
+    target = _current_target_arch()
+    if target is None:
+        return
+    normalized = str(target).lower()
+    if normalized not in allowed:
+        expected = ", ".join(f"target='{name}'" for name in sorted(allowed))
+        raise ValueError(f"{surface} is only supported for {expected}; got target={target!r}")
+
+
 def _explicit_mode_only(surface: str):
     def decorator(fn):
         @wraps(fn)
@@ -2588,6 +2610,7 @@ def tadd(src0, src1, dst):
 
 def taddrelu(src0, src1, dst):
     """``pto.taddrelu ins(src0, src1) outs(dst)``."""
+    _require_target_arch("pto.tile.addrelu", {"a2", "a3"})
     _pto.taddrelu(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),

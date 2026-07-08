@@ -2918,18 +2918,21 @@ int mlir::pto::compilePTOASModule(
   pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
+  // PTOViewToMemref is generic view lowering required by both backends; keep it
+  // outside the local-memory planning gate so default A2/A3 EmitC still lowers
+  // pto.make_tensor_view before backend legalization.
+  const bool isA2A3 = isA2A3Arch(ptoTargetArch);
+  if (!isA2A3)
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      pto::createPTOValidateIntToPtrUsesPass());
+
   // Local tile planning path.  A5 already uses this path. A2/A3 VPTO also
   // enters it so UB tile addresses come from PTOPlanMemory instead of the
   // fallback allocator in LowerPTOToUBufOps.
-  const bool isA2A3 = isA2A3Arch(ptoTargetArch);
   const bool enableLocalTilePlanning =
       !isA2A3 || effectiveBackend == PTOBackend::VPTO;
   if (enableLocalTilePlanning) {
-    if (!isA2A3)
-      pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOValidateIntToPtrUsesPass());
-
     // Keep frontend fusion on tile-native PTO IR and annotate last_use directly
     // on scheduled block-local spans before the shared mainline lowers tiles.
     // The shape-inference switch drives FusionPlan only: that is where the
@@ -2951,9 +2954,11 @@ int mlir::pto::compilePTOASModule(
       pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
       pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
     }
+  }
 
-    pm.addPass(pto::createPTOViewToMemrefPass());
+  pm.addPass(pto::createPTOViewToMemrefPass());
 
+  if (enableLocalTilePlanning) {
     if (effectiveLevel != PTOBuildLevel::Level3) {
       PlanMemoryOptions planMemoryOption;
       planMemoryOption.memMode = MemPlanMode::LOCAL_MEM_PLAN;
