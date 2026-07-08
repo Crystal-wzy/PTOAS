@@ -36,7 +36,7 @@ def register_col_arg_template(*, op, name, cmp_mode, reduce_op):
         op=op,
         target="a5",
         name=name,
-        dtypes=[("f32", "f32", "i32")],
+        dtypes=[("f32", "f32", "i32"), ("ui32", "ui32", "i32")],
         iteration_axis="column",
         op_engine="vector",
         op_class="reduction",

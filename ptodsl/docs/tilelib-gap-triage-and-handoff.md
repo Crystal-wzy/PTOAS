@@ -20,14 +20,36 @@ Data sources used for this snapshot:
   `lib/PTO/Transforms/InsertTemplateAttributes.cpp`, and
   `lib/PTO/Transforms/ExpandTileOp.cpp`
 
+## Topline Counts
+
+| Metric | Count | Notes |
+|---|---:|---|
+| Known current smoke failures | `10` | Based on the active smoke-blocker list below, after the reduction/arg-reduction smoke batch (`tcolmax`, `tcolmin`, `tcolprod`, `tcolargmax`, `tcolargmin`, `trowargmax`, `trowargmin`) was rechecked and passed on 2026-07-08. |
+| Full non-smoke failures | `37 / 105` | Exact count from `mani_log/full_nonsmoke_isolated_20260708-023856`. This is the last exact isolated full snapshot and still includes failures from before the 2026-07-08 reduction-family smoke fix. |
+| Tileops still tracked in the implementation / parity table | `30` | Unique tileops in Section 3. Most are version / mode gaps; this count also still includes the two row-arg semantic holdouts because they remain closely tied to the same planning bucket. |
+ 
 ## Snapshot Summary
 
 | Area | Current read |
 |---|---|
-| Smoke ST | Latest tracker is partially stale, but it still gives the best focused view of active smoke blockers and recently fixed families. |
-| Non-smoke ST | Latest isolated full run is exact: `68 passed`, `37 failed`, `105 total`. |
+| Smoke ST | Known current blocker count is `10`. The reduction/arg-reduction smoke batch now passes. |
+| Non-smoke ST | Latest isolated full run is exact: `68 passed`, `37 failed`, `105 total`, but it predates the latest reduction-family smoke fix. |
 | Gap shape | The remaining work is split across three buckets: wrong-output bugs, missing template versions/modes/dtypes, and backend metadata/selection gaps. |
-| Best next wins | `tcmp`, `trandom`, `tinsert`, `tmrgsort`, `tsort32`, `tcvt`, the high-precision math family, and a small set of missing dtype signatures. |
+| Best next wins | `tcmp`, `trandom`, `tinsert`, `tmrgsort`, `tsort32`, `tcvt`, and the high-precision math family. |
+
+## Recent Updates
+
+Recent branch-tip changes that are newer than the last exact isolated full
+non-smoke rerun:
+
+- The reduction/arg-reduction smoke batch now passes:
+  `tcolmax`, `tcolmin`, `tcolprod`, `tcolargmax`, `tcolargmin`,
+  `trowargmax`, `trowargmin`.
+- Because of that, the smoke blocker list below no longer treats those seven as
+  active smoke failures.
+- The last exact full non-smoke number (`37 / 105`) is still useful for
+  prioritization, but it should be read as a dated snapshot rather than current
+  branch-tip truth for this family.
 
 ## 1. Smoke ST Triage
 
@@ -57,7 +79,7 @@ read literally.
 |---|---|---|---|---|
 | `tcvt` | later focused rerun passed smoke | PTODSL still lacks a lot of the TileLang conversion matrix; non-smoke currently asks for `f32 -> f8e4m3` | Treat smoke as cleared for the old case; keep `tcvt` in the version-gap table | P1 |
 | `textract_fp` | failure was recorded before later `tmatmul`/candidate fixes | pre-quant extract variants still need rerun and parity review | Rerun smoke and non-smoke after the next extract/fixpipe pass | P2 |
-| `trowargmax` | smoke build blocker became a non-smoke wrong-output case | index dtype/writeback semantics are still wrong | Move this from signature-gap work into wrong-output debugging | P0 |
+| `trowargmax` | smoke now passes after the shared row-arg rewrite on 2026-07-08 | non-smoke semantics still need confirmation on the full ST cases | Keep the smoke status as fixed; rerun non-smoke before calling full parity closed | P0 |
 | `trowargmin` | same as `trowargmax` | same | same | P0 |
 | `trowsum` | non-smoke now passes | legacy/ST used an i16 path; PTODSL likely gained enough for current ST, but full dtype parity still needs review | Move from smoke blocker to version-watch item only | P2 |
 | `tsels` | non-smoke now passes | scalar/mask dtype matrix is still narrower than TileLang in principle | Keep only as a version-watch item unless new failures reappear | P2 |
@@ -133,8 +155,8 @@ ST testcase.
 | Insert mode matrix | `tinsert` | acc->mat, acc->vec ND/DN/NZ, vec->vec NZ, vec->mat ND/NZ, pre-quant + relu variants | Large user-visible feature gap versus TileLang | P0 | High | TileLib implementation plus new context attrs (`acc_to_vec_mode`, `relu_pre_mode`) in `InsertTemplateAttributes` |
 | Extract mode matrix | `textract`, `textract_fp` | mat->left/right same-fractal and cross-fractal forms, plus any still-missing fixpipe forms | Current PTODSL mostly covers only the UB vec->vec path and split fp path | P1 | Medium-high | Mostly TileLib implementation; current operand metadata/layout flow likely sufficient |
 | Sort / merge callable forms | `tmrgsort`, `tsort32` | correct operand count/order, `ex_vec` dtype, tmp/no-tmp split, and `exhausted` attr handling | These are structural mismatches, not just missing dtypes | P0 | Medium | TileLib implementation plus `InsertTemplateAttributes` for `exhausted` |
-| Arg-reduction index variants | `trowargmax`, `trowargmin`, `tcolargmax`, `tcolargmin` | missing unsigned index/data signature families; row-arg writeback semantics still wrong | Common reduction family and directly visible in ST | P0 | Low-medium | Mostly TileLib implementation |
-| Reduction dtype matrix | `tcolmax`, `tcolmin`, `tcolprod`, `trowsum` | unsigned and i16 forms that TileLang/ST already exercise | Low-cost parity wins | P1 | Low-medium | TileLib implementation |
+| Row arg-reduction semantics | `trowargmax`, `trowargmin` | shared implementation now compiles and passes smoke again, but full ST semantic parity still needs rerun/confirmation | These are no longer missing-version issues; they are now remaining semantic-validation items | P0 | Low-medium | TileLib implementation |
+| Reduction dtype matrix | `trowsum` | legacy/ST used an i16 form that should stay covered, even though the previous smoke blocker is now cleared | Mostly a parity-watch item after the 2026-07-08 reduction-family smoke fix | P2 | Low-medium | TileLib implementation |
 | Default divide dtype coverage | `tdiv`, `tcolexpanddiv`, maybe `tdivs` forms | f16 default divide, integer default variants where legacy supports them | These block practical ST cases before high-precision work even starts | P1 | Medium | TileLib implementation |
 | f16 remainder parity | `tfmod`, `tfmods`, `trem`, `trems` | TileLang widens f16 halves to f32 before remainder math; PTODSL does not | Likely numerical differences in full validation even if smoke passes | P2 | Medium | TileLib implementation |
 | Movement/load dtype coverage | `tload`, `tmov`, possibly related move helpers | fp8 and unsigned movement forms present in ST/legacy but not all registered in PTODSL | Small but real catalog parity gap | P2 | Low-medium | TileLib implementation, maybe PTODSL dtype support |
@@ -252,4 +274,3 @@ candidate payload.
 | 4 | Close the reduction/arg-reduction dtype gaps (`tcol*`, `trowarg*`, `trowsum`) | mostly TileLib-only wins |
 | 5 | Expand `tcvt` and the default divide family | blocks broad non-smoke coverage |
 | 6 | Revisit cube/fixpipe candidate loss (`tgemv*`, `tmatmul*.acc/bias/mx`, `tmov2bias`, `tlog`) | likely backend-sensitive and affects several families at once |
-

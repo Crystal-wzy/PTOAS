@@ -19,6 +19,8 @@ template_tcolprod = register_column_reduction(
     dtypes=[
         ("i16", "i16"),
         ("i32", "i32"),
+        ("ui16", "ui16"),
+        ("ui32", "ui32"),
         ("f16", "f16"),
         ("bf16", "bf16"),
         ("f32", "f32"),

@@ -11,10 +11,32 @@ from ptodsl import pto
 import ptodsl.tilelib as tilelib
 
 from ._common import NUMERIC_DTYPES, element_store_dist
+from ._part import pad_max, pad_min
 
 
 def _single_output_col(dst_valid_shape=(), **_):
     return len(dst_valid_shape) == 2 and dst_valid_shape[1] == 1
+
+
+def _scalar_literal(dtype, value):
+    name = str(dtype)
+    if name == "f32":
+        return pto.f32(float(value))
+    if name == "f16":
+        return pto.f16(float(value))
+    if name == "bf16":
+        return pto.bf16(float(value))
+    if name == "ui32":
+        return pto.ui32(value)
+    if name == "ui16":
+        return pto.ui16(value)
+    if name == "ui8":
+        return pto.ui8(value)
+    if name in {"i32", "si32"}:
+        return pto.i32(value)
+    if name in {"i16", "si16"}:
+        return pto.i16(value)
+    return pto.i8(value)
 
 
 def register_row_arg(*, op, name, reduce_op, cmp_mode):
@@ -45,16 +67,15 @@ def register_row_arg(*, op, name, reduce_op, cmp_mode):
         lanes = pto.elements_per_vreg(src_dtype)
         src_one_mask, _ = pto.make_mask(src_dtype, 1)
         idx_one_mask, _ = pto.make_mask(idx_dtype, 1)
+        init_val = pad_min(src_dtype) if cmp_mode == "lt" else pad_max(src_dtype)
 
         for row in range(0, valid_rows, 1):
-            first_mask, remained = pto.make_mask(src_dtype, valid_cols)
-            first = pto.vlds(src[row, 0:])
-            first_reduced = reduce_op(first, first_mask)
-            zero_src = pto.vmuls(first_reduced, 0, src_one_mask)
-            val_acc, idx_acc_src = pto.vdintlv(first_reduced, zero_src)
-            idx_acc = pto.vbitcast(idx_acc_src, idx_dtype)
+            remained = valid_cols
+            val_acc = pto.vbr(init_val)
+            idx_acc = pto.vbr(_scalar_literal(idx_dtype, 0))
+            zero_src = pto.vbr(_scalar_literal(src_dtype, 0))
 
-            for col in range(lanes, valid_cols, lanes):
+            for col in range(0, valid_cols, lanes):
                 mask, remained = pto.make_mask(src_dtype, remained)
                 value = pto.vlds(src[row, col:])
                 reduced = reduce_op(value, mask)
