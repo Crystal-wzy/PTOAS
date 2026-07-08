@@ -2578,6 +2578,105 @@ static bool isStructuredAccStoreInt32PreQuantMode(AccStoreQuantPreMode mode) {
   }
 }
 
+enum class StructuredAccStoreDestinationFamily {
+  Any,
+  F32,
+  F16,
+  BF16,
+  I32,
+  I16,
+  I8,
+  I4,
+  FP8
+};
+
+static StructuredAccStoreDestinationFamily
+getStructuredAccStorePreQuantDestinationFamily(AccStoreQuantPreMode mode) {
+  switch (mode) {
+  case AccStoreQuantPreMode::F32F16:
+  case AccStoreQuantPreMode::QF322F16PreVec:
+  case AccStoreQuantPreMode::QF322F16PreScalar:
+  case AccStoreQuantPreMode::DEQF16Vec:
+  case AccStoreQuantPreMode::DEQF16Scalar:
+    return StructuredAccStoreDestinationFamily::F16;
+  case AccStoreQuantPreMode::F32BF16:
+  case AccStoreQuantPreMode::QF322BF16PreVec:
+  case AccStoreQuantPreMode::QF322BF16PreScalar:
+  case AccStoreQuantPreMode::QS322BF16PreVec:
+  case AccStoreQuantPreMode::QS322BF16PreScalar:
+    return StructuredAccStoreDestinationFamily::BF16;
+  case AccStoreQuantPreMode::QF322F32PreVec:
+  case AccStoreQuantPreMode::QF322F32PreScalar:
+    return StructuredAccStoreDestinationFamily::F32;
+  case AccStoreQuantPreMode::QF322HIF8PreVec:
+  case AccStoreQuantPreMode::QF322HIF8PreScalar:
+  case AccStoreQuantPreMode::QF322HIF8PreHybridVec:
+  case AccStoreQuantPreMode::QF322HIF8PreHybridScalar:
+  case AccStoreQuantPreMode::QF322FP8PreVec:
+  case AccStoreQuantPreMode::QF322FP8PreScalar:
+    return StructuredAccStoreDestinationFamily::FP8;
+  case AccStoreQuantPreMode::DEQS32IntVec:
+  case AccStoreQuantPreMode::DEQS32IntScalar:
+    return StructuredAccStoreDestinationFamily::I32;
+  case AccStoreQuantPreMode::QF162S16PreVec:
+  case AccStoreQuantPreMode::QF162S16PreScalar:
+  case AccStoreQuantPreMode::DEQS16Vec:
+  case AccStoreQuantPreMode::DEQS16Scalar:
+    return StructuredAccStoreDestinationFamily::I16;
+  case AccStoreQuantPreMode::QF162B8PreVec:
+  case AccStoreQuantPreMode::QF162B8PreScalar:
+  case AccStoreQuantPreMode::REQ8Vec:
+  case AccStoreQuantPreMode::REQ8Scalar:
+  case AccStoreQuantPreMode::QF322B8PreVec:
+  case AccStoreQuantPreMode::QF322B8PreScalar:
+    return StructuredAccStoreDestinationFamily::I8;
+  case AccStoreQuantPreMode::QF162S4PreVec:
+  case AccStoreQuantPreMode::QF162S4PreScalar:
+  case AccStoreQuantPreMode::REQ4Vec:
+  case AccStoreQuantPreMode::REQ4Scalar:
+  case AccStoreQuantPreMode::QF322S4PreVec:
+  case AccStoreQuantPreMode::QF322S4PreScalar:
+    return StructuredAccStoreDestinationFamily::I4;
+  case AccStoreQuantPreMode::NoConvert:
+    return StructuredAccStoreDestinationFamily::Any;
+  }
+  llvm_unreachable("unknown acc-store pre_quant mode");
+}
+
+static bool isStructuredAccStoreDestinationFamily(
+    Type type, StructuredAccStoreDestinationFamily family) {
+  switch (family) {
+  case StructuredAccStoreDestinationFamily::Any:
+    return true;
+  case StructuredAccStoreDestinationFamily::F32:
+    return type.isF32();
+  case StructuredAccStoreDestinationFamily::F16:
+    return type.isF16();
+  case StructuredAccStoreDestinationFamily::BF16:
+    return type.isBF16();
+  case StructuredAccStoreDestinationFamily::I32:
+    if (auto intType = dyn_cast<IntegerType>(type))
+      return intType.getWidth() == 32;
+    return false;
+  case StructuredAccStoreDestinationFamily::I16:
+    if (auto intType = dyn_cast<IntegerType>(type))
+      return intType.getWidth() == 16 && !intType.isUnsigned();
+    return false;
+  case StructuredAccStoreDestinationFamily::I8:
+    if (auto intType = dyn_cast<IntegerType>(type))
+      return intType.getWidth() == 8;
+    return false;
+  case StructuredAccStoreDestinationFamily::I4:
+    if (auto intType = dyn_cast<IntegerType>(type))
+      return intType.getWidth() == 4 && !intType.isUnsigned();
+    return false;
+  case StructuredAccStoreDestinationFamily::FP8:
+    return pto::isPTOFloat8Type(type) || pto::isPTOHiFloat8Type(type) ||
+           pto::isPTOHiFloat8x2Type(type);
+  }
+  llvm_unreachable("unknown acc-store destination family");
+}
+
 static ParseResult parseStructuredAccStoreUnitFlag(OpAsmParser &parser,
                                                    StructuredAccStoreAsmState &state) {
   if (state.unitFlag)
@@ -2838,7 +2937,11 @@ static LogicalResult verifyStructuredAccStoreLike(
   if (static_cast<bool>(preQuant) != static_cast<bool>(preQuantMode))
     return op->emitOpError("pre_quant requires payload and mode together");
   if (preQuantMode) {
-    if (isStructuredAccStoreVectorQuantMode(*preQuantMode)) {
+    if (*preQuantMode == AccStoreQuantPreMode::NoConvert) {
+      // The no_convert keyword carries no quantization parameters; the
+      // syntactic payload operand is ignored for compatibility with the
+      // structured pre_quant clause form.
+    } else if (isStructuredAccStoreVectorQuantMode(*preQuantMode)) {
       if (!isStructuredAccStoreScalingPayload(preQuant))
         return op->emitOpError("vector pre_quant mode requires scaling pointer payload");
       if (!isStructuredAccStoreFloatScalarPayloadType(
@@ -2857,16 +2960,24 @@ static LogicalResult verifyStructuredAccStoreLike(
              << " and destination element type " << destinationElementType;
     };
 
-    if (isa<Float32Type>(sourceElementType)) {
-      if (!isStructuredAccStoreFloatPreQuantMode(*preQuantMode))
+    if (*preQuantMode != AccStoreQuantPreMode::NoConvert) {
+      if (isa<Float32Type>(sourceElementType)) {
+        if (!isStructuredAccStoreFloatPreQuantMode(*preQuantMode))
+          return emitIncompatibleQuantModeError();
+      } else if (sourceElementType.isSignlessInteger(32)) {
+        if (!isStructuredAccStoreInt32PreQuantMode(*preQuantMode))
+          return emitIncompatibleQuantModeError();
+      } else {
+        return op->emitOpError()
+               << "pre_quant requires source element type to be f32 or i32, got "
+               << sourceElementType;
+      }
+
+      StructuredAccStoreDestinationFamily destinationFamily =
+          getStructuredAccStorePreQuantDestinationFamily(*preQuantMode);
+      if (!isStructuredAccStoreDestinationFamily(destinationElementType,
+                                                destinationFamily))
         return emitIncompatibleQuantModeError();
-    } else if (sourceElementType.isSignlessInteger(32)) {
-      if (!isStructuredAccStoreInt32PreQuantMode(*preQuantMode))
-        return emitIncompatibleQuantModeError();
-    } else {
-      return op->emitOpError()
-             << "pre_quant requires source element type to be f32 or i32, got "
-             << sourceElementType;
     }
   }
 

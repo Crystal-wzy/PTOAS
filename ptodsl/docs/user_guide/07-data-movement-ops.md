@@ -1048,6 +1048,55 @@ pto.mte_l0c_ub(acc, ub, 16, 32, 16, 32, split=pto.SplitMode.N)   # split N
 
 ---
 
+#### `pre_quant` modes and destination types
+
+`pre_quant=(payload, mode)` applies a conversion or quantization step before
+`pre_relu`, `clip`, saturation, and the final store. The selected mode must
+match both the accumulator source element type and the destination element
+type.
+
+Payload rules:
+
+- `_vec` modes require a scaling pointer payload with `f16`, `bf16`, or `f32`
+  elements.
+- `_scalar` modes require an `f16`, `bf16`, or `f32` scalar payload.
+- `f32_f16` and `f32_bf16` also require an `f16`, `bf16`, or `f32` scalar
+  payload; the payload is required by the public syntax but does not select
+  per-channel scaling.
+
+Legal mode families:
+
+| Mode family | Accumulator source dtype | Legal destination dtype |
+|-------------|--------------------------|--------------------------|
+| `f32_f16`, `qf322f16_pre_*`, `deqf16_*` | `f32` for `f32_f16` / `qf322f16_pre_*`; `i32` for `deqf16_*` | `f16` |
+| `f32_bf16`, `qf322bf16_pre_*`, `qs322bf16_pre_*` | `f32` for `f32_bf16` / `qf322bf16_pre_*`; `i32` for `qs322bf16_pre_*` | `bf16` |
+| `qf322f32_pre_*` | `f32` | `f32` |
+| `qf322hif8_pre_*`, `qf322fp8_pre_*` | `f32` | PTO FP8 / HiFloat8 family |
+| `deqs32_int_*` | `i32` | 32-bit integer |
+| `qf162s16_pre_*`, `deqs16_*` | `i32` | signed or signless 16-bit integer |
+| `qf162b8_pre_*`, `req8_*`, `qf322b8_pre_*` | `f32` for `qf162b8_pre_*` / `qf322b8_pre_*`; `i32` for `req8_*` | 8-bit integer |
+| `qf162s4_pre_*`, `req4_*`, `qf322s4_pre_*` | `f32` for `qf162s4_pre_*` / `qf322s4_pre_*`; `i32` for `req4_*` | signed or signless 4-bit integer |
+
+Examples:
+
+```python
+# Legal: f32 accumulator values are converted to bf16 on writeback.
+pto.mte_l0c_gm(
+    acc_f32, dst_bf16, 16, 16, 16, 16, 0, 0,
+    pre_quant=(pto.bf16(1.0), "f32_bf16"),
+    layout="nz2nd",
+)
+
+# Illegal: "f32_bf16" requires a bf16 destination, not f16.
+pto.mte_l0c_gm(
+    acc_f32, dst_f16, 16, 16, 16, 16, 0, 0,
+    pre_quant=(pto.bf16(1.0), "f32_bf16"),
+    layout="nz2nd",
+)
+```
+
+---
+
 ### Cube data movement quick reference
 
 | Data Flow | Operation | Src Space | Dst Space |

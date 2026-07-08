@@ -1960,6 +1960,96 @@ def public_cube_surface_probe(
     pto.mte_l0c_ub(acc_tile.as_ptr(), out_tile.as_ptr(), m, n, n, n, split=pto.SplitMode.M, layout="nz2nd")
 
 
+@pto.jit(target="a5", mode="explicit")
+def acc_store_pre_quant_surface_probe(
+    dst: pto.ptr(pto.bf16, "gm"),
+):
+    size = pto.const(16)
+    zero = pto.const(0)
+    src = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    pto.mte_l0c_gm(
+        src.as_ptr(),
+        dst,
+        size,
+        size,
+        size,
+        size,
+        zero,
+        zero,
+        pre_quant=(pto.bf16(1.0), "f32_bf16"),
+        layout="nz2nd",
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def acc_store_bad_pre_quant_mode_probe(
+    dst: pto.ptr(pto.bf16, "gm"),
+):
+    size = pto.const(16)
+    zero = pto.const(0)
+    src = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    pto.mte_l0c_gm(
+        src.as_ptr(),
+        dst,
+        size,
+        size,
+        size,
+        size,
+        zero,
+        zero,
+        pre_quant=(pto.bf16(1.0), "not_a_mode"),
+        layout="nz2nd",
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def acc_store_bad_pre_quant_payload_probe(
+    dst: pto.ptr(pto.bf16, "gm"),
+):
+    size = pto.const(16)
+    zero = pto.const(0)
+    src = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    payload = pto.alloc_tile(
+        shape=[16],
+        dtype=pto.bf16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[16],
+    )
+    pto.mte_l0c_gm(
+        src.as_ptr(),
+        dst,
+        size,
+        size,
+        size,
+        size,
+        zero,
+        zero,
+        pre_quant=(payload.as_ptr(), "f32_bf16"),
+        layout="nz2nd",
+    )
+
+
 @pto.cube
 def public_cube_tile_mx_probe(
     mat_lhs: pto.Tile,
@@ -5314,6 +5404,22 @@ def main() -> None:
 
     public_surface_text = public_surface_exports_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(public_surface_text, "public surface export specialization")
+    acc_store_pre_quant_text = acc_store_pre_quant_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(acc_store_pre_quant_text, "acc-store pre_quant public mode specialization")
+    expect(
+        "pre_quant(%" in acc_store_pre_quant_text and "mode = f32_bf16" in acc_store_pre_quant_text,
+        "mte_l0c_gm pre_quant should preserve the f32_bf16 public mode",
+    )
+    expect_raises(
+        ValueError,
+        lambda: acc_store_bad_pre_quant_mode_probe.compile().mlir_text(),
+        "unsupported acc store pre_quant mode",
+    )
+    expect_raises(
+        TypeError,
+        lambda: acc_store_bad_pre_quant_payload_probe.compile().mlir_text(),
+        "acc store scalar pre_quant payload must be an f16, bf16, or f32 scalar",
+    )
     compile_time_query_text = compile_time_query_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(compile_time_query_text, "compile-time query specialization")
     eager_scalar_text = eager_scalar_constructor_probe.compile().mlir_text()
