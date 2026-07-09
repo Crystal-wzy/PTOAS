@@ -1739,7 +1739,7 @@ getVstsMaskGranularityOverride(StringRef dist, Type elementType) {
     return StringRef("b32");
   if (dist == "PK_B16")
     return StringRef("b16");
-  if (dist == "PK_B32")
+  if (dist == "PK_B32" || dist == "PK_B64" || dist == "PK4_B32")
     return StringRef("b32");
 
   return std::nullopt;
