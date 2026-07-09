@@ -702,6 +702,27 @@ class TileLibCatalogTest(unittest.TestCase):
                 self.assertIn(expected_dist, mlir)
                 self.assertIn('"lt"', mlir)
 
+    def test_tlrelu_accepts_f16_tiles_with_f32_slope(self):
+        specs = {
+            "src": TileSpec(
+                shape=(63, 64),
+                dtype=ScalarType("f16"),
+                memory_space="vec",
+                valid_shape=(63, 64),
+            ),
+            "slope": ScalarSpec(dtype=ScalarType("f32"), value=1.0),
+            "dst": TileSpec(
+                shape=(63, 128),
+                dtype=ScalarType("f16"),
+                memory_space="vec",
+                valid_shape=(63, 64),
+            ),
+        }
+        selected = select("pto.tlrelu", "a5", specs)
+        self.assertEqual(selected.name, "template_tlrelu")
+        mlir = selected.specialize(**specs).mlir_text()
+        self.assertIn("pto.vlrelu", mlir)
+
     def test_tcvt_additional_rowwise_versions_render(self):
         signatures = {
             ("i32", "f32"): "template_tcvt_i32_to_f32",

@@ -7,8 +7,9 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """PTODSL TileLib template for pto.tlrelu."""
 
-from ptodsl import pto
+from ptodsl import pto, scalar
 import ptodsl.tilelib as tilelib
+from ptodsl._types import _resolve
 
 
 def _ub_or_vec_row_major(operand_memory_spaces, operand_b_layouts, operand_s_layouts, **_):
@@ -25,6 +26,7 @@ def _ub_or_vec_row_major(operand_memory_spaces, operand_b_layouts, operand_s_lay
     name="template_tlrelu",
     dtypes=[
         ("f16", "f16", "f16"),
+        ("f16", "f32", "f16"),
         ("f32", "f32", "f32"),
     ],
     iteration_axis="none",
@@ -43,11 +45,18 @@ def template_tlrelu(src: pto.Tile, slope, dst: pto.Tile):
     dtype = dst.dtype
     valid_rows, valid_cols = dst.valid_shape
     lanes = pto.elements_per_vreg(dtype)
+    slope_scalar = slope
+    if str(dtype) == "f16":
+        slope_scalar = scalar.coerce_scalar_to_type(
+            slope,
+            _resolve(pto.f16),
+            context="template_tlrelu(slope)",
+        )
 
     for row in range(0, valid_rows, 1):
         remained = valid_cols
         for col in range(0, valid_cols, lanes):
             mask, remained = pto.make_mask(dtype, remained)
             value = pto.vlds(src[row, col:])
-            result = pto.vlrelu(value, slope, mask)
+            result = pto.vlrelu(value, slope_scalar, mask)
             pto.vsts(result, dst[row, col:], mask)
