@@ -20,13 +20,13 @@ def same_dtype_signatures(arity, dtypes=NUMERIC_DTYPES):
     return [tuple([dtype] * arity) for dtype in dtypes]
 
 
-def ub_row_major_constraints(*operand_names):
+def ub_row_major_constraints(*operand_names, require_same_valid_shape=True):
     constraints = [
         tilelib.check_memory_space("ub"),
         tilelib.check_layout("row_major"),
         tilelib.check_s_layout("none_box"),
     ]
-    if operand_names:
+    if require_same_valid_shape and operand_names:
         constraints.append(tilelib.require_same_valid_shape(*operand_names))
     return constraints
 
