@@ -24,7 +24,7 @@ Data sources used for this snapshot:
 
 | Metric | Count | Notes |
 |---|---:|---|
-| Known current smoke failures | `10` | Based on the active smoke-blocker list below, after the reduction/arg-reduction smoke batch (`tcolmax`, `tcolmin`, `tcolprod`, `tcolargmax`, `tcolargmin`, `trowargmax`, `trowargmin`) was rechecked and passed on 2026-07-08. |
+| Known current smoke failures | `8` | Based on the active smoke-blocker list below, after the reduction/arg-reduction smoke batch plus `tmrgsort` and `tsort32` were rechecked and passed on 2026-07-09. |
 | Full non-smoke failures | `37 / 105` | Exact count from `mani_log/full_nonsmoke_isolated_20260708-023856`. This is the last exact isolated full snapshot and still includes failures from before the 2026-07-08 reduction-family smoke fix. |
 | Tileops still tracked in the implementation / parity table | `30` | Unique tileops in Section 3. Most are version / mode gaps; this count also still includes the two row-arg semantic holdouts because they remain closely tied to the same planning bucket. |
  
@@ -32,10 +32,10 @@ Data sources used for this snapshot:
 
 | Area | Current read |
 |---|---|
-| Smoke ST | Known current blocker count is `10`. The reduction/arg-reduction smoke batch now passes. |
+| Smoke ST | Known current blocker count is `8`. The reduction/arg-reduction smoke batch plus `tmrgsort` and `tsort32` now pass. |
 | Non-smoke ST | Latest isolated full run is exact: `68 passed`, `37 failed`, `105 total`, but it predates the latest reduction-family smoke fix. |
 | Gap shape | The remaining work is split across three buckets: wrong-output bugs, missing template versions/modes/dtypes, and backend metadata/selection gaps. |
-| Best next wins | `tcmp`, `trandom`, `tinsert`, `tmrgsort`, `tsort32`, `tcvt`, and the high-precision math family. |
+| Best next wins | `tcmp`, `trandom`, `tinsert`, `tcvt`, `tlog`, `tsel`, and the high-precision math family. |
 
 ## Recent Updates
 
@@ -45,7 +45,11 @@ non-smoke rerun:
 - The reduction/arg-reduction smoke batch now passes:
   `tcolmax`, `tcolmin`, `tcolprod`, `tcolargmax`, `tcolargmin`,
   `trowargmax`, `trowargmin`.
-- Because of that, the smoke blocker list below no longer treats those seven as
+- `tmrgsort` and `tsort32` smoke now pass after aligning PTODSL callable
+  forms with ST, forwarding `exhausted`, preserving template candidates
+  through `PTOViewToMemref`, and making the PTODSL sort templates use
+  runtime-safe scalar/control-flow constructs.
+- Because of that, the smoke blocker list below no longer treats those nine as
   active smoke failures.
 - The last exact full non-smoke number (`37 / 105`) is still useful for
   prioritization, but it should be read as a dated snapshot rather than current
@@ -69,9 +73,7 @@ read literally.
 | `tdivs` | scalar divide | Build / constraint failure | custom constraints not satisfied | Scalar operand order / tmp / value typing still narrower than TileLang | Relax legality to accept both real ST scalar forms, then revisit high-precision parity | P1 | High |
 | `textract` | movement / extract | Build / constraint failure | vec-to-vec constraint fails in smoke | PTODSL only covers the UB ND path and may still be too narrow even there | First fix the UB vec-to-vec legality; then add the cube/mat forms from legacy | P1 | High |
 | `tlog` | unary math | Build / no candidate | `ExpandTileOp requires at least one template candidate` | Selection path is not finding a legal candidate; high-precision parity is also still missing | Confirm candidate insertion for the default path, then port `precisionType=high_precision` | P1 | High |
-| `tmrgsort` | sort / merge | Build / operand-shape mismatch | wrong operand count or wrong `ex_vec` dtype/signature | PTODSL operand forms do not match ST/legacy, and `exhausted` is not forwarded today | Align template signatures with ST and add `exhausted` to context attrs | P0 | High |
 | `tsel` | select / mask | Build / constraint failure | custom constraints are not satisfied | PTODSL mask/data layout acceptance is narrower than legacy | Relax legality to the ST mask tile layout, then validate select mask unpacking | P1 | High |
-| `tsort32` | sort | Build / operand-signature mismatch | aligned form expects wrong operands and tmp form rejects the ST dtype | PTODSL operand order and index dtype coverage do not match legacy/ST | Match legacy/ST callable forms and add missing index dtype coverage | P0 | High |
 
 ### 1.2 Smoke Rows That Are Likely Stale But Still Point At Real Gaps
 

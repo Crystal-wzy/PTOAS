@@ -24,7 +24,7 @@ mani_log/fixed_attr/summary.tsv
 The following smoke testcases now build, run, and compare successfully with
 PTODSL: `tcolexpand`, `tcolexpandmax`, `tcolexpandmin`, `tcolexpandmul`,
 `softmax`, `tcolmax`, `tcolmin`, `tlrelu`, `tload`, `tmatmul`, `tmov`,
-`tpartadd`, `tpartmax`, `tpartmin`, `tpartmul`, `tfillpad`,
+`tmrgsort`, `tsort32`, `tpartadd`, `tpartmax`, `tpartmin`, `tpartmul`, `tfillpad`,
 `tfillpad_expand`, and `tfillpad_inplace`.
 
 | Testcase | Stage | Failure type | Main error / observation |
@@ -52,13 +52,13 @@ PTODSL: `tcolexpand`, `tcolexpandmax`, `tcolexpandmin`, `tcolexpandmul`,
 | tlrelu | Fixed | Passed smoke ST | Fixed by preserving candidates through `PTOViewToMemref` and allowing `vec` row-major tiles. See `mani_log/fixed_attr/tlrelu.log`. |
 | tmatmul | Fixed | Passed smoke ST | Fixed by preserving candidates through `PTOViewToMemref`; smoke ST passes. See `mani_log/fixed_attr/tmatmul.log`. |
 | tmov | Fixed | Passed smoke ST | Fixed by preserving candidates through `PTOViewToMemref` and allowing `vec` row-major tiles. See `mani_log/fixed_attr/tmov.log`. |
-| tmrgsort | Build | Operand/signature mismatch | `NoMatchingTemplate` for `pto.tmrgsort`; single-list expects 3 operands but got 5, multi-list2 rejects dtype signature `('f16', 'f16', 'f16', 'f16', 'i16')`, multi-list3/4 expect 6/7 operands. See `mani_log/tmrgsort.log`. |
+| tmrgsort | Fixed | Passed smoke ST | Fixed by aligning PTODSL callable forms with ST, forwarding `exhausted`, preserving candidates through `PTOViewToMemref`, and using runtime-safe scalar/control-flow constructs in `tmrgsort.py`. Smoke build, run, and compare now pass on 2026-07-09. |
 | trowargmax | Build | Unsupported dtype | `NoMatchingTemplate` for `pto.trowargmax`; `template_trowargmax` rejects dtype signature `('f32', 'f32', 'ui32')`. See `mani_log/trowargmax.log`. |
 | trowargmin | Build | Unsupported dtype | `NoMatchingTemplate` for `pto.trowargmin`; `template_trowargmin` rejects dtype signature `('f32', 'f32', 'ui32')`. See `mani_log/trowargmin.log`. |
 | trowsum | Build | Unsupported dtype | `NoMatchingTemplate` for `pto.trowsum`; `template_trowsum` rejects dtype signature `('i16', 'i16', 'i16')`. See `mani_log/trowsum.log`. |
 | tsel | Build | Constraint failure | `NoMatchingTemplate` for `pto.tsel`; `template_tsel` custom constraints are not satisfied. See `mani_log/tsel.log`. |
 | tsels | Build | Unsupported dtype | `NoMatchingTemplate` for `pto.tsels`; `template_tsels` rejects dtype signature `('i16', 'i32', 'i32', 'i32', 'i32')`. See `mani_log/tsels.log`. |
-| tsort32 | Build | Operand/signature mismatch | `NoMatchingTemplate` for `pto.tsort32`; `template_tsort32` expects 3 operands but got 4, and `template_tsort32_with_tmp` rejects dtype signature `('f32', 'ui32', 'f32', 'f32')`. See `mani_log/tsort32.log`. |
+| tsort32 | Fixed | Passed smoke ST | Fixed by matching the ST callable forms, using `ui32` index tiles, and relaxing the unaligned legality path to the legacy behavior. Smoke build, run, and compare now pass on 2026-07-09. |
 
 ## Notes
 

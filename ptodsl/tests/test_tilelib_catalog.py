@@ -10,7 +10,7 @@
 import unittest
 
 import ptodsl.tilelib as tilelib
-from ptodsl.tilelib import ScalarSpec, ScalarType, TileSpec, ViewSpec, select
+from ptodsl.tilelib import ScalarSpec, ScalarType, TileSpec, VectorSpec, ViewSpec, select
 
 
 # op -> (template name, rendered op, parameter names, representative dtype[, candidate id])
@@ -280,7 +280,6 @@ SCALAR_OPERANDS = {
     "counter2",
     "counter3",
     "block_len",
-    "ex_vec",
 }
 SPECIAL_SCALAR_DTYPES = {
     ("pto.tshls", "scalar"): "i16",
@@ -297,19 +296,21 @@ SPECIAL_SCALAR_DTYPES = {
     ("pto.trandom", "counter1"): "i32",
     ("pto.trandom", "counter2"): "i32",
     ("pto.trandom", "counter3"): "i32",
-    ("pto.tmrgsort", "ex_vec"): "i32",
 }
 SPECIAL_OPERAND_DTYPES = {
     ("pto.tcmp", "dst"): "i8",
     ("pto.tcmps", "dst"): "ui8",
     ("pto.trandom", "dst"): "ui32",
-    ("pto.tsort32", "idx"): "i32",
+    ("pto.tsort32", "idx"): "ui32",
     ("pto.textract_fp", "fp"): "f32",
     ("pto.textract_fp", "dst"): "f16",
     ("pto.tstore_fp", "fp"): "f16",
     ("pto.tstore_fp", "dst"): "f16",
     ("pto.trowargmax", "dst"): "i32",
     ("pto.trowargmin", "dst"): "i32",
+}
+SPECIAL_VECTOR_OPERANDS = {
+    ("pto.tmrgsort", "ex_vec"): ("i16", (4,)),
 }
 for _op in CUBE_OPS:
     SPECIAL_OPERAND_DTYPES[(_op, "acc")] = "f32"
@@ -409,6 +410,10 @@ def _specs(op, parameter_names, dtype_name):
         )
         if (op, name) in VIEW_OPERANDS:
             specs[name] = _view_spec_for(op, name, operand_dtype)
+            continue
+        if (op, name) in SPECIAL_VECTOR_OPERANDS:
+            vector_dtype, vector_shape = SPECIAL_VECTOR_OPERANDS[(op, name)]
+            specs[name] = VectorSpec(shape=vector_shape, dtype=ScalarType(vector_dtype))
             continue
         valid_shape = SPECIAL_VALID_SHAPES.get((op, name), (8, 64))
         if op in COLUMN_REDUCTIONS and name == "dst":

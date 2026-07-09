@@ -224,7 +224,7 @@ class TileLibDaemonTest(unittest.TestCase):
             _tile_spec(),
             _tile_spec(),
             _tile_spec(),
-            {"kind": "vector", "dtype": "i32", "shape": [4]},
+            {"kind": "vector", "dtype": "i16", "shape": [4]},
         ]
 
         metadata = self.client.get_metadata("a5", "pto.tmrgsort", operands)

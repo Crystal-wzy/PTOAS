@@ -496,6 +496,9 @@ static void appendOpContextAttrs(
       attrs.emplace_back("cmp_mode",
                          stringifyCmpMode(cmpModeAttr.getValue()).str());
   }
+  if (auto tmrgsort = dyn_cast<pto::TMrgSortOp>(op))
+    attrs.emplace_back("exhausted",
+                       tmrgsort.getExhausted() ? "1" : "0");
   if (auto tgather = dyn_cast<pto::TGatherOp>(op)) {
     if (auto maskPatternAttr = tgather.getMaskPatternAttr()) {
       attrs.emplace_back(

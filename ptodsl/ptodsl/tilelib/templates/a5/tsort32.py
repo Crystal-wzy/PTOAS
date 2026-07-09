@@ -34,7 +34,7 @@ def _unaligned(src_valid_shape, src_dtype, **_):
     if len(src_valid_shape) != 2:
         return False
     valid_cols = src_valid_shape[1]
-    return valid_cols % BLOCK_SIZE != 0 and valid_cols * _bytewidth(src_dtype) <= MAX_UB_TMP
+    return valid_cols % BLOCK_SIZE != 0
 
 
 def _pad_min(dtype):
@@ -50,7 +50,7 @@ def _pad_min(dtype):
     op="pto.tsort32",
     target="a5",
     name="template_tsort32",
-    dtypes=[("f16", "i32", "f16"), ("bf16", "i32", "bf16"), ("f32", "i32", "f32")],
+    dtypes=[("f16", "ui32", "f16"), ("bf16", "ui32", "bf16"), ("f32", "ui32", "f32")],
     iteration_axis="none",
     op_engine="vector",
     op_class="other",
@@ -110,7 +110,7 @@ def template_tsort32(src: pto.Tile, idx: pto.Tile, dst: pto.Tile):
     op="pto.tsort32",
     target="a5",
     name="template_tsort32_with_tmp",
-    dtypes=[("f16", "i32", "f16", "f16"), ("bf16", "i32", "bf16", "bf16"), ("f32", "i32", "f32", "f32")],
+    dtypes=[("f16", "ui32", "f16", "f16"), ("bf16", "ui32", "bf16", "bf16"), ("f32", "ui32", "f32", "f32")],
     iteration_axis="none",
     op_engine="vector",
     op_class="other",

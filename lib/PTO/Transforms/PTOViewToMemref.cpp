@@ -3981,7 +3981,7 @@ struct PTOViewToMemrefPass
             return;
           }
 
-          rewriter.replaceOpWithNewOp<pto::TMrgSortOp>(
+          auto newOp = rewriter.replaceOpWithNewOp<pto::TMrgSortOp>(
               op,
               TypeRange{},
               ValueRange{src},
@@ -3990,6 +3990,7 @@ struct PTOViewToMemrefPass
               Value() /*tmp*/,
               Value() /*excuted*/,
               op.getExhaustedAttr());
+          newOp->setAttrs(op->getAttrs());
         } else if (op.isFormat2()) {
           bool allMemRef = true;
           for (Value v : op.getSrcs())
@@ -4019,7 +4020,7 @@ struct PTOViewToMemrefPass
             return;
           }
 
-          rewriter.replaceOpWithNewOp<pto::TMrgSortOp>(
+          auto newOp = rewriter.replaceOpWithNewOp<pto::TMrgSortOp>(
               op,
               TypeRange{},
               op.getSrcs(),
@@ -4028,6 +4029,7 @@ struct PTOViewToMemrefPass
               tmp,
               excuted,
               op.getExhaustedAttr());
+          newOp->setAttrs(op->getAttrs());
         } else {
           op.emitError("tmrgsort must be format1 or format2");
           signalPassFailure();
