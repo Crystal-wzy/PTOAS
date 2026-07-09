@@ -43,6 +43,11 @@ enum BufferStatus { UNDEFFINED = 0, DEFFINED, GENED, KILLED };
 /// Pair of inplace Value.
 using ValuePair = std::pair<Value, Value>;
 
+enum class MemPlanMode {
+  LOCAL_MEM_PLAN,
+  GLOBAL_WORKSPACE_PLAN,
+};
+
 /// Result status after plan memory.
 enum PlanStatus {
   PLAN_SUCCESS = 0,

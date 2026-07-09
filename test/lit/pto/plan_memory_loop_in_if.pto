@@ -1,4 +1,5 @@
 // RUN: ptoas --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --plan-memory-impl=modern --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
 
 module {
   func.func @loop_in_if(%arg0: memref<16x16x16xf16, #pto.address_space<gm>>,
@@ -34,4 +35,3 @@ module {
 // CHECK: scf.for
 // CHECK: } else {
 // CHECK: pto.pointer_cast
-

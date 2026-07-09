@@ -13,6 +13,7 @@
 
 #include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/IR/PTOTypeUtils.h"
+#include "Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -464,6 +465,32 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       // op and is consumed later by PTOResolveBufferSelect / sync.
       UpdateBufferAlias(slotOp.getResult(), slotOp.getSource());
       return WalkResult::advance();
+    } else if (isLocalMemPlan() && dyn_cast<pto::AllocTileOp>(op)) {
+      auto allocTileOp = cast<pto::AllocTileOp>(op);
+      if (allocTileOp.getAddr()) {
+        return WalkResult::advance();
+      }
+      auto memorySpaceAttr = GetBufferSpaceAttr(allocTileOp.getResult());
+      if (!isLocalBuffer(memorySpaceAttr)) {
+        allocTileOp.emitError("Alloc tile buffer not at local space");
+        return WalkResult::interrupt();
+      }
+      if (auto attr = allocTileOp->getAttrOfType<IntegerAttr>(
+              mlir::pto::kPtoMultiBufferAttrName)) {
+        uint64_t n = attr.getValue().getZExtValue();
+        if (n < mlir::pto::kPtoMultiBufferMinNum ||
+            n > mlir::pto::kPtoMultiBufferMaxNum) {
+          allocTileOp.emitError()
+              << "pto.multi_buffer must be in ["
+              << mlir::pto::kPtoMultiBufferMinNum << ", "
+              << mlir::pto::kPtoMultiBufferMaxNum << "] (got " << n << ")";
+          return WalkResult::interrupt();
+        }
+        buffer2MultiNum[allocTileOp.getResult()] = static_cast<uint32_t>(n);
+      }
+      UpdateOpBufferInfo(op, op->getResults());
+      UpdateOperandGenInfo(curOpInfo, allocTileOp.getResult());
+      return WalkResult::advance();
     } else if (isLocalMemPlan() && dyn_cast<memref::AllocOp>(op)) {
       auto allocOp = cast<memref::AllocOp>(op);
       if (failed(CheckLocalBufferAllocOp(op))) {
@@ -538,6 +565,9 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
     } else if (auto selectOp = dyn_cast<arith::SelectOp>(op)) {
       UpdateBufferAlias(selectOp.getResult(), selectOp.getTrueValue(), true);
       UpdateBufferAlias(selectOp.getResult(), selectOp.getFalseValue(), true);
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tileBufAddrOp = dyn_cast<pto::TileBufAddrOp>(op)) {
+      UpdateOpGenInfo(curOpInfo, ValueRange{tileBufAddrOp.getSrc()});
       OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto callOp = dyn_cast<func::CallOp>(op)) {
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(callOp->getOperands()));
@@ -968,14 +998,23 @@ BufferInfo MemLivenessAnalysis::GetBufferInfo(Operation *op, Value operand,
   bufferInfo.operation = op;
   bufferInfo.bufferScope = bufferScope;
   // get buffer size, now for static shape
-  Value traceValue = tracebackMemRef(operand);
-  auto memRefType = cast<MemRefType>(traceValue.getType());
-  bufferInfo.bufferType = memRefType.getElementType();
+  ArrayRef<int64_t> shape;
+  Type elementType;
+  if (auto tileType = dyn_cast<TileBufType>(operand.getType())) {
+    shape = tileType.getShape();
+    elementType = tileType.getElementType();
+  } else {
+    Value traceValue = tracebackMemRef(operand);
+    auto memRefType = cast<MemRefType>(traceValue.getType());
+    shape = memRefType.getShape();
+    elementType = memRefType.getElementType();
+  }
+  bufferInfo.bufferType = elementType;
   std::optional<int64_t> totalStaticSize =
-      getStaticTotalSize(memRefType.getShape());
+      getStaticTotalSize(shape);
   if (!totalStaticSize.has_value())
     llvm::report_fatal_error("failed to obtain buffer static shape size");
-  unsigned elemBytes = getPTOStorageElemByteSize(memRefType.getElementType());
+  unsigned elemBytes = getPTOStorageElemByteSize(elementType);
   if (elemBytes == 0)
     llvm::report_fatal_error("failed to obtain buffer element byte size");
   bufferInfo.constBits =
@@ -2477,8 +2516,69 @@ PlanRecord MemPlan::RollbackOutline(PlanRecHis &history,
 }
 
 namespace {
+
+class LegacyAllocTileOpAddPlannedAddressPattern
+    : public OpRewritePattern<pto::AllocTileOp> {
+public:
+  explicit LegacyAllocTileOpAddPlannedAddressPattern(
+      MLIRContext *context,
+      DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets)
+      : OpRewritePattern<pto::AllocTileOp>(context),
+        buffer2Offsets(std::move(buffer2Offsets)) {}
+
+  LogicalResult matchAndRewrite(pto::AllocTileOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getAddr())
+      return failure();
+
+    auto tileType = dyn_cast<TileBufType>(op.getResult().getType());
+    if (!tileType)
+      return failure();
+
+    auto it = buffer2Offsets.find(op.getResult());
+    if (it == buffer2Offsets.end() || it->second.empty())
+      return failure();
+
+    if (it->second.size() != 1) {
+      return rewriter.notifyMatchFailure(
+          op, "single alloc_tile root expects exactly one planned address");
+    }
+
+    Value addr = rewriter.create<arith::ConstantIntOp>(op.getLoc(),
+                                                       it->second.front(), 64);
+    auto planned = rewriter.create<pto::AllocTileOp>(
+        op.getLoc(), tileType, addr,
+        op.getValidRow() ? op.getValidRow() : Value(),
+        op.getValidCol() ? op.getValidCol() : Value());
+    for (NamedAttribute attr : op->getAttrs()) {
+      if (attr.getName().getValue() == "operandSegmentSizes")
+        continue;
+      planned->setAttr(attr.getName(), attr.getValue());
+    }
+
+    rewriter.replaceOp(op, planned.getResult());
+    return success();
+  }
+
+private:
+  DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets;
+};
+
+static FailureOr<MemPlanMode> parseLegacyMemPlanMode(func::FuncOp func,
+                                                     llvm::StringRef memMode) {
+  if (memMode.equals_insensitive("local") ||
+      memMode.equals_insensitive("local-mem-plan"))
+    return MemPlanMode::LOCAL_MEM_PLAN;
+  if (memMode.equals_insensitive("global-work-space-plan"))
+    return MemPlanMode::GLOBAL_WORKSPACE_PLAN;
+  func.emitError("unsupported mem-mode '")
+      << memMode << "'; only 'local' is supported by the PTOAS pipeline";
+  return failure();
+}
+
 struct PlanMemoryPass : public mlir::pto::impl::PlanMemoryBase<PlanMemoryPass> {
 public:
+  PlanMemoryPass() = default;
   explicit PlanMemoryPass(const mlir::pto::PlanMemoryOptions &planMemoryOption)
       : PlanMemoryBase(planMemoryOption) {}
 
@@ -2486,11 +2586,13 @@ public:
 
 private:
   void populateBufferAddressToAllocOp(
-      RewritePatternSet &patterns,
+      RewritePatternSet &patterns, MemPlanMode mode,
       DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets) {
-    if (this->memMode == MemPlanMode::LOCAL_MEM_PLAN) {
+    if (mode == MemPlanMode::LOCAL_MEM_PLAN) {
       patterns.add<MemrefAllocaOpToPointerCastOpPattern>(patterns.getContext(),
                                                          buffer2Offsets);
+      patterns.add<LegacyAllocTileOpAddPlannedAddressPattern>(
+          patterns.getContext(), buffer2Offsets);
     }
   }
 };
@@ -2524,12 +2626,16 @@ void PlanMemoryPass::runOnOperation() {
   });
 
   for (func::FuncOp funcOp : funcs) {
+    auto parsedMode = parseLegacyMemPlanMode(funcOp, this->memMode);
+    if (failed(parsedMode))
+      return signalPassFailure();
+    MemPlanMode mode = *parsedMode;
     ReserveBufferPlans reservePlans;
-    if (this->memMode == MemPlanMode::LOCAL_MEM_PLAN &&
+    if (mode == MemPlanMode::LOCAL_MEM_PLAN &&
         failed(analyzeReserveBufferPlans(funcOp, reservePlans))) {
       return signalPassFailure();
     }
-    if (this->memMode == MemPlanMode::LOCAL_MEM_PLAN) {
+    if (mode == MemPlanMode::LOCAL_MEM_PLAN) {
       for (ReserveBufferPlan &reservePlan : reservePlans) {
         if (reservePlan.mode != ReserveBufferMode::Manual)
           continue;
@@ -2540,12 +2646,14 @@ void PlanMemoryPass::runOnOperation() {
       }
     }
 
-    MemLivenessAnalysis memLiveness(funcOp, this->memMode);
+    MemLivenessAnalysis memLiveness(funcOp, mode);
     memLiveness.build();
 
-    MemPlan memPlan(this->memMode, this->enableGlobalReuse,
-                    this->enablePrintMemoryAllocatedSize,
-                    this->restrictInplaceAsISA, this->orderBySize);
+    constexpr bool enableGlobalReuse = false;
+    constexpr bool enablePrintMemoryAllocatedSize = false;
+    constexpr bool restrictInplaceAsISA = false;
+    MemPlan memPlan(mode, enableGlobalReuse, enablePrintMemoryAllocatedSize,
+                    restrictInplaceAsISA, this->orderBySize);
     if (failed(memPlan.InitMemSpecsFromModule(funcOp))) {
       return signalPassFailure();
     }
@@ -2564,21 +2672,32 @@ void PlanMemoryPass::runOnOperation() {
     // Keep reserve_buffer allocation outside the core MemPlan algorithm:
     // normal local buffers are planned first, then reserve_buffer claims one
     // aligned hole in its target address space.
-    if (this->memMode == MemPlanMode::LOCAL_MEM_PLAN &&
-        failed(assignAutoReserveBufferBases(reservePlans, memLiveness.bufferInfos,
-                                            memPlan.GetBuffer2Offsets()))) {
+    if (mode == MemPlanMode::LOCAL_MEM_PLAN &&
+        failed(assignAutoReserveBufferBases(
+            reservePlans, memLiveness.bufferInfos, memPlan.GetBuffer2Offsets()))) {
       return signalPassFailure();
     }
 
     RewritePatternSet patterns(&getContext());
-    populateBufferAddressToAllocOp(patterns, memPlan.GetBuffer2Offsets());
+    populateBufferAddressToAllocOp(patterns, mode, memPlan.GetBuffer2Offsets());
     if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
       return signalPassFailure();
     }
+
+    bool hasUnplannedAllocTile = false;
+    funcOp.walk([&](pto::AllocTileOp op) {
+      if (op.getAddr())
+        return;
+      op.emitError(
+          "PTOPlanMemory failed to assign an address to pto.alloc_tile");
+      hasUnplannedAllocTile = true;
+    });
+    if (hasUnplannedAllocTile)
+      return signalPassFailure();
   }
 }
 
 std::unique_ptr<Pass>
-mlir::pto::createPlanMemoryPass(const PlanMemoryOptions &planMemoryOption) {
-  return std::make_unique<PlanMemoryPass>(planMemoryOption);
+mlir::pto::createPlanMemoryPass(const PlanMemoryOptions &options) {
+  return std::make_unique<PlanMemoryPass>(options);
 }

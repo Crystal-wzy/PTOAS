@@ -1,4 +1,5 @@
 // RUN: ptoas --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --plan-memory-impl=modern --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
 
 module {
   func.func @peak_8_overlapping(%arg0: memref<16x16x16xf16, #pto.address_space<gm>>,
@@ -56,4 +57,3 @@ module {
 // 8 live buffers implies a max offset of 7*8192 = 57344 bytes.
 // CHECK: %[[O57344:.*]] = arith.constant 57344 : i64
 // CHECK: pto.pointer_cast(%[[O57344]]) : memref<16x16x16xf16, #pto.address_space<{{vec|ub}}>>
-

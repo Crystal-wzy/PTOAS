@@ -8,9 +8,9 @@
 
 // RUN: not ptoas --pto-level=level3 --pto-arch=a5 %s 2>&1 | FileCheck %s
 
-// In level3 PTOPlanMemory is skipped, so multi-buffer slots have no physical
-// addresses unless the caller provides a base `addr`. Reject the op instead of
-// silently collapsing every slot onto one memref.
+// In level3 automatic address planning is unavailable, so multi-buffer slots
+// have no physical addresses unless the caller provides a base `addr`. Reject
+// the op instead of silently collapsing every slot onto one memref.
 
 module {
   func.func @l3_missing_addr(

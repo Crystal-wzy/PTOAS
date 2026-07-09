@@ -10,16 +10,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "AllocToPointerCast.h"
+#include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/IR/PTOTypeUtils.h"
-#include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-
-namespace mlir {
-#define GEN_PASS_DEF_ALLOCTOPOINTERCAST
-#include "PTO/Transforms/Passes.h.inc"
-
-} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::pto;
@@ -30,62 +23,77 @@ namespace {
 constexpr uint64_t kDefaultAllocAlignmentBytes = 4096;
 constexpr size_t kDynamicValidShapeRank = 2;
 
-static TileBufConfigAttr inferBindTileConfig(memref::AllocOp op) {
+static uint64_t alignUpToDefault(uint64_t value) {
+  return ((value + kDefaultAllocAlignmentBytes - 1) /
+          kDefaultAllocAlignmentBytes) *
+         kDefaultAllocAlignmentBytes;
+}
+
+static TileBufConfigAttr inferBindTileConfig(Value root, Operation *diagOp) {
   TileBufConfigAttr configAttr;
-  for (Operation *user : op.getResult().getUsers()) {
+  for (Operation *user : root.getUsers()) {
     auto bind = dyn_cast<pto::BindTileOp>(user);
-    if (!bind || bind.getSource() != op.getResult())
+    if (!bind || bind.getSource() != root)
       continue;
     if (!configAttr) {
       configAttr = bind.getConfigAttr();
       continue;
     }
     if (configAttr != bind.getConfigAttr()) {
-      op.emitWarning("alloc has multiple bind_tile users with different configs; "
-                     "using the first one");
+      diagOp->emitWarning(
+          "alloc has multiple bind_tile users with different configs; "
+          "using the first one");
       break;
     }
   }
   return configAttr;
 }
 
-static SmallVector<uint64_t> getAllocatedOffsets(memref::AllocOp op,
-                                                 BaseMemRefType memRefType,
-                                                 const DenseMap<Value, SmallVector<uint64_t>> &buffer2Offsets,
-                                                 uint64_t &fallbackNextOffset) {
-  auto iter = buffer2Offsets.find(op.getResult());
+static SmallVector<uint64_t> getAllocatedOffsets(
+    Value root, Operation *allocLikeOp, BaseMemRefType memRefType,
+    const DenseMap<Value, SmallVector<uint64_t>> &buffer2Offsets,
+    uint64_t &fallbackNextOffset) {
+  auto iter = buffer2Offsets.find(root);
   SmallVector<uint64_t> offsets;
   if (iter != buffer2Offsets.end())
     offsets = iter->second;
 
-  if (offsets.empty()) {
-    // Estimate buffer size (best-effort). Most PTO tile buffers are 32x32 and
-    // naturally align to 4096 bytes.
-    uint64_t bytes = kDefaultAllocAlignmentBytes;
-    if (auto memrefTy = dyn_cast<MemRefType>(memRefType)) {
-      uint64_t elemBytes = getPTOStorageElemByteSize(memrefTy.getElementType());
-      if (elemBytes != 0) {
-        uint64_t numel = 1;
-        bool allStatic = true;
-        for (int64_t d : memrefTy.getShape()) {
-          if (d == ShapedType::kDynamic) {
-            allStatic = false;
-            break;
-          }
-          numel *= static_cast<uint64_t>(d);
+  if (!offsets.empty())
+    return offsets;
+
+  // Estimate buffer size (best-effort). Most PTO tile buffers are 32x32 and
+  // naturally align to 4096 bytes.
+  uint64_t bytes = kDefaultAllocAlignmentBytes;
+  if (auto memrefTy = dyn_cast<MemRefType>(memRefType)) {
+    uint64_t elemBytes = getPTOStorageElemByteSize(memrefTy.getElementType());
+    if (elemBytes != 0) {
+      uint64_t numel = 1;
+      bool allStatic = true;
+      for (int64_t d : memrefTy.getShape()) {
+        if (d == ShapedType::kDynamic) {
+          allStatic = false;
+          break;
         }
-        if (allStatic && numel != 0)
-          bytes = numel * elemBytes;
+        numel *= static_cast<uint64_t>(d);
       }
+      if (allStatic && numel != 0)
+        bytes = numel * elemBytes;
     }
-    uint64_t stride = ((bytes + kDefaultAllocAlignmentBytes - 1) /
-                       kDefaultAllocAlignmentBytes) *
-                      kDefaultAllocAlignmentBytes;
-    uint64_t off = fallbackNextOffset;
-    fallbackNextOffset +=
-        std::max<uint64_t>(stride, kDefaultAllocAlignmentBytes);
-    offsets.push_back(off);
   }
+
+  uint64_t slotCount = 1;
+  if (auto attr =
+          allocLikeOp->getAttrOfType<IntegerAttr>(pto::kPtoMultiBufferAttrName)) {
+    slotCount = attr.getValue().getZExtValue();
+  }
+
+  uint64_t stride = alignUpToDefault(bytes);
+  uint64_t off = fallbackNextOffset;
+  for (uint64_t i = 0; i < slotCount; ++i)
+    offsets.push_back(off + i * stride);
+
+  fallbackNextOffset +=
+      std::max<uint64_t>(stride * slotCount, kDefaultAllocAlignmentBytes);
   return offsets;
 }
 
@@ -106,9 +114,10 @@ static std::pair<Value, Value> getDynamicValidShapeValues(memref::AllocOp op) {
 LogicalResult MemrefAllocaOpToPointerCastOpPattern::matchAndRewrite(
     memref::AllocOp op, PatternRewriter &rewriter) const {
   const auto &currentMemRefType = cast<BaseMemRefType>(op.getType());
-  TileBufConfigAttr configAttr = inferBindTileConfig(op);
-  SmallVector<uint64_t> offsets = getAllocatedOffsets(
-      op, currentMemRefType, buffer2Offsets, fallbackNextOffset);
+  TileBufConfigAttr configAttr = inferBindTileConfig(op.getResult(), op);
+  SmallVector<uint64_t> offsets =
+      getAllocatedOffsets(op.getResult(), op, currentMemRefType,
+                          buffer2Offsets, fallbackNextOffset);
   SmallVector<Value> addrs;
   addrs.reserve(offsets.size());
   for (uint64_t offset : offsets) {

@@ -150,6 +150,13 @@ void setBaseMemRefTypeScope(Value val, AddressSpaceAttr targetMemScope) {
 
 
 std::optional<AddressSpaceAttr> GetBufferSpaceAttr(Value operand) {
+  if (auto tileTy = dyn_cast<pto::TileBufType>(operand.getType())) {
+    if (auto memorySpaceAttr =
+            dyn_cast_or_null<AddressSpaceAttr>(tileTy.getMemorySpace()))
+      return memorySpaceAttr;
+    return std::nullopt;
+  }
+
   if (!llvm::isa<MemRefType>(operand.getType())) {
     return std::nullopt;
   }

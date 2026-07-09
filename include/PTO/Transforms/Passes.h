@@ -67,10 +67,10 @@ std::unique_ptr<Pass> createConvertToPTOOpPass();
 /// PTO Ops.
 std::unique_ptr<Pass> createInferPTOMemScopePass();
 
-/// Create a pass to plan memory.
 std::unique_ptr<Pass>
-createPlanMemoryPass(const PlanMemoryOptions &planMemoryOption = {});
-
+createPlanMemoryPass(const PlanMemoryOptions &options = {});
+std::unique_ptr<Pass>
+createPlanMemoryModernPass(const PlanMemoryOptions &options);
 std::unique_ptr<Pass> createPTORemoveRedundantBarrierPass();
 std::unique_ptr<Pass> createPTOViewToMemrefPass();
 std::unique_ptr<Pass> createPTOValidateIntToPtrUsesPass();

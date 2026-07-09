@@ -1,4 +1,5 @@
 // RUN: ptoas --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --plan-memory-impl=modern --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
 
 module {
   func.func @if_in_loop(%arg0: memref<16x16x16xf16, #pto.address_space<gm>>,
@@ -31,7 +32,7 @@ module {
 // CHECK: func.func @if_in_loop
 // CHECK-NOT: memref.alloc
 // CHECK-DAG: %c0_i64 = arith.constant 0 : i64
-// CHECK-DAG: %c8192_i64 = arith.constant 8192 : i64
 // CHECK: scf.for
 // CHECK: scf.if
-// CHECK: pto.pointer_cast
+// CHECK: pto.pointer_cast(%c0_i64)
+// CHECK: pto.pointer_cast(%c0_i64)

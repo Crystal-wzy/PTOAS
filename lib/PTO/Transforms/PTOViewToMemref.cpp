@@ -65,6 +65,18 @@ static void markForceDynamicValidShape(Operation *op, bool force,
 
 static Type convertPTOTypeToMemRef(Type t);
 
+static bool hasTileNativeAllocTileRoot(func::FuncOp func) {
+  bool found = false;
+  auto result = func.walk([&](pto::AllocTileOp op) {
+    if (!isa<pto::TileBufType>(op.getResult().getType()))
+      return WalkResult::advance();
+    found = true;
+    return WalkResult::interrupt();
+  });
+  (void)result;
+  return found;
+}
+
 constexpr size_t kTileRank2D = 2;
 constexpr size_t kRowDimensionIndex = 0;
 constexpr size_t kColumnDimensionIndex = 1;
@@ -939,63 +951,6 @@ static void markForceDynamicValidShape(Operation *op, bool force,
   func.setFunctionType(FunctionType::get(ctx, newInputs, newResults));
 }
 
-[[maybe_unused]] static LogicalResult lowerAllocTileOps(func::FuncOp func, MLIRContext *ctx) {
-  DefaultInlineVector<mlir::pto::AllocTileOp> allocTiles;
-  func.walk([&](mlir::pto::AllocTileOp op) { allocTiles.push_back(op); });
-
-  for (auto op : allocTiles) {
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(op);
-    Location loc = op.getLoc();
-
-    auto tbTy = dyn_cast<mlir::pto::TileBufType>(op.getResult().getType());
-    if (!tbTy)
-      continue;
-
-    SmallInlineVector<int64_t> shape(tbTy.getShape().begin(),
-                                  tbTy.getShape().end());
-    Type elemTy = tbTy.getElementType();
-    SmallVector<int64_t> strides = buildTileMemRefStrides(tbTy);
-
-    auto targetLayout =
-        StridedLayoutAttr::get(ctx, ShapedType::kDynamic, strides);
-    auto targetType =
-        MemRefType::get(shape, elemTy, targetLayout, tbTy.getMemorySpace());
-
-    Value vRow = op.getValidRow();
-    Value vCol = op.getValidCol();
-    materializeStaticValidDims(rewriter, loc, tbTy, vRow, vCol);
-
-    auto configAttr = tbTy.getConfigAttr();
-    if (!configAttr)
-      configAttr = pto::TileBufConfigAttr::getDefault(ctx);
-
-    if (Value addr = op.getAddr()) {
-      auto pc = rewriter.create<pto::PointerCastOp>(
-          loc, targetType, ValueRange{addr}, vRow ? vRow : Value(),
-          vCol ? vCol : Value(), configAttr);
-      markForceDynamicValidShape(pc, tbTy.hasDynamicValid(), ctx);
-      auto bindOp = rewriter.create<pto::BindTileOp>(
-          loc, targetType, pc.getResult(), vRow ? vRow : Value(),
-          vCol ? vCol : Value(), configAttr);
-      markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
-      rewriter.replaceOp(op, bindOp.getResult());
-      continue;
-    }
-
-    auto allocLayout = StridedLayoutAttr::get(ctx, 0, strides);
-    auto allocType =
-        MemRefType::get(shape, elemTy, allocLayout, tbTy.getMemorySpace());
-    Value alloc = rewriter.create<memref::AllocOp>(loc, allocType);
-    auto bindOp = rewriter.create<pto::BindTileOp>(
-        loc, targetType, alloc, vRow ? vRow : Value(), vCol ? vCol : Value(),
-        configAttr);
-    markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
-    rewriter.replaceOp(op, bindOp.getResult());
-  }
-  return success();
-}
-
 [[maybe_unused]] static LogicalResult lowerDeclareTileOps(func::FuncOp func, MLIRContext *ctx) {
   DefaultInlineVector<mlir::pto::DeclareTileOp> declaredTiles;
   func.walk([&](mlir::pto::DeclareTileOp op) { declaredTiles.push_back(op); });
@@ -1246,6 +1201,40 @@ static LogicalResult lowerPtrLikeTileBufAddrOps(func::FuncOp func,
     if (!replacement)
       return failure();
     rewriter.replaceOp(op, replacement);
+  }
+  return success();
+}
+
+static LogicalResult bridgeMemRefOperandsToExternalPtrCallees(ModuleOp mod,
+                                                              func::FuncOp func,
+                                                              MLIRContext *ctx) {
+  SmallVector<func::CallOp, 8> callOps;
+  func.walk([&](func::CallOp callOp) { callOps.push_back(callOp); });
+
+  for (auto callOp : callOps) {
+    auto callee = mod.lookupSymbol<func::FuncOp>(callOp.getCallee());
+    if (!callee || !callee.isExternal())
+      continue;
+
+    FunctionType calleeType = callee.getFunctionType();
+    if (calleeType.getNumInputs() != callOp.getNumOperands()) {
+      callOp.emitError("callee signature does not match call operands");
+      return failure();
+    }
+
+    IRRewriter rewriter(ctx);
+    rewriter.setInsertionPoint(callOp);
+    for (auto [index, expectedType] :
+         llvm::enumerate(calleeType.getInputs())) {
+      Value operand = callOp.getOperand(index);
+      if (!isa<mlir::pto::PtrType>(expectedType) ||
+          !isa<BaseMemRefType>(operand.getType()))
+        continue;
+
+      auto castOp = rewriter.create<pto::CastPtrOp>(
+          callOp.getLoc(), expectedType, operand);
+      callOp->setOperand(index, castOp.getResult());
+    }
   }
   return success();
 }
@@ -1638,6 +1627,12 @@ struct PTOViewToMemrefPass
         return;
       }
 
+      // Keep external declarations in the authored ABI. PTOViewToMemref does
+      // not rewrite func.call operands for external/private helpers, so changing
+      // only the callee type can leave pointer-like call users mismatched.
+      if (func.isExternal())
+        continue;
+
       auto fnTy = func.getFunctionType();
 
       // ------------------------------------------------------------------
@@ -1650,7 +1645,6 @@ struct PTOViewToMemrefPass
       for (Type t : fnTy.getResults()) newResults.push_back(convertPTOTypeToMemRef(t));
 
       func.setFunctionType(FunctionType::get(ctx, newInputs, newResults));
-      if (func.isExternal()) continue;
 
       Block &entry = func.front();
 
@@ -1659,6 +1653,11 @@ struct PTOViewToMemrefPass
         if (entry.getArgument(i).getType() != newInputs[i]) {
             entry.getArgument(i).setType(newInputs[i]);
         }
+      }
+
+      if (failed(bridgeMemRefOperandsToExternalPtrCallees(mod, func, ctx))) {
+        signalPassFailure();
+        return;
       }
 
       // ------------------------------------------------------------------
@@ -1721,97 +1720,12 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
-      // Stage 0.5: lower pto.alloc_tile -> memref.alloc + pto.bind_tile
+      // Stage 0.5: keep pto.alloc_tile as a tile-native allocation root.
+      //
+      // Explicit-address alloc_tile already carries the physical address for
+      // level3. No-address alloc_tile is assigned an address by PTOPlanMemory.
+      // Neither case needs a pointer_cast + bind_tile detour here.
       // ------------------------------------------------------------------
-      DefaultInlineVector<mlir::pto::AllocTileOp> allocTiles;
-      func.walk([&](mlir::pto::AllocTileOp op) { allocTiles.push_back(op); });
-
-      for (auto op : allocTiles) {
-        IRRewriter rewriter(ctx);
-        rewriter.setInsertionPoint(op);
-        Location loc = op.getLoc();
-
-        auto tbTy = dyn_cast<mlir::pto::TileBufType>(op.getResult().getType());
-        if (!tbTy) continue;
-
-        // 1. 获取 Shape 和 ElementType
-        SmallInlineVector<int64_t> shape(tbTy.getShape().begin(), tbTy.getShape().end());
-        Type elemTy = tbTy.getElementType();
-
-        // 2. 计算 Strides (layout-aware when possible)
-        SmallVector<int64_t> strides;
-        TileLayoutInfo info;
-        if (computeTileLayoutInfo(tbTy.getConfigAttr(), elemTy, shape, info)) {
-          strides = {info.rowStride, info.colStride};
-        } else {
-          strides.resize(shape.size());
-          int64_t s = 1;
-          for (int i = (int)shape.size() - 1; i >= 0; --i) {
-            strides[i] = s;
-            if (shape[i] != ShapedType::kDynamic) s *= shape[i];
-          }
-        }
-
-        // 3. 构造 [BindTile 输出] 的动态类型 (Offset: ?)
-        // 这必须与 convertPTOTypeToMemRef 返回的类型一致，以便与 Subview 兼容
-        auto targetLayout =
-            StridedLayoutAttr::get(ctx, ShapedType::kDynamic, strides); // offset = ?
-        auto targetType =
-            MemRefType::get(shape, elemTy, targetLayout, tbTy.getMemorySpace());
-
-        // 4. Preserve tile valid dims (v_row / v_col).
-        //
-        // `pto.alloc_tile` encodes the valid shape in the result TileBufType
-        // (e.g. acc tile may be rows=16 but v_row=1). The alloc op itself does
-        // not necessarily carry explicit operands for static valid dims, so we
-        // must materialize them from the type to keep them through
-        // tile_buf -> memref lowering.
-        //
-        // For dynamically valid tiles (validShape == [-1, -1]), preserve the
-        // runtime operands if present.
-        Value vRow = op.getValidRow();
-        Value vCol = op.getValidCol();
-        // TileBuf valid dims use a negative sentinel (e.g. '?' / -1), which is
-        // distinct from MLIR's ShapedType::kDynamic (INT64_MIN). Treat any
-        // negative value as dynamic here.
-        materializeStaticValidDims(rewriter, loc, tbTy, vRow, vCol);
-
-        // 5. 获取 Config (保持不变)
-        auto configAttr = tbTy.getConfigAttr();
-        if (!configAttr) configAttr = pto::TileBufConfigAttr::getDefault(ctx);
-
-        // 6. If alloc_tile provides an explicit address, keep the original
-        // pointer_cast lowering intact and additionally rebind through
-        // pto.bind_tile. PointerCastOp continues to carry the tile metadata
-        // used by existing lowering paths, while BindTileOp provides the
-        // unified anchor EmitC uses to recover tile_buf information.
-        if (Value addr = op.getAddr()) {
-          auto pc = rewriter.create<pto::PointerCastOp>(
-              loc, targetType, ValueRange{addr}, vRow ? vRow : Value(),
-              vCol ? vCol : Value(), configAttr);
-          markForceDynamicValidShape(pc, tbTy.hasDynamicValid(), ctx);
-          auto bindOp = rewriter.create<pto::BindTileOp>(
-              loc, targetType, pc.getResult(), vRow ? vRow : Value(),
-              vCol ? vCol : Value(), configAttr);
-          markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
-          rewriter.replaceOp(op, bindOp.getResult());
-          continue;
-        }
-
-        // 7. Otherwise allocate a concrete memref buffer and bind tile.
-        // memref.alloc 要求明确的 layout，不能是动态 offset。
-        auto allocLayout = StridedLayoutAttr::get(ctx, 0, strides); // offset = 0
-        auto allocType = MemRefType::get(shape, elemTy, allocLayout, tbTy.getMemorySpace());
-        Value alloc = rewriter.create<memref::AllocOp>(loc, allocType);
-
-        // BindTileOp 的 Builder 会自动处理空的 Value，将其视为静态维度
-        auto bindOp = rewriter.create<pto::BindTileOp>(
-            loc, targetType, alloc, vRow ? vRow : Value(), vCol ? vCol : Value(),
-            configAttr);
-        markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
-
-        rewriter.replaceOp(op, bindOp.getResult());
-      }
 
       // ------------------------------------------------------------------
       // Stage 0.6: lower pto.alloc_multi_tile / pto.multi_tile_get
@@ -1822,13 +1736,13 @@ struct PTOViewToMemrefPass
       //   %m = pto.bind_tile %a, ... : memref<S> -> memref<dyn-offset S>
       // and replace all uses of the multi_tile_buf SSA with %m. The N-way
       // physical fan-out lives on the `pto.multi_buffer` attr and is
-      // materialized later by PTOPlanMemory.
+      // materialized later by the fallback address resolver.
       //
       // multi_tile_get consumes that memref and wraps it in
       //   %slot = pto.slot_marker %m[%k] : memref -> memref
       //   %t    = pto.bind_tile %slot, ... : memref -> memref<dyn-offset>
       // The slot_marker carries the user-supplied slot SSA forward so that
-      // PlanMemory / sync / EnableBufferSelect can identify which physical
+      // sync analysis and buffer-select lowering can identify which physical
       // slot this use refers to.
       //
       // Ordering: alloc_multi_tile must be lowered before multi_tile_get so
@@ -1898,13 +1812,12 @@ struct PTOViewToMemrefPass
         if (!configAttr)
           configAttr = pto::TileBufConfigAttr::getDefault(ctx);
 
-        // Level3 (caller-owned memory): an explicit base address is given and
-        // PlanMemory is skipped. Lay the N slots out contiguously as
+        // Level3 (caller-owned memory): an explicit base address is given.
+        // Lay the N slots out contiguously as
         // [addr, addr + slotBytes, ..., addr + (N-1)*slotBytes] and emit the
-        // multi-address `pto.pointer_cast` alloc anchor directly -- the same
-        // shape PlanMemory produces in the default pipeline (addrs are kept in
-        // slot order so PTOResolveBufferSelect can pick addrs[slot]). Sync and
-        // buffer-select then run unchanged.
+        // multi-address `pto.pointer_cast` alloc anchor directly (addrs are
+        // kept in slot order so PTOResolveBufferSelect can pick addrs[slot]).
+        // Sync and buffer-select then run unchanged.
         if (Value addr = op.getAddr()) {
           uint32_t n = mtbTy.getCount();
           int64_t elemBytes = getElemBytes(elemTy);
@@ -1952,7 +1865,7 @@ struct PTOViewToMemrefPass
         }
 
         // memref.alloc with N-slot annotation. The actual N-way address
-        // expansion happens in PlanMemory.
+        // expansion happens in PTOPlanMemory.
         auto allocLayout = StridedLayoutAttr::get(ctx, 0, strides);
         auto allocType =
             MemRefType::get(shape, elemTy, allocLayout, tbTy.getMemorySpace());
@@ -2431,6 +2344,7 @@ struct PTOViewToMemrefPass
       // Stage 3: Rewrite Compute Ops
       // [关键] 全面使用 op->getOperand(i) 避免 Typed Accessor Crash
       // ------------------------------------------------------------------
+      if (!hasTileNativeAllocTileRoot(func)) {
       
       // --- TLoadOp [Src, Dst] ---
       DefaultInlineVector<mlir::pto::TLoadOp> loads;
@@ -4306,6 +4220,9 @@ struct PTOViewToMemrefPass
         auto srcTy = dyn_cast<MemRefType>(src.getType());
         auto tmpTy = tmp ? dyn_cast<MemRefType>(tmp.getType()) : MemRefType();
         if (!srcTy || (tmp && !tmpTy)) {
+          if (isa<pto::TileBufType>(src.getType()) &&
+              (!tmp || isa<pto::TileBufType>(tmp.getType())))
+            continue;
           op.emitError("ins/outs are not memref yet");
           signalPassFailure();
           return;
@@ -4318,6 +4235,7 @@ struct PTOViewToMemrefPass
             tmp,
             dyn_cast_or_null<pto::PrintFormatAttr>(
                 op.getProperties().printFormat));
+      }
       }
 
       // ------------------------------------------------------------------

@@ -193,37 +193,26 @@ def PTORematerializeFixpipeVectorQuant
 }
 
 def PlanMemory : Pass<"pto-plan-memory", "ModuleOp"> {
-  let summary = "Plan memory for PTO Ops";
+ let summary = "Plan memory for PTO Ops";
   let constructor = "mlir::pto::createPlanMemoryPass()";
-  let dependentDialects = ["pto::PTODialect", ];
+
   let options = [
-    Option<"memMode", "mem-plan-mode", "pto::MemPlanMode",
-           "pto::MemPlanMode::LOCAL_MEM_PLAN",
-           "plan mem mode (default is LOCAL_MEM_PLAN)",
-           [{::llvm::cl::values(
-               clEnumValN(pto::MemPlanMode::LOCAL_MEM_PLAN, "local-mem-plan",
-                          "plan mem mode is for memref.alloc"),
-               clEnumValN(
-                   pto::MemPlanMode::GLOBAL_WORKSPACE_PLAN,
-                   "global-work-space-plan",
-                   "plan mem mode is for memref_ext.alloc_workspace"))}]>,
-    Option<"enableGlobalReuse", "enable-global-workspace-reuse", "bool",
-           /*default=*/"false",
-           "Enable global workspace reuse ,default : false">,
-    Option<"enablePrintMemoryAllocatedSize", "enable-print-memory-allocated-size", "bool",
-           /*default=*/"false",
-           "Enable print memory allocated size, default : false">,
-    Option<"restrictInplaceAsISA", "restrict-inplace-as-isa", "bool",
-           /*default=*/"false",
-           "restrict memory inplace as isa, default : false">,
-    Option<"orderBySize", "order-by-size", "bool",
-           /*default=*/"false",
-           "Process buffers largest-first (first-fit-decreasing order) during "
-           "local memory planning instead of the default DMA-first order. "
-           "Decreasing-size order packs heterogeneous-size buffers tighter "
-           "(matches XLA/TVM/SOMAS). default : false">,
+    Option<"memMode", "mem-mode", "std::string", "\"local\"",
+           "Planning mode. Supported value today: local">,
+    Option<"orderBySize", "order-by-size", "bool", "false",
+           "Plan larger buffers first inside one AddressSpace before applying "
+           "SPEC_LEVEL_0 first-fit reuse">
+  ];
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect",
+    "mlir::scf::SCFDialect"
   ];
 }
+
 def PTOLoweringSyncToPipe : Pass<"pto-lowering-sync-to-pipe", "func::FuncOp"> {
   let summary = "Lower high-level sync ops to low-level pipe ops";
   let description = [{

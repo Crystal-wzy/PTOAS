@@ -434,12 +434,13 @@ def main() -> None:
         "ptr_like_tile_buf_addr_probe frontend verification output should preserve the kernel symbol",
     )
     expect(
-        "memref<?xf32" in ptr_like_addr_frontend_text,
-        "ptr-like tile_buf_addr lowering should materialize one memref<?xf32> address view during PTOViewToMemref",
+        "pto.alloc_tile addr" in ptr_like_addr_frontend_text
+        and "pto.tile_buf_addr" in ptr_like_addr_frontend_text,
+        "ptr-like tile_buf_addr lowering should keep the tile-native address path until PTOPlanMemory materializes alloc_tile addr",
     )
     expect(
         "call @consume" in ptr_like_addr_frontend_text,
-        "ptr-like tile_buf_addr lowering should preserve call users after converting pointer-like operands",
+        "ptr-like tile_buf_addr lowering should preserve call users without half-converting pointer-like operands",
     )
 
     example_mlir_text = emit_example_mlir(mixed_backend_example)

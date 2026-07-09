@@ -366,12 +366,17 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
                                             llvm::cl::desc("Enable automatic synchronization insertion pass"),
                                             llvm::cl::init(false));
 
-static llvm::cl::opt<bool> planMemoryOrderBySize(
+[[maybe_unused]] static llvm::cl::opt<bool> planMemoryOrderBySize(
     "plan-memory-order-by-size",
-    llvm::cl::desc("PlanMemory: allocate buffers largest-first "
-                   "(first-fit-decreasing) instead of the default DMA-first "
-                   "order"),
+    llvm::cl::desc("Plan larger local buffers first inside one AddressSpace "
+                   "before applying the basic SPEC_LEVEL_0 reuse strategy"),
     llvm::cl::init(false));
+
+static llvm::cl::opt<std::string> planMemoryImpl(
+    "plan-memory-impl",
+    llvm::cl::desc("Select local memory planner implementation: legacy or "
+                   "modern"),
+    llvm::cl::init("legacy"));
 
 static llvm::cl::opt<bool> enableBufidSync(
     "enable-bufid_sync",
@@ -691,6 +696,97 @@ static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
     return true;
   }
   return false;
+}
+
+struct ReserveBufferMemSpec {
+  uint64_t capacityBytes = 0;
+  uint64_t alignmentBytes = 1;
+};
+
+static ReserveBufferMemSpec getReserveBufferMemSpec(PTOArch arch,
+                                                    AddressSpace space) {
+  switch (space) {
+  case AddressSpace::VEC:
+    return {arch == PTOArch::A5 ? 253952ull : 196608ull, 256};
+  case AddressSpace::MAT:
+    return {524288ull, 256};
+  case AddressSpace::LEFT:
+  case AddressSpace::RIGHT:
+  case AddressSpace::ACC:
+  case AddressSpace::BIAS:
+  case AddressSpace::SCALING:
+  case AddressSpace::GM:
+  case AddressSpace::Zero:
+    break;
+  }
+  return {};
+}
+
+static LogicalResult validateReserveBufferBase(pto::ReserveBufferOp op,
+                                               PTOArch arch) {
+  auto baseAttr = op.getBaseAttr();
+  if (!baseAttr)
+    return op.emitError("expects explicit 'base'");
+
+  int64_t signedBase = baseAttr.getInt();
+  if (signedBase < 0)
+    return op.emitError("expects 'base' to be non-negative when present");
+
+  ReserveBufferMemSpec spec =
+      getReserveBufferMemSpec(arch, op.getLocation().getAddressSpace());
+  uint64_t base = static_cast<uint64_t>(signedBase);
+  if (base % spec.alignmentBytes != 0) {
+    return op.emitError("expects 'base' to be aligned to ")
+           << spec.alignmentBytes << " bytes for "
+           << stringifyEnum(op.getLocation().getAddressSpace());
+  }
+
+  uint64_t size = static_cast<uint64_t>(op.getSize());
+  if (base > spec.capacityBytes || size > spec.capacityBytes - base) {
+    return op.emitError("reserved range exceeds ")
+           << stringifyEnum(op.getLocation().getAddressSpace())
+           << " capacity: base " << base << " + size " << size
+           << " > " << spec.capacityBytes << " bytes";
+  }
+
+  return success();
+}
+
+static bool validateReserveBufferLevelRules(ModuleOp module,
+                                            PTOBuildLevel level) {
+  bool failed = false;
+  PTOArch arch = getTargetArch(module);
+  module.walk([&](pto::ReserveBufferOp op) {
+    if (level != PTOBuildLevel::Level3) {
+      if (op.getAutoAlloc()) {
+        if (op.getBaseAttr()) {
+          op.emitError("unexpected 'base' on auto reserve_buffer: "
+                       "level1/level2 assign it in pto-plan-memory");
+          failed = true;
+        }
+        return;
+      }
+
+      if (op.getBaseAttr())
+        (void)validateReserveBufferBase(op, arch);
+      op.emitError("pto.reserve_buffer with explicit 'base' (auto = false) is "
+                   "not supported when --pto-level=level1 or level2; use "
+                   "--pto-level=level3 or set auto = true");
+      failed = true;
+      return;
+    }
+
+    if (op.getAutoAlloc() || !op.getBaseAttr()) {
+      op.emitError("pto.reserve_buffer requires 'auto = false' and explicit "
+                   "'base' when --pto-level=level3");
+      failed = true;
+      return;
+    }
+
+    if (mlir::failed(validateReserveBufferBase(op, arch)))
+      failed = true;
+  });
+  return !failed;
 }
 
 static constexpr llvm::StringLiteral kAutoSyncTailPolicyBarrierAll =
@@ -3133,6 +3229,9 @@ int mlir::pto::compilePTOASModule(
       return 1;
   }
 
+  if (!validateReserveBufferLevelRules(*module, effectiveLevel))
+    return 1;
+
   {
     PassManager preBackendPM(module->getContext());
     preBackendPM.enableVerifier();
@@ -3233,12 +3332,18 @@ int mlir::pto::compilePTOASModule(
       pto::createPTORematerializeFixpipeVectorQuantPass());
 
   if (effectiveLevel != PTOBuildLevel::Level3) {
-    PlanMemoryOptions planMemoryOption;
-    planMemoryOption.memMode = MemPlanMode::LOCAL_MEM_PLAN;
-    planMemoryOption.enableGlobalReuse = false;
-    planMemoryOption.enablePrintMemoryAllocatedSize = false;
-    planMemoryOption.orderBySize = planMemoryOrderBySize;
-    pm.addPass(pto::createPlanMemoryPass(planMemoryOption));
+    pto::PlanMemoryOptions planMemoryOptions;
+    planMemoryOptions.memMode = "local";
+    planMemoryOptions.orderBySize = planMemoryOrderBySize;
+    if (planMemoryImpl == "legacy") {
+      pm.addPass(pto::createPlanMemoryPass(planMemoryOptions));
+    } else if (planMemoryImpl == "modern") {
+      pm.addPass(pto::createPlanMemoryModernPass(planMemoryOptions));
+    } else {
+      llvm::errs() << "Error: invalid --plan-memory-impl='" << planMemoryImpl
+                   << "', expected 'legacy' or 'modern'.\n";
+      return 1;
+    }
   }
   pm.addPass(pto::createPTOResolveReservedBuffersPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveIdentityTMovPass());
@@ -3268,7 +3373,8 @@ int mlir::pto::compilePTOASModule(
 
   // Materialize per-slot single-address `pto.pointer_cast` (constant slot)
   // or an `arith.select` chain (dynamic slot). The multi-address cast
-  // produced by PlanMemory survives as the alloc anchor.
+  // produced by explicit-address lowering or PTOPlanMemory survives as
+  // the alloc anchor.
   pm.addPass(pto::createPTOResolveBufferSelectPass());
   if (effectiveBackend == PTOBackend::EmitC)
     pm.addPass(createNarrowUnusedMultiResultProvenancePass());

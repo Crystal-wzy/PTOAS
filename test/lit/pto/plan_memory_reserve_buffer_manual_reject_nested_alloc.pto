@@ -1,4 +1,5 @@
 // RUN: not ptoas %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: not ptoas --plan-memory-impl=modern %s 2>&1 1>/dev/null | FileCheck %s
 
 module {
   func.func @manual_nested_alloc(%cond: i1) {
@@ -22,4 +23,4 @@ module {
   }
 }
 
-// CHECK: error: 'pto.reserve_buffer' op pto.reserve_buffer with explicit 'base' (auto = false) is not supported in PlanMemory; use --pto-level=level3 or set auto = true
+// CHECK: error: pto.reserve_buffer with explicit 'base' (auto = false) is not supported when --pto-level=level1 or level2; use --pto-level=level3 or set auto = true

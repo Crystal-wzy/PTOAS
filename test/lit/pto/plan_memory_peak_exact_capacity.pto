@@ -1,4 +1,5 @@
 // RUN: ptoas --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --plan-memory-impl=modern --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
 
 module {
   func.func @peak_exact_capacity(%arg0: memref<16x16x16xf16, #pto.address_space<gm>>,
@@ -138,4 +139,3 @@ module {
 // 24 live buffers implies a max offset of 23*8192 = 188416 bytes.
 // CHECK: %[[O188416:.*]] = arith.constant 188416 : i64
 // CHECK: pto.pointer_cast(%[[O188416]]) : memref<16x16x16xf16, #pto.address_space<{{vec|ub}}>>
-

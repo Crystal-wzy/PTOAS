@@ -8,15 +8,14 @@
 
 // RUN: ptoas --pto-level=level3 --pto-arch=a5 --mlir-print-ir-after=pto-view-to-memref %s 2>&1 1>/dev/null | FileCheck %s
 // RUN: ptoas --pto-level=level3 --pto-arch=a5 --mlir-print-ir-after=pto-resolve-buffer-select %s 2>&1 1>/dev/null | FileCheck %s --check-prefix=SELECT
-// RUN: not ptoas --pto-level=level2 --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=LV2ERR
+// RUN: not ptoas --pto-level=level1 --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=LVERR
+// RUN: not ptoas --pto-level=level2 --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=LVERR
 
 // Under --pto-level=level3 the caller owns local memory, PTOPlanMemory does not
 // run, and `pto.alloc_multi_tile` carries an explicit base `addr`. The view
-// lowering must fan the base address out into the multi-address
-// `pto.pointer_cast` anchor PlanMemory would otherwise produce -- slot k at
-// `addr + k * slotBytes` (slotBytes = 16*16*2 = 512 here) -- so sync and
-// PTOResolveBufferSelect keep working. Without this the slots would all alias
-// the same memref (silent single-buffer downgrade).
+// lowering fans it out into a multi-address `pto.pointer_cast` anchor. Slot k is
+// placed at `addr + k * slotBytes` (slotBytes = 16*16*2 = 512 here), so sync and
+// PTOResolveBufferSelect keep working without automatic address planning.
 
 module {
   func.func @l3_two_buffers(
@@ -63,4 +62,4 @@ module {
 // SELECT-NOT: pto.slot_marker
 
 // Outside level3 an explicit addr on alloc_multi_tile is rejected.
-// LV2ERR: unexpected 'addr' operand on pto.alloc_multi_tile: only supported when --pto-level=level3
+// LVERR: unexpected 'addr' operand on pto.alloc_multi_tile: only supported when --pto-level=level3
