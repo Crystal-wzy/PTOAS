@@ -26,8 +26,10 @@ def _common_constraints(*operand_names):
     ]
 
 
-def register_unary(*, op, name, vector_op, dtypes):
+def register_unary(*, op, name, vector_op, dtypes, constraints=()):
     """Register a unary tile traversal using a public PTODSL vector operation."""
+
+    candidate_constraints = _common_constraints("src", "dst") + list(constraints)
 
     @tilelib.tile_template(
         op=op,
@@ -37,7 +39,7 @@ def register_unary(*, op, name, vector_op, dtypes):
         iteration_axis="none",
         op_engine="vector",
         op_class="elementwise",
-        constraints=_common_constraints("src", "dst"),
+        constraints=candidate_constraints,
         id=0,
         loop_depth=2,
         is_post_update=False,
