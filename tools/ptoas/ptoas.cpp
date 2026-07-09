@@ -2522,6 +2522,14 @@ static bool shouldDeclareVariablesAtTop(ModuleOp module) {
 
 static void prepareVPTOForEmission(PassManager &pm) {
   auto &kernelModulePM = pm.nest<ModuleOp>();
+  // VPTO LLVM emission lowers pto.barrier to the backend barrier intrinsic.
+  // A5 does not support a standalone PIPE_V barrier; vector barriers are either
+  // unnecessary or must be removed before LLVM emission. Upper-level
+  // programming frameworks may still produce pto.barrier(PIPE_V) from generic
+  // storage-sync constructs, so run sync-to-pipe legalization here and let the
+  // backend checks catch any illegal barrier that still leaks through.
+  kernelModulePM.addNestedPass<func::FuncOp>(
+      pto::createLoweringSyncToPipePass());
   kernelModulePM.addNestedPass<func::FuncOp>(
       pto::createPTOUnrollSIMTForPass());
   kernelModulePM.addPass(createSCCPPass());

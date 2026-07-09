@@ -8585,6 +8585,13 @@ public:
   matchAndRewrite(pto::BarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     (void)adaptor;
+    if (isTargetArchA5(op.getOperation()) &&
+        op.getPipe().getPipe() == PIPE::PIPE_V) {
+      op.emitError("internal error: A5 PIPE_V barrier should be erased before "
+                   "VPTO LLVM lowering");
+      return failure();
+    }
+
     auto pipe = parsePipeImmediate(stringifyPIPE(op.getPipe().getPipe()));
     if (!pipe)
       return rewriter.notifyMatchFailure(op, "unsupported barrier pipe");
