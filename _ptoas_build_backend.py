@@ -9,7 +9,7 @@
 """
 PEP 517 build backend for ptoas.
 
-Runs the CMake/Ninja build (assuming LLVM is already built), then delegates
+Runs the CMake build (assuming LLVM is already built), then delegates
 wheel packaging to docker/create_wheel.sh.
 
 Environment variables (all optional):
@@ -125,7 +125,7 @@ def _should_use_linux_hardening_cache() -> bool:
 
 
 def _cmake_configure_and_build():
-    """CMake configure + Ninja build + install."""
+    """CMake configure + build + install."""
     _BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
     pybind11_dir = subprocess.check_output(
@@ -160,8 +160,10 @@ def _cmake_configure_and_build():
         cmake_cmd.insert(1, f"-C{hardening_cache}")
 
     subprocess.check_call(cmake_cmd)
-    subprocess.check_call(["ninja", "-C", str(_BUILD_DIR)])
-    subprocess.check_call(["ninja", "-C", str(_BUILD_DIR), "install"])
+    subprocess.check_call(["cmake", "--build", str(_BUILD_DIR)])
+    subprocess.check_call(
+        ["cmake", "--build", str(_BUILD_DIR), "--target", "install"]
+    )
     _assert_installed_ptodsl_payload()
 
 
