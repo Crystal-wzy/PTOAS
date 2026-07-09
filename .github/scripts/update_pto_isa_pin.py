@@ -36,11 +36,6 @@ def parse_args() -> argparse.Namespace:
         help="Path to the CI workflow file.",
     )
     parser.add_argument(
-        "--ci-sim-workflow",
-        default=".github/workflows/ci_sim.yml",
-        help="Path to the simulator CI workflow file.",
-    )
-    parser.add_argument(
         "--dockerfile",
         default="docker/Dockerfile",
         help="Path to the Dockerfile that vendors pto-isa.",
@@ -109,27 +104,6 @@ def update_ci_workflow(path: pathlib.Path, commit: str) -> bool:
     return False
 
 
-def update_ci_sim_workflow(path: pathlib.Path, repo_url: str, commit: str) -> bool:
-    original = read_text(path)
-    updated = original
-    updated = replace_exactly_once(
-        updated,
-        r"^(\s+PTO_ISA_REPO:\s*)(\S+)$",
-        rf"\g<1>{repo_url}",
-        path,
-    )
-    updated = replace_exactly_once(
-        updated,
-        r"^(\s+PTO_ISA_COMMIT:\s*)([0-9a-f]{40})$",
-        rf"\g<1>{commit}",
-        path,
-    )
-    if updated != original:
-        write_text(path, updated)
-        return True
-    return False
-
-
 def update_dockerfile(path: pathlib.Path, commit: str) -> bool:
     original = read_text(path)
     updated = original
@@ -181,23 +155,6 @@ def extract_ci_commit(path: pathlib.Path) -> tuple[str, str]:
     return default_match.group(1), env_match.group(1)
 
 
-def extract_ci_sim_pin(path: pathlib.Path) -> tuple[str, str]:
-    text = read_text(path)
-    repo_match = re.search(
-        r"^\s+PTO_ISA_REPO:\s*(\S+)$",
-        text,
-        flags=re.MULTILINE,
-    )
-    commit_match = re.search(
-        r"^\s+PTO_ISA_COMMIT:\s*([0-9a-f]{40})$",
-        text,
-        flags=re.MULTILINE,
-    )
-    if not repo_match or not commit_match:
-        raise RuntimeError(f"failed to read pinned pto-isa repo/commit from {path}")
-    return repo_match.group(1), commit_match.group(1)
-
-
 def extract_docker_commit(path: pathlib.Path) -> tuple[str, str]:
     text = read_text(path)
     arg_match = re.search(r"^ARG PTO_ISA_COMMIT=([0-9a-f]{40})$", text, flags=re.MULTILINE)
@@ -225,14 +182,11 @@ def extract_remote_validation_commit(path: pathlib.Path) -> str:
 
 def verify(
     ci_path: pathlib.Path,
-    ci_sim_path: pathlib.Path,
     docker_path: pathlib.Path,
     remote_validation_path: pathlib.Path,
-    repo_url: str,
     commit: str,
 ) -> None:
     ci_default, ci_env = extract_ci_commit(ci_path)
-    ci_sim_repo, ci_sim_commit = extract_ci_sim_pin(ci_sim_path)
     docker_arg, docker_comment = extract_docker_commit(docker_path)
     remote_validation_commit = extract_remote_validation_commit(
         remote_validation_path
@@ -240,59 +194,32 @@ def verify(
     values = {
         f"{ci_path}:workflow_dispatch_default": ci_default,
         f"{ci_path}:runtime_default": ci_env,
-        f"{ci_sim_path}:repo": ci_sim_repo,
-        f"{ci_sim_path}:commit": ci_sim_commit,
         f"{docker_path}:arg": docker_arg,
         f"{docker_path}:comment": docker_comment,
         f"{remote_validation_path}:fallback": remote_validation_commit,
     }
-    expected = {
-        **{name: commit for name in values if not name.endswith(":repo")},
-        f"{ci_sim_path}:repo": repo_url,
-    }
-    mismatches = {
-        name: value for name, value in values.items() if value != expected[name]
-    }
+    mismatches = {name: value for name, value in values.items() if value != commit}
     if mismatches:
-        detail = ", ".join(
-            f"{name}={value}, expected {expected[name]}"
-            for name, value in mismatches.items()
-        )
-        raise RuntimeError(f"pto-isa pin mismatch: {detail}")
+        detail = ", ".join(f"{name}={value}" for name, value in mismatches.items())
+        raise RuntimeError(f"pto-isa pin mismatch, expected {commit}: {detail}")
 
 
 def main() -> int:
     args = parse_args()
     commit = args.commit or resolve_head_commit(args.repo_url)
     ci_path = pathlib.Path(args.ci_workflow)
-    ci_sim_path = pathlib.Path(args.ci_sim_workflow)
     docker_path = pathlib.Path(args.dockerfile)
     remote_validation_path = pathlib.Path(args.remote_validation_script)
 
     if args.check:
-        verify(
-            ci_path,
-            ci_sim_path,
-            docker_path,
-            remote_validation_path,
-            args.repo_url,
-            commit,
-        )
+        verify(ci_path, docker_path, remote_validation_path, commit)
         print(commit)
         return 0
 
     update_ci_workflow(ci_path, commit)
-    update_ci_sim_workflow(ci_sim_path, args.repo_url, commit)
     update_dockerfile(docker_path, commit)
     update_remote_validation_script(remote_validation_path, commit)
-    verify(
-        ci_path,
-        ci_sim_path,
-        docker_path,
-        remote_validation_path,
-        args.repo_url,
-        commit,
-    )
+    verify(ci_path, docker_path, remote_validation_path, commit)
     print(commit)
     return 0
 
