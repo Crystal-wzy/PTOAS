@@ -3609,15 +3609,36 @@ static StringRef buildVsstbPostCallee(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.vsstb.post").getValue();
 }
 
+static Type getVgather2SourceElementType(Type sourceType) {
+  if (auto ptrType = dyn_cast<pto::PtrType>(sourceType))
+    return ptrType.getElementType();
+  if (auto memrefType = dyn_cast<BaseMemRefType>(sourceType))
+    return memrefType.getElementType();
+  return {};
+}
+
 static FailureOr<StringRef> buildVgather2Callee(MLIRContext *context,
+                                                Type sourceType,
                                                 Type resultType) {
-  std::string vec =
-      getElementTypeFragment(getElementTypeFromVectorLike(resultType));
+  Type sourceElemType = getVgather2SourceElementType(sourceType);
+  Type resultElemType = getElementTypeFromVectorLike(resultType);
   auto lanes = getElementCountFromVectorLike(resultType);
-  if (vec.empty() || !lanes)
+  if (!sourceElemType || !resultElemType || !lanes)
     return failure();
+
+  std::string vec;
+  int64_t intrinsicLanes = *lanes;
+  if (pto::getPTOStorageElemBitWidth(sourceElemType) == 8) {
+    vec = getElementTypeFragment(sourceElemType);
+    intrinsicLanes *= 2;
+  } else {
+    vec = getElementTypeFragment(resultElemType);
+  }
+  if (vec.empty())
+    return failure();
+
   return StringAttr::get(context, "llvm.hivm.vgather2.v300.v" +
-                                      std::to_string(*lanes) + vec)
+                                      std::to_string(intrinsicLanes) + vec)
       .getValue();
 }
 
@@ -3635,11 +3656,13 @@ static std::optional<uint64_t> getFixedVectorBitWidth(Type type) {
 }
 
 static FailureOr<Type> getVgather2OffsetsCarrierType(PatternRewriter &rewriter,
+                                                     Type sourceType,
                                                      Type resultType,
                                                      Type offsetsType) {
+  Type sourceElemType = getVgather2SourceElementType(sourceType);
   Type elementType = getElementTypeFromVectorLike(resultType);
   auto lanes = getElementCountFromVectorLike(resultType);
-  if (!elementType || !lanes || *lanes <= 0)
+  if (!sourceElemType || !elementType || !lanes || *lanes <= 0)
     return failure();
 
   Type carrierType = offsetsType;
@@ -7223,13 +7246,15 @@ public:
       return rewriter.notifyMatchFailure(op, "failed to convert vgather2 result type");
 
     FailureOr<StringRef> calleeName =
-        buildVgather2Callee(op.getContext(), op.getResult().getType());
+        buildVgather2Callee(op.getContext(), op.getSource().getType(),
+                            op.getResult().getType());
     if (failed(calleeName))
       return rewriter.notifyMatchFailure(op, "unsupported vgather2 signature");
 
     Value offsets = adaptor.getOffsets();
     FailureOr<Type> offsetsCarrierType = getVgather2OffsetsCarrierType(
-        rewriter, op.getResult().getType(), offsets.getType());
+        rewriter, op.getSource().getType(), op.getResult().getType(),
+        offsets.getType());
     if (failed(offsetsCarrierType))
       return rewriter.notifyMatchFailure(op, "unsupported vgather2 offsets carrier");
     if (offsets.getType() != *offsetsCarrierType)

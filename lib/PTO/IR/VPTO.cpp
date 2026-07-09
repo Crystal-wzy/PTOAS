@@ -1859,6 +1859,14 @@ static int64_t getBufferElementByteSize(Type type) {
   return getPTOStorageElemByteSize(elementType);
 }
 
+static Type getBufferElementType(Type type) {
+  if (auto ptrType = dyn_cast<pto::PtrType>(type))
+    return ptrType.getElementType();
+  if (auto memrefType = dyn_cast<BaseMemRefType>(type))
+    return memrefType.getElementType();
+  return {};
+}
+
 static std::optional<AddressSpace> getBufferAddressSpace(Type type) {
   if (auto ptrType = dyn_cast<pto::PtrType>(type))
     return ptrType.getMemorySpace().getAddressSpace();
@@ -4378,6 +4386,31 @@ void Vgather2Op::getEffects(
   effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
 }
 
+static bool isUnsignedOrSignlessIntegerOfWidth(Type type, unsigned width) {
+  auto intType = dyn_cast<IntegerType>(type);
+  return intType && intType.getWidth() == width && !intType.isSigned();
+}
+
+static bool isSameVgather2IntegerSemantics(IntegerType sourceType,
+                                           IntegerType resultType) {
+  if (!sourceType || !resultType ||
+      sourceType.getWidth() != resultType.getWidth())
+    return false;
+  if (sourceType.isUnsigned())
+    return resultType.isUnsigned();
+  return !resultType.isUnsigned();
+}
+
+static bool isVgather2B8ResultType(IntegerType sourceType,
+                                   IntegerType resultType) {
+  if (!sourceType || !resultType || sourceType.getWidth() != 8 ||
+      resultType.getWidth() != 16)
+    return false;
+  if (sourceType.isUnsigned())
+    return resultType.isUnsigned();
+  return !resultType.isUnsigned();
+}
+
 LogicalResult Vgather2Op::verify() {
   if (!isBufferLike(getSource().getType()))
     return emitOpError("requires a pointer-like source");
@@ -4389,11 +4422,72 @@ LogicalResult Vgather2Op::verify() {
   auto resultType = dyn_cast<VRegType>(getResult().getType());
   if (!offsetsType || !resultType)
     return emitOpError("offsets and result must be !pto.vreg<...>");
-  if (!isa<IntegerType>(offsetsType.getElementType()))
+
+  auto offsetsElemType = dyn_cast<IntegerType>(offsetsType.getElementType());
+  if (!offsetsElemType)
     return emitOpError("offset vector must use integer element type");
   if (offsetsType.getElementCount() != resultType.getElementCount())
     return emitOpError("offset and result vectors must have the same element count");
-  if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
+
+  Type sourceElemType = getBufferElementType(getSource().getType());
+  Type resultElemType = resultType.getElementType();
+  unsigned sourceElemWidth = getPTOStorageElemBitWidth(sourceElemType);
+  unsigned resultElemWidth = getPTOStorageElemBitWidth(resultElemType);
+  unsigned expectedOffsetWidth = 0;
+  StringRef expectedMaskGranularity;
+  int64_t expectedLanes = 0;
+
+  if (sourceElemWidth == 8 && isa<IntegerType>(sourceElemType)) {
+    if (!isVgather2B8ResultType(cast<IntegerType>(sourceElemType),
+                                dyn_cast<IntegerType>(resultElemType)))
+      return emitOpError(
+          "8-bit gather requires i8/ui8 source and matching i16/ui16 result");
+    expectedOffsetWidth = 16;
+    expectedMaskGranularity = "b16";
+    expectedLanes = 128;
+  } else if (sourceElemWidth == 16) {
+    if (auto sourceInt = dyn_cast<IntegerType>(sourceElemType)) {
+      if (!isSameVgather2IntegerSemantics(
+              sourceInt, dyn_cast<IntegerType>(resultElemType)))
+        return emitOpError(
+            "16-bit integer gather requires matching i16/ui16 result");
+    } else if (!(sourceElemType.isF16() || sourceElemType.isBF16()) ||
+               sourceElemType != resultElemType) {
+      return emitOpError(
+          "16-bit gather requires i16/ui16/f16/bf16 source and matching result");
+    }
+    expectedOffsetWidth = 16;
+    expectedMaskGranularity = "b16";
+    expectedLanes = 128;
+  } else if (sourceElemWidth == 32) {
+    if (auto sourceInt = dyn_cast<IntegerType>(sourceElemType)) {
+      if (!isSameVgather2IntegerSemantics(
+              sourceInt, dyn_cast<IntegerType>(resultElemType)))
+        return emitOpError(
+            "32-bit integer gather requires matching i32/ui32 result");
+    } else if (!sourceElemType.isF32() || sourceElemType != resultElemType) {
+      return emitOpError(
+          "32-bit gather requires i32/ui32/f32 source and matching result");
+    }
+    expectedOffsetWidth = 32;
+    expectedMaskGranularity = "b32";
+    expectedLanes = 64;
+  } else {
+    return emitOpError(
+        "requires source element type i8/ui8/i16/ui16/i32/ui32/f16/bf16/f32");
+  }
+
+  if (resultElemWidth != 16 && resultElemWidth != 32)
+    return emitOpError("result element type must be 16-bit or 32-bit");
+  if (resultType.getElementCount() != expectedLanes)
+    return emitOpError() << "expects result type "
+                         << formatVRegType(expectedLanes, resultElemType);
+  if (!isUnsignedOrSignlessIntegerOfWidth(offsetsElemType, expectedOffsetWidth))
+    return emitOpError() << "requires ui" << expectedOffsetWidth << "/i"
+                         << expectedOffsetWidth << " offset vector elements";
+  if (failed(verifyMaskTypeWithGranularityLike(
+          getOperation(), getMask().getType(), "mask type",
+          expectedMaskGranularity)))
     return failure();
   return success();
 }
