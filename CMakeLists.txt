@@ -78,7 +78,7 @@ endfunction()
 
 ptoas_preseed_compilers_from_llvm_cache()
 
-project(ptoas VERSION 0.50)
+project(ptoas VERSION 0.51)
 
 option(PTOAS_VALIDATE_CMAKE4_FETCHCONTENT_COMPAT
        "Validate CMake 4 compatibility for legacy FetchContent users" OFF)
