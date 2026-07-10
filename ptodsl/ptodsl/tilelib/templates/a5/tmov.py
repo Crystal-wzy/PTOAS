@@ -30,6 +30,7 @@ def _ub_or_vec_row_major(operand_memory_spaces, operand_b_layouts, operand_s_lay
         ("i32", "i32"),
         ("i16", "i16"),
         ("i8", "i8"),
+        ("ui8", "ui8"),
     ],
     iteration_axis="none",
     op_engine="vector",

@@ -723,6 +723,15 @@ class TileLibCatalogTest(unittest.TestCase):
         mlir = selected.specialize(**specs).mlir_text()
         self.assertIn("pto.vlrelu", mlir)
 
+    def test_tmov_accepts_ui8_vec_tiles(self):
+        specs = {
+            "src": TileSpec(shape=(64, 64), dtype=ScalarType("ui8"), memory_space="vec"),
+            "dst": TileSpec(shape=(64, 64), dtype=ScalarType("ui8"), memory_space="vec"),
+        }
+        selected = select("pto.tmov", "a5", specs)
+        self.assertEqual(selected.name, "template_tmov_basic")
+        self.assertIn("pto.vsts", selected.specialize(**specs).mlir_text())
+
     def test_tcvt_additional_rowwise_versions_render(self):
         signatures = {
             ("i32", "f32"): "template_tcvt_i32_to_f32",
