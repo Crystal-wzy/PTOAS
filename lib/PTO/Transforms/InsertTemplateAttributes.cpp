@@ -746,6 +746,18 @@ invokeMetadataHelper(Operation *operation, StringRef pythonExe,
   }
   ::close(outputFd);
 
+  llvm::SmallString<128> errorPath;
+  int errorFd;
+  if (auto error = llvm::sys::fs::createTemporaryFile(
+          "tilelib_metadata", "err", errorFd, errorPath)) {
+    llvm::sys::fs::remove(outputPath);
+    operation->emitError("InsertTemplateAttributes cannot create temporary "
+                         "metadata error output: ")
+        << error.message();
+    return std::nullopt;
+  }
+  ::close(errorFd);
+
   std::string opName = operation->getName().getStringRef().str();
   SmallVector<StringRef> args = {
       *pythonPath,       "-m",            daemonHelperModule,
@@ -762,7 +774,7 @@ invokeMetadataHelper(Operation *operation, StringRef pythonExe,
   std::optional<StringRef> redirects[] = {
       std::nullopt,
       StringRef(outputPath),
-      std::nullopt,
+      StringRef(errorPath),
   };
 
   SmallVector<StringRef> environment;
@@ -793,14 +805,26 @@ invokeMetadataHelper(Operation *operation, StringRef pythonExe,
           : std::nullopt,
       redirects, /*secondsToWait=*/30, /*memoryLimit=*/0, &errorMessage);
   if (result != 0) {
+    auto errorOutput = llvm::MemoryBuffer::getFile(errorPath);
     llvm::sys::fs::remove(outputPath);
+    llvm::sys::fs::remove(errorPath);
+
+    std::string detail;
+    if (errorOutput)
+      detail = errorOutput.get()->getBuffer().trim().str();
+    if (detail.empty())
+      detail = errorMessage;
+    if (detail.empty())
+      detail = "helper exited with status " + std::to_string(result);
+
     operation->emitError("InsertTemplateAttributes metadata RPC failed: ")
-        << errorMessage;
+        << detail;
     return std::nullopt;
   }
 
   auto output = llvm::MemoryBuffer::getFile(outputPath);
   llvm::sys::fs::remove(outputPath);
+  llvm::sys::fs::remove(errorPath);
   if (!output) {
     operation->emitError(
         "InsertTemplateAttributes cannot read metadata output");
@@ -822,8 +846,9 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
   auto *root = parsed->getAsObject();
   auto *candidates = root ? root->getObject("candidates") : nullptr;
   if (!candidates || candidates->empty()) {
-    operation->emitError(
-        "InsertTemplateAttributes found no legal template candidates");
+    operation->emitError("InsertTemplateAttributes found no legal template "
+                         "candidates for ")
+        << operation->getName();
     return failure();
   }
 
