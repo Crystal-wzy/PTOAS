@@ -1,9 +1,9 @@
 # TileLang ST A5 Parallel Summary
 
 - Total: 193
-- Passed: 173
+- Passed: 176
 - Build failed: 12
-- Run failed: 8
+- Run failed: 5
 
 ## Failed Build Testcases
 
@@ -13,9 +13,9 @@
 | full_tcvt | full | tcvt | build |
 | full_tdiv | full | tdiv | build |
 | full_tinsert | full | tinsert | build |
-| full_tinsert_acc2vec | full | tinsert_acc2vec | build |
+| full_tinsert_acc2vec | full | tinsert_acc2vec | tilelangdsl fails too |
 | full_tload | full | tload | build |
-| full_tload_mat | full | tload_mat | build |
+| full_tload_mat | full | tload_mat | tilelangdsl fails too |
 | full_tlog | full | tlog | build |
 | full_tmov | full | tmov | build |
 | full_tstore_acc2gm | full | tstore_acc2gm | build |
@@ -28,9 +28,6 @@
 | --- | --- | --- | --- |
 | full_tdivs | full | tdivs | compare |
 | full_tfillpad | full | tfillpad | compare |
-| full_tgemv_mx | full | tgemv_mx | gen_data |
-| full_tmatmul_bias_mx | full | tmatmul_bias_mx | gen_data |
-| full_tmatmul_mx | full | tmatmul_mx | gen_data |
 | full_trowargmax | full | trowargmax | compare |
 | full_trowargmin | full | trowargmin | compare |
 | full_tsort32 | full | tsort32 | compare |
