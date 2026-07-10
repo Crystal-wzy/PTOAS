@@ -11,8 +11,12 @@ MLIR path bootstrap and context factory.
 Discovers local LLVM MLIR Python bindings plus PTO Python dialect artifacts so
 that ``ptodsl`` can import ``mlir`` / ``mlir.dialects.pto`` directly from a
 developer workspace without requiring the caller to pre-seed ``PYTHONPATH``.
+When the current interpreter already has a complete installed MLIR/PTO stack,
+leave ``sys.path`` untouched so wheel installs do not accidentally mix in a
+developer checkout from environment variables or nearby directories.
 """
 
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -58,7 +62,19 @@ def _bootstrap_python_paths() -> None:
         sys.path.insert(0, root_text)
 
 
-_bootstrap_python_paths()
+def _can_import_active_python_mlir() -> bool:
+    required_modules = ("mlir.ir", "mlir.dialects.pto")
+    for module_name in required_modules:
+        try:
+            if importlib.util.find_spec(module_name) is None:
+                return False
+        except (ImportError, ValueError, ModuleNotFoundError):
+            return False
+    return True
+
+
+if not _can_import_active_python_mlir():
+    _bootstrap_python_paths()
 
 from mlir.dialects import pto as _pto_dialect  # noqa: E402
 try:
