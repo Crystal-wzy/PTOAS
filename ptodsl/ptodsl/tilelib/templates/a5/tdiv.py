@@ -5,23 +5,19 @@
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
-"""PTODSL TileLib template for pto.tdiv — default precision only.
-
-Ported from lib/TileOps/tdiv_template.py, but only the default-precision branch (plain
-pto.vdiv). The high-precision (IEEE-754) path is deferred: it needs a `get_op_attr`
-bridge to read the `precisionType` context attr the daemon already receives, plus the
-div_hp algorithm — tracked as a follow-up.
-"""
+"""PTODSL TileLib template for pto.tdiv."""
 
 from ptodsl import pto
 import ptodsl.tilelib as tilelib
+
+from .div_hp import _div_ieee754_f32_impl, _div_ieee754_f16_impl
 
 
 @tilelib.tile_template(
     op="pto.tdiv",
     target="a5",
     name="template_tdiv",
-    dtypes=[("f32", "f32", "f32")],
+    dtypes=[("f16", "f16", "f16"), ("f32", "f32", "f32")],
     iteration_axis="none",
     op_engine="vector",
     op_class="elementwise",
@@ -36,6 +32,7 @@ def template_tdiv(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     dtype = dst.dtype
     valid_rows, valid_cols = dst.valid_shape
     lanes = pto.elements_per_vreg(dtype)
+    precision_type = pto.get_op_attr("precisionType", "default")
 
     for row in range(0, valid_rows, 1):
         remained = valid_cols
@@ -43,5 +40,11 @@ def template_tdiv(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
             mask, remained = pto.make_mask(dtype, remained)
             lhs = pto.vlds(src0[row, col:])
             rhs = pto.vlds(src1[row, col:])
-            divided = pto.vdiv(lhs, rhs, mask)
+            if precision_type == "high_precision":
+                if str(dtype) == "f32":
+                    divided = _div_ieee754_f32_impl(lhs, rhs, mask)
+                else:
+                    divided = _div_ieee754_f16_impl(lhs, rhs, mask)
+            else:
+                divided = pto.vdiv(lhs, rhs, mask)
             pto.vsts(divided, dst[row, col:], mask)

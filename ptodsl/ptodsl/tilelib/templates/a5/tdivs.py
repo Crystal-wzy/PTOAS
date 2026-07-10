@@ -5,11 +5,13 @@
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
-"""PTODSL TileLib template for pto.tdivs — default precision only."""
+"""PTODSL TileLib template for pto.tdivs."""
 
 from ptodsl import pto
+import ptodsl.tilelib as tilelib
 
-from ._elementwise import register_scalar_binary
+from ._elementwise import _common_constraints
+from .div_hp import _div_ieee754_f32_impl, _div_ieee754_f16_impl
 
 
 _DTYPES = [
@@ -18,11 +20,72 @@ _DTYPES = [
 ]
 
 
-template_tdivs_tile_scalar, template_tdivs_scalar_tile = register_scalar_binary(
+def _tile_scalar_tile(operand_kinds=(), **_):
+    return operand_kinds == ("tile", "scalar", "tile")
+
+
+def _scalar_tile_tile(operand_kinds=(), **_):
+    return operand_kinds == ("scalar", "tile", "tile")
+
+
+def _div(lhs, rhs, dtype, mask, precision_type):
+    if precision_type == "high_precision":
+        if str(dtype) == "f32":
+            return _div_ieee754_f32_impl(lhs, rhs, mask)
+        return _div_ieee754_f16_impl(lhs, rhs, mask)
+    return pto.vdiv(lhs, rhs, mask)
+
+
+def _emit_tdivs_body(src, scalar, dst, *, scalar_lhs=False):
+    dtype = dst.dtype
+    valid_rows, valid_cols = dst.valid_shape
+    lanes = pto.elements_per_vreg(dtype)
+    precision_type = pto.get_op_attr("precisionType", "default")
+
+    with pto.for_(0, valid_rows, step=1) as row:
+        col_loop = pto.for_(0, valid_cols, step=lanes).carry(remained=valid_cols)
+        with col_loop:
+            col = col_loop.iv
+            mask, remained = pto.make_mask(dtype, col_loop.remained)
+            value = pto.vlds(src[row, col:])
+            scalar_value = pto.vbr(scalar)
+            lhs, rhs = (scalar_value, value) if scalar_lhs else (value, scalar_value)
+            result = _div(lhs, rhs, dtype, mask, precision_type)
+            pto.vsts(result, dst[row, col:], mask)
+            col_loop.update(remained=remained)
+
+
+@tilelib.tile_template(
     op="pto.tdivs",
+    target="a5",
     name="template_tdivs_tile_scalar",
-    reverse_name="template_tdivs_scalar_tile",
-    vector_op=pto.vdiv,
     dtypes=_DTYPES,
-    broadcast_scalar=True,
+    iteration_axis="none",
+    op_engine="vector",
+    op_class="elementwise",
+    constraints=_common_constraints("src", "dst") + [_tile_scalar_tile],
+    id=0,
+    loop_depth=2,
+    is_post_update=False,
+    tags=("elementwise", "scalar"),
 )
+def template_tdivs_tile_scalar(src: pto.Tile, scalar, dst: pto.Tile):
+    _emit_tdivs_body(src, scalar, dst)
+
+
+@tilelib.tile_template(
+    op="pto.tdivs",
+    target="a5",
+    name="template_tdivs_scalar_tile",
+    dtypes=_DTYPES,
+    iteration_axis="none",
+    op_engine="vector",
+    op_class="elementwise",
+    constraints=_common_constraints("src", "dst") + [_scalar_tile_tile],
+    id=1,
+    loop_depth=2,
+    is_post_update=False,
+    tags=("elementwise", "scalar"),
+)
+def template_tdivs_scalar_tile(scalar, src: pto.Tile, dst: pto.Tile):
+    _emit_tdivs_body(src, scalar, dst, scalar_lhs=True)

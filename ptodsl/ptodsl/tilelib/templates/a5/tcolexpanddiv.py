@@ -13,6 +13,46 @@ import ptodsl.tilelib as tilelib
 from ._expand_binary import _ub_or_vec_row_major, _valid_column_expand_binary, register_column_expand_binary
 
 
+def _divide_i16(lhs, rhs, mask, f32_mask):
+    lhs_even = pto.vcvt(lhs, pto.f32, mask, part=pto.VcvtPartMode.EVEN)
+    rhs_even = pto.vcvt(rhs, pto.f32, mask, part=pto.VcvtPartMode.EVEN)
+    divided_even = pto.vdiv(lhs_even, rhs_even, f32_mask)
+    result_even = pto.vcvt(
+        divided_even,
+        pto.i16,
+        f32_mask,
+        rnd=pto.VcvtRoundMode.Z,
+        sat=pto.VcvtSatMode.NOSAT,
+        part=pto.VcvtPartMode.EVEN,
+    )
+
+    lhs_odd = pto.vcvt(lhs, pto.f32, mask, part=pto.VcvtPartMode.ODD)
+    rhs_odd = pto.vcvt(rhs, pto.f32, mask, part=pto.VcvtPartMode.ODD)
+    divided_odd = pto.vdiv(lhs_odd, rhs_odd, f32_mask)
+    result_odd = pto.vcvt(
+        divided_odd,
+        pto.i16,
+        f32_mask,
+        rnd=pto.VcvtRoundMode.Z,
+        sat=pto.VcvtSatMode.NOSAT,
+        part=pto.VcvtPartMode.ODD,
+    )
+    return pto.vor(result_even, result_odd, mask)
+
+
+def _divide_i32(lhs, rhs, mask):
+    lhs_f32 = pto.vcvt(lhs, pto.f32, mask, rnd=pto.VcvtRoundMode.R)
+    rhs_f32 = pto.vcvt(rhs, pto.f32, mask, rnd=pto.VcvtRoundMode.R)
+    divided = pto.vdiv(lhs_f32, rhs_f32, mask)
+    return pto.vcvt(
+        divided,
+        pto.i32,
+        mask,
+        rnd=pto.VcvtRoundMode.Z,
+        sat=pto.VcvtSatMode.NOSAT,
+    )
+
+
 template_tcolexpanddiv = register_column_expand_binary(
     op="pto.tcolexpanddiv",
     name="template_tcolexpanddiv",
@@ -28,7 +68,7 @@ template_tcolexpanddiv = register_column_expand_binary(
     op="pto.tcolexpanddiv",
     target="a5",
     name="template_tcolexpanddiv_i32",
-    dtypes=[("i32", "i32", "i32")],
+    dtypes=[("i16", "i16", "i16"), ("i32", "i32", "i32")],
     iteration_axis="column",
     op_engine="vector",
     op_class="broadcast",
@@ -43,24 +83,21 @@ template_tcolexpanddiv = register_column_expand_binary(
 )
 def template_tcolexpanddiv_i32(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     valid_rows, valid_cols = dst.valid_shape
-    lanes = pto.elements_per_vreg(dst.dtype)
+    dtype = dst.dtype
+    lanes = pto.elements_per_vreg(dtype)
 
     with pto.for_(0, valid_rows, step=1) as row:
         col_loop = pto.for_(0, valid_cols, step=lanes).carry(remained=valid_cols)
         with col_loop:
             col = col_loop.iv
-            mask, remained = pto.make_mask(dst.dtype, col_loop.remained)
+            mask, remained = pto.make_mask(dtype, col_loop.remained)
             lhs = pto.vlds(src0[row, col:])
             rhs = pto.vlds(src1[0, col:])
-            lhs_f32 = pto.vcvt(lhs, pto.f32, mask, rnd=pto.VcvtRoundMode.R)
-            rhs_f32 = pto.vcvt(rhs, pto.f32, mask, rnd=pto.VcvtRoundMode.R)
-            divided = pto.vdiv(lhs_f32, rhs_f32, mask)
-            result = pto.vcvt(
-                divided,
-                pto.i32,
-                mask,
-                rnd=pto.VcvtRoundMode.Z,
-                sat=pto.VcvtSatMode.NOSAT,
-            )
+            if str(dtype) == "i16":
+                f32_remained = (col_loop.remained + 1) // 2
+                f32_mask, _ = pto.make_mask(pto.f32, f32_remained)
+                result = _divide_i16(lhs, rhs, mask, f32_mask)
+            else:
+                result = _divide_i32(lhs, rhs, mask)
             pto.vsts(result, dst[row, col:], mask)
             col_loop.update(remained=remained)
