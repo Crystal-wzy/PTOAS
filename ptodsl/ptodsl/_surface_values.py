@@ -304,6 +304,18 @@ class VecValue(_SurfaceValue):
         self.size = int(vec_type.shape[0])
         self.element_type = vec_type.element_type
 
+    def __add__(self, other):
+        return _emit_vec_binary_op("add", self, other)
+
+    def __radd__(self, other):
+        return _emit_vec_binary_op("add", other, self)
+
+    def __sub__(self, other):
+        return _emit_vec_binary_op("sub", self, other)
+
+    def __rsub__(self, other):
+        return _emit_vec_binary_op("sub", other, self)
+
     def __mul__(self, other):
         return _emit_vec_binary_op("mul", self, other)
 
