@@ -8,6 +8,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "Utils.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -22,6 +23,9 @@
 namespace mlir {
 namespace pto {
 
+static constexpr llvm::StringLiteral kFrontendPipeIdAttrName =
+    "__pto.frontend_id";
+
 func::ReturnOp getAssumedUniqueReturnOp(func::FuncOp funcOp) {
   func::ReturnOp returnOp;
   for (Block &b : funcOp.getBody()) {
@@ -32,6 +36,65 @@ func::ReturnOp getAssumedUniqueReturnOp(func::FuncOp funcOp) {
     }
   }
   return returnOp;
+}
+
+Value peelUnrealized(Value value) {
+  if (auto castOp = value.getDefiningOp<UnrealizedConversionCastOp>())
+    return castOp.getOperand(0);
+  return value;
+}
+
+bool isScalarFixpipeQuant(FixpipeQuant quant) {
+  switch (quant) {
+  case FixpipeQuant::DEQF16Scalar:
+  case FixpipeQuant::REQ8Scalar:
+  case FixpipeQuant::QF322B8PreScalar:
+  case FixpipeQuant::QF322F16PreScalar:
+  case FixpipeQuant::QF322BF16PreScalar:
+  case FixpipeQuant::QS322BF16PreScalar:
+  case FixpipeQuant::QF322HIF8PreScalar:
+  case FixpipeQuant::QF322FP8PreScalar:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool isVectorFixpipeQuant(FixpipeQuant quant) {
+  switch (quant) {
+  case FixpipeQuant::DEQF16Vec:
+  case FixpipeQuant::REQ8Vec:
+  case FixpipeQuant::QF322B8PreVec:
+  case FixpipeQuant::QS322BF16PreVec:
+    return true;
+  default:
+    return false;
+  }
+}
+
+Operation *getPipeInitDef(Value pipeHandle) {
+  pipeHandle = peelUnrealized(pipeHandle);
+  return pipeHandle ? pipeHandle.getDefiningOp() : nullptr;
+}
+
+AccPushEpilogueAttr getPipeInitAccPushEpilogue(Operation *initOp) {
+  if (auto init = dyn_cast_or_null<InitializeL2LPipeOp>(initOp))
+    return init.getAccPushEpilogueAttr();
+  if (auto init = dyn_cast_or_null<InitializeL2G2LPipeOp>(initOp))
+    return init.getAccPushEpilogueAttr();
+  return {};
+}
+
+std::optional<int32_t> getFrontendPipeIdFromInit(Operation *initOp) {
+  if (!initOp)
+    return std::nullopt;
+  if (auto attr = initOp->getAttrOfType<IntegerAttr>(kFrontendPipeIdAttrName))
+    return static_cast<int32_t>(attr.getInt());
+  return std::nullopt;
+}
+
+std::optional<int32_t> getFrontendPipeIdFromHandle(Value pipeHandle) {
+  return getFrontendPipeIdFromInit(getPipeInitDef(pipeHandle));
 }
 
 // New helper function to get the updated BaseMemRefType

@@ -18,7 +18,9 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/IR/PTOSyncUtils.h"
+#include "PTO/Transforms/MemoryConsistencyAttrs.h"
 #include "PTO/Transforms/Passes.h"
+#include "Utils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -54,6 +56,7 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include "llvm/ADT/DenseSet.h"
 
 #define DEBUG_TYPE "pto-emitc"
 
@@ -205,15 +208,14 @@ static constexpr llvm::StringLiteral kForceDynamicValidShapeAttrName =
     "__pto.force_dynamic_valid_shape";
 static constexpr llvm::StringLiteral kGlobalTensorStridesAttrName =
     "__pto.globaltensor_strides";
-static constexpr llvm::StringLiteral kTNotifyDrainMte2AttrName =
-    "__pto.emitc.tnotify_drain_mte2";
-static constexpr llvm::StringLiteral kTNotifyDrainMte3AttrName =
-    "__pto.emitc.tnotify_drain_mte3";
-
-enum TNotifyMteDrainMask : unsigned {
-  kDrainMte2 = 1U << 0,
-  kDrainMte3 = 1U << 1,
-};
+static constexpr llvm::StringLiteral kPipePeerOwnerFuncAttrName =
+    "__pto.peer_owner_func";
+static constexpr llvm::StringLiteral kPipePeerReserveNameAttrName =
+    "__pto.peer_reserve_name";
+static constexpr llvm::StringLiteral kPipePeerDirMaskAttrName =
+    "__pto.peer_dir_mask";
+static constexpr llvm::StringLiteral kEmitCScalarOutTypeAttrName =
+    "__pto.emitc_scalar_out_type";
 static constexpr llvm::StringLiteral kLastUseAttrName = "pto.last_use";
 static constexpr llvm::StringLiteral kLastUseMarkerPrefix = "PTOAS__LAST_USE__";
 
@@ -337,123 +339,17 @@ static StringRef getLastUseAwareCallee(Operation *op, StringRef callee,
   return storage;
 }
 
-static void createLastUseAwareOpaqueCall(ConversionPatternRewriter &rewriter,
-                                         Operation *op, TypeRange resultTypes,
-                                         StringRef callee,
-                                         ValueRange operands,
-                                         ArrayAttr args = ArrayAttr{},
-                                         ArrayAttr templateArgs = ArrayAttr{},
-                                         ArrayRef<unsigned> tileSlotOrder = {}) {
+static void createLastUseAwareOpaqueCall(
+    ConversionPatternRewriter &rewriter, Operation *op, TypeRange resultTypes,
+    StringRef callee, ValueRange operands, ArrayAttr args = ArrayAttr{},
+    ArrayAttr templateArgs = ArrayAttr{},
+    ArrayRef<unsigned> tileSlotOrder = {}) {
   std::string calleeStorage;
   StringRef effectiveCallee =
       getLastUseAwareCallee(op, callee, calleeStorage, tileSlotOrder);
   rewriter.create<emitc::CallOpaqueOp>(op->getLoc(), resultTypes,
                                        effectiveCallee, args, templateArgs,
                                        operands);
-}
-
-static Value peelUnrealized(Value v) {
-  if (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>())
-    return castOp.getOperand(0);
-  return v;
-}
-
-static unsigned getMteDrainMaskForPipe(pto::PIPE pipe) {
-  switch (pipe) {
-  case pto::PIPE::PIPE_MTE2:
-    return kDrainMte2;
-  case pto::PIPE::PIPE_MTE3:
-    return kDrainMte3;
-  case pto::PIPE::PIPE_ALL:
-    return kDrainMte2 | kDrainMte3;
-  default:
-    return 0;
-  }
-}
-
-static unsigned getDirectMteDrainMask(Operation *op) {
-  if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op))
-    return getMteDrainMaskForPipe(pipeOp.getPipe());
-  return 0;
-}
-
-static unsigned collectMteDrainMask(Operation *op) {
-  unsigned mask = getDirectMteDrainMask(op);
-  for (Region &region : op->getRegions())
-    for (Block &block : region)
-      for (Operation &nested : block)
-        mask |= collectMteDrainMask(&nested);
-  return mask;
-}
-
-static bool isLoopLikeOp(Operation *op) {
-  return isa<scf::ForOp, scf::WhileOp, scf::ParallelOp, scf::ForallOp>(op);
-}
-
-static void setTNotifyDrainAttrs(pto::TNotifyOp op, unsigned mask) {
-  op->removeAttr(kTNotifyDrainMte2AttrName);
-  op->removeAttr(kTNotifyDrainMte3AttrName);
-  if (mask & kDrainMte2)
-    op->setAttr(kTNotifyDrainMte2AttrName, UnitAttr::get(op.getContext()));
-  if (mask & kDrainMte3)
-    op->setAttr(kTNotifyDrainMte3AttrName, UnitAttr::get(op.getContext()));
-}
-
-static void markNestedTNotifyWithMask(Operation *op, unsigned mask) {
-  op->walk([&](pto::TNotifyOp notify) { setTNotifyDrainAttrs(notify, mask); });
-}
-
-static unsigned annotateTNotifyMteDrainForBlock(Block &block,
-                                                unsigned entryPendingMask,
-                                                unsigned loopCarriedMask) {
-  unsigned pendingMask = entryPendingMask;
-  for (Operation &op : block) {
-    if (auto notify = dyn_cast<pto::TNotifyOp>(op)) {
-      setTNotifyDrainAttrs(notify, pendingMask | loopCarriedMask);
-      pendingMask = 0;
-    }
-
-    pendingMask |= getDirectMteDrainMask(&op);
-
-    unsigned regionEntryMask = pendingMask;
-    unsigned combinedRegionExitMask = 0;
-    for (Region &region : op.getRegions()) {
-      unsigned nestedLoopCarriedMask = loopCarriedMask;
-      if (isLoopLikeOp(&op))
-        nestedLoopCarriedMask |= collectMteDrainMask(&op);
-
-      if (region.hasOneBlock()) {
-        combinedRegionExitMask |= annotateTNotifyMteDrainForBlock(
-            region.front(), regionEntryMask, nestedLoopCarriedMask);
-      } else {
-        unsigned regionMask = collectMteDrainMask(&op);
-        markNestedTNotifyWithMask(&op, regionEntryMask | nestedLoopCarriedMask |
-                                           regionMask);
-        combinedRegionExitMask |= regionEntryMask | regionMask;
-      }
-    }
-    pendingMask |= combinedRegionExitMask;
-
-    if (auto barrier = dyn_cast<pto::BarrierOp>(op))
-      pendingMask &= ~getMteDrainMaskForPipe(barrier.getPipe().getPipe());
-  }
-  return pendingMask;
-}
-
-static void annotateTNotifyMteDrain(ModuleOp module) {
-  for (auto func : module.getOps<func::FuncOp>()) {
-    if (func.getBody().hasOneBlock()) {
-      (void)annotateTNotifyMteDrainForBlock(func.getBody().front(),
-                                            /*entryPendingMask=*/0,
-                                            /*loopCarriedMask=*/0);
-      continue;
-    }
-
-    // Be conservative for pre-existing CFG: without a path-sensitive CFG data
-    // flow here, every TNotify may observe any MTE work in the function.
-    unsigned funcMask = collectMteDrainMask(func.getOperation());
-    markNestedTNotifyWithMask(func.getOperation(), funcMask);
-  }
 }
 
 static Value buildGlobalTensorFromMemref(ConversionPatternRewriter &rewriter,
@@ -1191,6 +1087,278 @@ static FailureOr<std::string> buildTPipeTokenFromInitOp(Operation *op,
   }
 
   return failure();
+}
+
+static std::string buildFixpipeConfigAliasName(int32_t pipeId) {
+  return "Pipe" + std::to_string(pipeId) + "FixpipeConfig";
+}
+
+static FailureOr<std::string> getFixpipeLayoutToken(FixpipeLayout layout) {
+  switch (layout) {
+  case FixpipeLayout::NZ2ND:
+    return std::string("LayoutMode_t::NZ2ND");
+  case FixpipeLayout::NZ2DN:
+    return std::string("LayoutMode_t::NZ2DN");
+  case FixpipeLayout::NZ2NZ:
+    return std::string("LayoutMode_t::NZ2NZ");
+  }
+  return failure();
+}
+
+static FailureOr<std::string> getFixpipeQuantToken(FixpipeQuant quant) {
+  switch (quant) {
+  case FixpipeQuant::NoConvert:
+    return std::string("QuantMode_t::NoQuant");
+  case FixpipeQuant::F32F16:
+    return std::string("QuantMode_t::F322F16");
+  case FixpipeQuant::F32BF16:
+    return std::string("QuantMode_t::F322BF16");
+  case FixpipeQuant::REQ8Scalar:
+    return std::string("QuantMode_t::REQ8");
+  case FixpipeQuant::REQ8Vec:
+    return std::string("QuantMode_t::VREQ8");
+  case FixpipeQuant::DEQF16Scalar:
+    return std::string("QuantMode_t::DEQF16");
+  case FixpipeQuant::DEQF16Vec:
+    return std::string("QuantMode_t::VDEQF16");
+  case FixpipeQuant::QF322B8PreScalar:
+    return std::string("QuantMode_t::QF322B8_PRE");
+  case FixpipeQuant::QF322B8PreVec:
+    return std::string("QuantMode_t::VQF322B8_PRE");
+  case FixpipeQuant::QF322F16PreScalar:
+    return std::string("QuantMode_t::QF322F16_PRE");
+  case FixpipeQuant::QF322BF16PreScalar:
+    return std::string("QuantMode_t::QF322BF16_PRE");
+  case FixpipeQuant::QS322BF16PreScalar:
+    return std::string("QuantMode_t::QS322BF16_PRE");
+  case FixpipeQuant::QS322BF16PreVec:
+    return std::string("QuantMode_t::VQS322BF16_PRE");
+  case FixpipeQuant::QF322HIF8PreScalar:
+    return std::string("QuantMode_t::QF322HIF8_PRE");
+  case FixpipeQuant::QF322FP8PreScalar:
+    return std::string("QuantMode_t::QF322FP8_PRE");
+  }
+  return failure();
+}
+
+static FailureOr<std::string> getFixpipeReluToken(FixpipeRelu relu) {
+  switch (relu) {
+  case FixpipeRelu::NoRelu:
+    return std::string("ReluPreMode::NoRelu");
+  case FixpipeRelu::NormalRelu:
+    return std::string("ReluPreMode::NormalRelu");
+  }
+  return failure();
+}
+
+static FailureOr<std::string>
+buildFixpipeConfigTypeToken(AccPushEpilogueAttr accPushEpilogue) {
+  auto layoutTok = getFixpipeLayoutToken(accPushEpilogue.getLayout());
+  auto quantTok = getFixpipeQuantToken(accPushEpilogue.getQuant());
+  auto reluTok = getFixpipeReluToken(accPushEpilogue.getRelu());
+  if (failed(layoutTok) || failed(quantTok) || failed(reluTok))
+    return failure();
+  return "FixpipeParams<" + *layoutTok + ", " + *quantTok + ", " + *reluTok +
+         ">";
+}
+
+static FailureOr<Operation *> findPeerFixpipeConsumerInit(Operation *producerInit) {
+  auto ownerFuncAttr =
+      producerInit->getAttrOfType<FlatSymbolRefAttr>(kPipePeerOwnerFuncAttrName);
+  auto reserveNameAttr =
+      producerInit->getAttrOfType<StringAttr>(kPipePeerReserveNameAttrName);
+  auto dirMaskAttr =
+      producerInit->getAttrOfType<IntegerAttr>(kPipePeerDirMaskAttrName);
+  if (!ownerFuncAttr || !reserveNameAttr || !dirMaskAttr ||
+      dirMaskAttr.getInt() != 1)
+    return failure();
+
+  auto peerFunc =
+      lookupPeerFuncAcrossContainer(producerInit, ownerFuncAttr);
+  if (!peerFunc)
+    return failure();
+
+  Operation *matchedInit = nullptr;
+  unsigned matchedInitCount = 0;
+  peerFunc.walk([&](Operation *candidate) {
+    if (!isa<InitializeL2LPipeOp, InitializeL2G2LPipeOp>(candidate))
+      return WalkResult::advance();
+
+    if (!getPipeInitAccPushEpilogue(candidate))
+      return WalkResult::advance();
+
+    auto candidateOwnerFuncAttr =
+        candidate->getAttrOfType<FlatSymbolRefAttr>(kPipePeerOwnerFuncAttrName);
+    auto candidateReserveNameAttr =
+        candidate->getAttrOfType<StringAttr>(kPipePeerReserveNameAttrName);
+    auto candidateDirMaskAttr =
+        candidate->getAttrOfType<IntegerAttr>(kPipePeerDirMaskAttrName);
+    if (!candidateOwnerFuncAttr || !candidateReserveNameAttr ||
+        !candidateDirMaskAttr)
+      return WalkResult::advance();
+
+    if (candidateOwnerFuncAttr != ownerFuncAttr ||
+        candidateReserveNameAttr != reserveNameAttr ||
+        candidateDirMaskAttr.getInt() != dirMaskAttr.getInt())
+      return WalkResult::advance();
+
+    auto candidateFunc = candidate->getParentOfType<func::FuncOp>();
+    if (!candidateFunc || candidateFunc != peerFunc)
+      return WalkResult::advance();
+
+    matchedInit = candidate;
+    ++matchedInitCount;
+    return WalkResult::advance();
+  });
+  if (matchedInitCount != 1 || !matchedInit)
+    return failure();
+  return matchedInit;
+}
+
+static FailureOr<TileBufType> resolveFixpipeConsumerTileType(Value pipeHandle) {
+  Operation *producerInit = getPipeInitDef(pipeHandle);
+  if (!producerInit)
+    return failure();
+
+  Type resolvedType;
+  bool hasMismatch = false;
+
+  auto collectFromFunc = [&](func::FuncOp funcOp,
+                             llvm::function_ref<bool(pto::TPopOp)> matchesPop) {
+    funcOp.walk([&](pto::TPopOp pop) {
+      if (!matchesPop(pop))
+        return WalkResult::advance();
+      if (!resolvedType) {
+        resolvedType = pop.getTile().getType();
+        return WalkResult::advance();
+      }
+      if (resolvedType != pop.getTile().getType()) {
+        hasMismatch = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+  };
+
+  auto peerInitOr = findPeerFixpipeConsumerInit(producerInit);
+  if (failed(peerInitOr))
+    return failure();
+
+  Value peerPipe = (*peerInitOr)->getResult(0);
+  collectFromFunc((*peerInitOr)->getParentOfType<func::FuncOp>(),
+                  [&](pto::TPopOp pop) {
+                    return peelUnrealized(pop.getPipeHandle()) == peerPipe;
+                  });
+
+  if (hasMismatch || !resolvedType)
+    return failure();
+  auto tileTy = dyn_cast<TileBufType>(resolvedType);
+  if (!tileTy)
+    return failure();
+  return tileTy;
+}
+
+static LogicalResult rematerializeFixpipeQuantBindings(ModuleOp mop) {
+  SmallVector<Operation *> eraseList;
+  auto processBlock =
+      [&](auto &&self, Block &block) -> LogicalResult {
+    llvm::DenseMap<int32_t, SetQuantScalarOp> activeScalarById;
+    llvm::DenseMap<int32_t, SetQuantVectorOp> activeVectorById;
+    SmallVector<Operation *> originalOps;
+    for (Operation &op : block)
+      originalOps.push_back(&op);
+
+    for (Operation *op : originalOps) {
+      if (auto setQuantScalar = dyn_cast<SetQuantScalarOp>(op)) {
+        activeScalarById[setQuantScalar.getId()] = setQuantScalar;
+        eraseList.push_back(op);
+      } else if (auto setQuantVector = dyn_cast<SetQuantVectorOp>(op)) {
+        activeVectorById[setQuantVector.getId()] = setQuantVector;
+        eraseList.push_back(op);
+      } else if (auto tpush = dyn_cast<TPushOp>(op)) {
+        auto accPushEpilogue =
+            getPipeInitAccPushEpilogue(getPipeInitDef(tpush.getPipeHandle()));
+        auto pipeId = getFrontendPipeIdFromHandle(tpush.getPipeHandle());
+        if (accPushEpilogue && pipeId) {
+          OpBuilder builder(tpush);
+          if (isScalarFixpipeQuant(accPushEpilogue.getQuant())) {
+            auto it = activeScalarById.find(*pipeId);
+            if (it != activeScalarById.end()) {
+              auto consumerTileTy =
+                  resolveFixpipeConsumerTileType(tpush.getPipeHandle());
+              if (failed(consumerTileTy)) {
+                tpush.emitOpError("failed to resolve peer consumer tile type "
+                                  "for fixpipe quant rematerialization");
+                return failure();
+              }
+              Operation *cloned = builder.clone(*it->second.getOperation());
+              cloned->setAttr(kEmitCScalarOutTypeAttrName,
+                              builder.getStringAttr(getEmitCScalarTypeToken(
+                                  (*consumerTileTy).getElementType())));
+            }
+          } else if (isVectorFixpipeQuant(accPushEpilogue.getQuant())) {
+            auto it = activeVectorById.find(*pipeId);
+            if (it != activeVectorById.end())
+              builder.clone(*it->second.getOperation());
+          }
+        }
+      }
+
+      for (Region &region : op->getRegions()) {
+        for (Block &nestedBlock : region) {
+          if (failed(self(self, nestedBlock)))
+            return failure();
+        }
+      }
+    }
+    return success();
+  };
+
+  for (auto funcOp : mop.getOps<func::FuncOp>()) {
+    for (Block &block : funcOp.getBlocks()) {
+      if (failed(processBlock(processBlock, block)))
+        return failure();
+    }
+  }
+
+  for (Operation *op : eraseList)
+    op->erase();
+  return success();
+}
+
+static LogicalResult insertFixpipeConfigAliases(ModuleOp mop) {
+  for (auto funcOp : mop.getOps<func::FuncOp>()) {
+    llvm::DenseSet<int32_t> seenIds;
+    SmallVector<std::pair<int32_t, std::string>> aliases;
+    bool aliasBuildFailed = false;
+    funcOp.walk([&](TPushOp tpush) {
+      auto accPushEpilogue = getPipeInitAccPushEpilogue(getPipeInitDef(tpush.getPipeHandle()));
+      auto pipeId = getFrontendPipeIdFromHandle(tpush.getPipeHandle());
+      if (!accPushEpilogue || !pipeId || !seenIds.insert(*pipeId).second)
+        return WalkResult::advance();
+      auto configTok = buildFixpipeConfigTypeToken(accPushEpilogue);
+      if (failed(configTok)) {
+        aliasBuildFailed = true;
+        return WalkResult::interrupt();
+      }
+      aliases.emplace_back(*pipeId, *configTok);
+      return WalkResult::advance();
+    });
+    if (aliasBuildFailed)
+      return failure();
+
+    if (aliases.empty())
+      continue;
+
+    OpBuilder builder(&funcOp.front(), funcOp.front().begin());
+    for (const auto &[pipeId, configTok] : aliases) {
+      std::string line =
+          "using " + buildFixpipeConfigAliasName(pipeId) + " = " + configTok + ";";
+      builder.create<emitc::VerbatimOp>(
+          funcOp.getLoc(), builder.getStringAttr(line));
+    }
+  }
+  return success();
 }
 
 static FailureOr<std::string> getTPipeTokenFromValue(Value pipeHandle,
@@ -5441,6 +5609,13 @@ static std::string getAutoSyncTailModeToken(Operation *op) {
 //===----------------------------------------------------------------------===//
 // pto.barrier lowering -> pipe_barrier(...)
 //===----------------------------------------------------------------------===//
+static void emitDsbDdr(ConversionPatternRewriter &rewriter, Location loc) {
+  auto *ctx = rewriter.getContext();
+  auto args = rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "DSB_DDR")});
+  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "dsb", args,
+                                       ArrayAttr{}, ValueRange{});
+}
+
 struct PTOBarrierToEmitC : public OpConversionPattern<pto::BarrierOp> {
   using OpConversionPattern<pto::BarrierOp>::OpConversionPattern;
 
@@ -5478,6 +5653,23 @@ struct PTOBarrierToEmitC : public OpConversionPattern<pto::BarrierOp> {
         ValueRange{}        // operands
     );
 
+    return success();
+  }
+};
+
+template <typename FenceOp>
+struct PTOFenceToEmitC : public OpConversionPattern<FenceOp> {
+  using OpConversionPattern<FenceOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(FenceOp op, typename FenceOp::Adaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    if (op.getScope().getScope() != pto::FenceScope::GM &&
+        op.getScope().getScope() != pto::FenceScope::All)
+      return rewriter.notifyMatchFailure(op, "unsupported fence scope");
+
+    emitDsbDdr(rewriter, op.getLoc());
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -6102,7 +6294,7 @@ struct PTOSyncSetToEmitC : public OpConversionPattern<mlir::pto::SyncSetOp> {
     return success();
   }
 
-  PTOArch targetArch;
+  [[maybe_unused]] PTOArch targetArch;
 };
 
 struct PTOSyncWaitToEmitC : public OpConversionPattern<mlir::pto::SyncWaitOp> {
@@ -6137,7 +6329,7 @@ struct PTOSyncWaitToEmitC : public OpConversionPattern<mlir::pto::SyncWaitOp> {
     return success();
   }
 
-  PTOArch targetArch;
+  [[maybe_unused]] PTOArch targetArch;
 };
 
 // GetBlockIdxOp Lowering (pto.get_block_idx -> get_block_idx())
@@ -6640,6 +6832,51 @@ struct PTOTAssignToEmitC : public OpConversionPattern<pto::TAssignOp> {
 // pto.load_scalar / pto.store_scalar lowering -> ptr[offset]
 //===----------------------------------------------------------------------===//
 
+static void emitInvalidateGmCacheAll(ConversionPatternRewriter &rewriter,
+                                     Location loc) {
+  auto *ctx = rewriter.getContext();
+  auto args = rewriter.getArrayAttr({
+      emitc::OpaqueAttr::get(ctx, "(__gm__ void*)0"),
+      emitc::OpaqueAttr::get(ctx, "cache_line_t::ENTIRE_DATA_CACHE"),
+  });
+  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "dcci", args,
+                                       ArrayAttr{}, ValueRange{});
+}
+
+static void emitInvalidateGmCacheSingleLine(ConversionPatternRewriter &rewriter,
+                                            Location loc, Value addr) {
+  rewriter.create<emitc::CallOpaqueOp>(
+      loc, TypeRange{}, "PTOAS__DCCI_SINGLE_CACHE_LINE",
+      ArrayAttr{}, ArrayAttr{}, ValueRange{addr});
+}
+
+static bool isGmCmoSpace(pto::AddressSpace space) {
+  return space == pto::AddressSpace::GM || space == pto::AddressSpace::Zero;
+}
+
+struct PTOCmoCacheInvalidToEmitC
+    : public OpConversionPattern<pto::CmoCacheInvalidOp> {
+  using OpConversionPattern<pto::CmoCacheInvalidOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::CmoCacheInvalidOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    if (op->hasAttr(kCmoCacheInvalidSkipLoweringAttrName)) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    if (!isGmCmoSpace(op.getSpace().getAddressSpace()))
+      return rewriter.notifyMatchFailure(op, "unsupported CMO invalidate space");
+    if (op.getAddr()) {
+      Value addr = peelUnrealized(adaptor.getAddr());
+      emitInvalidateGmCacheSingleLine(rewriter, op.getLoc(), addr);
+    } else {
+      emitInvalidateGmCacheAll(rewriter, op.getLoc());
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 static Type getPointerLikeElementType(Type type) {
   if (auto ptrTy = dyn_cast<pto::PtrType>(type))
     return ptrTy.getElementType();
@@ -7138,28 +7375,20 @@ static void emitPipeBarrier(ConversionPatternRewriter &rewriter, Location loc,
                                        ArrayAttr{}, ValueRange{});
 }
 
-static void emitDsbDdr(ConversionPatternRewriter &rewriter, Location loc) {
-  auto *ctx = rewriter.getContext();
-  auto args = rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "DSB_DDR")});
-  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "dsb", args,
-                                       ArrayAttr{}, ValueRange{});
-}
-
 // Issue #711: TNOTIFY writes its signal on the scalar pipe, and
 // TNOTIFY_IMPL's trailing pipe_barrier(PIPE_ALL) runs *after* that store.
-// If prior pto.tload / pto.tstore work is still in flight on an MTE pipe when
-// the signal lands, the receiver's matching TWAIT can return before the data
-// is visible. Emit only the MTE pipe drains that the pre-lowering analysis
-// proved may be needed before this TNotify. Issue #744: prior MTE3 stores also
-// need a DDR-domain release fence before publishing the notification signal.
-static void emitTNotifyMteDrain(ConversionPatternRewriter &rewriter,
-                                Location loc, unsigned mask) {
-  if (mask & kDrainMte2)
+// If prior MTE work is still in flight when the signal lands, the receiver's
+// matching TWAIT can return before the producer-side payload operation is
+// complete. MemoryConsistency now validates explicit CMO/fence operations for
+// DDR visibility; lowering only keeps the pipe-drain actions that the pass may
+// still annotate automatically.
+static void emitTNotifyReleaseActions(ConversionPatternRewriter &rewriter,
+                                      Location loc, bool drainMte2,
+                                      bool drainMte3) {
+  if (drainMte2)
     emitPipeBarrier(rewriter, loc, "PIPE_MTE2");
-  if (mask & kDrainMte3) {
+  if (drainMte3)
     emitPipeBarrier(rewriter, loc, "PIPE_MTE3");
-    emitDsbDdr(rewriter, loc);
-  }
 }
 
 static std::string waitCmpTok(pto::WaitCmp cmp) {
@@ -7416,14 +7645,11 @@ struct PTOSignalCommToEmitC : public OpConversionPattern<SignalOp> {
           rewriter, op.getLoc(), notifyTy, notifyOpTok(op.getNotifyOp()));
       SmallVector<Value> operands{*signalGT, peelUnrealized(adaptor.getValue()),
                                   notifyOp};
-      // See emitTNotifyMteDrain comment: drain in-flight MTE work before the
+      // See emitTNotifyReleaseActions comment: drain in-flight MTE work before the
       // scalar-pipe signal store so the notify/wait handshake is honored.
-      unsigned drainMask = 0;
-      if (op->hasAttr(kTNotifyDrainMte2AttrName))
-        drainMask |= kDrainMte2;
-      if (op->hasAttr(kTNotifyDrainMte3AttrName))
-        drainMask |= kDrainMte3;
-      emitTNotifyMteDrain(rewriter, op.getLoc(), drainMask);
+      bool drainMte2 = op->hasAttr(kTNotifyDrainMte2AttrName);
+      bool drainMte3 = op->hasAttr(kTNotifyDrainMte3AttrName);
+      emitTNotifyReleaseActions(rewriter, op.getLoc(), drainMte2, drainMte3);
       rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, callee,
                                            ArrayAttr{}, ArrayAttr{}, operands);
       rewriter.eraseOp(op);
@@ -7943,6 +8169,56 @@ struct PTOTAllocToEmitC : public OpConversionPattern<mlir::pto::TAllocOp> {
   PTOArch targetArch;
 };
 
+struct PTOSetQuantScalarToEmitC
+    : public OpConversionPattern<mlir::pto::SetQuantScalarOp> {
+  PTOSetQuantScalarToEmitC(TypeConverter &typeConverter, MLIRContext *ctx,
+                           PTOArch targetArch)
+      : OpConversionPattern<mlir::pto::SetQuantScalarOp>(typeConverter, ctx),
+        targetArch(targetArch) {}
+
+  LogicalResult matchAndRewrite(mlir::pto::SetQuantScalarOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto outTypeAttr =
+        op->getAttrOfType<StringAttr>(kEmitCScalarOutTypeAttrName);
+    if (!outTypeAttr)
+      return rewriter.notifyMatchFailure(
+          op, "expected rematerialized fixpipe set_quant_scalar to carry emitc out type");
+
+    std::string outTok = outTypeAttr.getValue().str();
+    Value scale = peelUnrealized(adaptor.getScale());
+    auto floatTy = emitc::OpaqueType::get(rewriter.getContext(), "float");
+    if (scale.getType() != floatTy)
+      scale = rewriter.create<emitc::CastOp>(op.getLoc(), floatTy, scale).getResult();
+
+    ArrayAttr targs = rewriter.getArrayAttr(
+        {emitc::OpaqueAttr::get(rewriter.getContext(), outTok)});
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange{}, "SET_QUANT_SCALAR", ArrayAttr{}, targs,
+        ValueRange{scale});
+    return success();
+  }
+
+  PTOArch targetArch;
+};
+
+struct PTOSetQuantVectorToEmitC
+    : public OpConversionPattern<mlir::pto::SetQuantVectorOp> {
+  PTOSetQuantVectorToEmitC(TypeConverter &typeConverter, MLIRContext *ctx,
+                           PTOArch targetArch)
+      : OpConversionPattern<mlir::pto::SetQuantVectorOp>(typeConverter, ctx),
+        targetArch(targetArch) {}
+
+  LogicalResult matchAndRewrite(mlir::pto::SetQuantVectorOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange{}, "SET_QUANT_VECTOR", ArrayAttr{}, ArrayAttr{},
+        ValueRange{peelUnrealized(adaptor.getScalingTile())});
+    return success();
+  }
+
+  PTOArch targetArch;
+};
+
 struct PTOTPushToEmitC : public OpConversionPattern<mlir::pto::TPushOp> {
   PTOTPushToEmitC(TypeConverter &typeConverter, MLIRContext *ctx,
                   PTOArch targetArch)
@@ -7960,15 +8236,35 @@ struct PTOTPushToEmitC : public OpConversionPattern<mlir::pto::TPushOp> {
     auto tileTok = getPipeDataTypeToken(convertedTile);
     if (failed(tileTok))
       return rewriter.notifyMatchFailure(op, "failed to resolve tile token");
-    auto splitTok = getTileSplitToken(op.getSplit());
-    if (failed(splitTok))
-      return rewriter.notifyMatchFailure(op, "failed to resolve split token");
-
-    std::string callee =
-        "TPUSH<" + *pipeTok + ", " + *tileTok + ", " + *splitTok + ">";
+    std::string callee;
+    if (auto accPushEpilogue =
+            getPipeInitAccPushEpilogue(getPipeInitDef(op.getPipeHandle()))) {
+      auto pipeId = getFrontendPipeIdFromHandle(op.getPipeHandle());
+      std::string configTok;
+      if (pipeId) {
+        configTok = buildFixpipeConfigAliasName(*pipeId);
+      } else {
+        auto configTokOr = buildFixpipeConfigTypeToken(accPushEpilogue);
+        if (failed(configTokOr))
+          return rewriter.notifyMatchFailure(op, "failed to resolve fixpipe config token");
+        configTok = *configTokOr;
+      }
+      callee = "TPUSH<" + *pipeTok + ", " + *tileTok + ", " + configTok + ">";
+    } else {
+      auto splitTok = getTileSplitToken(op.getSplit());
+      if (failed(splitTok))
+        return rewriter.notifyMatchFailure(op, "failed to resolve split token");
+      callee = "TPUSH<" + *pipeTok + ", " + *tileTok + ", " + *splitTok + ">";
+    }
+    SmallVector<Value> callOperands{peelUnrealized(adaptor.getPipeHandle()),
+                                    convertedTile};
+    if (Value aivSubblockId = adaptor.getAivSubblockid()) {
+      Value aivSubblockIdI32 = rewriter.create<emitc::CastOp>(
+          op.getLoc(), rewriter.getI32Type(), peelUnrealized(aivSubblockId));
+      callOperands.push_back(aivSubblockIdI32);
+    }
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
-        ValueRange{peelUnrealized(adaptor.getPipeHandle()), convertedTile});
+        op, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{}, callOperands);
     return success();
   }
 
@@ -7996,9 +8292,15 @@ struct PTOTPopToEmitC : public OpConversionPattern<mlir::pto::TPopOp> {
 
     std::string callee =
         "TPOP<" + *pipeTok + ", " + *tileTok + ", " + *splitTok + ">";
+    SmallVector<Value> callOperands{peelUnrealized(adaptor.getPipeHandle()),
+                                    convertedTile};
+    if (Value aivSubblockId = adaptor.getAivSubblockid()) {
+      Value aivSubblockIdI32 = rewriter.create<emitc::CastOp>(
+          op.getLoc(), rewriter.getI32Type(), peelUnrealized(aivSubblockId));
+      callOperands.push_back(aivSubblockIdI32);
+    }
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
-        ValueRange{peelUnrealized(adaptor.getPipeHandle()), convertedTile});
+        op, TypeRange{}, callee, ArrayAttr{}, ArrayAttr{}, callOperands);
     return success();
   }
 
@@ -13908,6 +14210,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOLocalArraySetToEmitC>(typeConverter, ctx);
   patterns.add<PTOTReshapeToEmitC>(typeConverter, ctx);
   patterns.add<PTOBitcastToEmitC>(typeConverter, ctx);
+  patterns.add<PTOSetQuantScalarToEmitC, PTOSetQuantVectorToEmitC>(
+      typeConverter, ctx, targetArch);
   patterns.add<PTOTAllocToEmitC>(typeConverter, ctx, targetArch);
   patterns.add<PTOTPushToEmitC>(typeConverter, ctx, targetArch);
   patterns.add<PTOTPopToEmitC>(typeConverter, ctx, targetArch);
@@ -13936,7 +14240,9 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
     PTOTGemvMXToTGEMV_MX,
     PTOTGemvMXAccToTGEMV_MX,
     PTOTGemvMXBiasToTGEMV_MX,
-    PTOBarrierToEmitC
+    PTOBarrierToEmitC,
+    PTOFenceToEmitC<pto::FenceBarrierAllOp>,
+    PTOCmoCacheInvalidToEmitC
   >(typeConverter, ctx);
 
   patterns.add<CallToEmitC, ReturnToEmitC>(typeConverter, ctx);
@@ -14090,6 +14396,11 @@ static AICORE inline void ptoas_auto_sync_tail(
     break;
   }
 }
+
+template <typename Ptr>
+static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
+  dcci((__gm__ void*)ptr, cache_line_t::SINGLE_CACHE_LINE);
+}
 )cpp"));
 	    // Only inject the bitcast helper when we actually lower ops that need it
 	    // (e.g. arith.bitcast or arith.maximumf/minimumf tie-breaking on zeros).
@@ -14197,7 +14508,14 @@ static AICORE inline void ptoas_auto_sync_tail(
       }
     }
 
-    annotateTNotifyMteDrain(mop);
+    if (failed(rematerializeFixpipeQuantBindings(mop))) {
+      mop.emitError("failed to rematerialize fixpipe quant bindings");
+      return signalPassFailure();
+    }
+    if (failed(insertFixpipeConfigAliases(mop))) {
+      mop.emitError("failed to insert fixpipe config aliases");
+      return signalPassFailure();
+    }
 
     // 3. 配置转换目标
     ConversionTarget target(*ctx);

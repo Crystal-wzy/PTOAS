@@ -1822,7 +1822,7 @@ static void appendScalarGMFlush(std::string &out, llvm::StringRef indent) {
   out.append(indent.str());
   out.append("pipe_barrier(PIPE_ALL);\n");
   out.append(indent.str());
-  out.append("dcci((__gm__ void*)0, ENTIRE_DATA_CACHE, CACHELINE_OUT);\n");
+  out.append("dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE);\n");
   out.append(indent.str());
   out.append("dsb((mem_dsb_t)0);\n");
 }
@@ -2576,6 +2576,14 @@ static bool shouldDeclareVariablesAtTop(ModuleOp module) {
 
 static void prepareVPTOForEmission(PassManager &pm) {
   auto &kernelModulePM = pm.nest<ModuleOp>();
+  // VPTO LLVM emission lowers pto.barrier to the backend barrier intrinsic.
+  // A5 does not support a standalone PIPE_V barrier; vector barriers are either
+  // unnecessary or must be removed before LLVM emission. Upper-level
+  // programming frameworks may still produce pto.barrier(PIPE_V) from generic
+  // storage-sync constructs, so run sync-to-pipe legalization here and let the
+  // backend checks catch any illegal barrier that still leaks through.
+  kernelModulePM.addNestedPass<func::FuncOp>(
+      pto::createLoweringSyncToPipePass());
   kernelModulePM.addNestedPass<func::FuncOp>(
       pto::createPTOUnrollSIMTForPass());
   kernelModulePM.addPass(createSCCPPass());
@@ -2965,6 +2973,8 @@ int mlir::pto::compilePTOASModule(
   }
 
   pm.addPass(pto::createPTOViewToMemrefPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      pto::createPTORematerializeFixpipeVectorQuantPass());
 
   if (effectiveLevel != PTOBuildLevel::Level3) {
     PlanMemoryOptions planMemoryOption;
@@ -3033,6 +3043,7 @@ int mlir::pto::compilePTOASModule(
     pm.addPass(createNarrowUnusedMultiResultProvenancePass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
+  pm.addPass(pto::createPTOMemoryConsistencyPass());
   if (failed(applyConfiguredPassManagerCLOptions(pm, "main PTOAS pipeline")))
     return 1;
 

@@ -1466,11 +1466,28 @@ def TMovOp  : PTO_TOp<"tmov", [
         return ::mlir::pto::PIPE::PIPE_V;
       }
 
-      // MAT -> L0 (Left/Right/Bias/Scaling) are MTE1 moves.
+      // MAT -> L0A/L0B/Bias moves run on MTE1.
       if ((s == ::mlir::pto::AddressSpace::MAT &&
            (d == ::mlir::pto::AddressSpace::LEFT || d == ::mlir::pto::AddressSpace::RIGHT ||
-            d == ::mlir::pto::AddressSpace::BIAS || d == ::mlir::pto::AddressSpace::SCALING))) {
+            d == ::mlir::pto::AddressSpace::BIAS))) {
         return ::mlir::pto::PIPE::PIPE_MTE1;
+      }
+
+      if (s == ::mlir::pto::AddressSpace::MAT &&
+          d == ::mlir::pto::AddressSpace::SCALING) {
+        // PTOAS uses SCALING for two distinct PTO-ISA destinations. A5 MX
+        // scale tiles are ScaleLeft/ScaleRight loads into L0A/L0B and run on
+        // MTE1. Regular Scaling tiles are FBUF loads (TMOV_M2S) and run on
+        // FIX. PTOViewToMemref preserves the element type but erases the tile
+        // role before sync insertion, so distinguish the MX-only f8E8M0 type.
+        Type dstElemTy;
+        if (auto tb = llvm::dyn_cast<::mlir::pto::TileBufType>(getDst().getType()))
+          dstElemTy = tb.getElementType();
+        else if (auto mr = llvm::dyn_cast<::mlir::MemRefType>(getDst().getType()))
+          dstElemTy = mr.getElementType();
+        if (dstElemTy && llvm::isa<::mlir::pto::F8E8M0Type>(dstElemTy))
+          return ::mlir::pto::PIPE::PIPE_MTE1;
+        return ::mlir::pto::PIPE::PIPE_FIX;
       }
 
       // ACC -> MAT / VEC use FIX in PTO-ISA sync mapping (TMOV_A2M/TMOV_A2V).
@@ -1753,6 +1770,7 @@ def AicInitializePipeOp : PTO_Op<"aic_initialize_pipe",
       OptionalAttr<I32Attr>:$slot_num,
       OptionalAttr<I32Attr>:$local_slot_num,
       OptionalAttr<BoolAttr>:$nosplit,
+      OptionalAttr<PTO_AccPushEpilogueAttr>:$acc_push_epilogue,
       Optional<PtrType>:$gm_slot_buffer,
       Optional<TensorViewType>:$gm_slot_tensor,
       Optional<I32>:$c2v_consumer_buf,
@@ -1775,6 +1793,7 @@ def AivInitializePipeOp : PTO_Op<"aiv_initialize_pipe",
       OptionalAttr<I32Attr>:$slot_num,
       OptionalAttr<I32Attr>:$local_slot_num,
       OptionalAttr<BoolAttr>:$nosplit,
+      OptionalAttr<PTO_AccPushEpilogueAttr>:$acc_push_epilogue,
       Optional<PtrType>:$gm_slot_buffer,
       Optional<TensorViewType>:$gm_slot_tensor,
       Optional<I32>:$c2v_consumer_buf,
@@ -1820,7 +1839,9 @@ def TAllocToAicOp : PTO_TOp<"talloc_to_aic"> {
   }];
 }
 
-def TPushToAivOp : PTO_TOp<"tpush_to_aiv"> {
+def TPushToAivOp : PTO_TOp<"tpush_to_aiv", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
   let summary = "Frontend C2V producer push from Cube to Vector";
 
   let arguments = (ins
@@ -1843,6 +1864,7 @@ def TPushToAicOp : PTO_TOp<"tpush_to_aic"> {
 
   let arguments = (ins
       PTOPipeEntryType:$tile,
+      Optional<I64>:$aiv_subblockid,
       DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
@@ -1852,7 +1874,9 @@ def TPushToAicOp : PTO_TOp<"tpush_to_aic"> {
 
   let assemblyFormat = [{
     `(` $tile `:` qualified(type($tile)) `)`
-    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
+    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
   }];
 }
 
@@ -1862,6 +1886,7 @@ def TPopFromAicOp : PTO_TOp<"tpop_from_aic", [AttrSizedOperandSegments]> {
   let arguments = (ins
       Optional<Index>:$valid_row,
       Optional<Index>:$valid_col,
+      Optional<I64>:$aiv_subblockid,
       DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
@@ -1870,7 +1895,10 @@ def TPopFromAicOp : PTO_TOp<"tpop_from_aic", [AttrSizedOperandSegments]> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    (`(` $valid_row^ `,` $valid_col `)`)? `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
+    (`(` $valid_row^ `,` $valid_col `)`)?
+    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
     `->` qualified(type($tile))
   }];
 }
@@ -1927,6 +1955,67 @@ def TFreeFromAivOp : PTO_TOp<"tfree_from_aiv"> {
   let assemblyFormat = [{
     (`(` $entry^ `:` qualified(type($entry)) `)`)?
     `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// Fixpipe Quant Config Ops
+//===----------------------------------------------------------------------===//
+
+def SetQuantScalarOp : PTO_Op<"set_quant_scalar", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Set scalar quantization parameters for fixpipe producer";
+
+  let description = [{
+    Producer-side scalar quantization configuration for fixpipe TPUSH.
+    Binds an f32 scalar quant payload to a logical pipe id.
+    This binding persists until overwritten by another set_quant_scalar with
+    the same id. Used by scalar quant modes: deqf16_scalar, req8_scalar,
+    qf322b8_pre_scalar, qf322f16_pre_scalar, qf322bf16_pre_scalar,
+    qs322bf16_pre_scalar, qf322hif8_pre_scalar, qf322fp8_pre_scalar.
+  }];
+
+  let arguments = (ins
+      F32:$scale,
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id
+  );
+
+  let results = (outs);
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `(` $scale `:` type($scale) `)` `{` `id` `=` $id `}` attr-dict
+  }];
+}
+
+def SetQuantVectorOp : PTO_Op<"set_quant_vector", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Set vector quantization parameters for fixpipe producer";
+
+  let description = [{
+    Producer-side vector quantization configuration for fixpipe TPUSH.
+    Binds a vector quant payload (scaling tile) to a logical pipe id.
+    The input tile must have loc=scaling. A5 consumes a direct scaling
+    payload with an element type in the f16/bf16/f32 family; A3 consumes
+    a packed 64-bit integer payload (i64/ui64). This binding persists
+    until overwritten by another set_quant_vector with the same id.
+    Used by vector quant modes: deqf16_vec, req8_vec, qf322b8_pre_vec,
+    qs322bf16_pre_vec.
+  }];
+
+  let arguments = (ins
+      PTOPipeEntryType:$scaling_tile,
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id
+  );
+
+  let results = (outs);
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `(` $scaling_tile `:` qualified(type($scaling_tile)) `)`
+    `{` `id` `=` $id `}` attr-dict
   }];
 }
 
@@ -2253,6 +2342,7 @@ def InitializeL2G2LPipeOp : PTO_Op<"initialize_l2g2l_pipe", [
       OptionalAttr<I32Attr>:$local_slot_num,
       OptionalAttr<I32Attr>:$flag_base,
       OptionalAttr<BoolAttr>:$nosplit,
+      OptionalAttr<PTO_AccPushEpilogueAttr>:$acc_push_epilogue,
       AnyType:$gm_addr,
       Optional<AnyType>:$local_addr,
       Optional<AnyType>:$peer_local_addr
@@ -2287,6 +2377,7 @@ def InitializeL2LPipeOp : PTO_Op<"initialize_l2l_pipe", [
       I32Attr:$slot_num,
       OptionalAttr<I32Attr>:$flag_base,
       OptionalAttr<BoolAttr>:$nosplit,
+      OptionalAttr<PTO_AccPushEpilogueAttr>:$acc_push_epilogue,
       AnyType:$local_addr,
       Optional<AnyType>:$peer_local_addr
   );
@@ -2316,6 +2407,7 @@ def TPushOp : PTO_TOp<"tpush", [
   let arguments = (ins
       PTOPipeEntryType:$tile,
       PipeType:$pipe_handle,
+      Optional<I64>:$aiv_subblockid,
       I8Attr:$split
   );
 
@@ -2324,7 +2416,9 @@ def TPushOp : PTO_TOp<"tpush", [
 
   let assemblyFormat = [{
     `(` $tile `,` $pipe_handle `:` qualified(type($tile)) `,` qualified(type($pipe_handle)) `)`
-    `{` `split` `=` $split `}` attr-dict
+    `{` `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
   }];
 
   let extraClassDeclaration = [{
@@ -2566,6 +2660,7 @@ def TPopOp : PTO_TOp<"tpop", [
   let arguments = (ins
       PTOPipeEntryType:$tile,
       PipeType:$pipe_handle,
+      Optional<I64>:$aiv_subblockid,
       I8Attr:$split
   );
 
@@ -2574,7 +2669,9 @@ def TPopOp : PTO_TOp<"tpop", [
 
   let assemblyFormat = [{
     `(` $tile `,` $pipe_handle `:` qualified(type($tile)) `,` qualified(type($pipe_handle)) `)`
-    `{` `split` `=` $split `}` attr-dict
+    `{` `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
   }];
 
   let extraClassDeclaration = [{
@@ -2815,6 +2912,49 @@ def BarrierOp : PTO_Op<"barrier"> {
   let summary = "Intra-pipeline memory barrier";
   let arguments = (ins PTO_PipeAttr:$pipe);
   let assemblyFormat = "$pipe attr-dict";
+}
+
+def CmoCacheInvalidOp : PTO_Op<"cmo.cacheinvalid"> {
+  let summary = "Perform cache maintenance for a memory space";
+  let description = [{
+    Cache maintenance operation for the specified memory space.
+
+    The whole-cache form lowers to PTO-ISA's two-argument
+    `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)`.
+
+    The single-cache-line form carries the GM payload address selected by the
+    producer DSL/user.  When it is required for a cacheable scalar path, it
+    lowers to `dcci(addr, cache_line_t::SINGLE_CACHE_LINE)`.  When it only marks
+    a non-cacheable payload for signal release analysis, MemoryConsistency may
+    consume it as marker-only IR and erase it before EmitC lowering.
+
+    MemoryConsistency interprets both forms as explicit CMO boundaries on
+    producer release and consumer acquire paths. It also uses the addressed form
+    to match a TNotify payload against pending MTE2, MTE3, FIX, or scalar GM
+    accesses before deciding which pipe drains are required. Precise coverage of
+    the selected line is the producer DSL/user's responsibility in this phase.
+  }];
+
+  let arguments = (ins
+    Optional<AnyType>:$addr,
+    PTO_AddressSpaceAttr:$space
+  );
+
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+}
+
+def FenceBarrierAllOp : PTO_Op<"fence.barrier_all"> {
+  let summary = "All-direction memory fence for a visibility scope";
+  let description = [{
+    Memory fence for a visibility scope. Around signal/payload communication it
+    can be used as the producer-side publish barrier or the consumer-side
+    acquire barrier depending on placement. `scope = gm` lowers to
+    `dsb(DSB_DDR)`.
+  }];
+
+  let arguments = (ins PTO_FenceScopeAttr:$scope);
+  let assemblyFormat = "$scope attr-dict";
 }
 
 def TSyncOp : PTO_TOp<"tsync"> {

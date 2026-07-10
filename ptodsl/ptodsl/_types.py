@@ -35,6 +35,7 @@ from mlir.ir import (
     IntegerType,
     ShapedType,
     Type,
+    VectorType,
 )
 
 # ── Address-space name → AddressSpace enum ───────────────────────────────────
@@ -150,6 +151,35 @@ class _MaskDescriptor(_DType):
 
     def __repr__(self):
         return f"<pto.mask {self._bits}>"
+
+
+class _VecDescriptor(_DType):
+    def __init__(self, elem, size: int):
+        self._elem = elem
+        self._size = _validate_vec_size(size, context="pto.Vec(...)")
+
+    def resolve(self) -> Type:
+        elem = _ensure_non_storage_only_dtype(self._elem, context="pto.Vec(...)")
+        return VectorType.get([self._size], elem)
+
+    @property
+    def size(self) -> int:
+        return self._size
+
+    @property
+    def elem(self):
+        return self._elem
+
+    def __repr__(self):
+        return f"<pto.Vec {self._size}x{self._elem}>"
+
+
+def _validate_vec_size(size: int, *, context: str) -> int:
+    if isinstance(size, bool) or not isinstance(size, int):
+        raise TypeError(f"{context} expects size to be a positive Python integer")
+    if size <= 0:
+        raise ValueError(f"{context} expects size to be positive")
+    return size
 
 
 def _resolve(dtype) -> Type:
@@ -396,6 +426,11 @@ def vreg_type(lanes: int, elem) -> _VRegDescriptor:
     return _VRegDescriptor(lanes, elem)
 
 
+def vec_type(elem, size: int) -> _VecDescriptor:
+    """Return a lazy descriptor for builtin ``vector<size x elem>`` values."""
+    return _VecDescriptor(elem, size)
+
+
 def mask_type(bits: str = "b32") -> _MaskDescriptor:
     """Return a lazy descriptor for ``!pto.mask<bits>``."""
     return _MaskDescriptor(bits)
@@ -477,7 +512,7 @@ __all__ = [
     "si8", "si16", "si32", "si64",
     "ui8", "ui16", "ui32", "ui64",
     "index",
-    "ptr", "vreg_type", "mask_type",
+    "ptr", "vreg_type", "vec_type", "mask_type",
     "tile_buf_type", "tensor_view_type", "tensor_view_type_from_dims",
     "part_tensor_view_type", "part_tensor_view_type_from_dims",
 ]

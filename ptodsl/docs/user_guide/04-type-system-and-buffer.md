@@ -330,3 +330,55 @@ reduce_tile = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], 
 # Reinterpret as ColMajor layout (same shape, different layout)
 reduce_col = pto.tile.reshape(reduce_tile, shape=[BR, 1], blayout="ColMajor")
 ```
+
+## 4.9 Builtin Vector
+
+An MLIR `vector<size x dtype>` is a rank-1 builtin vector type with `size` elements of `dtype`. It is distinct from a PTO SIMD `vreg`.
+
+PTODSL uses builtin vector values in SIMT scalar code, including contiguous `scalar.load` / `scalar.store` paths and elementwise vector arithmetic. Create a builtin vector type descriptor or initialized vector value with `pto.Vec`:
+
+#### `pto.Vec(dtype, size, *, init=None)`
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `dtype` | PTO dtype | Element type, such as `pto.f32` |
+| `size` | Positive Python `int` | Number of elements in the builtin vector value |
+| `init` | Scalar value, builtin vector value, or `None` | Optional initializer; broadcastable scalar inputs: Python scalar literal, SSA scalar value, dynamic runtime scalar value |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | Builtin vector type descriptor or `pto.Vec(dtype, size)` value | Without `init`, returns a vector type descriptor; with `init`, returns a vector value |
+
+**Example**:
+
+<!-- ptodsl-doc-pending: {"reason":"illustrative fragment; covered by test_jit_compile scalar contiguous vector probes"} -->
+```python
+x4 = scalar.load(ptr, offset, contiguous=4)
+rstd4 = pto.Vec(pto.f32, 4, init=rstd)
+y4 = x4 * rstd4
+scalar.store(y4, ptr, offset)
+```
+
+## 4.10 Explicit scratch buffers
+
+A scratch buffer is a lane-local temporary buffer inside SIMT code. Allocate scratch buffers with `pto.alloc_buffer`:
+
+```text
+pto.alloc_buffer(shape, dtype)
+```
+
+<!-- ptodsl-doc-pending: {"reason":"illustrative fragment; covered by test_jit_compile alloc_buffer probes"} -->
+```python
+scratch = pto.alloc_buffer((32,), pto.f32)
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `shape` | Static positive integer shape. Pass an `int`, `tuple[int, ...]`, or `list[int]`. |
+| `dtype` | Element type of the returned buffer, such as `pto.f32` or `pto.i32`. |
+
+The returned value wraps the buffer address together with its allocation metadata: shape, dtype, element type, element count, and byte size.

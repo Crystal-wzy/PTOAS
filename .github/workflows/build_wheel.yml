@@ -86,6 +86,11 @@ jobs:
           # (see pybind11 static_assert on def_property + keep_alive).
           pip install --no-cache-dir numpy 'pybind11<3' nanobind setuptools wheel auditwheel
 
+      - name: Test PEP 517 build backend
+        run: |
+          export PATH="${PY_PATH}/bin:$PATH"
+          PYTHONPATH="$GITHUB_WORKSPACE" python test/python/test_ptoas_build_backend.py
+
       - name: Set build directories
         run: |
           echo "WORKSPACE_DIR=/llvm-workspace" >> $GITHUB_ENV

@@ -30,6 +30,7 @@
 #include "llvm/Support/Debug.h"
 
 #include <cassert>
+#include <optional>
 #include <queue>
 #include <set>
 #include <type_traits>
@@ -54,6 +55,13 @@ namespace pto {
   std::optional<memref::AllocOp> tracebackMemRefToAlloc(Value memrefVal);
   bool isFromFunctionArg(mlir::Value v);
   bool isOpTouchLocalBuffer(Operation *op);
+  Value peelUnrealized(Value value);
+  bool isScalarFixpipeQuant(FixpipeQuant quant);
+  bool isVectorFixpipeQuant(FixpipeQuant quant);
+  Operation *getPipeInitDef(Value pipeHandle);
+  AccPushEpilogueAttr getPipeInitAccPushEpilogue(Operation *initOp);
+  std::optional<int32_t> getFrontendPipeIdFromInit(Operation *initOp);
+  std::optional<int32_t> getFrontendPipeIdFromHandle(Value pipeHandle);
 }
 }
 #endif
