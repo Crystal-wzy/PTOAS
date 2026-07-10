@@ -88,9 +88,10 @@ constexpr llvm::StringLiteral kCandidatesAttr = "candidates";
 //   Tile   — from TileBufType.  dtype + shape + memorySpace + config
 //            all participate in the specialization key (SpecKey).
 //   View   — from MemRefType (lowered PartitionTensorViewType). The element
-//            dtype and optional explicit layout participate in SpecKey;
-//            shape/strides/memorySpace remain JSON-only metadata for Python
-//            constraint checking and must not perturb C++ codegen caching.
+//            dtype, shape, strides, memory space, and optional explicit layout
+//            participate in SpecKey. PTODSL templates compile ViewSpec metadata
+//            into helper bodies, so helpers with different view strides must not
+//            share one cached specialization.
 //   Vector — from builtin VectorType. The element dtype and vector shape
 //            participate in SpecKey so helper-side schema filtering can
 //            distinguish auxiliary vector operands such as tmrgsort's
@@ -138,8 +139,10 @@ struct OperandTypeInfo {
       return vectorShape == rhs.vectorShape;
     if (kind == OperandKind::Scalar)
       return scalarValue == rhs.scalarValue;
-    // View: dtype + explicit layout are sufficient for template caching.
-    return viewLayout == rhs.viewLayout;
+    return viewShape == rhs.viewShape &&
+           viewStrides == rhs.viewStrides &&
+           viewMemorySpace == rhs.viewMemorySpace &&
+           viewLayout == rhs.viewLayout;
   }
 };
 
@@ -183,6 +186,11 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
           h = llvm::hash_combine(h, *op.scalarValue);
       }
       if (op.kind == OperandKind::View) {
+        h = llvm::hash_combine(h, op.viewMemorySpace);
+        for (int64_t d : op.viewShape)
+          h = llvm::hash_combine(h, d);
+        for (int64_t d : op.viewStrides)
+          h = llvm::hash_combine(h, d);
         h = llvm::hash_combine(h, op.viewLayout.has_value());
         if (op.viewLayout)
           h = llvm::hash_combine(h, static_cast<int>(*op.viewLayout));
@@ -835,6 +843,12 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
   return json;
 }
 
+static std::string dimSuffix(int64_t dim) {
+  if (ShapedType::isDynamic(dim))
+    return "d";
+  return std::to_string(dim);
+}
+
 static std::string buildUniqueFunctionBaseName(const SpecKey &key) {
   std::string uniqueName = "__pto_tilelang_" + key.targetArch + "_" + key.opName;
   for (const auto &op : key.operands) {
@@ -853,6 +867,13 @@ static std::string buildUniqueFunctionBaseName(const SpecKey &key) {
       uniqueName += "_fr" + std::to_string(op.fractal);
       uniqueName += "_pd" + llvm::utohexstr(op.pad, /*LowerCase=*/false);
     } else if (op.kind == OperandKind::View) {
+      uniqueName += "_ms_" + op.viewMemorySpace;
+      uniqueName += "_shape";
+      for (int64_t d : op.viewShape)
+        uniqueName += "_" + dimSuffix(d);
+      uniqueName += "_strides";
+      for (int64_t d : op.viewStrides)
+        uniqueName += "_" + dimSuffix(d);
       if (op.viewLayout)
         uniqueName += "_vl_" + stringifyLayout(*op.viewLayout).str();
     } else if (op.kind == OperandKind::Vector) {

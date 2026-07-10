@@ -1,9 +1,9 @@
 # TileLang ST A5 Parallel Summary
 
 - Total: 193
-- Passed: 182
+- Passed: 185
 - Build failed: 6
-- Run failed: 5
+- Run failed: 2
 
 ## Failed Build Testcases
 
@@ -22,9 +22,6 @@
 | Name | Kind | Testcase | Phase |
 | --- | --- | --- | --- |
 | full_tdivs | full | tdivs | compare |
-| full_tfillpad | full | tfillpad | compare |
-| full_trowargmax | full | trowargmax | compare |
-| full_trowargmin | full | trowargmin | compare |
 | full_tsort32 | full | tsort32 | compare |
 
 ## Passed Testcases
@@ -32,6 +29,9 @@
 | Name | Kind | Testcase |
 | --- | --- | --- |
 | full_softmax | full | softmax |
+| full_trowargmax | full | trowargmax |
+| full_trowargmin | full | trowargmin |
+| full_tfillpad | full | tfillpad |
 | full_tabs | full | tabs |
 | full_tadd | full | tadd |
 | full_tadds | full | tadds |

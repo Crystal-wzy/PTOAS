@@ -239,6 +239,138 @@ This is progress. The issue moved from coverage to behavior.
   - no longer a no-template failure
   - now fails large unaligned non-smoke semantics
 
+### 9. PTODSL helper cache ignores view metadata
+
+**Symptom**
+
+- build succeeds
+- a row-reduction / row-arg case computes the right per-row values, but compare
+  sees zeros or stale data in later rows
+- failures may appear only in full non-smoke runs, while an isolated one-function
+  compile looks correct
+
+**What it usually means**
+
+PTODSL templates can bake `ViewSpec` shape/stride metadata into helper bodies.
+If `ExpandTileOp` reuses a helper specialization using only the tile type and
+view dtype/layout, an earlier compact destination view can poison a later
+strided destination view with the same tile type.
+
+TileLangDSL is less exposed to this particular cache bug because its helper
+keeps a `partition_tensor_view` argument and asks for the tensor-view stride in
+IR. PTODSL often receives/renders a memref-shaped helper and materializes the
+view stride as constants.
+
+**Debug trail from `trowargmin`**
+
+1. First isolate the failing case with `run_st.py -c`:
+
+   ```bash
+   PTOAS_TILE_LIB_BACKEND=ptodsl \
+   python3 test/tilelang_st/script/run_st.py \
+     -r sim -v a5 \
+     -p build-llvm21/tools/ptoas/ptoas \
+     -t trowargmin \
+     -c uint32_float_3x8_3x3480_3x3473 \
+     &> mani_log/manual_20260709/trowargmin_one.log
+   ```
+
+2. Inspect `golden.bin` and `output.bin`, not only the compare message.
+
+   The failing case had:
+
+   ```text
+   golden = [1088, 661, 176]
+   output first 24 = [1088, 661, 176, 0, 0, ...]
+   output as 3x8 first column = [1088, 0, 0]
+   ```
+
+   That proved `trowargmin` found the right row answers, but writeback packed
+   them into GM offsets `0, 1, 2` instead of first-column offsets `0, 8, 16`.
+
+3. Compare TileLangDSL and PTODSL emitted VPTO for the same case.
+
+   Useful commands:
+
+   ```bash
+   build-llvm21/tools/ptoas/ptoas \
+     --pto-arch=a5 --pto-backend=vpto --emit-vpto \
+     --tile-lib-backend=tilelang --enable-insert-sync \
+     test/tilelang_st/npu/a5/src/st/testcase/trowargmin/trowargmin.pto \
+     -o /tmp/trowargmin_tilelang.vpto
+
+   build-llvm21/tools/ptoas/ptoas \
+     --pto-arch=a5 --pto-backend=vpto --emit-vpto \
+     --tile-lib-backend=ptodsl --enable-insert-sync \
+     test/tilelang_st/npu/a5/src/st/testcase/trowargmin/trowargmin.pto \
+     -o /tmp/trowargmin_ptodsl.vpto
+   ```
+
+   The row-arg body was not the real problem: both backends stored the row result
+   in UB at `row * 8`. The difference was the final store helper:
+
+   - TileLangDSL used a 32-byte GM row stride.
+   - PTODSL reused a helper with a 4-byte GM row stride.
+
+4. Dump after `ExpandTileOp` to find where the divergence entered.
+
+   ```bash
+   build-llvm21/tools/ptoas/ptoas \
+     --pto-arch=a5 --pto-backend=vpto --emit-vpto \
+     --tile-lib-backend=ptodsl --enable-insert-sync \
+     --mlir-print-ir-after=pto-expand-tile-op \
+     --mlir-print-ir-tree-dir=/tmp/trowargmin_after_expand_ptodsl \
+     test/tilelang_st/npu/a5/src/st/testcase/trowargmin/trowargmin.pto \
+     -o /tmp/trowargmin_ptodsl.vpto
+   ```
+
+   Avoid relying on `--mlir-print-ir-module-scope` in this build; it may require
+   a threading-disable flag that is not exposed by this `ptoas`.
+
+   The after-expand IR already showed the bad PTODSL helper:
+
+   ```mlir
+   pto.mte_ub_gm ... nburst(%c3_i64, %c32_i64, %c4_i64)
+   ```
+
+   The matching TileLangDSL helper kept `!pto.partition_tensor_view` and used
+   `pto.get_tensor_view_stride` for the destination row stride.
+
+5. Look earlier in the full generated testcase for another op that shares the
+   same destination tile type.
+
+   In `trowargmin.pto`, an earlier case used `tile_ui32_3_8_v3_v1` with a
+   physically compact destination view `3x1`. Later,
+   `uint32_float_3x8_3x3480_3x3473` used the same tile type but a physical
+   destination row width of `8`. Because the PTODSL helper cache key/name did
+   not include view shape/strides, the later case reused the compact helper.
+
+**What fixed it**
+
+- make PTODSL `ExpandTileOp` helper specialization include view shape, strides,
+  memory space, and layout in:
+  - `OperandTypeInfo::operator==`
+  - `SpecKeyInfo::getHashValue`
+  - `buildUniqueFunctionBaseName`
+- add a focused lit regression with two `tstore`s that have the same tile type
+  but different destination strides:
+  - `test/lit/vpto/expand_tile_op_ptodsl_view_stride_cache.pto`
+
+**Validated by**
+
+- `ninja -C build-llvm21 tools/ptoas/ptoas`
+- `llvm-lit -v build-llvm21/test/lit --filter expand_tile_op_ptodsl_view_stride_cache`
+- compiler-only full `trowargmin.pto` emit now shows the strided case using
+  32-byte GM and UB row strides
+- full non-smoke `trowargmin` ST passed after the fix
+
+**Likely affected ops**
+
+- `trowargmin`
+- `trowargmax`
+- any PTODSL template that bakes `ViewSpec` strides into a helper and can see
+  multiple physical destination views with the same tile type
+
 ## Reusable debugging workflow
 
 ### A. For `NoMatchingTemplate` / `custom constraints are not satisfied`
@@ -268,14 +400,28 @@ This is progress. The issue moved from coverage to behavior.
 ### C. For build-pass but compare-fail
 
 1. Identify the smallest failing ST case.
-2. Diff PTODSL body vs TileLangDSL body.
+2. Inspect the binary outputs, not just the compare log:
+   - read `golden.bin`
+   - read `output.bin`
+   - reshape output to the physical destination shape used by ST
+   - check whether values are wrong, missing, or stored at the wrong stride
+3. Diff PTODSL body vs TileLangDSL body.
 3. Look for:
    - pack/store offsets
    - pad constants
    - reduction loop depth
    - tail handling
    - precision widening/casting
-4. Re-run only the affected testcase after each change.
+4. If the body looks right, compare the final store/load movement IR:
+   - emitted VPTO for `tilelang`
+   - emitted VPTO for `ptodsl`
+   - `--mlir-print-ir-after=pto-expand-tile-op` when the final VPTO only shows
+     the symptom, not the entry point
+5. Check for helper cache collisions:
+   - same generated helper name
+   - same tile type
+   - different view shape or stride metadata
+6. Re-run only the affected testcase after each change.
 
 ## Patterns that are usually low effort
 
