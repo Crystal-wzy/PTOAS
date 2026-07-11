@@ -17,11 +17,10 @@ from ptodsl.tilelib import ScalarSpec, ScalarType, TileSpec, VectorSpec, ViewSpe
 CATALOG = {
     "pto.tabs": ("template_tabs", "pto.vabs", ("src", "dst"), "f32"),
     "pto.tadd": (
-        "template_tadd_2d_no_post_update",
+        "template_tadd",
         "pto.vadd",
         ("src0", "src1", "dst"),
         "f32",
-        "template_tadd_2d_no_post_update",
     ),
     "pto.tand": ("template_tand", "pto.vand", ("src0", "src1", "dst"), "i32"),
     "pto.tands": ("template_tands", "pto.vand", ("src", "scalar", "dst"), "i32"),
@@ -186,11 +185,10 @@ CATALOG = {
     "pto.tmins": ("template_tmins", "pto.vmins", ("src", "scalar", "dst"), "f32"),
     "pto.tmuls": ("template_tmuls", "pto.vmuls", ("src", "scalar", "dst"), "f32"),
     "pto.tmul": (
-        "template_tmul_2d_no_post_update",
+        "template_tmul",
         "pto.vmul",
         ("src0", "src1", "dst"),
         "f32",
-        "template_tmul_2d_no_post_update",
     ),
     "pto.txor": (
         "template_txor",

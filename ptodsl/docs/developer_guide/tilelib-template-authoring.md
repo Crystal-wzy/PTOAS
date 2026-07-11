@@ -1,8 +1,7 @@
 # PTODSL TileLib Template Authoring Guide
 
 This guide is for developers adding or changing PTODSL TileLib templates under
-`ptodsl/ptodsl/tilelib/templates`. It focuses on parity with the legacy
-TileLangDSL template catalog and on making template selection debuggable.
+`ptodsl/ptodsl/tilelib/templates`.
 
 For the compiler-side design, see
 `docs/designs/ptodsl-tilelib-template-selection-design.md`.
@@ -15,7 +14,7 @@ Register a template with `tilelib.tile_template`:
 @tilelib.tile_template(
     op="pto.tadd",
     target="a5",
-    name="template_tadd_default",
+    name="template_tadd",
     dtypes=[("f32", "f32", "f32")],
     constraints=[
         tilelib.check_memory_space("ub"),
@@ -28,7 +27,7 @@ Register a template with `tilelib.tile_template`:
     op_engine="vector",
     op_class="elementwise",
 )
-def template_tadd_default(src0, src1, dst):
+def template_tadd(src0, src1, dst):
     ...
 ```
 
@@ -128,6 +127,17 @@ For multi-candidate ops:
 - keep names descriptive enough for IR dumps;
 - add a lit check when candidate ordering matters.
 
+## Current Elementwise Binary Policy
+
+Simple binary elementwise ops should use the shared
+`_elementwise.register_binary` helper unless they need a proven TileLangDSL
+version split. The current PTODSL `tadd` and `tmul` templates intentionally use
+one non-post-update candidate and do not set `Tail`.
+
+Do not add `Tail` or post-update variants speculatively. Reintroduce those
+versions only with a concrete ST/lit case that needs them and a real selection
+rule that matches TileLangDSL behavior.
+
 ## Runtime-Safe PTODSL
 
 Template bodies execute under PTODSL tracing. Python values and PTODSL runtime
@@ -174,24 +184,3 @@ describes the cache rule in detail.
 Keep broad parity tables out of the source of truth for a template change. They
 are useful for planning, but committed behavior should be represented by
 metadata, implementation, and focused regression tests.
-
-## Authoring Pitfalls
-
-| Pitfall | Better approach |
-|---|---|
-| Empty `dtypes` for a narrow template | List supported dtype signatures. |
-| Constraint only checks shape | Also check dtype, memory space, and layout when they affect codegen. |
-| Template assumes compact GM rows | Read and use `ViewSpec.strides`. |
-| Candidate tie at the same priority | Make constraints exclusive or set explicit priorities. |
-| New attr read only in Python | Forward it through context attrs and test it. |
-| Full ST failure fixed by editing ST | First prove whether TileLangDSL passed the same case. |
-
-## Minimum Review Checklist
-
-- The PTODSL callable form matches the real TileOp operands.
-- Metadata rejects unsupported forms with useful reasons.
-- Every codegen-affecting op attribute is forwarded as a context attr.
-- View shape/stride and tile valid shape are handled separately.
-- The template body uses runtime-safe PTODSL constructs.
-- A focused regression covers the selection or rendering behavior.
-- Smoke and non-smoke ST expectations are clearly stated.

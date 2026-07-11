@@ -7,9 +7,7 @@ PTOAS currently supports two TileLib backends for VPTO tile-op expansion:
 - `tilelang`, the legacy TileLangDSL template implementation.
 - `ptodsl`, the PTODSL-native template implementation.
 
-The migration goal is for PTODSL to reach TileLangDSL parity for A5 TileLib
-templates while keeping the VPTO compiler pipeline deterministic and
-debuggable. A tile op may have several legal implementations for the same op
+A tile op may have several legal implementations for the same op
 name. Those implementations can differ by dtype, layout, memory space,
 attribute mode, tail behavior, temporary-buffer shape, or special algorithmic
 version. This document defines how PTODSL discovers, filters, records, and
@@ -20,21 +18,15 @@ in the ISA and user guide documents, not here.
 
 ## Goals
 
-- Match the TileLangDSL version-selection model closely enough that ST coverage
-  can migrate incrementally.
 - Keep legality decisions in Python, where template metadata and predicates are
   authored with the template.
 - Keep the IR-side candidate attribute compact and stable.
 - Make `ExpandTileOp` specialization reuse safe across all operands that can
   change rendered helper bodies.
-- Make debugging possible from either side of the boundary: PTODSL metadata,
-  inserted IR attributes, after-expand IR, and emitted VPTO.
 
 ## Non-Goals
 
 - This design does not define public PTODSL user syntax.
-- This design does not make PTODSL the default TileLib backend.
-- This design does not require every TileLangDSL version to be ported at once.
 - This design does not store the full Python metadata object on every TileOp.
 
 ## Terminology
@@ -207,60 +199,6 @@ The helper name should also carry enough of this information to make IR dumps
 readable. It is not a semantic contract, but useful names make ST failures much
 faster to inspect.
 
-## View Metadata In The Specialization Key
-
-PTODSL and TileLangDSL differ in how view metadata reaches helper bodies.
-
-TileLangDSL helpers can keep a partition tensor view argument and read the
-tensor-view stride in IR. PTODSL helpers often receive memref-shaped operands
-and bake `ViewSpec` shape or stride values into the rendered function. Because
-of that, the PTODSL specialization cache must not treat all views with the same
-element dtype as equivalent.
-
-A real failure exposed this requirement:
-
-- A full `trowargmin` non-smoke run contained an earlier compact destination
-  view with physical row width `1`.
-- A later case used the same output tile type but a physical destination row
-  width of `8`.
-- The old PTODSL specialization key ignored view shape and strides, so
-  `ExpandTileOp` reused the compact helper for the strided case.
-- The row-arg computation was correct, but final writeback used a 4-byte GM row
-  stride instead of 32 bytes.
-
-The fix was to include view shape, view strides, view memory space, and view
-layout in both specialization equality and hashing. A focused lit regression
-uses two `tstore` ops with the same tile type but different destination view
-strides to prove those helpers remain distinct.
-
-## Failure Modes
-
-| Symptom | Most likely layer |
-|---|---|
-| `NoMatchingTemplate` with dtype/signature reason | missing metadata coverage or too-narrow constraints |
-| custom constraints are not satisfied | template predicate does not accept the real ST operand form |
-| no `candidates` attr at expansion | metadata pass did not run or candidate attr was lost |
-| `ExpandTileOp requires at least one template candidate` | candidate attr missing or empty |
-| isolated case passes but full file fails | specialization cache may be missing an operand or context field |
-| computed values look right but GM compare fails | store/load view shape, stride, or valid-shape metadata may be wrong |
-
-## Validation Strategy
-
-Each selection or specialization change should have a small regression before
-relying on full ST.
-
-Recommended layers:
-
-1. Python TileLib tests for metadata, constraints, and render coverage.
-2. Focused lit tests for inserted candidate attrs and expansion behavior.
-3. Compiler-only emits for representative ST `.pto` files.
-4. Smoke ST for quick end-to-end validation.
-5. Non-smoke ST for parity claims.
-
-The `trowargmin` view-stride cache bug is covered by
-`test/lit/vpto/expand_tile_op_ptodsl_view_stride_cache.pto`. The test is
-deliberately small: it checks helper specialization directly instead of
-depending on a long row-reduction run.
 
 ## Rules For Future Version Work
 

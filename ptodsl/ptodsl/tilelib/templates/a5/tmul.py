@@ -5,119 +5,20 @@
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
-"""PTODSL TileLib templates for pto.tmul."""
+"""PTODSL TileLib template for pto.tmul."""
 
 from ptodsl import pto
-import ptodsl.tilelib as tilelib
 
-from . import tbinop
-
-
-class MulOp:
-    @staticmethod
-    def BinInstr(reg_src0, reg_src1, preg):
-        return pto.vmul(reg_src0, reg_src1, preg)
+from ._elementwise import register_binary
 
 
-def TMul(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, version):
-    tbinop.BinaryInstr(dst, src0, src1, MulOp, version)
+def _vmul(lhs, rhs, mask):
+    return pto.vmul(lhs, rhs, mask)
 
 
-@tilelib.tile_template(
+template_tmul = register_binary(
     op="pto.tmul",
-    target="a5",
-    name="template_tmul_2d_no_post_update",
-    id=0,
+    name="template_tmul",
+    vector_op=_vmul,
     dtypes=[("f32", "f32", "f32")],
-    iteration_axis="none",
-    op_engine="vector",
-    op_class="elementwise",
-    constraints=[
-        tilelib.check_memory_space("ub"),
-        tilelib.check_layout("row_major"),
-        tilelib.require_contiguous(False),
-    ],
-    priority=0,
-    loop_depth=2,
-    Tail=tbinop.has_tail,
-    is_post_update=False,
-    tags=["binop", "2d", "no_post_update"],
 )
-def template_tmul_2d_no_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
-    TMul(dst, src0, src1, tbinop.VFIMPL_2D_NO_POST_UPDATE)
-
-
-@tilelib.tile_template(
-    op="pto.tmul",
-    target="a5",
-    name="template_tmul_1d_no_post_update",
-    id=1,
-    dtypes=[("f32", "f32", "f32")],
-    iteration_axis="none",
-    op_engine="vector",
-    op_class="elementwise",
-    constraints=[
-        tilelib.check_memory_space("ub"),
-        tilelib.check_layout("row_major"),
-        tilelib.require_contiguous(False),
-    ],
-    priority=0,
-    loop_depth=1,
-    Tail=tbinop.has_tail,
-    is_post_update=False,
-    tags=["binop", "1d", "no_post_update"],
-)
-def template_tmul_1d_no_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
-    TMul(dst, src0, src1, tbinop.VFIMPL_1D_NO_POST_UPDATE)
-
-
-@tilelib.tile_template(
-    op="pto.tmul",
-    target="a5",
-    name="template_tmul_2d_post_update",
-    id=2,
-    dtypes=[("f32", "f32", "f32")],
-    iteration_axis="none",
-    op_engine="vector",
-    op_class="elementwise",
-    constraints=[
-        tilelib.check_memory_space("ub"),
-        tilelib.check_layout("row_major"),
-        tilelib.require_contiguous(False),
-    ],
-    priority=0,
-    loop_depth=2,
-    Tail=tbinop.has_tail,
-    is_post_update=True,
-    tags=["binop", "2d", "post_update"],
-)
-def template_tmul_2d_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
-    TMul(dst, src0, src1, tbinop.VFIMPL_2D_POST_UPDATE)
-
-
-@tilelib.tile_template(
-    op="pto.tmul",
-    target="a5",
-    name="template_tmul_1d_post_update",
-    id=3,
-    dtypes=[("f32", "f32", "f32")],
-    iteration_axis="none",
-    op_engine="vector",
-    op_class="elementwise",
-    constraints=[
-        tilelib.check_memory_space("ub"),
-        tilelib.check_layout("row_major"),
-        tilelib.require_contiguous(True),
-    ],
-    priority=0,
-    loop_depth=1,
-    Tail=tbinop.has_tail,
-    is_post_update=True,
-    tags=["binop", "1d", "post_update"],
-)
-def template_tmul_1d_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
-    TMul(dst, src0, src1, tbinop.VFIMPL_1D_POST_UPDATE)
-
-
-# Compatibility alias for tests and examples that import the original tmul template.
-template_tmul = template_tmul_2d_no_post_update

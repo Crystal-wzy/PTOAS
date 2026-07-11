@@ -11,7 +11,6 @@ import unittest
 from types import SimpleNamespace
 
 from ptodsl.tilelib import (
-    AmbiguousTemplate,
     ScalarSpec,
     ScalarType,
     TemplateMetadata,
@@ -20,17 +19,11 @@ from ptodsl.tilelib import (
     legal_candidates,
     select,
 )
-from ptodsl.tilelib import constraints as _constraints
 from ptodsl.tilelib.registry import NoMatchingTemplate
 
 
 def _f32_specs():
     spec = TileSpec(shape=(8, 64), dtype=ScalarType("f32"))
-    return {"src0": spec, "src1": spec, "dst": spec}
-
-
-def _f32_single_row_specs():
-    spec = TileSpec(shape=(1, 64), dtype=ScalarType("f32"))
     return {"src0": spec, "src1": spec, "dst": spec}
 
 
@@ -155,74 +148,29 @@ class TileLibSelectTest(unittest.TestCase):
                 },
             )
 
-    def test_four_tadd_versions_registered(self):
+    def test_tadd_uses_single_elementwise_candidate(self):
         candidates = legal_candidates("pto.tadd", "a5", _f32_specs())
-        names = {candidate.name for candidate in candidates}
-        self.assertEqual({
-            "template_tadd_2d_no_post_update",
-            "template_tadd_1d_no_post_update",
-            "template_tadd_2d_post_update",
-            "template_tadd_1d_post_update",
-        }, names)
-        for candidate in candidates:
-            self.assertEqual(
-                candidate.metadata.dtypes,
-                (("f32", "f32", "f32"),),
-            )
+        self.assertEqual([candidate.name for candidate in candidates], ["template_tadd"])
 
-    def test_plain_tadd_select_is_ambiguous(self):
-        with self.assertRaises(AmbiguousTemplate):
-            select("pto.tadd", "a5", _f32_specs())
-
-    def test_named_tadd_selects_2d_no_post_update_template(self):
-        chosen = select(
-            "pto.tadd",
-            "a5",
-            _f32_specs(),
-            candidate_id="template_tadd_2d_no_post_update",
-        )
-        self.assertEqual(chosen.name, "template_tadd_2d_no_post_update")
+        chosen = select("pto.tadd", "a5", _f32_specs())
+        self.assertEqual(chosen.name, "template_tadd")
+        self.assertEqual(chosen.metadata.dtypes, (("f32", "f32", "f32"),))
         self.assertFalse(chosen.metadata.is_post_update)
         self.assertEqual(chosen.metadata.loop_depth, 2)
-        self.assertTrue(callable(chosen.metadata.Tail))
+        self.assertIsNone(chosen.metadata.Tail)
         self.assertEqual(chosen.metadata.iteration_axis, "none")
         self.assertEqual(chosen.metadata.op_engine, "vector")
         self.assertEqual(chosen.metadata.op_class, "elementwise")
-        self.assertEqual(chosen.metadata.tags, ("binop", "2d", "no_post_update"))
-
-    def test_single_row_tadd_candidates_are_still_all_visible(self):
-        candidates = legal_candidates("pto.tadd", "a5", _f32_single_row_specs())
-        self.assertEqual(len(candidates), 4)
-
-    def test_legal_candidates_include_loop_depth_metadata(self):
-        candidates = legal_candidates("pto.tadd", "a5", _f32_specs())
-        by_name = {candidate.name: candidate for candidate in candidates}
-        self.assertEqual(set(by_name), {
-            "template_tadd_2d_no_post_update",
-            "template_tadd_1d_no_post_update",
-            "template_tadd_2d_post_update",
-            "template_tadd_1d_post_update",
-        })
-        self.assertEqual(by_name["template_tadd_2d_no_post_update"].metadata.loop_depth, 2)
-        self.assertFalse(by_name["template_tadd_2d_no_post_update"].metadata.is_post_update)
-        self.assertTrue(callable(by_name["template_tadd_2d_no_post_update"].metadata.Tail))
-        self.assertEqual(by_name["template_tadd_1d_no_post_update"].metadata.loop_depth, 1)
-        self.assertTrue(callable(by_name["template_tadd_1d_no_post_update"].metadata.Tail))
-        self.assertTrue(by_name["template_tadd_2d_post_update"].metadata.is_post_update)
-        self.assertTrue(callable(by_name["template_tadd_2d_post_update"].metadata.Tail))
-        self.assertTrue(by_name["template_tadd_1d_post_update"].metadata.is_post_update)
-        self.assertTrue(callable(by_name["template_tadd_1d_post_update"].metadata.Tail))
-        context = _constraints.build_context(_f32_specs(), "a5", "pto.tadd")
-        self.assertFalse(by_name["template_tadd_1d_post_update"].metadata.Tail(**context))
+        self.assertEqual(chosen.metadata.tags, ("elementwise", "binary"))
 
     def test_can_select_named_legal_candidate(self):
         chosen = select(
             "pto.tadd",
             "a5",
             _f32_specs(),
-            candidate_id="template_tadd_2d_no_post_update",
+            candidate_id="template_tadd",
         )
-        self.assertEqual(chosen.name, "template_tadd_2d_no_post_update")
+        self.assertEqual(chosen.name, "template_tadd")
 
     def test_no_matching_dtype_raises(self):
         spec = TileSpec(shape=(8, 64), dtype=ScalarType("i8"))

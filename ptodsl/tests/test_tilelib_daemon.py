@@ -51,7 +51,7 @@ def _view_spec(dtype="f32", shape=(1, 1, 1, 8, 64), strides=(512, 512, 512, 64, 
 # ExpandTileOp sends tadd as ins(src0, src1), outs(dst), matching the
 # template parameter order (src0, src1, dst).
 TADD_OPERANDS = [_tile_spec(), _tile_spec(), _tile_spec()]
-TADD_2D_NO_POST_UPDATE = "template_tadd_2d_no_post_update"
+TADD = "template_tadd"
 
 
 class TileLibDaemonTest(unittest.TestCase):
@@ -87,9 +87,9 @@ class TileLibDaemonTest(unittest.TestCase):
             "a5",
             "pto.tadd",
             TADD_OPERANDS,
-            candidate_id=TADD_2D_NO_POST_UPDATE,
+            candidate_id=TADD,
         )
-        self.assertIn(f"func.func @{TADD_2D_NO_POST_UPDATE}", mlir)
+        self.assertIn(f"func.func @{TADD}", mlir)
         for operation in (
             "pto.tile_buf_addr",
             "memref.subview",
@@ -102,45 +102,27 @@ class TileLibDaemonTest(unittest.TestCase):
             self.assertIn(operation, mlir)
         self.assertNotIn("pto.castptr", mlir)
 
-    def test_instantiate_requires_candidate_when_top_priority_ties(self):
-        with self.assertRaises(DaemonError):
-            self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
+    def test_instantiate_uses_single_tadd_candidate_without_explicit_id(self):
+        mlir = self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
+        self.assertIn(f"func.func @{TADD}", mlir)
 
     def test_get_metadata_returns_legal_candidates(self):
         metadata = self.client.get_metadata("a5", "pto.tadd", TADD_OPERANDS)
         candidates = metadata["candidates"]
         self.assertEqual(
             set(candidates),
-            {
-                TADD_2D_NO_POST_UPDATE,
-                "template_tadd_1d_no_post_update",
-                "template_tadd_2d_post_update",
-                "template_tadd_1d_post_update",
-            },
+            {TADD},
         )
 
-        selected = candidates[TADD_2D_NO_POST_UPDATE]
+        selected = candidates[TADD]
         self.assertEqual(selected["loop_depth"], 2)
-        self.assertEqual(selected["Tail"], {"callable": "has_tail"})
+        self.assertIsNone(selected["Tail"])
         self.assertFalse(selected["has_tail"])
         self.assertFalse(selected["is_post_update"])
         self.assertEqual(selected["iteration_axis"], "none")
         self.assertEqual(selected["op_engine"], "vector")
         self.assertEqual(selected["op_class"], "elementwise")
-        self.assertEqual(selected["tags"], ["binop", "2d", "no_post_update"])
-
-    def test_get_metadata_evaluates_tail_for_each_request(self):
-        tail_operands = [
-            _tile_spec(shape=(7, 65)),
-            _tile_spec(shape=(7, 65)),
-            _tile_spec(shape=(7, 65)),
-        ]
-
-        metadata = self.client.get_metadata("a5", "pto.tadd", tail_operands)
-
-        self.assertTrue(
-            metadata["candidates"][TADD_2D_NO_POST_UPDATE]["has_tail"]
-        )
+        self.assertEqual(selected["tags"], ["elementwise", "binary"])
 
     def test_cache_stats_and_clear_are_available_over_rpc(self):
         arguments = (
@@ -150,11 +132,11 @@ class TileLibDaemonTest(unittest.TestCase):
         )
         self.client.instantiate(
             *arguments,
-            candidate_id=TADD_2D_NO_POST_UPDATE,
+            candidate_id=TADD,
         )
         self.client.instantiate(
             *arguments,
-            candidate_id=TADD_2D_NO_POST_UPDATE,
+            candidate_id=TADD,
         )
 
         stats = self.client.get_stats()
@@ -171,14 +153,14 @@ class TileLibDaemonTest(unittest.TestCase):
             "pto.tadd",
             TADD_OPERANDS,
             context_attrs={"variant": 0},
-            candidate_id=TADD_2D_NO_POST_UPDATE,
+            candidate_id=TADD,
         )
         self.client.instantiate(
             "a5",
             "pto.tadd",
             TADD_OPERANDS,
             context_attrs={"variant": 1},
-            candidate_id=TADD_2D_NO_POST_UPDATE,
+            candidate_id=TADD,
         )
         self.assertEqual(self.client.get_stats()["misses"], 2)
 
@@ -272,7 +254,7 @@ class TileLibDaemonTest(unittest.TestCase):
                 "a5",
                 "pto.tadd",
                 operands,
-                candidate_id=TADD_2D_NO_POST_UPDATE,
+                candidate_id=TADD,
             )
 
     def test_unknown_op_errors(self):

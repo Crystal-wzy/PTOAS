@@ -15,7 +15,7 @@ from ptodsl.tilelib import ScalarType, TileSpec, select
 # op -> (expected template name, expected vector op in the rendered MLIR)
 ELEMENTWISE = {
     "pto.tsub": ("template_tsub", "pto.vsub"),
-    "pto.tmul": ("template_tmul_2d_no_post_update", "pto.vmul"),
+    "pto.tmul": ("template_tmul", "pto.vmul"),
     "pto.tmax": ("template_tmax", "pto.vmax"),
     "pto.tmin": ("template_tmin", "pto.vmin"),
     "pto.tdiv": ("template_tdiv", "pto.vdiv"),
