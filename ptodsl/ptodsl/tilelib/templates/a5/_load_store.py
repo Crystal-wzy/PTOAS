@@ -7,6 +7,8 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """Shared helpers for PTODSL TileLib load/store template ports."""
 
+from ptodsl import pto
+
 from ._common import NUMERIC_DTYPES
 
 
@@ -255,7 +257,93 @@ def tstore_fp_constraint(src_kind, src_memory_space, src_dtype, fp_kind, fp_memo
     )
 
 
+def _pad_token(value):
+    aliases = {
+        "null": "null",
+        "0": "null",
+        "0x0": "null",
+        "0x00": "null",
+        "zero": "zero",
+        "1": "zero",
+        "0x1": "zero",
+        "0x01": "zero",
+        "max": "max",
+        "2": "max",
+        "0x2": "max",
+        "0x02": "max",
+        "min": "min",
+        "3": "min",
+        "0x3": "min",
+        "0x03": "min",
+    }
+    return aliases.get(str(value).lower(), str(value).lower())
+
+
+def _pad_zero(dtype):
+    name = str(dtype)
+    if name == "f32":
+        return pto.f32(0.0)
+    if name == "f16":
+        return pto.f16(0.0)
+    if name == "bf16":
+        return pto.bf16(0.0)
+    if name in {"i64", "si64", "ui64", "i32", "si32", "ui32"}:
+        return pto.i32(0)
+    if name in {"i16", "si16", "ui16"}:
+        return pto.i16(0)
+    return pto.i8(0)
+
+
+def _pad_max(dtype):
+    name = str(dtype)
+    if name == "f32":
+        return pto.f32(3.4028234663852886e38)
+    if name == "f16":
+        return pto.f16(65504.0)
+    if name == "bf16":
+        return pto.bf16(3.3895313892515355e38)
+    if name in {"i64", "si64"}:
+        return pto.i32(2147483647)
+    if name == "ui64":
+        return pto.i32(-1)
+    if name == "ui32":
+        return pto.i32(-1)
+    if name in {"i32", "si32"}:
+        return pto.i32(2147483647)
+    if name == "ui16":
+        return pto.i16(-1)
+    if name in {"i16", "si16"}:
+        return pto.i16(32767)
+    if name == "ui8":
+        return pto.i8(-1)
+    return pto.i8(127)
+
+
+def _pad_min(dtype):
+    name = str(dtype)
+    if name == "f32":
+        return pto.f32(-3.4028234663852886e38)
+    if name == "f16":
+        return pto.f16(-65504.0)
+    if name == "bf16":
+        return pto.bf16(-3.3895313892515355e38)
+    if name in {"ui64", "ui32", "ui16", "ui8"}:
+        return _pad_zero(dtype)
+    if name in {"i64", "si64"}:
+        return pto.i32(-2147483648)
+    if name in {"i32", "si32"}:
+        return pto.i32(-2147483648)
+    if name in {"i16", "si16"}:
+        return pto.i16(-32768)
+    return pto.i8(-128)
+
+
 def dma_pad_for(tile):
-    if str(getattr(tile, "pad_value", "Null")).lower() == "null":
+    pad_value = _pad_token(getattr(tile, "pad_value", "Null"))
+    if pad_value == "null":
         return None
-    return (0.0, 0, 0)
+    if pad_value == "max":
+        return (_pad_max(tile.dtype), 0, 0)
+    if pad_value == "min":
+        return (_pad_min(tile.dtype), 0, 0)
+    return (_pad_zero(tile.dtype), 0, 0)

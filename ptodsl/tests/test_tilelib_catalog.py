@@ -952,6 +952,37 @@ class TileLibCatalogTest(unittest.TestCase):
         self.assertEqual(selected.name, "template_tload_nd2nd")
         self.assertIn("pto.mte_gm_ub", selected.specialize(**specs).mlir_text())
 
+    def test_tload_materializes_pad_values_by_dtype(self):
+        cases = (
+            ("f32", "0x1", "0.000000e+00 : f32", "pad f32"),
+            ("f32", "0x2", "3.40282347E+38 : f32", "pad f32"),
+            ("f32", "0x3", "-3.40282347E+38 : f32", "pad f32"),
+            ("i32", "0x2", "2147483647 : i32", "pad i32"),
+            ("ui32", "0x2", "-1 : i32", "pad i32"),
+            ("ui32", "0x3", "0 : i32", "pad i32"),
+        )
+        for dtype, pad_value, expected_constant, expected_pad_type in cases:
+            with self.subTest(dtype=dtype, pad_value=pad_value):
+                specs = {
+                    "src": ViewSpec(
+                        shape=(1, 1, 1, 60, 60),
+                        dtype=ScalarType(dtype),
+                        strides=(3600, 3600, 3600, 60, 1),
+                    ),
+                    "dst": TileSpec(
+                        shape=(64, 64),
+                        dtype=ScalarType(dtype),
+                        memory_space="vec",
+                        valid_shape=(60, 60),
+                        pad_value=pad_value,
+                    ),
+                }
+                selected = select("pto.tload", "a5", specs)
+                self.assertEqual(selected.name, "template_tload_nd2nd")
+                mlir = selected.specialize(**specs).mlir_text()
+                self.assertIn(expected_constant, mlir)
+                self.assertIn(expected_pad_type, mlir)
+
     def test_tload_tstore_accept_low_precision_storage_dtypes(self):
         for dtype in ("f8e4m3", "hif8"):
             with self.subTest(dtype=dtype):
