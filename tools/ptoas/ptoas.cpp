@@ -366,10 +366,12 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
                                             llvm::cl::desc("Enable automatic synchronization insertion pass"),
                                             llvm::cl::init(false));
 
-[[maybe_unused]] static llvm::cl::opt<bool> planMemoryOrderBySize(
+static llvm::cl::opt<bool> planMemoryOrderBySize(
     "plan-memory-order-by-size",
     llvm::cl::desc("Plan larger local buffers first inside one AddressSpace "
-                   "before applying the basic SPEC_LEVEL_0 reuse strategy"),
+                   "before applying the basic SPEC_LEVEL_0 reuse strategy. "
+                   "Defaults to true when --plan-memory-impl=modern is "
+                   "explicitly selected"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<std::string> planMemoryImpl(
@@ -3334,7 +3336,12 @@ int mlir::pto::compilePTOASModule(
   if (effectiveLevel != PTOBuildLevel::Level3) {
     pto::PlanMemoryOptions planMemoryOptions;
     planMemoryOptions.memMode = "local";
-    planMemoryOptions.orderBySize = planMemoryOrderBySize;
+    bool effectivePlanMemoryOrderBySize = planMemoryOrderBySize;
+    if (planMemoryImpl == "modern" &&
+        planMemoryOrderBySize.getNumOccurrences() == 0) {
+      effectivePlanMemoryOrderBySize = true;
+    }
+    planMemoryOptions.orderBySize = effectivePlanMemoryOrderBySize;
     if (planMemoryImpl == "legacy") {
       pm.addPass(pto::createPlanMemoryPass(planMemoryOptions));
     } else if (planMemoryImpl == "modern") {

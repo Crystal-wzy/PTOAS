@@ -15,6 +15,7 @@
 #include "PTO/Transforms/InsertSync/InsertSyncDebug.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "llvm/Support/Debug.h"
  
 #define DEBUG_TYPE "pto-inject-sync"
@@ -104,7 +105,64 @@ static Value GetRealRoot(Value v) {
   }
   return v;
 }
- 
+
+// Extract the base UB address carried by `rootBuffer` when it is the i64
+// address SSA operand of a `pto.pointer_cast` (single-address path). In that
+// model `rootBuffer` is an `arith.constant` i64 whose value is the absolute UB
+// offset, and `BaseMemInfo::baseAddresses` holds {0} (relative deltas). For
+// the multi-address path `rootBuffer` is the `PointerCastOp` result itself
+// (not an i64 constant), so this returns 0 and `baseAddresses` already holds
+// the absolute slot offsets — making `rootBase + baseAddresses[i]` resolve to
+// the absolute address in both models.
+static uint64_t getRootBaseAddress(Value rootBuffer) {
+  if (!rootBuffer)
+    return 0;
+  if (auto cst = rootBuffer.getDefiningOp<arith::ConstantOp>()) {
+    if (auto attr = dyn_cast<IntegerAttr>(cst.getValue()))
+      return attr.getValue().getZExtValue();
+  }
+  return 0;
+}
+
+// Cross-root byte-range overlap check for local memory (UB/L1).
+//
+// `MemAlias` historically only checked byte-range overlap when the two
+// `rootBuffer` SSA values were identical (same `alloc_tile`/`pointer_cast`).
+// When PlanMemory reuses the same physical UB region for two *different*
+// allocations, their `rootBuffer` values differ even though their byte ranges
+// overlap — so `MemAlias` returned false and InsertSync silently dropped the
+// cross-pipe hazard (issue #934: MTE3 tstore racing a V-pipe write into an
+// overlapping-but-different-root buffer).
+//
+// This helper re-derives the absolute address as `getRootBaseAddress(root) +
+// baseAddresses[i]` and performs the same `maxStart < minEnd` overlap test
+// across every address pair, regardless of root identity.
+static bool isLocalBufferOverlapCrossRoot(const BaseMemInfo *a,
+                                           const BaseMemInfo *b) {
+  // Conservative: if either side has no known address or size, assume alias.
+  if (a->baseAddresses.empty() || b->baseAddresses.empty())
+    return true;
+  if (a->allocateSize == 0 || b->allocateSize == 0)
+    return true;
+
+  uint64_t rootBaseA = getRootBaseAddress(a->rootBuffer);
+  uint64_t rootBaseB = getRootBaseAddress(b->rootBuffer);
+
+  for (uint64_t addrA : a->baseAddresses) {
+    for (uint64_t addrB : b->baseAddresses) {
+      uint64_t aStart = rootBaseA + addrA;
+      uint64_t bStart = rootBaseB + addrB;
+      uint64_t aEnd = aStart + a->allocateSize;
+      uint64_t bEnd = bStart + b->allocateSize;
+      uint64_t maxStart = std::max(aStart, bStart);
+      uint64_t minEnd = std::min(aEnd, bEnd);
+      if (maxStart < minEnd)
+        return true;
+    }
+  }
+  return false;
+}
+
 bool MemoryDependentAnalyzer::DepBetween(
     const SmallVector<const BaseMemInfo *> &a,
     const SmallVector<const BaseMemInfo *> &b,

@@ -15,10 +15,11 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
 
 using namespace mlir;
 using namespace mlir::pto;
@@ -46,10 +47,34 @@ struct RootInfo {
   unsigned allocIndex = 0;
   unsigned freeIndex = 0;
   unsigned stableOrder = 0;
+  bool hasWriter = false;
+  bool hasUseBeforeFirstWrite = false;
   SmallVector<uint64_t> offsets;
 };
 
 using RootList = SmallVector<Value, 4>;
+
+struct ConflictFacts {
+  DenseMap<Value, RootList> forbidAlias;
+  DenseSet<Value> loadDerivedRoots;
+  DenseSet<Value> tpopConsumerRoots;
+  DenseMap<Value, SmallVector<unsigned>> tpopConsumerWriteIndices;
+  DenseMap<Value, SmallVector<unsigned>> phiFamilyIds;
+  bool targetHazardEnabled = false;
+};
+
+struct InplacePolicy {
+  bool notInplaceSafe = false;
+  SmallVector<unsigned> forbidOutputAliasOperands;
+};
+
+struct ReuseGroup {
+  AddressSpace space = AddressSpace::Zero;
+  uint64_t sizeBytes = 0;
+  uint64_t alignmentBytes = 1;
+  uint64_t offsetBytes = 0;
+  SmallVector<RootInfo *> members;
+};
 
 static uint64_t alignUp(uint64_t value, uint64_t align) {
   if (align == 0)
@@ -138,17 +163,116 @@ static RootList unionRoots(const RootList &lhs, const RootList &rhs) {
   return result;
 }
 
+static bool isOneOf(StringRef name, ArrayRef<StringRef> names) {
+  return llvm::is_contained(names, name);
+}
+
+static InplacePolicy getInplacePolicy(Operation *op) {
+  StringRef name = op->getName().getStringRef();
+  InplacePolicy policy;
+
+  policy.notInplaceSafe = isOneOf(
+      name, {
+                "pto.tands",      "pto.tfillpad_expand", "pto.tfmod",
+                "pto.tfmods",     "pto.tgather",         "pto.tmrgsort",
+                "pto.tors",       "pto.trecip",          "pto.trsqrt",
+                "pto.tsort32",    "pto.ttrans",          "pto.trowargmax",
+                "pto.trowargmin", "pto.trowmax",         "pto.trowmin",
+                "pto.trowprod",   "pto.trowsum",         "pto.tcolargmax",
+                "pto.tcolargmin", "pto.txors",
+            });
+
+  if (name == "pto.tsel") {
+    policy.forbidOutputAliasOperands.push_back(0); // mask
+    policy.forbidOutputAliasOperands.push_back(3); // tmp
+  }
+
+  if (isOneOf(name, {
+                        "pto.trowexpand",
+                        "pto.tcolexpand",
+                    })) {
+    policy.forbidOutputAliasOperands.push_back(0);
+  }
+
+  if (isOneOf(name, {
+                        "pto.trowexpandadd",
+                        "pto.trowexpanddiv",
+                        "pto.trowexpandexpdif",
+                        "pto.trowexpandmax",
+                        "pto.trowexpandmin",
+                        "pto.trowexpandmul",
+                        "pto.trowexpandsub",
+                        "pto.tcolexpandadd",
+                        "pto.tcolexpanddiv",
+                        "pto.tcolexpandexpdif",
+                        "pto.tcolexpandmax",
+                        "pto.tcolexpandmin",
+                        "pto.tcolexpandmul",
+                        "pto.tcolexpandsub",
+                    })) {
+    policy.forbidOutputAliasOperands.push_back(1);
+  }
+
+  return policy;
+}
+
+static SmallVector<Value> getWrittenNonDpsOperands(Operation *op,
+                                                   ValueRange dpsInits) {
+  SmallVector<Value> scratchOperands;
+  auto memEffect = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!memEffect)
+    return scratchOperands;
+
+  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 8> effects;
+  memEffect.getEffects(effects);
+  for (const auto &effect : effects) {
+    if (!isa<MemoryEffects::Write>(effect.getEffect()))
+      continue;
+    Value value = effect.getValue();
+    if (!value)
+      continue;
+    if (!llvm::is_contained(op->getOperands(), value))
+      continue;
+    if (llvm::is_contained(dpsInits, value))
+      continue;
+    if (!llvm::is_contained(scratchOperands, value))
+      scratchOperands.push_back(value);
+  }
+  return scratchOperands;
+}
+
+static bool hasReadEffectOnValue(Operation *op, Value value) {
+  auto memEffect = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!memEffect)
+    return false;
+
+  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 8> effects;
+  memEffect.getEffects(effects);
+  for (const auto &effect : effects) {
+    if (!isa<MemoryEffects::Read>(effect.getEffect()))
+      continue;
+    if (effect.getValue() == value)
+      return true;
+  }
+  return false;
+}
+
 struct PlannerAnalysis {
   func::FuncOp func;
   DenseMap<Value, RootList> valueToRoots;
+  DenseSet<Value> splitTpopDerivedValues;
   SmallVector<Operation *> linearOps;
   DenseMap<Operation *, unsigned> opToIndex;
   SmallVector<RootInfo> roots;
   DenseMap<Value, unsigned> rootIndexByValue;
-  DenseMap<Value, RootList> semanticConflictMap;
+  ConflictFacts facts;
+  unsigned nextPhiFamilyId = 0;
   bool failed = false;
 
-  explicit PlannerAnalysis(func::FuncOp func) : func(func) {}
+  explicit PlannerAnalysis(func::FuncOp func) : func(func) {
+    facts.targetHazardEnabled =
+        getTargetArch(func.getOperation()) == PTOArch::A3;
+  }
 
   RootList getRoots(Value value) const {
     auto it = valueToRoots.find(value);
@@ -206,44 +330,240 @@ struct PlannerAnalysis {
       if (found == rootIndexByValue.end())
         continue;
       RootInfo &info = roots[found->second];
+      if (!info.hasWriter)
+        info.hasUseBeforeFirstWrite = true;
       if (index < info.allocIndex)
         info.allocIndex = index;
       info.freeIndex = std::max(info.freeIndex, index);
     }
   }
 
-  void addSemanticConflict(Value a, Value b) {
+  void markWrite(Value value, unsigned index, bool pureOverwrite) {
+    for (Value root : getRoots(value)) {
+      auto found = rootIndexByValue.find(root);
+      if (found == rootIndexByValue.end())
+        continue;
+      RootInfo &info = roots[found->second];
+      if (!info.hasWriter) {
+        if (pureOverwrite && !info.hasUseBeforeFirstWrite)
+          info.allocIndex = index;
+        info.hasWriter = true;
+      }
+      info.freeIndex = std::max(info.freeIndex, index);
+    }
+  }
+
+  void addForbidAlias(Value a, Value b) {
     if (a == b)
       return;
     if (!rootIndexByValue.count(a) || !rootIndexByValue.count(b))
       return;
-    appendUniqueRoot(semanticConflictMap[a], b);
-    appendUniqueRoot(semanticConflictMap[b], a);
+    appendUniqueRoot(facts.forbidAlias[a], b);
+    appendUniqueRoot(facts.forbidAlias[b], a);
   }
 
-  bool hasSemanticConflict(Value a, Value b) const {
+  bool hasForbidAlias(Value a, Value b) const {
     if (a == b)
       return false;
-    auto it = semanticConflictMap.find(a);
-    if (it == semanticConflictMap.end())
+    auto it = facts.forbidAlias.find(a);
+    if (it == facts.forbidAlias.end())
       return false;
     return llvm::is_contained(it->second, b);
   }
 
-  void recordLocalOpConflicts(Operation *op) {
-    RootList operandRoots;
-    RootList resultRoots;
-    for (Value operand : op->getOperands())
-      operandRoots = unionRoots(operandRoots, getRoots(operand));
-    for (Value result : op->getResults())
-      resultRoots = unionRoots(resultRoots, getRoots(result));
+  void addForbidAliasBetweenRoots(const RootList &lhsRoots,
+                                  const RootList &rhsRoots) {
+    for (Value lhs : lhsRoots)
+      for (Value rhs : rhsRoots)
+        addForbidAlias(lhs, rhs);
+  }
 
-    if (operandRoots.empty() || resultRoots.empty())
+  void markRoots(DenseSet<Value> &set, const RootList &roots) {
+    for (Value root : roots)
+      set.insert(root);
+  }
+
+  bool rootsContain(const DenseSet<Value> &set, const RootList &roots) const {
+    return llvm::any_of(roots, [&](Value root) { return set.contains(root); });
+  }
+
+  bool isSplitTpopDerived(Value value) const {
+    return splitTpopDerivedValues.contains(value);
+  }
+
+  bool operandsContainSplitTpopDerived(Operation *op) const {
+    return llvm::any_of(op->getOperands(), [&](Value operand) {
+      return isSplitTpopDerived(operand);
+    });
+  }
+
+  bool operandsContainLoadDerivedRoot(Operation *op) const {
+    return llvm::any_of(op->getOperands(), [&](Value operand) {
+      return rootsContain(facts.loadDerivedRoots, getRoots(operand));
+    });
+  }
+
+  void propagateSplitTpopDerived(Value result, ValueRange sources) {
+    if (!result)
       return;
-    for (Value lhs : operandRoots) {
-      for (Value rhs : resultRoots)
-        addSemanticConflict(lhs, rhs);
+    if (llvm::any_of(sources, [&](Value source) {
+          return isSplitTpopDerived(source);
+        }))
+      splitTpopDerivedValues.insert(result);
+  }
+
+  void propagateSplitTpopDerivedFromOperands(Operation *op) {
+    if (!operandsContainSplitTpopDerived(op))
+      return;
+    for (Value result : op->getResults())
+      splitTpopDerivedValues.insert(result);
+  }
+
+  bool isRootDefinedInRegion(Value root, Region &region) const {
+    auto it = rootIndexByValue.find(root);
+    if (it == rootIndexByValue.end())
+      return false;
+
+    Operation *defOp = roots[it->second].defOp;
+    for (Operation *cur = defOp; cur; cur = cur->getParentOp()) {
+      if (cur->getParentRegion() == &region)
+        return true;
     }
+    return false;
+  }
+
+  void addPhiFamily(Value root, unsigned familyId) {
+    if (!rootIndexByValue.count(root))
+      return;
+    SmallVector<unsigned> &families = facts.phiFamilyIds[root];
+    if (!llvm::is_contained(families, familyId))
+      families.push_back(familyId);
+  }
+
+  void recordIfPhiFamilies(scf::IfOp ifOp) {
+    if (ifOp.getNumResults() == 0)
+      return;
+
+    auto thenYield = cast<scf::YieldOp>(ifOp.thenBlock()->getTerminator());
+    auto elseYield = cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
+    for (auto [thenVal, elseVal] :
+         llvm::zip(thenYield.getResults(), elseYield.getResults())) {
+      RootList roots = unionRoots(getRoots(thenVal), getRoots(elseVal));
+      SmallVector<Value> branchLocalRoots;
+      for (Value root : roots) {
+        if (isRootDefinedInRegion(root, ifOp.getThenRegion()) ||
+            isRootDefinedInRegion(root, ifOp.getElseRegion()))
+          branchLocalRoots.push_back(root);
+      }
+      if (branchLocalRoots.size() < 2)
+        continue;
+
+      unsigned familyId = nextPhiFamilyId++;
+      for (Value root : branchLocalRoots)
+        addPhiFamily(root, familyId);
+    }
+  }
+
+  void recordDpsScratchConflicts(Operation *op, ValueRange dpsInits) {
+    RootList outputRoots;
+    for (Value init : dpsInits)
+      outputRoots = unionRoots(outputRoots, getRoots(init));
+    if (outputRoots.empty())
+      return;
+
+    for (Value scratch : getWrittenNonDpsOperands(op, dpsInits))
+      addForbidAliasBetweenRoots(getRoots(scratch), outputRoots);
+  }
+
+  void recordInplacePolicyConflicts(Operation *op, ValueRange dpsInits) {
+    RootList outputRoots;
+    for (Value init : dpsInits)
+      outputRoots = unionRoots(outputRoots, getRoots(init));
+    if (outputRoots.empty())
+      return;
+
+    InplacePolicy policy = getInplacePolicy(op);
+    if (policy.notInplaceSafe) {
+      for (Value operand : op->getOperands()) {
+        if (llvm::is_contained(dpsInits, operand))
+          continue;
+        addForbidAliasBetweenRoots(getRoots(operand), outputRoots);
+      }
+    }
+
+    for (unsigned operandIndex : policy.forbidOutputAliasOperands) {
+      if (operandIndex >= op->getNumOperands())
+        continue;
+      Value operand = op->getOperand(operandIndex);
+      if (llvm::is_contained(dpsInits, operand))
+        continue;
+      addForbidAliasBetweenRoots(getRoots(operand), outputRoots);
+    }
+  }
+
+  void recordDpsInplaceConflicts(Operation *op) {
+    auto dpsOp = dyn_cast<pto::PTO_DpsInitOpInterface>(op);
+    if (!dpsOp)
+      return;
+
+    ValueRange dpsInits = dpsOp.getDpsInits();
+    recordDpsScratchConflicts(op, dpsInits);
+    recordInplacePolicyConflicts(op, dpsInits);
+  }
+
+  void recordLoadDerivedRoots(Operation *op, ValueRange dpsInits) {
+    if (!isa<pto::TLoadOp, pto::TPrefetchOp>(op))
+      return;
+
+    for (Value init : dpsInits)
+      markRoots(facts.loadDerivedRoots, getRoots(init));
+  }
+
+  void recordTpopConsumerRoots(Operation *op, ValueRange dpsInits,
+                               unsigned opIndex) {
+    if (!facts.targetHazardEnabled)
+      return;
+    if (!operandsContainSplitTpopDerived(op) || !operandsContainLoadDerivedRoot(op))
+      return;
+
+    RootList outputRoots;
+    for (Value init : dpsInits)
+      outputRoots = unionRoots(outputRoots, getRoots(init));
+    markRoots(facts.tpopConsumerRoots, outputRoots);
+    for (Value root : outputRoots) {
+      SmallVector<unsigned> &indices = facts.tpopConsumerWriteIndices[root];
+      if (!llvm::is_contained(indices, opIndex))
+        indices.push_back(opIndex);
+    }
+  }
+
+  void recordDpsTargetHazardFacts(Operation *op, unsigned opIndex) {
+    auto dpsOp = dyn_cast<pto::PTO_DpsInitOpInterface>(op);
+    if (!dpsOp)
+      return;
+
+    ValueRange dpsInits = dpsOp.getDpsInits();
+    recordLoadDerivedRoots(op, dpsInits);
+    recordTpopConsumerRoots(op, dpsInits, opIndex);
+  }
+
+  void recordSplitTpopDerivedValue(Operation *op) {
+    if (!facts.targetHazardEnabled)
+      return;
+
+    if (auto pop = dyn_cast<pto::TPopFromAicOp>(op)) {
+      if (pop.getSplit() != 0)
+        splitTpopDerivedValues.insert(pop.getTile());
+      return;
+    }
+
+    if (auto pop = dyn_cast<pto::TPopOp>(op)) {
+      if (pop.getSplit() != 0)
+        splitTpopDerivedValues.insert(pop.getTile());
+      return;
+    }
+
+    propagateSplitTpopDerivedFromOperands(op);
   }
 
   void seedForIterArgAliases(scf::ForOp forOp) {
@@ -288,24 +608,47 @@ struct PlannerAnalysis {
 
         if (auto bind = dyn_cast<pto::BindTileOp>(op)) {
           setRoots(bind.getResult(), getRoots(bind.getSource()));
+          propagateSplitTpopDerived(bind.getResult(), ValueRange{bind.getSource()});
         } else if (auto slotMarker = dyn_cast<pto::SlotMarkerOp>(op)) {
           setRoots(slotMarker.getResult(), getRoots(slotMarker.getSource()));
+          propagateSplitTpopDerived(slotMarker.getResult(),
+                                    ValueRange{slotMarker.getSource()});
         } else if (auto select = dyn_cast<arith::SelectOp>(op)) {
           setRoots(select.getResult(),
                    unionRoots(getRoots(select.getTrueValue()),
                               getRoots(select.getFalseValue())));
+          propagateSplitTpopDerived(select.getResult(),
+                                    ValueRange{select.getTrueValue(),
+                                               select.getFalseValue()});
         } else if (auto castOp = dyn_cast<memref::CastOp>(op)) {
           setRoots(castOp.getResult(), getRoots(castOp.getSource()));
+          propagateSplitTpopDerived(castOp.getResult(),
+                                    ValueRange{castOp.getSource()});
         } else if (auto subview = dyn_cast<memref::SubViewOp>(op)) {
           setRoots(subview.getResult(), getRoots(subview.getSource()));
+          propagateSplitTpopDerived(subview.getResult(),
+                                    ValueRange{subview.getSource()});
         } else if (auto reinterpret = dyn_cast<memref::ReinterpretCastOp>(op)) {
           setRoots(reinterpret.getResult(), getRoots(reinterpret.getSource()));
+          propagateSplitTpopDerived(reinterpret.getResult(),
+                                    ValueRange{reinterpret.getSource()});
         } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
           seedForIterArgAliases(forOp);
         }
 
-        for (Value operand : op->getOperands())
+        auto dpsOp = dyn_cast<DestinationStyleOpInterface>(op);
+        ValueRange dpsInits = dpsOp ? dpsOp.getDpsInits() : ValueRange();
+        for (Value operand : op->getOperands()) {
+          if (llvm::is_contained(dpsInits, operand))
+            continue;
           markUse(operand, index);
+        }
+        for (Value init : dpsInits) {
+          bool readsOldValue = hasReadEffectOnValue(op, init);
+          if (readsOldValue)
+            markUse(init, index);
+          markWrite(init, index, /*pureOverwrite=*/!readsOldValue);
+        }
 
         for (Region &nested : op->getRegions()) {
           walkRegion(nested);
@@ -325,6 +668,7 @@ struct PlannerAnalysis {
               setRoots(result,
                        unionRoots(getRoots(thenVal), getRoots(elseVal)));
             }
+            recordIfPhiFamilies(ifOp);
           }
         } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
           auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
@@ -335,19 +679,85 @@ struct PlannerAnalysis {
           }
         }
 
-        recordLocalOpConflicts(op);
+        recordSplitTpopDerivedValue(op);
+        recordDpsTargetHazardFacts(op, index);
+        recordDpsInplaceConflicts(op);
       }
     }
   }
 };
 
-static bool lifetimesOverlap(const RootInfo &lhs, const RootInfo &rhs) {
-  return !(lhs.freeIndex < rhs.allocIndex || rhs.freeIndex < lhs.allocIndex);
+static bool lifetimesStrictlyOverlap(const RootInfo &lhs, const RootInfo &rhs) {
+  return !(lhs.freeIndex <= rhs.allocIndex || rhs.freeIndex <= lhs.allocIndex);
 }
 
-static bool intervalsOverlap(uint64_t lhsOffset, uint64_t lhsSize,
-                             uint64_t rhsOffset, uint64_t rhsSize) {
-  return lhsOffset < rhsOffset + rhsSize && rhsOffset < lhsOffset + lhsSize;
+static bool sharePhiFamily(Value lhs, Value rhs, const ConflictFacts &facts) {
+  auto lhsIt = facts.phiFamilyIds.find(lhs);
+  auto rhsIt = facts.phiFamilyIds.find(rhs);
+  if (lhsIt == facts.phiFamilyIds.end() || rhsIt == facts.phiFamilyIds.end())
+    return false;
+
+  for (unsigned lhsFamily : lhsIt->second) {
+    if (llvm::is_contained(rhsIt->second, lhsFamily))
+      return true;
+  }
+  return false;
+}
+
+static bool gateLifetimeAndPhi(const RootInfo &lhs, const RootInfo &rhs,
+                               const ConflictFacts &facts) {
+  if (!lifetimesStrictlyOverlap(lhs, rhs))
+    return true;
+
+  // Gate 5 is intentionally embedded in Gate 1: branch-local roots yielded by
+  // the same scf.if result are mutually exclusive at runtime, so their
+  // post-phi liveness extension does not by itself forbid reuse.
+  return sharePhiFamily(lhs.root, rhs.root, facts);
+}
+
+static bool hasTargetHazard(const RootInfo &input, const RootInfo &writer,
+                            const ConflictFacts &facts) {
+  if (!facts.targetHazardEnabled)
+    return false;
+
+  if (!facts.loadDerivedRoots.contains(input.root) ||
+      !facts.tpopConsumerRoots.contains(writer.root))
+    return false;
+
+  auto found = facts.tpopConsumerWriteIndices.find(writer.root);
+  if (found == facts.tpopConsumerWriteIndices.end())
+    return false;
+
+  return llvm::is_contained(found->second, input.freeIndex);
+}
+
+static bool gateTargetHazard(const RootInfo &lhs, const RootInfo &rhs,
+                             const ConflictFacts &facts) {
+  return !hasTargetHazard(lhs, rhs, facts) && !hasTargetHazard(rhs, lhs, facts);
+}
+
+static bool gateSemanticNoAlias(const RootInfo &lhs, const RootInfo &rhs,
+                                const PlannerAnalysis &analysis) {
+  return !analysis.hasForbidAlias(lhs.root, rhs.root);
+}
+
+static bool canShare(const RootInfo &lhs, const RootInfo &rhs,
+                     const PlannerAnalysis &analysis) {
+  const ConflictFacts &facts = analysis.facts;
+  return gateLifetimeAndPhi(lhs, rhs, facts) &&
+         gateTargetHazard(lhs, rhs, facts) &&
+         gateSemanticNoAlias(lhs, rhs, analysis);
+}
+
+static bool canJoinReuseGroup(const RootInfo &info, const ReuseGroup &group,
+                              const PlannerAnalysis &analysis) {
+  if (info.space != group.space)
+    return false;
+  for (const RootInfo *member : group.members) {
+    if (!canShare(info, *member, analysis))
+      return false;
+  }
+  return true;
 }
 
 static SmallVector<uint64_t> buildSlotOffsets(uint64_t base, uint64_t slotBytes,
@@ -507,152 +917,138 @@ static LogicalResult materializePlannedOffsets(
 LogicalResult mlir::pto::runModernPlanMemory(func::FuncOp func,
                                              llvm::StringRef memMode,
                                              bool orderBySize) {
-    if (!memMode.equals_insensitive("local")) {
-      func.emitError("unsupported mem-mode '")
-          << memMode << "'; only 'local' is currently implemented";
-      return failure();
-    }
+  if (!memMode.equals_insensitive("local")) {
+    func.emitError("unsupported mem-mode '")
+        << memMode << "'; only 'local' is currently implemented";
+    return failure();
+  }
 
-    PlannerAnalysis analysis(func);
-    analysis.walkRegion(func.getBody());
-    if (analysis.failed) {
-      return failure();
-    }
+  PlannerAnalysis analysis(func);
+  analysis.walkRegion(func.getBody());
+  if (analysis.failed) {
+    return failure();
+  }
 
-    DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets;
-    llvm::MapVector<AddressSpace, SmallVector<RootInfo *>> rootsBySpace;
-    for (RootInfo &info : analysis.roots)
-      rootsBySpace[info.space].push_back(&info);
+  DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets;
+  llvm::MapVector<AddressSpace, SmallVector<RootInfo *>> rootsBySpace;
+  for (RootInfo &info : analysis.roots)
+    rootsBySpace[info.space].push_back(&info);
 
-    for (auto &entry : rootsBySpace) {
-      AddressSpace space = entry.first;
-      SmallVector<RootInfo *> &roots = entry.second;
-      MemSpec spec = getMemSpec(getTargetArch(func), space);
+  for (auto &entry : rootsBySpace) {
+    AddressSpace space = entry.first;
+    SmallVector<RootInfo *> &roots = entry.second;
+    MemSpec spec = getMemSpec(getTargetArch(func), space);
 
-      llvm::stable_sort(roots, [&](const RootInfo *lhs, const RootInfo *rhs) {
-        if (orderBySize && lhs->totalBytes != rhs->totalBytes)
-          return lhs->totalBytes > rhs->totalBytes;
-        if (lhs->allocIndex != rhs->allocIndex)
-          return lhs->allocIndex < rhs->allocIndex;
-        return lhs->stableOrder < rhs->stableOrder;
-      });
-
-      SmallVector<RootInfo *> planned;
-      uint64_t scopeRequiredBytes = 0;
-      for (RootInfo *info : roots) {
-        llvm::SmallSet<uint64_t, 16> candidateSet;
-        candidateSet.insert(0);
-        for (RootInfo *other : planned) {
-          candidateSet.insert(other->offsets.front());
-          candidateSet.insert(
-              alignUp(other->offsets.front() + other->totalBytes,
-                      info->alignmentBytes));
-        }
-
-        SmallVector<uint64_t> candidates(candidateSet.begin(),
-                                         candidateSet.end());
-        llvm::sort(candidates);
-
-        std::optional<uint64_t> chosen;
-        for (uint64_t candidate : candidates) {
-          candidate = alignUp(candidate, info->alignmentBytes);
-          if (candidate + info->totalBytes > spec.capacityBytes)
-            continue;
-
-          bool conflict = false;
-          for (RootInfo *other : planned) {
-            if (!intervalsOverlap(candidate, info->totalBytes,
-                                  other->offsets.front(), other->totalBytes))
-              continue;
-            if (lifetimesOverlap(*info, *other) ||
-                analysis.hasSemanticConflict(info->root, other->root)) {
-              conflict = true;
-              break;
-            }
-          }
-          if (!conflict) {
-            chosen = candidate;
-            break;
-          }
-        }
-
-        if (!chosen) {
-          uint64_t fallback = 0;
-          for (RootInfo *other : planned)
-            fallback =
-                std::max(fallback, other->offsets.front() + other->totalBytes);
-          fallback = alignUp(fallback, info->alignmentBytes);
-          chosen = fallback;
-        }
-
-        info->offsets =
-            buildSlotOffsets(*chosen, info->slotBytes, info->slotCount);
-        scopeRequiredBytes =
-            std::max(scopeRequiredBytes, *chosen + info->totalBytes);
-        planned.push_back(info);
-      }
-
-      if (scopeRequiredBytes > spec.capacityBytes) {
-        func.emitError() << stringifyEnum(space) << " overflow, requires "
-                         << (scopeRequiredBytes * 8) << " bits while "
-                         << (spec.capacityBytes * 8) << " bits available";
-        return failure();
-      }
-
-      for (RootInfo *info : roots)
-        buffer2Offsets[info->root] = info->offsets;
-    }
-
-    DenseMap<AddressSpace, SmallVector<std::pair<uint64_t, uint64_t>>>
-        occupiedBySpace;
-    for (const RootInfo &info : analysis.roots) {
-      if (info.offsets.empty())
-        continue;
-      occupiedBySpace[info.space].push_back(
-          {info.offsets.front(), info.offsets.front() + info.totalBytes});
-    }
-
-    MLIRContext *ctx = func.getContext();
-    PTOArch arch = getTargetArch(func);
-    func.walk([&](pto::ReserveBufferOp reserveOp) -> WalkResult {
-      if (mlir::failed(validateReserveBufferForPlanMemory(reserveOp, arch))) {
-        analysis.failed = true;
-        return WalkResult::interrupt();
-      }
-
-      AddressSpace space = reserveOp.getLocation().getAddressSpace();
-      MemSpec spec = getMemSpec(arch, space);
-      auto baseOr =
-          planReserveBufferBase(reserveOp, spec, occupiedBySpace[space]);
-      if (mlir::failed(baseOr)) {
-        reserveOp.emitError("failed to reserve a local memory hole for "
-                            "reserve_buffer");
-        analysis.failed = true;
-        return WalkResult::interrupt();
-      }
-
-      reserveOp->setAttr("base",
-                         IntegerAttr::get(IntegerType::get(ctx, 32),
-                                          static_cast<int32_t>(*baseOr)));
-      return WalkResult::advance();
+    llvm::stable_sort(roots, [&](const RootInfo *lhs, const RootInfo *rhs) {
+      if (orderBySize && lhs->totalBytes != rhs->totalBytes)
+        return lhs->totalBytes > rhs->totalBytes;
+      if (lhs->allocIndex != rhs->allocIndex)
+        return lhs->allocIndex < rhs->allocIndex;
+      return lhs->stableOrder < rhs->stableOrder;
     });
 
-    if (analysis.failed ||
-        mlir::failed(materializePlannedOffsets(func, buffer2Offsets))) {
+    SmallVector<ReuseGroup> groups;
+    uint64_t scopeRequiredBytes = 0;
+    for (RootInfo *info : roots) {
+      ReuseGroup *chosen = nullptr;
+      for (ReuseGroup &group : groups) {
+        if (canJoinReuseGroup(*info, group, analysis)) {
+          chosen = &group;
+          break;
+        }
+      }
+
+      if (!chosen) {
+        ReuseGroup group;
+        group.space = space;
+        group.alignmentBytes = info->alignmentBytes;
+        groups.push_back(std::move(group));
+        chosen = &groups.back();
+      }
+
+      chosen->members.push_back(info);
+      chosen->sizeBytes = std::max(chosen->sizeBytes, info->totalBytes);
+      chosen->alignmentBytes =
+          std::max(chosen->alignmentBytes, info->alignmentBytes);
+    }
+
+    uint64_t cursor = 0;
+    for (ReuseGroup &group : groups) {
+      cursor = alignUp(cursor, group.alignmentBytes);
+      group.offsetBytes = cursor;
+      if (group.offsetBytes + group.sizeBytes > spec.capacityBytes) {
+        scopeRequiredBytes = group.offsetBytes + group.sizeBytes;
+        break;
+      }
+
+      for (RootInfo *member : group.members) {
+        member->offsets = buildSlotOffsets(group.offsetBytes, member->slotBytes,
+                                           member->slotCount);
+      }
+      scopeRequiredBytes =
+          std::max(scopeRequiredBytes, group.offsetBytes + group.sizeBytes);
+      cursor = group.offsetBytes + group.sizeBytes;
+    }
+
+    if (scopeRequiredBytes > spec.capacityBytes) {
+      func.emitError() << stringifyEnum(space) << " overflow, requires "
+                       << (scopeRequiredBytes * 8) << " bits while "
+                       << (spec.capacityBytes * 8) << " bits available";
       return failure();
     }
 
-    bool hasUnplannedAllocTile = false;
-    func.walk([&](pto::AllocTileOp op) {
-      if (op.getAddr())
-        return;
-      op.emitError(
-          "PTOPlanMemory failed to assign an address to pto.alloc_tile");
-      hasUnplannedAllocTile = true;
-    });
-    if (hasUnplannedAllocTile)
-      return failure();
-    return success();
+    for (RootInfo *info : roots)
+      buffer2Offsets[info->root] = info->offsets;
+  }
+
+  DenseMap<AddressSpace, SmallVector<std::pair<uint64_t, uint64_t>>>
+      occupiedBySpace;
+  for (const RootInfo &info : analysis.roots) {
+    if (info.offsets.empty())
+      continue;
+    occupiedBySpace[info.space].push_back(
+        {info.offsets.front(), info.offsets.front() + info.totalBytes});
+  }
+
+  MLIRContext *ctx = func.getContext();
+  PTOArch arch = getTargetArch(func);
+  func.walk([&](pto::ReserveBufferOp reserveOp) -> WalkResult {
+    if (mlir::failed(validateReserveBufferForPlanMemory(reserveOp, arch))) {
+      analysis.failed = true;
+      return WalkResult::interrupt();
+    }
+
+    AddressSpace space = reserveOp.getLocation().getAddressSpace();
+    MemSpec spec = getMemSpec(arch, space);
+    auto baseOr =
+        planReserveBufferBase(reserveOp, spec, occupiedBySpace[space]);
+    if (mlir::failed(baseOr)) {
+      reserveOp.emitError("failed to reserve a local memory hole for "
+                          "reserve_buffer");
+      analysis.failed = true;
+      return WalkResult::interrupt();
+    }
+
+    reserveOp->setAttr("base", IntegerAttr::get(IntegerType::get(ctx, 32),
+                                                static_cast<int32_t>(*baseOr)));
+    return WalkResult::advance();
+  });
+
+  if (analysis.failed ||
+      mlir::failed(materializePlannedOffsets(func, buffer2Offsets))) {
+    return failure();
+  }
+
+  bool hasUnplannedAllocTile = false;
+  func.walk([&](pto::AllocTileOp op) {
+    if (op.getAddr())
+      return;
+    op.emitError("PTOPlanMemory failed to assign an address to pto.alloc_tile");
+    hasUnplannedAllocTile = true;
+  });
+  if (hasUnplannedAllocTile)
+    return failure();
+  return success();
 }
 
 namespace {
@@ -681,8 +1077,8 @@ struct PlanMemoryModernPass
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
     for (func::FuncOp funcOp : moduleOp.getOps<func::FuncOp>()) {
-      if (failed(mlir::pto::runModernPlanMemory(funcOp, memMode,
-                                                orderBySize))) {
+      if (failed(
+              mlir::pto::runModernPlanMemory(funcOp, memMode, orderBySize))) {
         signalPassFailure();
         return;
       }

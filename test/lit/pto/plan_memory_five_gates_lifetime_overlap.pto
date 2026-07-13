@@ -1,0 +1,40 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-level=level2 --pto-arch=a3 --plan-memory-impl=modern \
+// RUN:   --emit-pto-ir --mlir-print-ir-after=pto-plan-memory %s 2>&1 \
+// RUN:   | FileCheck %s
+
+module attributes {"pto.target_arch" = "a3"} {
+  func.func @five_gates_lifetime_overlap(
+      %gm0 : memref<16x16xf16, #pto.address_space<gm>>,
+      %gm1 : memref<16x16xf16, #pto.address_space<gm>>,
+      %out0 : memref<16x16xf16, #pto.address_space<gm>>,
+      %out1 : memref<16x16xf16, #pto.address_space<gm>>) {
+    %buf0 = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
+    %buf1 = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
+
+    pto.tload ins(%gm0 : memref<16x16xf16, #pto.address_space<gm>>)
+              outs(%buf0 : memref<16x16xf16, #pto.address_space<vec>>) {layout = #pto.layout<nd>}
+    pto.tload ins(%gm1 : memref<16x16xf16, #pto.address_space<gm>>)
+              outs(%buf1 : memref<16x16xf16, #pto.address_space<vec>>) {layout = #pto.layout<nd>}
+
+    pto.tstore ins(%buf0 : memref<16x16xf16, #pto.address_space<vec>>)
+               outs(%out0 : memref<16x16xf16, #pto.address_space<gm>>) {layout = #pto.layout<nd>}
+    pto.tstore ins(%buf1 : memref<16x16xf16, #pto.address_space<vec>>)
+               outs(%out1 : memref<16x16xf16, #pto.address_space<gm>>) {layout = #pto.layout<nd>}
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @five_gates_lifetime_overlap
+// CHECK-DAG: %[[ADDR0:.*]] = arith.constant 0 : i64
+// CHECK-DAG: %[[ADDR1:.*]] = arith.constant 512 : i64
+// CHECK: pto.pointer_cast(%[[ADDR0]])
+// CHECK: pto.pointer_cast(%[[ADDR1]])
+// CHECK-NOT: memref.alloc
