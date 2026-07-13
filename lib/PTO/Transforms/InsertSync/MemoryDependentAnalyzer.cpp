@@ -260,8 +260,20 @@ bool MemoryDependentAnalyzer::MemAlias(const BaseMemInfo *a,
       if (isTraceEnabled())
         llvm::errs() << "      -> Mismatch. Real roots differ.\n";
   }
- 
-  return false;
+
+  // 2.3 Cross-root absolute-address overlap check.
+  //
+  // Roots genuinely differ (different alloc_tile / different pointer_cast
+  // address SSA). Historically MemAlias returned false here, but PlanMemory
+  // can reuse the same physical UB region for distinct allocations whose
+  // byte ranges overlap. Re-derive the absolute address and check overlap so
+  // a cross-pipe hazard (e.g. MTE3 tstore vs a V-pipe write into an
+  // overlapping region) is not silently dropped (issue #934).
+  bool crossRootOverlap = isLocalBufferOverlapCrossRoot(a, b);
+  if (isTraceEnabled())
+    llvm::errs() << "      -> Cross-root overlap check: "
+                 << (crossRootOverlap ? "true" : "false") << "\n";
+  return crossRootOverlap;
 }
  
 bool MemoryDependentAnalyzer::isGMBufferOverlap(const BaseMemInfo *a,
