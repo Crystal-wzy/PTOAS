@@ -46,11 +46,9 @@ module attributes {"pto.device-spec" = "Ascend910B3"} {
 }
 
 // CHECK-LABEL: func.func @issue708_zero_valid_subview_row
-// CHECK: %[[ROW:[0-9A-Za-z_]+]] = pto.bind_tile {{.*}}, %c0, %c128
-// CHECK-SAME: pto.view_semantics = "subview"
+// CHECK: %[[ROW:[0-9A-Za-z_]+]] = pto.subview {{.*}} valid [%c0, %c128]
 // CHECK: pto.tstore ins(%[[ROW]]
 
 // CHECK-LABEL: func.func @issue708_zero_valid_subview_col
-// CHECK: %[[COL:[0-9A-Za-z_]+]] = pto.bind_tile {{.*}}, %c5, %c0
-// CHECK-SAME: pto.view_semantics = "subview"
+// CHECK: %[[COL:[0-9A-Za-z_]+]] = pto.subview {{.*}} valid [%c5, %c0]
 // CHECK: pto.tstore ins(%[[COL]]

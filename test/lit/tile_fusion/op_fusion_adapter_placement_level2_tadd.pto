@@ -53,12 +53,9 @@ module {
 
 // SEAM-LABEL: func.func @fusion_adapter_placement_level2_tadd(
 // SEAM-NOT: pto.fusion_region
-// SEAM: memref.alloc()
-// SEAM: pto.bind_tile
-// SEAM: memref.alloc()
-// SEAM: pto.bind_tile
-// SEAM: memref.alloc()
-// SEAM: pto.bind_tile
+// SEAM: pto.alloc_tile
+// SEAM: pto.alloc_tile
+// SEAM: pto.alloc_tile
 // SEAM: pto.tadd{{.*}}{pto.fusion.group_id = 0 : i64, pto.fusion.order = 0 : i64{{.*}}}
 // SEAM: pto.tadd{{.*}}{pto.fusion.group_id = 0 : i64, pto.fusion.order = 1 : i64{{.*}}}
 // SEAM: pto.tadd{{.*}}{pto.fusion.group_id = 0 : i64, pto.fusion.order = 2 : i64{{.*}}}

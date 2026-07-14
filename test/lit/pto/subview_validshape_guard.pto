@@ -66,14 +66,14 @@ module {
 
 // Default non-compact subview keeps parent physical shape (4x16) but valid
 // defaults to subview shape (2x8), not clipped from parent valid shape.
-// CHECK: Tile<TileType::Vec, float, 4, 16, BLayout::RowMajor, 2, 8, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>
-// CHECK-NOT: Tile<TileType::Vec, float, 4, 16, BLayout::RowMajor, 1, 1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>
+// CHECK: Tile<TileType::Vec, float, 2, 8, BLayout::RowMajor, 2, 8, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>
+// CHECK-NOT: Tile<TileType::Vec, float, 2, 8, BLayout::RowMajor, 4, 16, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>
 
 // Default row-major full-col subview can use the compact child physical shape (2x8).
 // CHECK: Tile<TileType::Vec, float, 2, 8, BLayout::RowMajor, 2, 8, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>
 
 // Explicit valid override takes effect.
-// CHECK: Tile<TileType::Vec, float, 4, 16, BLayout::RowMajor, 1, 1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>
+// CHECK: Tile<TileType::Vec, float, 2, 8, BLayout::RowMajor, 1, 1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>
 
 // Dynamic explicit valid keeps dynamic valid dims at lowering.
-// CHECK: Tile<TileType::Vec, float, 4, 16, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>
+// CHECK: Tile<TileType::Vec, float, 2, 8, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>

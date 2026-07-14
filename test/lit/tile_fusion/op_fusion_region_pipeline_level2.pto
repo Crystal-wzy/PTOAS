@@ -70,7 +70,7 @@ module {
 // LEVEL2-PLAIN-NEXT: pto.trowexpandmul
 // LEVEL2-PLAIN-NEXT: pto.tadd
 // LEVEL2-PLAIN-NEXT: pto.yield(
-// LEVEL2-PLAIN: } {pto.fusion.group_id = 0 : i64} : memref<32x32xf32
+// LEVEL2-PLAIN: } {pto.fusion.group_id = 0 : i64} : !pto.tile_buf<vec, 32x32xf32>
 // LEVEL2-PLAIN: pto.tadd ins(
 // LEVEL2-PLAIN-NEXT: pto.tmul ins(
 // LEVEL2-PLAIN: pto.tstore ins(
@@ -83,7 +83,7 @@ module {
 // LEVEL2-SYNC-NEXT: pto.trowexpandmul
 // LEVEL2-SYNC-NEXT: pto.tadd
 // LEVEL2-SYNC: pto.yield(
-// LEVEL2-SYNC: } {pto.fusion.group_id = 0 : i64} : memref<32x32xf32
+// LEVEL2-SYNC: } {pto.fusion.group_id = 0 : i64} : !pto.tile_buf<vec, 32x32xf32>
 // LEVEL2-SYNC: pto.tadd ins(
 // LEVEL2-SYNC-NEXT: pto.tmul ins(
 // LEVEL2-SYNC: pto.tstore ins(

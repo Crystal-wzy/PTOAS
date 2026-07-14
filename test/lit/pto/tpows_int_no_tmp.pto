@@ -18,5 +18,5 @@ module {
   }
 }
 
-// A3: pto.tpows ins({{.*}}, {{.*}} : memref<1x16xi32
+// A3: pto.tpows ins({{.*}}, {{.*}} : !pto.tile_buf<vec, 1x16xi32
 // A3: TPOWS({{.*}}, {{.*}}, {{.*}});

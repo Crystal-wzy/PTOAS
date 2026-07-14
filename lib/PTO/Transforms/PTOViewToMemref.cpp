@@ -1239,6 +1239,39 @@ static LogicalResult bridgeMemRefOperandsToExternalPtrCallees(ModuleOp mod,
   return success();
 }
 
+static LogicalResult bridgeCallOperandsToConvertedCallees(ModuleOp mod,
+                                                          MLIRContext *ctx) {
+  SmallVector<func::CallOp, 16> callOps;
+  mod.walk([&](func::CallOp callOp) { callOps.push_back(callOp); });
+
+  for (func::CallOp callOp : callOps) {
+    auto callee = mod.lookupSymbol<func::FuncOp>(callOp.getCallee());
+    if (!callee || callee.isExternal())
+      continue;
+
+    FunctionType calleeType = callee.getFunctionType();
+    if (calleeType.getNumInputs() != callOp.getNumOperands()) {
+      callOp.emitError("callee signature does not match call operands");
+      return failure();
+    }
+
+    IRRewriter rewriter(ctx);
+    rewriter.setInsertionPoint(callOp);
+    for (auto [index, expectedType] :
+         llvm::enumerate(calleeType.getInputs())) {
+      Value operand = callOp.getOperand(index);
+      if (operand.getType() == expectedType)
+        continue;
+
+      auto bridge = rewriter.create<UnrealizedConversionCastOp>(
+          callOp.getLoc(), expectedType, operand);
+      callOp->setOperand(index, bridge.getResult(0));
+    }
+  }
+
+  return success();
+}
+
 [[maybe_unused]] static LogicalResult lowerTensorViewDimOps(func::FuncOp func, MLIRContext *ctx) {
   DefaultInlineVector<mlir::pto::GetTensorViewDimOp> tvDims;
   func.walk([&](mlir::pto::GetTensorViewDimOp op) { tvDims.push_back(op); });
@@ -1388,6 +1421,12 @@ static LogicalResult lowerSubViewOps(func::FuncOp func, MLIRContext *ctx) {
     Value src = op->getOperand(0);
     auto srcMrTy = dyn_cast<MemRefType>(src.getType());
     if (!srcMrTy) {
+      // Tile-native alloc_tile roots intentionally survive this pass so that
+      // PTOPlanMemory can assign their addresses. Defer tile_buf subviews until
+      // after planning, when PTOMaterializeTileHandles can materialize the
+      // adjusted address directly.
+      if (isa<mlir::pto::TileBufType>(src.getType()))
+        continue;
       op.emitError("pto.subview source must be lowered to memref first");
       return failure();
     }
@@ -1555,6 +1594,8 @@ static LogicalResult lowerTileBufViewLikeOps(func::FuncOp func, MLIRContext *ctx
       op.emitError("treshape result must be tile_buf type");
       return failure();
     }
+    if (isa<mlir::pto::TileBufType>(op->getOperand(0).getType()))
+      continue;
     Value lowered = buildTileBufViewLikeValue(op, op->getOperand(0), tbTy,
                                               "treshape", ctx);
     if (!lowered)
@@ -1571,6 +1612,8 @@ static LogicalResult lowerTileBufViewLikeOps(func::FuncOp func, MLIRContext *ctx
       op.emitError("bitcast result must be tile_buf type");
       return failure();
     }
+    if (isa<mlir::pto::TileBufType>(op->getOperand(0).getType()))
+      continue;
     Value lowered = buildTileBufViewLikeValue(op, op->getOperand(0), tbTy,
                                               "bitcast", ctx);
     if (!lowered)
@@ -4256,6 +4299,11 @@ struct PTOViewToMemrefPass
         signalPassFailure();
         return;
       }
+    }
+
+    if (failed(bridgeCallOperandsToConvertedCallees(mod, ctx))) {
+      signalPassFailure();
+      return;
     }
     
     // Debug Output

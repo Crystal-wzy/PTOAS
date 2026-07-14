@@ -124,6 +124,35 @@ static uint64_t getRootBaseAddress(Value rootBuffer) {
   return 0;
 }
 
+static bool isIntegerConstant(Value value) {
+  if (!value)
+    return false;
+  auto cst = value.getDefiningOp<arith::ConstantOp>();
+  return cst && isa<IntegerAttr>(cst.getValue());
+}
+
+static bool hasKnownLocalAbsoluteAddress(const BaseMemInfo *info) {
+  if (!info || info->baseAddresses.empty() || info->allocateSize == 0)
+    return false;
+
+  Value root = info->rootBuffer;
+  if (!root)
+    return false;
+
+  if (auto alloc = root.getDefiningOp<pto::AllocTileOp>())
+    return isIntegerConstant(alloc.getAddr());
+
+  if (isIntegerConstant(root))
+    return true;
+
+  // Multi-address pointer_cast records absolute slot offsets in baseAddresses
+  // and uses the pointer_cast result as rootBuffer.
+  if (auto ptrCast = root.getDefiningOp<pto::PointerCastOp>())
+    return ptrCast.getAddrs().size() > 1;
+
+  return false;
+}
+
 // Cross-root byte-range overlap check for local memory (UB/L1).
 //
 // `MemAlias` historically only checked byte-range overlap when the two
@@ -139,11 +168,11 @@ static uint64_t getRootBaseAddress(Value rootBuffer) {
 // across every address pair, regardless of root identity.
 static bool isLocalBufferOverlapCrossRoot(const BaseMemInfo *a,
                                            const BaseMemInfo *b) {
-  // Conservative: if either side has no known address or size, assume alias.
-  if (a->baseAddresses.empty() || b->baseAddresses.empty())
-    return true;
-  if (a->allocateSize == 0 || b->allocateSize == 0)
-    return true;
+  // Cross-root checks are only meaningful after physical addresses have been
+  // materialized. For unknown-address roots keep the historical behavior:
+  // different roots are treated as independent.
+  if (!hasKnownLocalAbsoluteAddress(a) || !hasKnownLocalAbsoluteAddress(b))
+    return false;
 
   uint64_t rootBaseA = getRootBaseAddress(a->rootBuffer);
   uint64_t rootBaseB = getRootBaseAddress(b->rootBuffer);

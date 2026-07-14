@@ -148,7 +148,7 @@ module {
 
   // CHECK-LABEL: func.func @event_id_fallback
   // CHECK-COUNT-9: {{pto\.set_flag\[<PIPE_MTE2>, <PIPE_V>, <EVENT_ID[0-9]+>\]}}
-  // CHECK: pto.tmuls ins(%4, %cst :
+  // CHECK: pto.tmuls ins(%{{[0-9]+}}, %cst :
 
   func.func @event_id_fallback(%arg0: !pto.ptr<f32>,
                                %arg2: index, %arg3: index, %arg4: index,

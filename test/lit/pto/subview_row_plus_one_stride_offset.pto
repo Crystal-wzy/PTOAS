@@ -21,6 +21,5 @@ module {
 }
 
 // RowPlusOne: major stride should be 17 (not 16).
-// CHECK: pto.pointer_cast(%c0_i64) {{.*}} : memref<16x16xf32, strided<[17, 1]>, #pto.address_space<vec>>
-// CHECK: compact=#pto.compact_mode<row_plus_one>
-// CHECK: memref.subview {{.*}} to memref<8x8xf32, strided<[17, 1], offset: ?>, #pto.address_space<vec>>
+// CHECK: pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<vec, 16x16xf32, compact=2>
+// CHECK: pto.subview {{.*}} sizes [8, 8] : !pto.tile_buf<vec, 16x16xf32, compact=2> -> !pto.tile_buf<vec, 8x8xf32, compact=2>

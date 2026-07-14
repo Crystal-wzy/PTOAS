@@ -102,6 +102,54 @@ static bool isPlannableLocalSpace(std::optional<AddressSpace> space) {
   return space && *space != AddressSpace::GM && *space != AddressSpace::Zero;
 }
 
+static bool isNameIn(StringRef name, ArrayRef<StringRef> names) {
+  return llvm::is_contained(names, name);
+}
+
+static bool isIgnoredA5TmpOperandUse(OpOperand &use) {
+  Operation *owner = use.getOwner();
+  unsigned operandNo = use.getOperandNumber();
+  StringRef name = owner->getName().getStringRef();
+
+  if (isNameIn(name, {"pto.trowargmax", "pto.trowargmin", "pto.trowmax",
+                     "pto.trowmin", "pto.trowsum", "pto.trowprod"}))
+    return operandNo == 1;
+
+  if (name == "pto.txors")
+    return operandNo == 2;
+
+  if (isNameIn(name, {"pto.tprelu", "pto.txor", "pto.tsels",
+                     "pto.trowexpand", "pto.tcolexpand",
+                     "pto.trowexpandadd", "pto.trowexpanddiv",
+                     "pto.trowexpandexpdif", "pto.trowexpandmax",
+                     "pto.trowexpandmin", "pto.trowexpandmul",
+                     "pto.trowexpandsub", "pto.tcolexpandadd",
+                     "pto.tcolexpanddiv", "pto.tcolexpandexpdif",
+                     "pto.tcolexpandmax", "pto.tcolexpandmin",
+                     "pto.tcolexpandmul", "pto.tcolexpandsub"}))
+    return operandNo == 2;
+
+  if (name == "pto.tsel")
+    return operandNo == 3;
+
+  return false;
+}
+
+static bool isA5IgnoredTmpAlloc(pto::AllocTileOp allocTile) {
+  if (getTargetArch(allocTile.getOperation()) != PTOArch::A5)
+    return false;
+
+  Value value = allocTile.getResult();
+  if (value.use_empty())
+    return false;
+
+  for (OpOperand &use : value.getUses()) {
+    if (!isIgnoredA5TmpOperandUse(use))
+      return false;
+  }
+  return true;
+}
+
 static MemSpec getMemSpec(PTOArch arch, AddressSpace space) {
   switch (space) {
   case AddressSpace::VEC:
@@ -586,6 +634,8 @@ struct PlannerAnalysis {
 
         if (auto allocTile = dyn_cast<pto::AllocTileOp>(op)) {
           if (!allocTile.getAddr()) {
+            if (isA5IgnoredTmpAlloc(allocTile))
+              continue;
             addRoot(allocTile.getResult(), op);
             if (failed)
               return;
@@ -628,6 +678,14 @@ struct PlannerAnalysis {
           setRoots(subview.getResult(), getRoots(subview.getSource()));
           propagateSplitTpopDerived(subview.getResult(),
                                     ValueRange{subview.getSource()});
+        } else if (auto subview = dyn_cast<pto::SubViewOp>(op)) {
+          setRoots(subview.getResult(), getRoots(subview.getSource()));
+          propagateSplitTpopDerived(subview.getResult(),
+                                    ValueRange{subview.getSource()});
+        } else if (auto reshape = dyn_cast<pto::TReshapeOp>(op)) {
+          setRoots(reshape.getResult(), getRoots(reshape.getSrc()));
+          propagateSplitTpopDerived(reshape.getResult(),
+                                    ValueRange{reshape.getSrc()});
         } else if (auto reinterpret = dyn_cast<memref::ReinterpretCastOp>(op)) {
           setRoots(reinterpret.getResult(), getRoots(reinterpret.getSource()));
           propagateSplitTpopDerived(reinterpret.getResult(),
@@ -1042,6 +1100,10 @@ LogicalResult mlir::pto::runModernPlanMemory(func::FuncOp func,
   bool hasUnplannedAllocTile = false;
   func.walk([&](pto::AllocTileOp op) {
     if (op.getAddr())
+      return;
+    if (op->use_empty())
+      return;
+    if (isA5IgnoredTmpAlloc(op))
       return;
     op.emitError("PTOPlanMemory failed to assign an address to pto.alloc_tile");
     hasUnplannedAllocTile = true;

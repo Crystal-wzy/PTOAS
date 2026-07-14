@@ -17,10 +17,10 @@ module {
 
     // CHECK-LABEL: func.func @tquant_dynamic_tmp_valid_a3
     // CHECK-SAME: (%[[ROW:arg[0-9]+]]: index, %[[COL:arg[0-9]+]]: index)
-    // CHECK: pto.bind_tile %{{.*}}, %[[ROW]], %[[COL]] {{.*}} : memref<32x32xf32
-    // CHECK: pto.bind_tile %{{.*}} : memref<32x1xf32
-    // CHECK: pto.bind_tile %{{.*}}, %[[ROW]], %[[COL]] {{.*}} : memref<32x32xi8
-    // CHECK: %[[TMP:.*]] = pto.bind_tile %{{.*}}, %[[ROW]], %[[COL]] {{.*}} : memref<32x32xf32
+    // CHECK: pto.alloc_tile{{.*}}valid_row = %[[ROW]] valid_col = %[[COL]]{{.*}} : !pto.tile_buf<vec, 32x32xf32
+    // CHECK: pto.alloc_tile{{.*}} : !pto.tile_buf<vec, 32x1xf32
+    // CHECK: pto.alloc_tile{{.*}}valid_row = %[[ROW]] valid_col = %[[COL]]{{.*}} : !pto.tile_buf<vec, 32x32xi8
+    // CHECK: %[[TMP:.*]] = pto.alloc_tile{{.*}}valid_row = %[[ROW]] valid_col = %[[COL]]{{.*}} : !pto.tile_buf<vec, 32x32xf32
     // CHECK: pto.tquant
     // CHECK-SAME: outs(%{{[^,]+}}, %[[TMP]] :
     pto.tquant ins(%src, %fp : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,

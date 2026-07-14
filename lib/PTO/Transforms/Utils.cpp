@@ -174,6 +174,10 @@ std::optional<AddressSpaceAttr> GetBufferSpaceAttr(Value operand) {
 std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
   if (auto subViewOp = dyn_cast<memref::SubViewOp>(op)) {
     return std::make_pair(subViewOp.getResult(), subViewOp.getViewSource());
+  } else if (auto subViewOp = dyn_cast<pto::SubViewOp>(op)) {
+    return std::make_pair(subViewOp.getResult(), subViewOp.getSource());
+  } else if (auto reshapeOp = dyn_cast<pto::TReshapeOp>(op)) {
+    return std::make_pair(reshapeOp.getResult(), reshapeOp.getSrc());
   } else if (auto bindTileOp = dyn_cast<pto::BindTileOp>(op)) {
     return std::make_pair(bindTileOp.getResult(), bindTileOp.getSource());
   } else if (auto slotMarkerOp = dyn_cast<pto::SlotMarkerOp>(op)) {
@@ -198,6 +202,9 @@ std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
     return std::make_pair(reshapeOp.getResult(), reshapeOp.getViewSource());
   } else if (auto castOp = dyn_cast<memref::CastOp>(op)) {
     return std::make_pair(castOp.getResult(), castOp.getViewSource());
+  } else if (auto castOp = dyn_cast<UnrealizedConversionCastOp>(op)) {
+    if (castOp.getNumOperands() == 1 && castOp.getNumResults() == 1)
+      return std::make_pair(castOp.getResult(0), castOp.getOperand(0));
   } else if (auto extractStridedMetadataOp =
                  dyn_cast<memref::ExtractStridedMetadataOp>(op)) {
     return std::make_pair(extractStridedMetadataOp.getBaseBuffer(),

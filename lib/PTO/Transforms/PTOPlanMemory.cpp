@@ -94,6 +94,54 @@ static LocalMemSpec getLocalMemSpec(Operation *op, AddressSpace as) {
   }
 }
 
+static bool isNameIn(StringRef name, ArrayRef<StringRef> names) {
+  return llvm::is_contained(names, name);
+}
+
+static bool isIgnoredA5TmpOperandUse(OpOperand &use) {
+  Operation *owner = use.getOwner();
+  unsigned operandNo = use.getOperandNumber();
+  StringRef name = owner->getName().getStringRef();
+
+  if (isNameIn(name, {"pto.trowargmax", "pto.trowargmin", "pto.trowmax",
+                     "pto.trowmin", "pto.trowsum", "pto.trowprod"}))
+    return operandNo == 1;
+
+  if (name == "pto.txors")
+    return operandNo == 2;
+
+  if (isNameIn(name, {"pto.tprelu", "pto.txor", "pto.tsels",
+                     "pto.trowexpand", "pto.tcolexpand",
+                     "pto.trowexpandadd", "pto.trowexpanddiv",
+                     "pto.trowexpandexpdif", "pto.trowexpandmax",
+                     "pto.trowexpandmin", "pto.trowexpandmul",
+                     "pto.trowexpandsub", "pto.tcolexpandadd",
+                     "pto.tcolexpanddiv", "pto.tcolexpandexpdif",
+                     "pto.tcolexpandmax", "pto.tcolexpandmin",
+                     "pto.tcolexpandmul", "pto.tcolexpandsub"}))
+    return operandNo == 2;
+
+  if (name == "pto.tsel")
+    return operandNo == 3;
+
+  return false;
+}
+
+static bool isA5IgnoredTmpAlloc(pto::AllocTileOp allocTile) {
+  if (getTargetArch(allocTile.getOperation()) != PTOArch::A5)
+    return false;
+
+  Value value = allocTile.getResult();
+  if (value.use_empty())
+    return false;
+
+  for (OpOperand &use : value.getUses()) {
+    if (!isIgnoredA5TmpOperandUse(use))
+      return false;
+  }
+  return true;
+}
+
 static void collectStableValueOrder(Region &region,
                                     AsmState &asmState,
                                     DenseMap<Value, std::string> &stableValueKeys,
@@ -470,6 +518,8 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       if (allocTileOp.getAddr()) {
         return WalkResult::advance();
       }
+      if (isA5IgnoredTmpAlloc(allocTileOp))
+        return WalkResult::advance();
       auto memorySpaceAttr = GetBufferSpaceAttr(allocTileOp.getResult());
       if (!isLocalBuffer(memorySpaceAttr)) {
         allocTileOp.emitError("Alloc tile buffer not at local space");
@@ -489,7 +539,6 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
         buffer2MultiNum[allocTileOp.getResult()] = static_cast<uint32_t>(n);
       }
       UpdateOpBufferInfo(op, op->getResults());
-      UpdateOperandGenInfo(curOpInfo, allocTileOp.getResult());
       return WalkResult::advance();
     } else if (isLocalMemPlan() && dyn_cast<memref::AllocOp>(op)) {
       auto allocOp = cast<memref::AllocOp>(op);
@@ -520,6 +569,7 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto tprintOp = dyn_cast<pto::TPrintOp>(op)) {
       // TPrintOp only reads from buffer, similar to LoadOp
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
       OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto tgetvalOp = dyn_cast<pto::TGetValOp>(op)) {
       (void)tgetvalOp;
@@ -543,7 +593,7 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
     } else if (auto ptoDpsOp = dyn_cast<pto::PTO_DpsInitOpInterface>(op)) {
       // PTO ops with destination (tile_buf, partition_view, etc.); no
       // tensor/memref-only verification.
-      SmallVector<Value> genBuffers = llvm::to_vector(ptoDpsOp.getDpsInits());
+      SmallVector<Value> genBuffers = llvm::to_vector(op->getOperands());
       auto scratchBuffers = getScratchBuffersFromEffects(
           op, ptoDpsOp.getDpsInits(), stableValueOrder);
       genBuffers.append(scratchBuffers.begin(), scratchBuffers.end());
@@ -2687,6 +2737,10 @@ void PlanMemoryPass::runOnOperation() {
     bool hasUnplannedAllocTile = false;
     funcOp.walk([&](pto::AllocTileOp op) {
       if (op.getAddr())
+        return;
+      if (op->use_empty())
+        return;
+      if (isA5IgnoredTmpAlloc(op))
         return;
       op.emitError(
           "PTOPlanMemory failed to assign an address to pto.alloc_tile");
