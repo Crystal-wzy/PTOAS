@@ -4760,6 +4760,50 @@ static FailureOr<Value> buildSyncAllWorkspaceTileValue(
 //===----------------------------------------------------------------------===//
 // pto.pointer_cast lowering
 //===----------------------------------------------------------------------===
+
+struct CastPtrConversion : public OpConversionPattern<pto::CastPtrOp> {
+  using OpConversionPattern<pto::CastPtrOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::CastPtrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type convertedResultType =
+        getTypeConverter()->convertType(op.getResult().getType());
+    if (!convertedResultType)
+      return failure();
+
+    Value input = adaptor.getInput();
+    if (input.getType() == convertedResultType) {
+      rewriter.replaceOp(op, input);
+      return success();
+    }
+
+    if (auto resultPtrTy = dyn_cast<pto::PtrType>(op.getResult().getType())) {
+      std::string elemTok = getEmitCScalarTypeToken(resultPtrTy.getElementType());
+      std::optional<pto::AddressSpace> as =
+          getAddressSpaceOrGM(resultPtrTy.getMemorySpace());
+      if (!as)
+        return rewriter.notifyMatchFailure(op, "unsupported ptr address space");
+
+      Value ptr = materializeAddressAsPointer(rewriter, op.getLoc(), input, *as,
+                                              elemTok);
+      if (ptr.getType() != convertedResultType)
+        ptr = rewriter.create<emitc::CastOp>(op.getLoc(), convertedResultType, ptr)
+                  .getResult();
+      rewriter.replaceOp(op, ptr);
+      return success();
+    }
+
+    if (emitc::isSupportedEmitCType(input.getType()) &&
+        emitc::isSupportedEmitCType(convertedResultType)) {
+      rewriter.replaceOpWithNewOp<emitc::CastOp>(op, convertedResultType, input);
+      return success();
+    }
+
+    return rewriter.notifyMatchFailure(op, "unsupported castptr conversion");
+  }
+};
+
 struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
   static bool getIndexConst(Value v, int64_t &out) {
     if (auto cst = v.getDefiningOp<arith::ConstantOp>()) {
@@ -14422,7 +14466,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOMrgSortToEmitC>(typeConverter, ctx);
   patterns.add<PTORandomToEmitC>(typeConverter, ctx);
   patterns.add<SubviewToEmitCPattern>(typeConverter, ctx);
-  patterns.add<PointerCastConversion>(typeConverter, ctx);
+  patterns.add<CastPtrConversion, PointerCastConversion>(typeConverter, ctx);
   patterns.add<PTOSetValToSETVAL, PTOGetValToGETVAL, PTOSetValidShapeToEmitC,
                PTOGetValidShapeToEmitC, PTOTAssignToEmitC,
                PTOPtrToIntToEmitC, PTOIntToPtrToEmitC, PTOLoadScalarToEmitC,
