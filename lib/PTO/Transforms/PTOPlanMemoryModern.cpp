@@ -111,6 +111,14 @@ static bool isIgnoredA5TmpOperandUse(OpOperand &use) {
   unsigned operandNo = use.getOperandNumber();
   StringRef name = owner->getName().getStringRef();
 
+  if (auto dpsOp = dyn_cast<pto::PTO_DpsInitOpInterface>(owner)) {
+    if (llvm::is_contained(dpsOp.getDpsInits(), use.get()))
+      return false;
+  } else if (auto dpsOp = dyn_cast<DestinationStyleOpInterface>(owner)) {
+    if (llvm::is_contained(dpsOp.getDpsInits(), use.get()))
+      return false;
+  }
+
   if (isNameIn(name, {"pto.trowargmax", "pto.trowargmin", "pto.trowmax",
                      "pto.trowmin", "pto.trowsum", "pto.trowprod"}))
     return operandNo == 1;
