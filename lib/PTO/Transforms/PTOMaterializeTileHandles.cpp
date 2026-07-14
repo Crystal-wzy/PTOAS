@@ -998,6 +998,25 @@ static Value getAllocValidOperand(TileBufType tileTy, Value operand,
   return Value();
 }
 
+static TileBufType buildPTOSubViewPhysicalTileType(pto::SubViewOp op,
+                                                   TileBufType resultTy) {
+  auto sourceTy = dyn_cast<TileBufType>(op.getSource().getType());
+  if (!sourceTy || sourceTy.getRank() != 2 || resultTy.getRank() != 2)
+    return resultTy;
+
+  SmallVector<int64_t, 2> physicalShape(sourceTy.getShape().begin(),
+                                        sourceTy.getShape().end());
+  SmallVector<int64_t, 2> validShape(resultTy.getValidShape().begin(),
+                                     resultTy.getValidShape().end());
+  if (validShape.size() != 2)
+    validShape.assign(resultTy.getShape().begin(), resultTy.getShape().end());
+
+  return TileBufType::get(op.getContext(), physicalShape,
+                          resultTy.getElementType(),
+                          resultTy.getMemorySpace(), validShape,
+                          resultTy.getConfigAttr());
+}
+
 static Attribute getAttr(ArrayRef<NamedAttribute> attrs, StringRef name) {
   for (NamedAttribute attr : attrs) {
     if (attr.getName().getValue() == name)
@@ -1033,11 +1052,12 @@ materializePTOSubViewOps(ModuleOp module, OpBuilder &builder,
       return failure();
     }
 
+    TileBufType physicalTileTy = buildPTOSubViewPhysicalTileType(op, tileTy);
     auto alloc = builder.create<AllocTileOp>(
-        op.getLoc(), tileTy, addr,
-        getAllocValidOperand(tileTy, op.getValidRow(), 0, builder,
+        op.getLoc(), physicalTileTy, addr,
+        getAllocValidOperand(physicalTileTy, op.getValidRow(), 0, builder,
                              op.getLoc()),
-        getAllocValidOperand(tileTy, op.getValidCol(), 1, builder,
+        getAllocValidOperand(physicalTileTy, op.getValidCol(), 1, builder,
                              op.getLoc()));
     alloc->setAttr("pto.view_semantics", builder.getStringAttr("subview"));
     tileHandles[op.getResult()] = alloc.getResult();

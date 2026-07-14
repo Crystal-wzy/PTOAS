@@ -1449,7 +1449,14 @@ static LogicalResult insertFixpipeConfigAliases(ModuleOp mop) {
     if (aliases.empty())
       continue;
 
-    OpBuilder builder(&funcOp.front(), funcOp.front().begin());
+    if (funcOp.empty()) {
+      funcOp.emitError("cannot insert fixpipe config aliases into an external "
+                       "function");
+      return failure();
+    }
+
+    OpBuilder builder(funcOp.getContext());
+    builder.setInsertionPointToStart(&funcOp.front());
     for (const auto &[pipeId, configTok] : aliases) {
       std::string line =
           "using " + buildFixpipeConfigAliasName(pipeId) + " = " + configTok + ";";
