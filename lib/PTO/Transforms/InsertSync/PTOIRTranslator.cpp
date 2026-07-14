@@ -82,6 +82,18 @@ static bool getConstIndexValue(Value value, int64_t &out) {
   return true;
 }
 
+static std::optional<uint64_t> getKnownPhysicalAddress(Value value) {
+  int64_t address = 0;
+  if (!getConstIndexValue(value, address) || address < 0)
+    return std::nullopt;
+  return static_cast<uint64_t>(address);
+}
+
+static bool isLocalAddressSpace(pto::AddressSpace space) {
+  return space != pto::AddressSpace::GM &&
+         space != pto::AddressSpace::Zero;
+}
+
 static bool isStaticRank2Shape(ArrayRef<int64_t> shape) {
   return shape.size() == kTileRank2D &&
          llvm::none_of(shape, [](int64_t dim) {
@@ -540,13 +552,22 @@ LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op)
   }
 
   if (op.getAddrs().size() == 1) {
-    // Single-address path: keep the historical semantics where `rootBuffer`
-    // is the i64 address SSA and `baseAddresses` starts at {0}. Downstream
-    // view ops accumulate a delta into baseAddresses[0]; MemAlias gates on
-    // rootBuffer SSA identity for single-buffer allocations.
+    // Keep the address SSA as the root so dynamic pointer casts retain their
+    // historical identity-based behavior. For a static local cast, also keep
+    // its byte address for cross-root physical range analysis; downstream view
+    // ops accumulate their delta into baseAddresses[0].
     Value rootSrc = op.getAddrs().front();
+    SmallVector<uint64_t> baseAddresses{0};
+    bool hasKnownPhysicalAddresses = false;
+    if (isLocalAddressSpace(space)) {
+      if (std::optional<uint64_t> address = getKnownPhysicalAddress(rootSrc)) {
+        baseAddresses[0] = *address;
+        hasKnownPhysicalAddresses = true;
+      }
+    }
     auto newMemInfo = std::make_unique<BaseMemInfo>(
-        res, rootSrc, space, SmallVector<uint64_t>{0}, sizeInBytes);
+        res, rootSrc, space, std::move(baseAddresses), sizeInBytes,
+        hasKnownPhysicalAddresses);
     buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
     return success();
   }
@@ -561,9 +582,8 @@ LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op)
   SmallVector<uint64_t> slotOffsets;
   slotOffsets.reserve(op.getAddrs().size());
   for (Value a : op.getAddrs()) {
-    auto cst = a.getDefiningOp<arith::ConstantOp>();
-    IntegerAttr attr;
-    if (!cst || !(attr = dyn_cast<IntegerAttr>(cst.getValue()))) {
+    std::optional<uint64_t> address = getKnownPhysicalAddress(a);
+    if (!address) {
       // Non-constant slot address: fall back to single-address semantics
       // with the first operand as rootBuffer so existing non-multi-buffer
       // codepaths that happen to feed non-constant i64s keep their
@@ -574,11 +594,12 @@ LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op)
       buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
       return success();
     }
-    slotOffsets.push_back(attr.getValue().getZExtValue());
+    slotOffsets.push_back(*address);
   }
 
   auto newMemInfo = std::make_unique<BaseMemInfo>(
-      res, res, space, std::move(slotOffsets), sizeInBytes);
+      res, res, space, std::move(slotOffsets), sizeInBytes,
+      isLocalAddressSpace(space));
   buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
   return success();
 }
