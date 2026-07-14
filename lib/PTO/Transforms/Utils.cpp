@@ -176,6 +176,8 @@ std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
     return std::make_pair(subViewOp.getResult(), subViewOp.getViewSource());
   } else if (auto subViewOp = dyn_cast<pto::SubViewOp>(op)) {
     return std::make_pair(subViewOp.getResult(), subViewOp.getSource());
+  } else if (auto bitcastOp = dyn_cast<pto::BitcastOp>(op)) {
+    return std::make_pair(bitcastOp.getResult(), bitcastOp.getSrc());
   } else if (auto reshapeOp = dyn_cast<pto::TReshapeOp>(op)) {
     return std::make_pair(reshapeOp.getResult(), reshapeOp.getSrc());
   } else if (auto bindTileOp = dyn_cast<pto::BindTileOp>(op)) {

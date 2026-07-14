@@ -690,6 +690,10 @@ struct PlannerAnalysis {
           setRoots(subview.getResult(), getRoots(subview.getSource()));
           propagateSplitTpopDerived(subview.getResult(),
                                     ValueRange{subview.getSource()});
+        } else if (auto bitcast = dyn_cast<pto::BitcastOp>(op)) {
+          setRoots(bitcast.getResult(), getRoots(bitcast.getSrc()));
+          propagateSplitTpopDerived(bitcast.getResult(),
+                                    ValueRange{bitcast.getSrc()});
         } else if (auto reshape = dyn_cast<pto::TReshapeOp>(op)) {
           setRoots(reshape.getResult(), getRoots(reshape.getSrc()));
           propagateSplitTpopDerived(reshape.getResult(),
