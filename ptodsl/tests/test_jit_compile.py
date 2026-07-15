@@ -3010,8 +3010,6 @@ def main() -> None:
         "pipe_barrier",
         "get_buf",
         "rls_buf",
-        "get_buf_dyn",
-        "rls_buf_dyn",
         "set_cross_flag",
         "wait_cross_flag",
         "set_intra_flag",
@@ -3079,6 +3077,8 @@ def main() -> None:
     expect(not hasattr(pto, "tload"), "legacy pto.tload should not remain on the public pto namespace")
     expect(not hasattr(pto, "tstore"), "legacy pto.tstore should not remain on the public pto namespace")
     expect(not hasattr(pto, "tadd"), "legacy pto.tadd should not remain on the public pto namespace")
+    expect(not hasattr(pto, "get_buf_dyn"), "pto.get_buf_dyn should not remain on the public pto namespace")
+    expect(not hasattr(pto, "rls_buf_dyn"), "pto.rls_buf_dyn should not remain on the public pto namespace")
     expect(not hasattr(pto, "tile_buf_type"), "pto.tile_buf_type should not remain on the public pto namespace")
     expect(not hasattr(pto, "vecscope"), "pto.vecscope should not remain on the public pto namespace")
     expect(not hasattr(pto, "as_ptr"), "pto.as_ptr should not remain on the public pto namespace")
