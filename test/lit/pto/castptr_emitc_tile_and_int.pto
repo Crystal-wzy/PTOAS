@@ -23,6 +23,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
   }
 }
 
+// CHECK-LABEL: static AICORE int64_t helper(__ubuf__ float*
+// CHECK: reinterpret_cast<int64_t>
 // CHECK-LABEL: AICORE void castptr_ptr_to_int(__ubuf__ float*
 // CHECK: helper(
-// CHECK: reinterpret_cast<int64_t>
