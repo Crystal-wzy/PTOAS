@@ -1,4 +1,4 @@
-# PTOAS Largest-First-Fit 与五道冲突闸门内存规划设计
+# PTOAS Largest-First-Fit 与四道冲突闸门内存规划设计
 
 ## 总体方案
 
@@ -40,7 +40,7 @@ pto.alloc_tile(no addr)
 本设计不包含以下内容：
 
 - 不修改 legacy memplan 的 StorageEntry / SPEC_LEVEL_1 / SPEC_LEVEL_2 逻辑。
-- 不在 legacy memplan 中实现五道闸门。
+- 不在 legacy memplan 中实现四道闸门。
 - 不恢复旧版回滚式投机规划。
 - 不把 modern memplan 作为默认实现。
 - 不在本阶段实现跨函数、跨 module 的全局内存规划。
@@ -530,7 +530,7 @@ forbidAlias[%tmp].insert(%dst)
 
 #### 4.4 闸门 4 判定
 
-`canShare(a, b)` 中的闸门 3 是双向检查：
+`canShare(a, b)` 中的闸门 4 是双向检查：
 
 ```text
 Gate4_OpSemanticNoAlias(a, b):

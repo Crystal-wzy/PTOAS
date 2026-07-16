@@ -4773,8 +4773,9 @@ struct CastPtrConversion : public OpConversionPattern<pto::CastPtrOp> {
       return failure();
 
     Value input = adaptor.getInput();
-    if (input.getType() == convertedResultType) {
-      rewriter.replaceOp(op, input);
+    Value peeledInput = peelUnrealized(input);
+    if (peeledInput.getType() == convertedResultType) {
+      rewriter.replaceOp(op, peeledInput);
       return success();
     }
 
@@ -4785,12 +4786,65 @@ struct CastPtrConversion : public OpConversionPattern<pto::CastPtrOp> {
       if (!as)
         return rewriter.notifyMatchFailure(op, "unsupported ptr address space");
 
-      Value ptr = materializeAddressAsPointer(rewriter, op.getLoc(), input, *as,
-                                              elemTok);
+      if (isEmitCTileLikeType(peeledInput.getType())) {
+        Value ptr = rewriter
+                        .create<emitc::CallOpaqueOp>(
+                            op.getLoc(), convertedResultType, "PTOAS__TILE_DATA",
+                            ArrayAttr{}, ArrayAttr{}, ValueRange{peeledInput})
+                        .getResult(0);
+        rewriter.replaceOp(op, ptr);
+        return success();
+      }
+
+      Value ptr = materializeAddressAsPointer(rewriter, op.getLoc(), peeledInput,
+                                              *as, elemTok);
       if (ptr.getType() != convertedResultType)
         ptr = rewriter.create<emitc::CastOp>(op.getLoc(), convertedResultType, ptr)
                   .getResult();
       rewriter.replaceOp(op, ptr);
+      return success();
+    }
+
+    if (isa<IntegerType>(op.getResult().getType()) &&
+        emitc::isSupportedEmitCType(convertedResultType)) {
+      Value source = input;
+      if (!emitc::isSupportedEmitCType(source.getType())) {
+        if (auto inputPtrTy = dyn_cast<pto::PtrType>(op.getInput().getType())) {
+          std::string elemTok =
+              getEmitCScalarTypeToken(inputPtrTy.getElementType());
+          std::optional<pto::AddressSpace> as =
+              getAddressSpaceOrGM(inputPtrTy.getMemorySpace());
+          if (!as)
+            return rewriter.notifyMatchFailure(op,
+                                               "unsupported ptr address space");
+          if (isEmitCTileLikeType(peeledInput.getType())) {
+            Type convertedInputType =
+                getTypeConverter()->convertType(op.getInput().getType());
+            if (!convertedInputType)
+              return rewriter.notifyMatchFailure(op,
+                                                 "failed to convert input ptr type");
+            source = rewriter
+                         .create<emitc::CallOpaqueOp>(
+                             op.getLoc(), convertedInputType, "PTOAS__TILE_DATA",
+                             ArrayAttr{}, ArrayAttr{}, ValueRange{peeledInput})
+                         .getResult(0);
+          } else {
+            source = materializeAddressAsPointer(rewriter, op.getLoc(),
+                                                 peeledInput, *as, elemTok);
+          }
+        }
+      }
+      if (!emitc::isSupportedEmitCType(source.getType()))
+        return rewriter.notifyMatchFailure(op,
+                                           "unsupported castptr integer source");
+      auto templateArgs = rewriter.getArrayAttr(
+          {emitc::OpaqueAttr::get(rewriter.getContext(),
+                                  cast<emitc::OpaqueType>(convertedResultType)
+                                      .getValue())});
+      auto cast = rewriter.create<emitc::CallOpaqueOp>(
+          op.getLoc(), convertedResultType, "reinterpret_cast", ArrayAttr{},
+          templateArgs, ValueRange{source});
+      rewriter.replaceOp(op, cast.getResult(0));
       return success();
     }
 
