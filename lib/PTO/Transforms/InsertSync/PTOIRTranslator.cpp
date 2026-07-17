@@ -459,6 +459,8 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       }
     } else if (auto multiGet = dyn_cast<pto::MultiTileGetOp>(op)) {
       UpdateMultiTileGetAliasBufferInfo(multiGet);
+    } else if (auto reshape = dyn_cast<pto::TReshapeOp>(op)) {
+      UpdateAliasBufferInfo(reshape.getResult(), reshape.getSrc());
     } else if (auto castOp = dyn_cast<memref::ReinterpretCastOp>(op)) {
       UpdateAliasBufferInfo(castOp.getResult(), castOp.getSource());
     }

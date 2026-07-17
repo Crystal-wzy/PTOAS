@@ -81,7 +81,7 @@ PTO tile/view IR
 | Op | 当前行为 | Tile-native 目标 | Memplan / Alias | InsertSync | Backend 与测试 |
 |---|---|---|---|---|---|
 | `pto.subview` | 通常转成 `memref.subview + pto.bind_tile`，之后再恢复 tile | 全程保留 `pto.subview` | result 与 source 同 root；按 layout/stride/offset 计算 byte range | 现有 InsertSync 已有精确 `pto.subview` 地址计算；GSS 和 BufidSync 补齐同等能力 | EmitC/VPTO 增加直接 lowering；覆盖 row/col-major、dynamic offset、valid shape |
-| `pto.treshape` | 转成 memref view，materialize 阶段恢复 `treshape` | 保持原 op | result 与 source 完全 alias，size 不变 | InsertSync/GSS 增加 result-to-source alias 传播 | backend 已有 tile op 路径；覆盖动态 valid shape 和控制流 |
+| `pto.treshape` | 已保持 tile-native，不再生成 memref view 或 `bind_tile` | 保持原 op | result 与 source 完全 alias，size 不变；legacy/modern memplan 已传播 alias | InsertSync/GSS 已直接传播 result-to-source alias | EmitC 已直接 lowering；覆盖 tile 参数、动态 valid shape 和静态 valid shape |
 | `pto.bitcast` | 转成 memref view，materialize 阶段恢复 `bitcast` | 保持原 op | result 与 source alias；以 byte range 为准，校验总容量一致 | InsertSync/GSS 增加 alias 传播，不能按 element type 分裂 root | EmitC/VPTO 直接 lowering；覆盖 dtype 改变和相同容量 |
 | `pto.set_validshape` | 在 memref 层通过 bind metadata 记录，materialize 后恢复 tile 类型 | 直接更新/产生 tile handle metadata，不改变物理 root | result 与 source alias，物理 size 使用 allocation shape，不使用 valid shape | 同一物理范围；repeat 分析读取更新后的 valid shape | 两后端直接消费；覆盖 if/for 和动态 valid shape |
 | `pto.get_validshape` | materialize 后依赖 tile handle 读取 metadata | 直接读取 tile operand metadata | 不产生 root | 无内存 effect | 两后端直接 lowering；覆盖静态折叠和动态值 |

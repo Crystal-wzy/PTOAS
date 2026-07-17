@@ -77,6 +77,16 @@ static bool hasTileNativeAllocationRoot(func::FuncOp func) {
   return found;
 }
 
+static bool hasMigratedTileNativeView(func::FuncOp func) {
+  bool found = false;
+  auto result = func.walk([&](pto::TReshapeOp) {
+    found = true;
+    return WalkResult::interrupt();
+  });
+  (void)result;
+  return found;
+}
+
 constexpr size_t kTileRank2D = 2;
 constexpr size_t kRowDimensionIndex = 0;
 constexpr size_t kColumnDimensionIndex = 1;
@@ -1546,24 +1556,6 @@ static Value buildTileBufViewLikeValue(Operation *anchorOp, Value src,
 }
 
 static LogicalResult lowerTileBufViewLikeOps(func::FuncOp func, MLIRContext *ctx) {
-  DefaultInlineVector<mlir::pto::TReshapeOp> reshapes;
-  func.walk([&](mlir::pto::TReshapeOp op) { reshapes.push_back(op); });
-  for (auto op : reshapes) {
-    auto tbTy = dyn_cast<mlir::pto::TileBufType>(op.getResult().getType());
-    if (!tbTy) {
-      op.emitError("treshape result must be tile_buf type");
-      return failure();
-    }
-    if (isa<mlir::pto::TileBufType>(op->getOperand(0).getType()))
-      continue;
-    Value lowered = buildTileBufViewLikeValue(op, op->getOperand(0), tbTy,
-                                              "treshape", ctx);
-    if (!lowered)
-      return failure();
-    IRRewriter rewriter(ctx);
-    rewriter.replaceOp(op, lowered);
-  }
-
   DefaultInlineVector<mlir::pto::BitcastOp> bitcasts;
   func.walk([&](mlir::pto::BitcastOp op) { bitcasts.push_back(op); });
   for (auto op : bitcasts) {
@@ -1637,15 +1629,26 @@ struct PTOViewToMemrefPass
         continue;
 
       auto fnTy = func.getFunctionType();
+      bool preserveTileABI = hasMigratedTileNativeView(func);
+      bool tileNativeMainline =
+          preserveTileABI || hasTileNativeAllocationRoot(func);
 
       // ------------------------------------------------------------------
       // Stage 0.10: Rewrite Function Signature
       // ------------------------------------------------------------------
       SmallVector<Type> newInputs;
-      for (Type t : fnTy.getInputs()) newInputs.push_back(convertPTOTypeToMemRef(t));
+      for (Type t : fnTy.getInputs()) {
+        newInputs.push_back(preserveTileABI && isa<pto::TileBufType>(t)
+                                ? t
+                                : convertPTOTypeToMemRef(t));
+      }
 
       SmallVector<Type> newResults;
-      for (Type t : fnTy.getResults()) newResults.push_back(convertPTOTypeToMemRef(t));
+      for (Type t : fnTy.getResults()) {
+        newResults.push_back(preserveTileABI && isa<pto::TileBufType>(t)
+                                 ? t
+                                 : convertPTOTypeToMemRef(t));
+      }
 
       func.setFunctionType(FunctionType::get(ctx, newInputs, newResults));
 
@@ -1698,7 +1701,7 @@ struct PTOViewToMemrefPass
         for (unsigned i = 0; i < entry.getNumArguments(); ++i) {
           Type origTy = fnTy.getInputs()[i];
           auto tbTy = dyn_cast<mlir::pto::TileBufType>(origTy);
-          if (!tbTy)
+          if (!tbTy || newInputs[i] == origTy)
             continue;
 
           auto configAttr = tbTy.getConfigAttr();
@@ -2080,7 +2083,7 @@ struct PTOViewToMemrefPass
       // Stage 3: Rewrite Compute Ops
       // [关键] 全面使用 op->getOperand(i) 避免 Typed Accessor Crash
       // ------------------------------------------------------------------
-      if (!hasTileNativeAllocationRoot(func)) {
+      if (!tileNativeMainline) {
       
       // --- TLoadOp [Src, Dst] ---
       DefaultInlineVector<mlir::pto::TLoadOp> loads;
