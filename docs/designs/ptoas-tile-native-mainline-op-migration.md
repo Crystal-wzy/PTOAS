@@ -85,7 +85,7 @@ PTO tile/view IR
 | `pto.bitcast` | 已保持 tile-native，不再生成 memref view 或 `bind_tile` | 保持原 op | result 与 source alias；legacy/modern memplan 已按 byte range 传播同一 root，并校验总容量一致 | InsertSync/GSS 已直接传播 alias，不按 element type 分裂 root | EmitC 已直接 lowering；覆盖 tile 参数和同容量 dtype 改变 |
 | `pto.set_validshape` | 已保持 tile-native，输入已收紧为 `TileBufType` | 直接更新 tile handle metadata，不改变物理 root | 不产生新 root；物理 size 使用 allocation shape，不使用 valid shape | 对原 root 建模为 metadata Write | EmitC 已直接消费；覆盖 if 和动态 valid shape |
 | `pto.get_validshape` | 已保持 tile-native，输入已收紧为 `TileBufType` | 直接读取 tile operand metadata | 不产生 root | 对原 root 建模为 metadata Read | EmitC 已直接 lowering；覆盖 tile 参数和动态值 |
-| `pto.tile_buf_addr` | ptr-like 形式转成线性 memref，后续 materialize 可能恢复 | 直接从 tile root/view 计算地址；返回 pointer-like PTO 类型 | 不产生新 root | 若结果参与 load/store，需要保留到原 root 的 provenance | EmitC/VPTO 直接生成地址表达式；覆盖 alloc、subview、multi slot |
+| `pto.tile_buf_addr` | tile-native 输入已保持原 op；仅 legacy memref 输入仍走线性 memref 兼容路径 | 直接从 tile root/view 计算地址；返回 pointer-like PTO 类型 | 不产生新 root；legacy memplan 将 source 记录为 use | 包含该 op 的函数保持 tile ABI，地址结果保留 source provenance | EmitC 直接生成 `tile.data()`，VPTO pointer normalize 保持 typed pointer；覆盖 tile 参数和 alloc root |
 
 ## 6. GM Tensor View 与地址 Op
 

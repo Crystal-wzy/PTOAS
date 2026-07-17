@@ -13572,23 +13572,18 @@ struct PTOTileBufAddrToEmitC : public OpConversionPattern<pto::TileBufAddrOp> {
 
   LogicalResult matchAndRewrite(pto::TileBufAddrOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    auto ptrTy = dyn_cast<pto::PtrType>(op.getResult().getType());
-    if (!ptrTy)
-      return failure();
-
     Value src = peelUnrealized(adaptor.getSrc());
+    Type dstTy = getTypeConverter()->convertType(op.getResult().getType());
+    if (!dstTy)
+      return failure();
 
     if (isEmitCTileLikeType(src.getType())) {
       rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-          op,
-          TypeRange{getTypeConverter()->convertType(op.getResult().getType())},
+          op, TypeRange{dstTy},
           "PTOAS__TILE_DATA", ArrayAttr{}, ArrayAttr{}, ValueRange{src});
       return success();
     }
 
-    Type dstTy = getTypeConverter()->convertType(op.getResult().getType());
-    if (!dstTy)
-      return failure();
     rewriter.replaceOpWithNewOp<emitc::CastOp>(op, dstTy, src);
     return success();
   }

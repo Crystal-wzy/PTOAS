@@ -79,7 +79,7 @@ static bool hasMigratedTileNativeView(func::FuncOp func) {
   bool found = false;
   auto result = func.walk([&](Operation *op) {
     if (isa<pto::TReshapeOp, pto::BitcastOp, pto::SetValidShapeOp,
-            pto::GetValidShapeOp, pto::SubViewOp>(op)) {
+            pto::GetValidShapeOp, pto::SubViewOp, pto::TileBufAddrOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
