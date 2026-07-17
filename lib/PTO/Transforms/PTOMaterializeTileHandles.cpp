@@ -1520,6 +1520,20 @@ struct PTOMaterializeTileHandlesPass
     ModuleOp module = getOperation();
     MLIRContext *ctx = module.getContext();
 
+    bool hasUnresolvedMultiTile = false;
+    module.walk([&](Operation *op) {
+      if (!isa<AllocMultiTileOp, MultiTileGetOp>(op))
+        return;
+      op->emitError(
+          "must be resolved by pto-resolve-buffer-select before "
+          "pto-materialize-tile-handles");
+      hasUnresolvedMultiTile = true;
+    });
+    if (hasUnresolvedMultiTile) {
+      signalPassFailure();
+      return;
+    }
+
     OpBuilder builder(ctx);
     DenseMap<Value, Value> tileHandles;
     DenseSet<Value> mustMaterialize;

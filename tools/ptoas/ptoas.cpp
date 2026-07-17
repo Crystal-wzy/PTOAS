@@ -9,6 +9,7 @@
 #include "ptoas.h"
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/VMIUtils.h"
+#include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
@@ -3188,6 +3189,17 @@ int mlir::pto::compilePTOASModule(
                     "disabled.\n";
     return 1;
   }
+
+  bool hasUserPlannedMultiAddrs = false;
+  module->walk([&](pto::AllocMultiTileOp op) {
+    if (!op->hasAttr(pto::kPtoMultiBufferAddrsAttrName))
+      return;
+    op.emitError() << "attribute '" << pto::kPtoMultiBufferAddrsAttrName
+                   << "' is reserved for pto-plan-memory";
+    hasUserPlannedMultiAddrs = true;
+  });
+  if (hasUserPlannedMultiAddrs)
+    return 1;
 
   if (effectiveLevel == PTOBuildLevel::Level3) {
     // In level3 the caller owns local memory and PTOPlanMemory is skipped, so

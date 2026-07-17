@@ -156,6 +156,12 @@ std::optional<AddressSpaceAttr> GetBufferSpaceAttr(Value operand) {
       return memorySpaceAttr;
     return std::nullopt;
   }
+  if (auto multiTy = dyn_cast<pto::MultiTileBufType>(operand.getType())) {
+    if (auto memorySpaceAttr = dyn_cast_or_null<AddressSpaceAttr>(
+            multiTy.getSlotType().getMemorySpace()))
+      return memorySpaceAttr;
+    return std::nullopt;
+  }
 
   if (!llvm::isa<MemRefType>(operand.getType())) {
     return std::nullopt;
@@ -187,6 +193,8 @@ std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
     // physical slot of a multi-buffer alloc. From an alias-walking
     // standpoint it behaves like any other view-like op.
     return std::make_pair(slotMarkerOp.getResult(), slotMarkerOp.getSource());
+  } else if (auto multiGetOp = dyn_cast<pto::MultiTileGetOp>(op)) {
+    return std::make_pair(multiGetOp.getResult(), multiGetOp.getSource());
   } else if (auto extSliceOp = dyn_cast<tensor::ExtractSliceOp>(op)) {
     return std::make_pair(extSliceOp.getResult(), extSliceOp.getSource());
   } else if (auto collapseShapeOp = dyn_cast<memref::CollapseShapeOp>(op)) {

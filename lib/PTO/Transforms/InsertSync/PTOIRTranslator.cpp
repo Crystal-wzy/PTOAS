@@ -14,6 +14,7 @@
 // of the License.
 
 #include "PTO/Transforms/InsertSync/PTOIRTranslator.h"
+#include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/InsertSync/SyncMacroModel.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -407,6 +408,11 @@ void PTOIRTranslator::RecursionIR(Region *region) {
         return WalkResult::interrupt();
       }
     }
+    else if (auto allocMultiOp = dyn_cast<pto::AllocMultiTileOp>(op)) {
+      if (failed(UpdateAllocMultiTileOpMemInfo(allocMultiOp))) {
+        return WalkResult::interrupt();
+      }
+    }
     // 支持标准 memref.alloc
     else if (auto memAllocOp = dyn_cast<memref::AllocOp>(op)) {
       if (failed(UpdateMemrefAllocOpMemInfo(memAllocOp))) {
@@ -448,6 +454,8 @@ void PTOIRTranslator::RecursionIR(Region *region) {
           isa<pto::PtrType, MemRefType>(castPtrOp.getResult().getType())) {
         UpdateAliasBufferInfo(castPtrOp.getResult(), castPtrOp.getInput());
       }
+    } else if (auto multiGet = dyn_cast<pto::MultiTileGetOp>(op)) {
+      UpdateMultiTileGetAliasBufferInfo(multiGet);
     } else if (auto castOp = dyn_cast<memref::ReinterpretCastOp>(op)) {
       UpdateAliasBufferInfo(castOp.getResult(), castOp.getSource());
     }
@@ -570,7 +578,55 @@ LogicalResult PTOIRTranslator::UpdateAllocTileOpMemInfo(pto::AllocTileOp op) {
 }
 
 LogicalResult
-PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op) {
+PTOIRTranslator::UpdateAllocMultiTileOpMemInfo(pto::AllocMultiTileOp op) {
+  Value result = op.getResult();
+  auto multiType = op.getResult().getType();
+  pto::TileBufType slotType = multiType.getSlotType();
+
+  uint64_t slotBytes = pto::getPTOStorageElemByteSize(slotType.getElementType());
+  if (slotBytes == 0)
+    return failure();
+  for (int64_t dim : slotType.getShape()) {
+    if (dim == ShapedType::kDynamic)
+      return op.emitError("requires a static slot shape for sync analysis");
+    slotBytes *= static_cast<uint64_t>(dim);
+  }
+
+  pto::AddressSpace space = pto::AddressSpace::MAT;
+  if (auto attr = dyn_cast_or_null<pto::AddressSpaceAttr>(
+          slotType.getMemorySpace()))
+    space = attr.getAddressSpace();
+
+  SmallVector<uint64_t> addresses;
+  bool hasKnownAddresses = false;
+  if (auto planned = op->getAttrOfType<DenseI64ArrayAttr>(
+          pto::kPtoMultiBufferAddrsAttrName)) {
+    if (planned.size() != multiType.getCount())
+      return op.emitError("planned address count does not match slot count");
+    for (int64_t address : planned.asArrayRef())
+      addresses.push_back(static_cast<uint64_t>(address));
+    hasKnownAddresses = true;
+  } else if (Value base = op.getAddr()) {
+    if (std::optional<uint64_t> knownBase = getKnownPhysicalAddress(base)) {
+      for (uint32_t slot = 0; slot < multiType.getCount(); ++slot)
+        addresses.push_back(*knownBase + slot * slotBytes);
+      hasKnownAddresses = true;
+    }
+  }
+
+  if (addresses.empty()) {
+    return op.emitError(
+        "requires planner-assigned slot addresses or a constant level3 base");
+  }
+
+  auto info = std::make_unique<BaseMemInfo>(
+      result, result, space, std::move(addresses), slotBytes,
+      hasKnownAddresses && isLocalAddressSpace(space));
+  buffer2MemInfoMap_[result].emplace_back(info->clone());
+  return success();
+}
+
+LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op) {
   Value res = op.getResult();
   auto memRefType = dyn_cast<MemRefType>(res.getType());
   if (!memRefType)
@@ -1091,14 +1147,24 @@ LogicalResult PTOIRTranslator::UpdateIntToPtrOpMemInfo(pto::IntToPtrOp op) {
 }
 
 void PTOIRTranslator::UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op) {
-  Value result = op.getResult();
-  Value source = op.getSource();
+  UpdateSlotSelectedAliasBufferInfo(op.getResult(), op.getSource(),
+                                    op.getSlot());
+}
+
+void PTOIRTranslator::UpdateMultiTileGetAliasBufferInfo(
+    pto::MultiTileGetOp op) {
+  UpdateSlotSelectedAliasBufferInfo(op.getResult(), op.getSource(),
+                                    op.getSlot());
+}
+
+void PTOIRTranslator::UpdateSlotSelectedAliasBufferInfo(Value result,
+                                                        Value source,
+                                                        Value slot) {
   if (!result || !source)
     return;
   if (!buffer2MemInfoMap_.contains(source))
     return;
 
-  Value slot = op.getSlot();
   IntegerAttr constAttr;
   bool isConstSlot = matchPattern(slot, m_Constant(&constAttr));
   int64_t constSlotIdx = isConstSlot ? constAttr.getValue().getSExtValue() : -1;

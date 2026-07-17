@@ -3239,6 +3239,43 @@ LogicalResult AllocMultiTileOp::verify() {
                          << kPtoMultiBufferMaxNum << "] (got " << count << ")";
   }
 
+  if (Attribute rawAddrs = (*this)->getAttr(kPtoMultiBufferAddrsAttrName)) {
+    auto addrs = dyn_cast<DenseI64ArrayAttr>(rawAddrs);
+    if (!addrs)
+      return emitOpError() << "expects internal '"
+                           << kPtoMultiBufferAddrsAttrName
+                           << "' to be a dense i64 array";
+    if (getAddr())
+      return emitOpError() << "cannot carry both base 'addr' and internal '"
+                           << kPtoMultiBufferAddrsAttrName << "'";
+    if (addrs.size() != count)
+      return emitOpError() << "expects " << count << " planned slot addresses, got "
+                           << addrs.size();
+
+    uint64_t elemBytes = getPTOStorageElemByteSize(slotTy.getElementType());
+    uint64_t slotBytes = elemBytes;
+    for (int64_t dim : slotTy.getShape()) {
+      if (dim == ShapedType::kDynamic)
+        return emitOpError(
+            "planned multi-buffer addresses require a static slot shape");
+      slotBytes *= static_cast<uint64_t>(dim);
+    }
+    for (auto [lhsIdx, lhs] : llvm::enumerate(addrs.asArrayRef())) {
+      if (lhs < 0)
+        return emitOpError("planned slot addresses must be non-negative");
+      uint64_t lhsBegin = static_cast<uint64_t>(lhs);
+      uint64_t lhsEnd = lhsBegin + slotBytes;
+      for (size_t rhsIdx = lhsIdx + 1;
+           rhsIdx < static_cast<size_t>(addrs.size()); ++rhsIdx) {
+        uint64_t rhsBegin = static_cast<uint64_t>(addrs[rhsIdx]);
+        uint64_t rhsEnd = rhsBegin + slotBytes;
+        if (std::max(lhsBegin, rhsBegin) < std::min(lhsEnd, rhsEnd))
+          return emitOpError() << "planned slots " << lhsIdx << " and "
+                               << rhsIdx << " overlap";
+      }
+    }
+  }
+
   return success();
 }
 

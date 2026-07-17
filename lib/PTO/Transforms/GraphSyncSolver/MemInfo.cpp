@@ -11,6 +11,7 @@
 
 #include "PTO/Transforms/GraphSyncSolver/MemInfo.h"
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "../Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -26,6 +27,19 @@ using namespace pto::syncsolver;
 namespace mlir::pto::syncsolver {
 
 static std::optional<int64_t> getBufferBitSize(Value value) {
+  if (auto multiType = dyn_cast<pto::MultiTileBufType>(value.getType())) {
+    auto slotType = multiType.getSlotType();
+    auto bitWidth = getPTOStorageElemBitWidth(slotType.getElementType());
+    if (bitWidth == 0)
+      return ShapedType::kDynamic;
+    int64_t numElements = 1;
+    for (int64_t dim : slotType.getShape()) {
+      if (dim == ShapedType::kDynamic)
+        return ShapedType::kDynamic;
+      numElements *= dim;
+    }
+    return numElements * bitWidth;
+  }
   auto shaped = dyn_cast<ShapedType>(value.getType());
   if (!shaped || !shaped.hasStaticShape()) {
     return ShapedType::kDynamic;
@@ -93,6 +107,55 @@ static MemInfo getConservativeIntToPtrMemInfo(pto::IntToPtrOp intToPtr) {
   pointerLikeInfo.allocateSize = ShapedType::kDynamic;
   pointerLikeInfo.aliasesUnknownRange = true;
   return MemInfo(intToPtr.getResult(), pointerLikeInfo);
+}
+
+static std::optional<int64_t> getConstantI64(Value value) {
+  IntegerAttr attr;
+  if (!value || !matchPattern(value, m_Constant(&attr)))
+    return std::nullopt;
+  return attr.getValue().getSExtValue();
+}
+
+static PointerLikeInfo getPointerLikeInfo(pto::AllocMultiTileOp alloc) {
+  PointerLikeInfo info(alloc);
+  info.allocateSize = getBufferBitSize(alloc.getResult());
+  auto slotType = alloc.getResult().getType().getSlotType();
+  if (auto space = dyn_cast_or_null<pto::AddressSpaceAttr>(
+          slotType.getMemorySpace()))
+    info.addressSpace = space.getAddressSpace();
+
+  if (auto planned = alloc->getAttrOfType<DenseI64ArrayAttr>(
+          pto::kPtoMultiBufferAddrsAttrName)) {
+    for (int64_t address : planned.asArrayRef())
+      info.addresses.push_back(address * pto::kBitsToByte);
+  } else if (auto base = getConstantI64(alloc.getAddr())) {
+    int64_t slotBits = info.allocateSize.value_or(ShapedType::kDynamic);
+    for (uint32_t slot = 0; slot < alloc.getResult().getType().getCount(); ++slot)
+      info.addresses.push_back(*base * pto::kBitsToByte + slot * slotBits);
+  }
+  if (auto loop = alloc->getParentOfType<LoopLikeOpInterface>())
+    info.parentLoop = loop;
+  return info;
+}
+
+static MemInfo getMemInfoForMultiTileGet(pto::MultiTileGetOp get) {
+  auto alloc = get.getSource().getDefiningOp<pto::AllocMultiTileOp>();
+  if (!alloc)
+    return MemInfo(get.getResult(), isWorkSpaceFuncArgument(get.getResult()));
+
+  PointerLikeInfo info = getPointerLikeInfo(alloc);
+  IntegerAttr slotAttr;
+  if (matchPattern(get.getSlot(), m_Constant(&slotAttr)) &&
+      info.addresses.size() > 1) {
+    int64_t slot = slotAttr.getValue().getSExtValue();
+    if (slot >= 0 && slot < static_cast<int64_t>(info.addresses.size())) {
+      int64_t address = info.addresses[static_cast<size_t>(slot)];
+      info.addresses.assign(1, address);
+    }
+  }
+  if (auto loop = get->getParentOfType<LoopLikeOpInterface>())
+    info.parentLoop = loop;
+  return MemInfo(get.getResult(), info);
 }
 
 // Walk back through metadata-only view ops (`pto.bind_tile`) to the
@@ -169,6 +232,10 @@ MemInfo getMemInfo(Value val) {
     if (auto slotMarker = llvm::dyn_cast<pto::SlotMarkerOp>(defOp)) {
       return getMemInfoForSlotMarker(slotMarker);
     }
+    if (auto allocMulti = llvm::dyn_cast<pto::AllocMultiTileOp>(defOp))
+      return MemInfo(val, getPointerLikeInfo(allocMulti));
+    if (auto multiGet = llvm::dyn_cast<pto::MultiTileGetOp>(defOp))
+      return getMemInfoForMultiTileGet(multiGet);
   }
   return MemInfo(val, isWorkSpaceFuncArgument(val));
 }

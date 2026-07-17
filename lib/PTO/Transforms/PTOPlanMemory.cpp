@@ -548,6 +548,19 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       }
       UpdateOpBufferInfo(op, op->getResults());
       return WalkResult::advance();
+    } else if (isLocalMemPlan() && dyn_cast<pto::AllocMultiTileOp>(op)) {
+      auto allocMultiOp = cast<pto::AllocMultiTileOp>(op);
+      if (allocMultiOp.getAddr())
+        return WalkResult::advance();
+      auto memorySpaceAttr = GetBufferSpaceAttr(allocMultiOp.getResult());
+      if (!isLocalBuffer(memorySpaceAttr)) {
+        allocMultiOp.emitError("Alloc multi tile buffer not at local space");
+        return WalkResult::interrupt();
+      }
+      uint32_t count = allocMultiOp.getResult().getType().getCount();
+      buffer2MultiNum[allocMultiOp.getResult()] = count;
+      UpdateOpBufferInfo(op, op->getResults());
+      return WalkResult::advance();
     } else if (isLocalMemPlan() && dyn_cast<memref::AllocOp>(op)) {
       auto allocOp = cast<memref::AllocOp>(op);
       if (failed(CheckLocalBufferAllocOp(op))) {
@@ -1061,6 +1074,9 @@ BufferInfo MemLivenessAnalysis::GetBufferInfo(Operation *op, Value operand,
   if (auto tileType = dyn_cast<TileBufType>(operand.getType())) {
     shape = tileType.getShape();
     elementType = tileType.getElementType();
+  } else if (auto multiType = dyn_cast<MultiTileBufType>(operand.getType())) {
+    shape = multiType.getSlotType().getShape();
+    elementType = multiType.getSlotType().getElementType();
   } else {
     Value traceValue = tracebackMemRef(operand);
     auto memRefType = cast<MemRefType>(traceValue.getType());
@@ -2622,6 +2638,42 @@ private:
   DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets;
 };
 
+class LegacyAllocMultiTileOpAddPlannedAddressesPattern
+    : public OpRewritePattern<pto::AllocMultiTileOp> {
+public:
+  explicit LegacyAllocMultiTileOpAddPlannedAddressesPattern(
+      MLIRContext *context,
+      DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets)
+      : OpRewritePattern<pto::AllocMultiTileOp>(context),
+        buffer2Offsets(std::move(buffer2Offsets)) {}
+
+  LogicalResult matchAndRewrite(pto::AllocMultiTileOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getAddr() || op->hasAttr(pto::kPtoMultiBufferAddrsAttrName))
+      return failure();
+    auto it = buffer2Offsets.find(op.getResult());
+    if (it == buffer2Offsets.end() || it->second.empty())
+      return failure();
+    if (it->second.size() != op.getResult().getType().getCount()) {
+      return rewriter.notifyMatchFailure(
+          op, "planned address count does not match multi_tile_buf count");
+    }
+
+    SmallVector<int64_t> addrs;
+    addrs.reserve(it->second.size());
+    for (uint64_t offset : it->second)
+      addrs.push_back(static_cast<int64_t>(offset));
+    rewriter.modifyOpInPlace(op, [&] {
+      op->setAttr(pto::kPtoMultiBufferAddrsAttrName,
+                  rewriter.getDenseI64ArrayAttr(addrs));
+    });
+    return success();
+  }
+
+private:
+  DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets;
+};
+
 static FailureOr<MemPlanMode> parseLegacyMemPlanMode(func::FuncOp func,
                                                      llvm::StringRef memMode) {
   if (memMode.equals_insensitive("local") ||
@@ -2650,6 +2702,8 @@ private:
       patterns.add<MemrefAllocaOpToPointerCastOpPattern>(patterns.getContext(),
                                                          buffer2Offsets);
       patterns.add<LegacyAllocTileOpAddPlannedAddressPattern>(
+          patterns.getContext(), buffer2Offsets);
+      patterns.add<LegacyAllocMultiTileOpAddPlannedAddressesPattern>(
           patterns.getContext(), buffer2Offsets);
     }
   }

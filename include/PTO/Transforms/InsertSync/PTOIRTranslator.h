@@ -70,6 +70,7 @@ private:
   // --- 内存/Alias 分析 ---
   void UpdateKernelArgMemInfo();
   LogicalResult UpdateAllocTileOpMemInfo(pto::AllocTileOp op);
+  LogicalResult UpdateAllocMultiTileOpMemInfo(pto::AllocMultiTileOp op);
   LogicalResult UpdateDeclareGlobalOpMemInfo(pto::DeclareGlobalOp op);
   LogicalResult UpdateDeclareTileMemRefOpMemInfo(pto::DeclareTileMemRefOp op);
   LogicalResult UpdatePointerCastOpMemInfo(pto::PointerCastOp op);
@@ -82,6 +83,9 @@ private:
   void UpdateTileSubViewAliasBufferInfo(pto::SubViewOp op);
   void UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op);
   LogicalResult UpdateIntToPtrOpMemInfo(pto::IntToPtrOp op);
+  void UpdateMultiTileGetAliasBufferInfo(pto::MultiTileGetOp op);
+  void UpdateSlotSelectedAliasBufferInfo(Value result, Value source,
+                                         Value slot);
  
   // --- 控制流处理 (SCF) ---
   void UpdateForOpInfo(scf::ForOp forOp);

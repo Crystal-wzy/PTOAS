@@ -81,7 +81,7 @@ llvm::SmallVector<Value> IRTranslator::tracebackMemValsStep(Value val) {
   // `getOperationAliasInfo` path below would treat slot_marker as a
   // transparent view and let the trace fall through to the underlying
   // multi-address `pto.pointer_cast`, dropping the slot.
-  if (isa<pto::SlotMarkerOp>(defOp)) {
+  if (isa<pto::SlotMarkerOp, pto::MultiTileGetOp>(defOp)) {
     return out;
   }
 
@@ -141,8 +141,9 @@ llvm::SmallVector<Value> IRTranslator::tracebackMemVals(Value val) {
     // stop, `getOperationAliasInfo` would let the walk slip past slot_marker
     // and reach the underlying multi-address `pto.pointer_cast`, dropping
     // the slot index.
-    if (isa<pto::PointerCastOp, pto::AllocTileOp, tensor::EmptyOp,
-            memref::AllocOp, pto::SlotMarkerOp>(defOp)) {
+    if (isa<pto::PointerCastOp, pto::AllocTileOp, pto::AllocMultiTileOp,
+            tensor::EmptyOp, memref::AllocOp, pto::SlotMarkerOp,
+            pto::MultiTileGetOp>(defOp)) {
       leaves.insert(result);
       continue;
     }

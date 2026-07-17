@@ -30,6 +30,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOMultiBuffer.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -53,6 +54,105 @@ namespace pto {
 using namespace mlir;
 
 namespace {
+
+static FailureOr<uint64_t> getStaticSlotBytes(pto::TileBufType slotType) {
+  uint64_t elemBytes = pto::getPTOStorageElemByteSize(slotType.getElementType());
+  if (elemBytes == 0)
+    return failure();
+  uint64_t bytes = elemBytes;
+  for (int64_t dim : slotType.getShape()) {
+    if (dim == ShapedType::kDynamic)
+      return failure();
+    bytes *= static_cast<uint64_t>(dim);
+  }
+  return bytes;
+}
+
+static LogicalResult getMultiTileAddresses(pto::AllocMultiTileOp alloc,
+                                           IRRewriter &rewriter,
+                                           SmallVectorImpl<Value> &addrs) {
+  uint32_t count = alloc.getResult().getType().getCount();
+  if (auto planned = alloc->getAttrOfType<DenseI64ArrayAttr>(
+          pto::kPtoMultiBufferAddrsAttrName)) {
+    if (planned.size() != count)
+      return alloc.emitError("planned address count does not match slot count");
+    for (int64_t address : planned.asArrayRef())
+      addrs.push_back(rewriter.create<arith::ConstantIntOp>(
+          alloc.getLoc(), address, 64));
+    return success();
+  }
+
+  Value base = alloc.getAddr();
+  if (!base)
+    return alloc.emitError(
+        "has neither a level3 base address nor planner-assigned slot addresses");
+  auto slotBytes = getStaticSlotBytes(alloc.getResult().getType().getSlotType());
+  if (failed(slotBytes))
+    return alloc.emitError(
+        "requires a static slot shape and known element byte size");
+
+  addrs.push_back(base);
+  for (uint32_t slot = 1; slot < count; ++slot) {
+    Value offset = rewriter.create<arith::ConstantIntOp>(
+        alloc.getLoc(), static_cast<int64_t>(slot * *slotBytes), 64);
+    addrs.push_back(
+        rewriter.create<arith::AddIOp>(alloc.getLoc(), base, offset));
+  }
+  return success();
+}
+
+static LogicalResult resolveTileNativeMultiGets(ModuleOp module,
+                                                MLIRContext *ctx) {
+  SmallVector<pto::MultiTileGetOp, 8> gets;
+  module.walk([&](pto::MultiTileGetOp op) { gets.push_back(op); });
+
+  for (pto::MultiTileGetOp op : gets) {
+    auto alloc = op.getSource().getDefiningOp<pto::AllocMultiTileOp>();
+    if (!alloc)
+      return op.emitError(
+          "currently requires a direct pto.alloc_multi_tile source");
+
+    IRRewriter rewriter(ctx);
+    rewriter.setInsertionPoint(op);
+    SmallVector<Value, 8> addrs;
+    if (failed(getMultiTileAddresses(alloc, rewriter, addrs)))
+      return failure();
+
+    Value selectedAddr;
+    IntegerAttr constSlotAttr;
+    if (matchPattern(op.getSlot(), m_Constant(&constSlotAttr))) {
+      int64_t slot = constSlotAttr.getValue().getSExtValue();
+      if (slot < 0 || slot >= static_cast<int64_t>(addrs.size()))
+        return op.emitError("constant slot is outside planned address range");
+      selectedAddr = addrs[static_cast<size_t>(slot)];
+    } else {
+      selectedAddr = addrs.front();
+      for (uint32_t slot = 1; slot < addrs.size(); ++slot) {
+        Value slotValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), slot);
+        Value matches = rewriter.create<arith::CmpIOp>(
+            op.getLoc(), arith::CmpIPredicate::eq, op.getSlot(), slotValue);
+        selectedAddr = rewriter.create<arith::SelectOp>(
+            op.getLoc(), matches, addrs[slot], selectedAddr);
+      }
+    }
+
+    auto slotHandle = rewriter.create<pto::AllocTileOp>(
+        op.getLoc(), op.getResult().getType(), selectedAddr,
+        alloc.getValidRow() ? alloc.getValidRow() : Value(),
+        alloc.getValidCol() ? alloc.getValidCol() : Value());
+    rewriter.replaceOp(op, slotHandle.getResult());
+  }
+
+  SmallVector<pto::AllocMultiTileOp, 8> allocs;
+  module.walk([&](pto::AllocMultiTileOp op) { allocs.push_back(op); });
+  for (pto::AllocMultiTileOp alloc : allocs) {
+    if (!alloc.getResult().use_empty())
+      return alloc.emitError(
+          "has unsupported uses after resolving pto.multi_tile_get");
+    alloc.erase();
+  }
+  return success();
+}
 
 /// Walk back through pure metadata ops (`pto.bind_tile`, `pto.slot_marker`)
 /// to find the root multi-address `pto.pointer_cast` that this view ties
@@ -112,6 +212,11 @@ struct PTOResolveBufferSelectPass
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     MLIRContext *ctx = &getContext();
+
+    if (failed(resolveTileNativeMultiGets(mod, ctx))) {
+      signalPassFailure();
+      return;
+    }
 
     SmallVector<pto::SlotMarkerOp, 8> markers;
     mod.walk([&](pto::SlotMarkerOp op) { markers.push_back(op); });

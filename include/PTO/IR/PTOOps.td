@@ -346,19 +346,18 @@ def AllocTileOp : PTO_Op<"alloc_tile", [AttrSizedOperandSegments]> {
 //===----------------------------------------------------------------------===//
 //
 // `pto.alloc_multi_tile` declares an N-slot logical tile buffer. The actual
-// physical allocation of N slots is performed by PTOPlanMemory once the op
-// has been lowered to `memref.alloc {pto.multi_buffer = N : i32}` by
-// PTOViewToMemref.
+// physical allocation of N slots is performed directly by PTOPlanMemory.
+// The op remains tile-native until PTOResolveBufferSelect materializes an
+// addressed `pto.alloc_tile` for each selected slot.
 //
 // `pto.multi_tile_get` is the *only* way to consume a `multi_tile_buf`: it
 // returns a regular `tile_buf` view onto the chosen slot. The slot index
 // may be a constant or any SSA `index` value; PTOAS does not synthesize
 // `iv mod N` automatically -- the user expression IS the slot selector.
 //
-// `pto.slot_marker` is an internal op materialized by PTOViewToMemref to
-// thread the slot SSA from `multi_tile_get` through the memref layer down
-// to PlanMemory / sync analysis. It is not intended for direct frontend
-// use.
+// `pto.slot_marker` remains as an internal compatibility op for legacy
+// memref-based multi-buffer IR. PTOViewToMemref does not create it for
+// tile-native `pto.multi_tile_get`.
 
 def AllocMultiTileOp : PTO_Op<"alloc_multi_tile", [AttrSizedOperandSegments]> {
   let summary = "Allocate an N-slot multi-buffer tile";
@@ -418,9 +417,9 @@ def MultiTileGetOp : PTO_Op<"multi_tile_get", [
     sync analysis treats this use as a slot-indexed dynamic access; ptoas
     does NOT rewrite the user expression into `iv mod N`.
 
-    This op is metadata-only (no data movement); the lowering merely
-    annotates the underlying memref view with the slot index for PlanMemory
-    / sync / EnableBufferSelect to consume.
+    This op is metadata-only (no data movement). PlanMemory preserves it,
+    sync analysis consumes its slot index directly, and
+    PTOResolveBufferSelect replaces it with an addressed `pto.alloc_tile`.
   }];
 
   let arguments = (ins
@@ -1559,11 +1558,10 @@ def SlotMarkerOp : PTO_Op<"slot_marker", [
   ]> {
   let summary = "Tag a memref view as referring to one slot of a multi_tile_buf";
   let description = [{
-    Internal op materialized by `PTOViewToMemref` while lowering
-    `pto.multi_tile_get`. It carries the slot SSA index through the memref
-    layer so that PlanMemory, sync analysis (InsertSync / GraphSyncSolver),
-    and the buffer-select lowering pass can identify which physical slot
-    this memref reference touches.
+    Internal compatibility op for legacy memref-based multi-buffer IR. It
+    carries a slot SSA index so sync analysis (InsertSync / GraphSyncSolver)
+    and the buffer-select lowering pass can identify which physical slot a
+    memref reference touches.
 
     The op is metadata-only (no data movement, no extra address arithmetic);
     its result memref aliases the source memref byte-for-byte. Frontends do

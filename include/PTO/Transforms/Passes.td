@@ -780,25 +780,20 @@ def PTOMaterializeTileHandles : Pass<"pto-materialize-tile-handles", "ModuleOp">
 }
 
 def PTOResolveBufferSelect : Pass<"pto-resolve-buffer-select", "ModuleOp"> {
-  let summary = "Lower pto.slot_marker to single-slot pointer_cast (multi-buffer)";
+  let summary = "Resolve multi-buffer slot selections to addressed tile handles";
   let description = [{
-    Consumes `pto.slot_marker %src[%k]` ops written by PTOViewToMemref to
-    thread multi-buffer slot selection through the memref layer.
+    Primarily consumes tile-native `pto.multi_tile_get %src[%k]` operations.
+    The source `pto.alloc_multi_tile` carries either planner-assigned physical
+    slot addresses or a level3 base address. Each selection is replaced by a
+    `pto.alloc_tile` carrying the selected address; constant slots select one
+    address directly, while dynamic slots use an N-way `arith.select` chain.
 
-    The op is replaced by a fresh single-address `pto.pointer_cast` that
-    refers to the chosen physical slot:
+    The pass also retains compatibility with legacy memref-based
+    `pto.slot_marker` IR, where the selection is materialized as a
+    single-address `pto.pointer_cast`.
 
-    - constant slot `k`: a single `pto.pointer_cast(addrK)` is emitted at
-      the use site, using slot k from the underlying multi-address
-      pointer_cast created by PTOPlanMemory / AllocToPointerCast.
-    - dynamic slot `%k`: per-slot single-address `pto.pointer_cast`s are
-      created and an N-way `arith.select` chain picks one according to the
-      user-supplied SSA. This pass does NOT rewrite `%k` into `iv mod N`;
-      the frontend expression is the slot selector.
-
-    The original multi-address `pto.pointer_cast` is kept in IR as the
-    "alloc anchor" so future sync passes can recognize the multi-buffer
-    geometry.
+    This pass does not rewrite `%k` into `iv mod N`; the frontend expression
+    remains the slot selector.
   }];
 
   let constructor = "mlir::pto::createPTOResolveBufferSelectPass()";

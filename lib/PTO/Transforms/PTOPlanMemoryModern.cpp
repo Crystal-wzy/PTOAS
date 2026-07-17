@@ -90,6 +90,9 @@ static std::optional<AddressSpace> getBufferAddressSpace(Type type) {
     return std::nullopt;
   }
 
+  if (auto multiType = dyn_cast<MultiTileBufType>(type))
+    return getBufferAddressSpace(multiType.getSlotType());
+
   if (auto memRefType = dyn_cast<BaseMemRefType>(type)) {
     if (auto attr =
             dyn_cast_or_null<AddressSpaceAttr>(memRefType.getMemorySpace()))
@@ -186,6 +189,9 @@ static FailureOr<uint64_t> computeStaticBufferBytes(Value value) {
   if (auto tileType = dyn_cast<TileBufType>(value.getType())) {
     shape = tileType.getShape();
     elementType = tileType.getElementType();
+  } else if (auto multiType = dyn_cast<MultiTileBufType>(value.getType())) {
+    shape = multiType.getSlotType().getShape();
+    elementType = multiType.getSlotType().getElementType();
   } else if (auto memRefType = dyn_cast<BaseMemRefType>(value.getType())) {
     shape = memRefType.getShape();
     elementType = memRefType.getElementType();
@@ -360,8 +366,10 @@ struct PlannerAnalysis {
     }
 
     uint64_t slotCount = 1;
-    if (auto attr =
-            defOp->getAttrOfType<IntegerAttr>(pto::kPtoMultiBufferAttrName))
+    if (auto multiType = dyn_cast<MultiTileBufType>(value.getType()))
+      slotCount = multiType.getCount();
+    else if (auto attr =
+                 defOp->getAttrOfType<IntegerAttr>(pto::kPtoMultiBufferAttrName))
       slotCount = attr.getValue().getZExtValue();
     MemSpec spec = getMemSpec(getTargetArch(func), *space);
     uint64_t slotBytes = alignUp(*bytesOr, spec.alignmentBytes);
@@ -653,6 +661,17 @@ struct PlannerAnalysis {
               roots[found->second].freeIndex = index;
             }
           }
+        } else if (auto allocMulti = dyn_cast<pto::AllocMultiTileOp>(op)) {
+          if (!allocMulti.getAddr()) {
+            addRoot(allocMulti.getResult(), op);
+            if (failed)
+              return;
+            auto found = rootIndexByValue.find(allocMulti.getResult());
+            if (found != rootIndexByValue.end()) {
+              roots[found->second].allocIndex = index;
+              roots[found->second].freeIndex = index;
+            }
+          }
         } else if (auto alloc = dyn_cast<memref::AllocOp>(op)) {
           addRoot(alloc.getResult(), op);
           if (failed)
@@ -671,6 +690,10 @@ struct PlannerAnalysis {
           setRoots(slotMarker.getResult(), getRoots(slotMarker.getSource()));
           propagateSplitTpopDerived(slotMarker.getResult(),
                                     ValueRange{slotMarker.getSource()});
+        } else if (auto multiGet = dyn_cast<pto::MultiTileGetOp>(op)) {
+          setRoots(multiGet.getResult(), getRoots(multiGet.getSource()));
+          propagateSplitTpopDerived(multiGet.getResult(),
+                                    ValueRange{multiGet.getSource()});
         } else if (auto select = dyn_cast<arith::SelectOp>(op)) {
           setRoots(select.getResult(),
                    unionRoots(getRoots(select.getTrueValue()),
@@ -970,6 +993,43 @@ private:
   DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets;
 };
 
+class AllocMultiTileOpAddPlannedAddressesPattern
+    : public OpRewritePattern<pto::AllocMultiTileOp> {
+public:
+  explicit AllocMultiTileOpAddPlannedAddressesPattern(
+      MLIRContext *context,
+      DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets)
+      : OpRewritePattern<pto::AllocMultiTileOp>(context),
+        buffer2Offsets(std::move(buffer2Offsets)) {}
+
+  LogicalResult matchAndRewrite(pto::AllocMultiTileOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getAddr() || op->hasAttr(pto::kPtoMultiBufferAddrsAttrName))
+      return failure();
+
+    auto it = buffer2Offsets.find(op.getResult());
+    if (it == buffer2Offsets.end() || it->second.empty())
+      return failure();
+    if (it->second.size() != op.getResult().getType().getCount()) {
+      return rewriter.notifyMatchFailure(
+          op, "planned address count does not match multi_tile_buf count");
+    }
+
+    SmallVector<int64_t> addrs;
+    addrs.reserve(it->second.size());
+    for (uint64_t offset : it->second)
+      addrs.push_back(static_cast<int64_t>(offset));
+    rewriter.modifyOpInPlace(op, [&] {
+      op->setAttr(pto::kPtoMultiBufferAddrsAttrName,
+                  rewriter.getDenseI64ArrayAttr(addrs));
+    });
+    return success();
+  }
+
+private:
+  DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets;
+};
+
 static LogicalResult materializePlannedOffsets(
     func::FuncOp func, DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets) {
   RewritePatternSet patterns(func.getContext());
@@ -977,6 +1037,8 @@ static LogicalResult materializePlannedOffsets(
                                                      buffer2Offsets);
   patterns.add<AllocTileOpAddPlannedAddressPattern>(patterns.getContext(),
                                                     buffer2Offsets);
+  patterns.add<AllocMultiTileOpAddPlannedAddressesPattern>(
+      patterns.getContext(), buffer2Offsets);
   if (mlir::failed(applyPatternsGreedily(func, std::move(patterns))))
     return failure();
   return success();

@@ -30,6 +30,8 @@ Value findSlotMarkerExpr(Value v) {
       return {};
     if (auto sm = dyn_cast<pto::SlotMarkerOp>(op))
       return sm.getSlot();
+    if (auto get = dyn_cast<pto::MultiTileGetOp>(op))
+      return get.getSlot();
     if (auto bind = dyn_cast<pto::BindTileOp>(op)) {
       v = bind.getSource();
       continue;
