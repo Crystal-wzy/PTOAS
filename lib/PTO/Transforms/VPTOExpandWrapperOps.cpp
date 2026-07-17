@@ -1196,9 +1196,10 @@ struct ExpandDmaStorePattern : public OpRewritePattern<pto::MteUbGmOp> {
           Value source = offsetPointerByBytes(op.getSource(), srcOffset, rewriter, loc);
           Value destination =
               offsetPointerByBytes(op.getDestination(), dstOffset, rewriter, loc);
+          Value l2CacheCtl = op.getL2CacheCtl() ? op.getL2CacheCtl() : zero;
           rewriter.create<pto::CopyUbufToGmOp>(
               loc, source, destination, zero, op.getNBurst(), op.getLenBurst(),
-              zero, op.getNburstDstStride(), op.getNburstSrcStride());
+              l2CacheCtl, op.getNburstDstStride(), op.getNburstSrcStride());
         });
     if (shouldRestoreDmaLoopSize(loop1Count, loop2Size))
       rewriter.create<pto::SetLoopSizeUbToOutOp>(loc, one, one);

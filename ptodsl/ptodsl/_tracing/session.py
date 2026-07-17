@@ -596,13 +596,6 @@ class TraceSession:
                     IntegerAttr.get(i32_attr_type, subkernel.spec.simt_max_threads),
                 )
             )
-        if subkernel.spec.simt_max_regs is not None:
-            helper_attributes.append(
-                (
-                    "pto.simt_max_regs",
-                    IntegerAttr.get(i32_attr_type, subkernel.spec.simt_max_regs),
-                )
-            )
         helper_fn = self._create_named_helper_function(
             helper_symbol,
             arg_types,

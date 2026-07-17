@@ -4440,7 +4440,15 @@ def mte_load(source, destination, l2_cache_ctl, len_burst, *, nburst, loops=None
 
 
 @_explicit_mode_only("pto.mte_store(...)")
-def mte_store(source, destination, len_burst, *, nburst, loops=None):
+def mte_store(
+    source,
+    destination,
+    len_burst,
+    *,
+    nburst,
+    loops=None,
+    l2_cache="nmfv",
+):
     """Ptr-based UB->GM DMA wrapper aligned with the underlying ``pto.dma_store`` surface."""
     n_burst, nburst_src_stride, nburst_dst_stride = _normalize_dma_group(
         "nburst",
@@ -4461,6 +4469,10 @@ def mte_store(source, destination, len_burst, *, nburst, loops=None):
         loop_counts,
         loop_src_strides,
         loop_dst_strides,
+        l2_cache_ctl=_coerce_i64(
+            _normalize_mte_store_l2_cache(l2_cache, context="mte_store(...) l2_cache"),
+            context="mte_store l2 cache control",
+        ),
     )
 
 
@@ -4550,7 +4562,15 @@ def mte_gm_ub(source, destination, l2_cache_ctl, len_burst, *, nburst, loops=Non
 
 
 @_explicit_mode_only("pto.mte_ub_gm(...)")
-def mte_ub_gm(source, destination, len_burst, *, nburst, loops=None):
+def mte_ub_gm(
+    source,
+    destination,
+    len_burst,
+    *,
+    nburst,
+    loops=None,
+    l2_cache="nmfv",
+):
     """``pto.mte_ub_gm`` – grouped UB-to-GM DMA surface."""
     n_burst, nburst_src_stride, nburst_dst_stride = _normalize_dma_group(
         "nburst",
@@ -4571,6 +4591,10 @@ def mte_ub_gm(source, destination, len_burst, *, nburst, loops=None):
         loop_counts,
         loop_src_strides,
         loop_dst_strides,
+        l2_cache_ctl=_coerce_i64(
+            _normalize_mte_store_l2_cache(l2_cache, context="mte_ub_gm(...) l2_cache"),
+            context="mte_ub_gm l2 cache control",
+        ),
     )
 
 
@@ -5232,6 +5256,24 @@ _ST_L2_CACHE_TOKENS = {
     "wbhfv", "wbhlv", "wbhprs", "wbhred",
     "wtsfv", "wtslv", "wtsprs", "wtsred",
 }
+_ST_L2_CACHE_CONTROL_VALUES = {
+    "nmfv": 0,
+    "nmlv": 1,
+    "nmprs": 2,
+    "nmred": 3,
+    "naci": 4,
+    "napw": 5,
+    "napi": 6,
+    "nared": 7,
+    "wbhfv": 8,
+    "wbhlv": 9,
+    "wbhprs": 10,
+    "wbhred": 11,
+    "wtsfv": 12,
+    "wtslv": 13,
+    "wtsprs": 14,
+    "wtsred": 15,
+}
 _ROUNDING_TOKENS = {"r", "a", "f", "c", "z", "o", "h"}
 _SATURATION_TOKENS = {"sat", "nosat"}
 
@@ -5258,6 +5300,14 @@ def _ld_l2_cache_attr(value, *, context: str):
 
 def _st_l2_cache_attr(value, *, context: str):
     return _simt_enum_attr("st_l2cache", value, supported=_ST_L2_CACHE_TOKENS, context=context)
+
+
+def _normalize_mte_store_l2_cache(l2_cache, *, context: str):
+    token = _normalize_token(l2_cache, context=context)
+    if token not in _ST_L2_CACHE_CONTROL_VALUES:
+        expected = ", ".join(sorted(_ST_L2_CACHE_CONTROL_VALUES))
+        raise ValueError(f"{context} does not support {l2_cache!r}; expected one of {expected}")
+    return _ST_L2_CACHE_CONTROL_VALUES[token]
 
 
 def _rounding_attr(value, *, context: str):

@@ -6592,10 +6592,13 @@ LogicalResult CopyUbufToGmOp::verify() {
 }
 
 void MteUbGmOp::build(OpBuilder &builder, OperationState &state, Value source,
-                       Value destination, Value lenBurst, pto::DmaLoopConfig nburst,
+                       Value destination, Value lenBurst,
+                       pto::DmaLoopConfig nburst, Value l2CacheCtl,
                        llvm::ArrayRef<pto::DmaLoopConfig> loops) {
   state.addOperands({source, destination, lenBurst, nburst.count,
                      nburst.srcStride, nburst.dstStride});
+  if (l2CacheCtl)
+    state.addOperands(l2CacheCtl);
   for (const pto::DmaLoopConfig &loop : loops)
     state.addOperands(loop.count);
   for (const pto::DmaLoopConfig &loop : loops)
@@ -6606,14 +6609,15 @@ void MteUbGmOp::build(OpBuilder &builder, OperationState &state, Value source,
   state.addAttribute(
       getOperandSegmentSizeAttr(),
       builder.getDenseI32ArrayAttr(
-          {1, 1, 1, 1, 1, 1,
+          {1, 1, 1, 1, 1, 1, l2CacheCtl ? 1 : 0,
            static_cast<int32_t>(loops.size()),
            static_cast<int32_t>(loops.size()),
            static_cast<int32_t>(loops.size())}));
 }
 
 void MteUbGmOp::build(OpBuilder &builder, OperationState &state, Value source,
-                       Value destination, Value lenBurst, pto::DmaLoopConfig nburst,
+                       Value destination, Value lenBurst,
+                       pto::DmaLoopConfig nburst, Value l2CacheCtl,
                        std::optional<pto::DmaLoopConfig> loop1,
                        std::optional<pto::DmaLoopConfig> loop2) {
   SmallVector<pto::DmaLoopConfig> loops;
@@ -6621,11 +6625,13 @@ void MteUbGmOp::build(OpBuilder &builder, OperationState &state, Value source,
     loops.push_back(*loop1);
   if (loop2)
     loops.push_back(*loop2);
-  build(builder, state, source, destination, lenBurst, nburst, loops);
+  build(builder, state, source, destination, lenBurst, nburst, l2CacheCtl,
+        loops);
 }
 
 ParseResult MteUbGmOp::parse(OpAsmParser &parser, OperationState &result) {
-  OpAsmParser::UnresolvedOperand source, destination, lenBurst;
+  OpAsmParser::UnresolvedOperand source, destination, lenBurst, l2CacheCtl;
+  bool hasL2CacheCtl = false;
   SmallVector<OpAsmParser::UnresolvedOperand> nburstOperands;
   SmallVector<OpAsmParser::UnresolvedOperand> loopCountOperands;
   SmallVector<OpAsmParser::UnresolvedOperand> loopSrcStrideOperands;
@@ -6635,6 +6641,12 @@ ParseResult MteUbGmOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.parseOperand(lenBurst) ||
       parseDmaTripleGroup(parser, "nburst", nburstOperands))
     return failure();
+  if (succeeded(parser.parseOptionalKeyword("l2_cache_ctl"))) {
+    hasL2CacheCtl = true;
+    if (parser.parseLParen() || parser.parseOperand(l2CacheCtl) ||
+        parser.parseRParen())
+      return failure();
+  }
   while (true) {
     StringRef parsedKeyword;
     SmallVector<OpAsmParser::UnresolvedOperand, 3> loopGroupOperands;
@@ -6651,7 +6663,7 @@ ParseResult MteUbGmOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
     return failure();
 
-  Type sourceType, destinationType, lenBurstType;
+  Type sourceType, destinationType, lenBurstType, l2CacheCtlType;
   SmallVector<Type> nburstTypes, loopCountTypes, loopSrcStrideTypes,
       loopDstStrideTypes;
   if (parser.parseType(sourceType) || parser.parseComma() ||
@@ -6659,6 +6671,10 @@ ParseResult MteUbGmOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.parseType(lenBurstType) || parser.parseComma() ||
       parseDmaTripleTypes(parser, nburstTypes))
     return failure();
+  if (hasL2CacheCtl) {
+    if (parser.parseComma() || parser.parseType(l2CacheCtlType))
+      return failure();
+  }
   while (succeeded(parser.parseOptionalComma())) {
     StringRef keyword;
     if (parser.parseKeyword(&keyword))
@@ -6690,6 +6706,7 @@ ParseResult MteUbGmOp::parse(OpAsmParser &parser, OperationState &result) {
   auto &segments =
       result.getOrAddProperties<MteUbGmOp::Properties>().operandSegmentSizes;
   llvm::copy(ArrayRef<int32_t>{1, 1, 1, 1, 1, 1,
+                               hasL2CacheCtl ? 1 : 0,
                                loopGroupCount, loopGroupCount, loopGroupCount},
              segments.begin());
 
@@ -6697,8 +6714,12 @@ ParseResult MteUbGmOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.resolveOperand(destination, destinationType, result.operands) ||
       parser.resolveOperand(lenBurst, lenBurstType, result.operands) ||
       parser.resolveOperands(nburstOperands, nburstTypes, parser.getCurrentLocation(),
-                             result.operands) ||
-      parser.resolveOperands(loopCountOperands, loopCountTypes,
+                             result.operands))
+    return failure();
+  if (hasL2CacheCtl &&
+      parser.resolveOperand(l2CacheCtl, l2CacheCtlType, result.operands))
+    return failure();
+  if (parser.resolveOperands(loopCountOperands, loopCountTypes,
                              parser.getCurrentLocation(), result.operands) ||
       parser.resolveOperands(loopSrcStrideOperands, loopSrcStrideTypes,
                              parser.getCurrentLocation(), result.operands) ||
@@ -6714,6 +6735,8 @@ void MteUbGmOp::print(OpAsmPrinter &printer) {
           << getLenBurst();
   printDmaTripleGroup(printer, "nburst", getNBurst(), getNburstSrcStride(),
                       getNburstDstStride());
+  if (Value l2CacheCtl = getL2CacheCtl())
+    printer << " l2_cache_ctl(" << l2CacheCtl << ")";
   for (auto [count, srcStride, dstStride] :
        llvm::zip(getLoopCounts(), getLoopSrcStrides(), getLoopDstStrides()))
     printDmaTripleGroup(printer, "loop", count, srcStride, dstStride);
@@ -6723,6 +6746,8 @@ void MteUbGmOp::print(OpAsmPrinter &printer) {
           << ", " << getNburstSrcStride().getType()
           << ", "
           << getNburstDstStride().getType();
+  if (Value l2CacheCtl = getL2CacheCtl())
+    printer << ", " << l2CacheCtl.getType();
   for (auto [count, srcStride, dstStride] :
        llvm::zip(getLoopCounts(), getLoopSrcStrides(), getLoopDstStrides()))
     printDmaTripleTypes(printer, "loop", count.getType(), srcStride.getType(),
@@ -6753,6 +6778,13 @@ LogicalResult MteUbGmOp::verify() {
   if (sourceElemBytes != destinationElemBytes)
     return emitOpError(
         "requires source and destination element byte widths to match");
+  if (Value l2CacheCtlValue = getL2CacheCtl()) {
+    APInt l2CacheCtl;
+    if (matchPattern(l2CacheCtlValue, m_ConstantInt(&l2CacheCtl)) &&
+        (l2CacheCtl.isNegative() || l2CacheCtl.ugt(15)))
+      return emitOpError(
+          "requires constant l2_cache_ctl to fit in range [0, 15]");
+  }
   return verifyDmaLoadStoreLoopGroups(
       getOperation(), getLoopCounts(), getLoopSrcStrides(),
       getLoopDstStrides());

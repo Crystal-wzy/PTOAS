@@ -1574,8 +1574,8 @@ packCopyUbToGmConfig0(Operation *anchor, ValueRange operands) {
   Value sid = getI64Operand(2);
   Value nBurst = getI64Operand(3);
   Value lenBurst = getI64Operand(4);
-  Value reserved = getI64Operand(5);
-  if (!sid || !nBurst || !lenBurst || !reserved)
+  Value l2CacheCtl = getI64Operand(5);
+  if (!sid || !nBurst || !lenBurst || !l2CacheCtl)
     return failure();
 
   auto shl = [&](Value value, uint64_t amount) -> Value {
@@ -1589,7 +1589,7 @@ packCopyUbToGmConfig0(Operation *anchor, ValueRange operands) {
   Value config = sid;
   config = bitOr(config, shl(nBurst, 4));
   config = bitOr(config, shl(lenBurst, 25));
-  config = bitOr(config, shl(reserved, 60));
+  config = bitOr(config, shl(l2CacheCtl, 60));
   return config;
 }
 
@@ -1602,12 +1602,12 @@ packCopyUbToGmConfig1(Operation *anchor, ValueRange operands) {
 
 [[maybe_unused]] static FailureOr<Value>
 packCopyUbToGmConfig0(Operation *anchor, Value sid, Value nBurst,
-                      Value lenBurst, Value reserved) {
+                      Value lenBurst, Value l2CacheCtl) {
   SmallVector<Value, 8> operands(8);
   operands[2] = sid;
   operands[3] = nBurst;
   operands[4] = lenBurst;
-  operands[5] = reserved;
+  operands[5] = l2CacheCtl;
   return packCopyUbToGmConfig0(anchor, operands);
 }
 

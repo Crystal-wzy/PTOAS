@@ -58,12 +58,12 @@ pipe_barrier(pipe);
 
 ```mlir
 // Both stores target the same GM address — order matters!
-pto.mte_ub_gm %ub_partial_0, %gm_result, ...
+pto.mte_ub_gm %ub_partial_0, %gm_result, %len_burst ...
 // Without pipe_barrier, MTE3 could execute the second copy before the first
 // completes, producing a non-deterministic result at %gm_result.
 pto.pipe_barrier "PIPE_MTE3"
 // After barrier: first copy is guaranteed complete. Second copy overwrites deterministically.
-pto.mte_ub_gm %ub_partial_1, %gm_result, ...
+pto.mte_ub_gm %ub_partial_1, %gm_result, %len_burst ...
 ```
 
 ---
@@ -367,7 +367,7 @@ pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
 // MTE3 waits until Vector's signal arrives
 pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
 
-pto.mte_ub_gm %ub_out, %gm_out, ...
+pto.mte_ub_gm %ub_out, %gm_out, %len_burst ...
 ```
 
 **Key property:** Every cross-pipeline edge is an explicit `(set_flag, wait_flag)` pair. Simple for straight-line code, but gets verbose in loops (see Example 3).
@@ -407,7 +407,7 @@ pto.rls_buf "PIPE_V", %bufid_ub_out, %c0 : i64, i64
 // ─── Stage 3: MTE3 stores result to GM ───
 // MTE3 acquires ub_out — blocks until Vector releases it (RAW: V write → MTE3 read)
 pto.get_buf "PIPE_MTE3", %bufid_ub_out, %c0 : i64, i64
-pto.mte_ub_gm %ub_out, %gm_out, ...
+pto.mte_ub_gm %ub_out, %gm_out, %len_burst ...
 // MTE3 done reading ub_out — release so Vector can reuse it in next iteration
 pto.rls_buf "PIPE_MTE3", %bufid_ub_out, %c0 : i64, i64
 ```
@@ -483,7 +483,7 @@ scf.for %i = %c0 to %N step %c1 {
   // ── MTE3: store result from buf_out[i%2] to GM ──
   // RAW: wait for Vector to finish writing buf_out[i%2]
   pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVT_OUT_FWD_{pp}"]
-  pto.mte_ub_gm %ub_out[%pp], %gm_out[%i], ...
+  pto.mte_ub_gm %ub_out[%pp], %gm_out[%i], %len_burst ...
   // WAR: tell Vector "done reading buf_out[i%2]"
   pto.set_flag["PIPE_MTE3", "PIPE_V", "EVT_OUT_REV_{pp}"]
 }
@@ -534,7 +534,7 @@ scf.for %i = %c0 to %N step %c1 {
   // ── MTE3: store result ──
   // Acquires out[i%2] — blocks until Vector releases it (RAW: automatic)
   pto.get_buf "PIPE_MTE3", %bufid_out[%pp], %c0 : i64, i64
-  pto.mte_ub_gm %ub_out[%pp], %gm_out[%i], ...
+  pto.mte_ub_gm %ub_out[%pp], %gm_out[%i], %len_burst ...
   pto.rls_buf "PIPE_MTE3", %bufid_out[%pp], %c0 : i64, i64
 }
 // No post-loop drain needed — last rls_buf completes the pipeline.

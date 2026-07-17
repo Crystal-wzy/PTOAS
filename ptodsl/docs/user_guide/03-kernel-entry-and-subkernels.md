@@ -986,7 +986,7 @@ Parameters are `Tile` references, typed UB pointers, and PTO scalars. The
 sub-kernel reads and writes individual elements through tile handles; results
 flow back to the caller via mutable tile parameters.
 
-**Signature**: `@pto.simt(fn=None, *, name=None, target="a5", max_threads=None, max_regs=None)`
+**Signature**: `@pto.simt(fn=None, *, name=None, target="a5", max_threads=None)`
 
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"kernel_entry.simt_signature","symbol":"kernel_entry_simt_signature_probe","compile":{"BLOCK":8}} -->
 ```python
@@ -1026,28 +1026,31 @@ in parallel, making it efficient for per-element operations.
 
 #### SIMT resource attributes
 
-Optional `max_threads` and `max_regs` arguments attach VPTO resource attributes
+An optional `max_threads` argument attaches a VPTO resource attribute
 to the generated `pto.simt_entry` helper.
 
-**Signature**: `@pto.simt(fn=None, *, name=None, target="a5", max_threads=None, max_regs=None)`
+**Signature**: `@pto.simt(fn=None, *, name=None, target="a5", max_threads=None)`
 
 **Parameters**:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `max_threads` | positive Python `int` | backend default `1024` | Compile-time launch envelope for this SIMT helper |
-| `max_regs` | positive Python `int` | backend default `32` | Scalar register budget per work-item |
 
 `max_threads` is not the launch size. The actual work-item count comes from the
-SIMT launch dimensions. Both arguments must be Python integers known at trace
-time, greater than zero, and fit in signless `i32`. They are only valid on
+SIMT launch dimensions. The argument must be a Python integer known at trace
+time, greater than zero, and fit in signless `i32`. It is only valid on
 decorated SIMT helper functions, not inline `with pto.simt():` scopes.
+
+The per-workitem register budget (`simt-max-registers`) is automatically
+derived from `max_threads` by the VPTO backend according to the hardware
+resource partition.
 
 **Example**:
 
 <!-- ptodsl-doc-test: {"mode":"compile","symbol":"kernel_entry_simt_resource_probe","compile":{}} -->
 ```python
-@pto.simt(max_threads=256, max_regs=48)
+@pto.simt(max_threads=256)
 def write_tid(dst: pto.ptr(pto.i32, "gm")):
     tid = pto.get_tid_x()
     idx = scalar.index_cast(tid)

@@ -75,7 +75,6 @@ class SubkernelSpec:
     symbol_name: str
     target: str = "a5"
     simt_max_threads: int | None = None
-    simt_max_regs: int | None = None
 
 
 class SubkernelTemplate:
@@ -404,7 +403,6 @@ class _SubkernelSurface:
         target: str = "a5",
         ast_rewrite: bool = True,
         simt_max_threads: int | None = None,
-        simt_max_regs: int | None = None,
         simt_inline_dims: tuple | None = None,
     ):
         self._role = role
@@ -412,7 +410,6 @@ class _SubkernelSurface:
         self._target = target
         self._ast_rewrite = ast_rewrite
         self._simt_max_threads = simt_max_threads
-        self._simt_max_regs = simt_max_regs
         self._simt_inline_dims = simt_inline_dims
         self._session_cm = None
 
@@ -425,17 +422,14 @@ class _SubkernelSurface:
                 symbol_name=self._name or fn.__name__,
                 target=self._target,
                 simt_max_threads=self._simt_max_threads,
-                simt_max_regs=self._simt_max_regs,
             ),
             fn,
             ast_rewrite=self._ast_rewrite,
         )
 
     def __enter__(self):
-        if self._role == KernelRole.SIMT and (
-            self._simt_max_threads is not None or self._simt_max_regs is not None
-        ):
-            raise TypeError("@pto.simt(max_threads=..., max_regs=...) is only supported as a function decorator")
+        if self._role == KernelRole.SIMT and self._simt_max_threads is not None:
+            raise TypeError("@pto.simt(max_threads=...) is only supported as a function decorator")
         runtime = current_runtime()
         if runtime is None:
             raise RuntimeError(
@@ -469,7 +463,6 @@ def _subkernel_decorator(
     target: str = "a5",
     ast_rewrite: bool = True,
     simt_max_threads: int | None = None,
-    simt_max_regs: int | None = None,
     simt_inline_dims: tuple | None = None,
 ):
     return _SubkernelSurface(
@@ -478,7 +471,6 @@ def _subkernel_decorator(
         target=target,
         ast_rewrite=ast_rewrite,
         simt_max_threads=simt_max_threads,
-        simt_max_regs=simt_max_regs,
         simt_inline_dims=simt_inline_dims,
     )
 
@@ -491,7 +483,6 @@ def _decorate_subkernel(
     target: str = "a5",
     ast_rewrite: bool = True,
     simt_max_threads: int | None = None,
-    simt_max_regs: int | None = None,
     simt_inline_dims: tuple | None = None,
 ):
     if fn is not None:
@@ -501,7 +492,6 @@ def _decorate_subkernel(
             target=target,
             ast_rewrite=ast_rewrite,
             simt_max_threads=simt_max_threads,
-            simt_max_regs=simt_max_regs,
             simt_inline_dims=simt_inline_dims,
         )(fn)
     return _subkernel_decorator(
@@ -510,7 +500,6 @@ def _decorate_subkernel(
         target=target,
         ast_rewrite=ast_rewrite,
         simt_max_threads=simt_max_threads,
-        simt_max_regs=simt_max_regs,
         simt_inline_dims=simt_inline_dims,
     )
 
@@ -542,10 +531,8 @@ def simt(
     target: str = "a5",
     ast_rewrite: bool = True,
     max_threads: int | None = None,
-    max_regs: int | None = None,
 ):
     max_threads = _validate_simt_resource_attr("max_threads", max_threads)
-    max_regs = _validate_simt_resource_attr("max_regs", max_regs)
     simt_inline_dims = None
     if fn is not None and not callable(fn):
         dims = (fn, *dims)
@@ -561,7 +548,6 @@ def simt(
         target=target,
         ast_rewrite=ast_rewrite,
         simt_max_threads=max_threads,
-        simt_max_regs=max_regs,
         simt_inline_dims=simt_inline_dims,
     )
 
