@@ -79,17 +79,18 @@ static bool hasTileNativeAllocationRoot(func::FuncOp func) {
 
 static bool hasMigratedTileNativeView(func::FuncOp func) {
   bool found = false;
-  auto result = func.walk([&](pto::TReshapeOp) {
-    found = true;
-    return WalkResult::interrupt();
+  auto result = func.walk([&](Operation *op) {
+    if (isa<pto::TReshapeOp, pto::BitcastOp>(op)) {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
   });
   (void)result;
   return found;
 }
 
 constexpr size_t kTileRank2D = 2;
-constexpr size_t kRowDimensionIndex = 0;
-constexpr size_t kColumnDimensionIndex = 1;
 constexpr unsigned kShapeVectorInlineCapacity = 4;
 constexpr unsigned kOperationVectorInlineCapacity = 8;
 
@@ -256,27 +257,6 @@ static OpTy replaceOpWithClonedAttrs(IRRewriter &rewriter, Operation *op,
   newOp->setAttrs(op->getAttrs());
   rewriter.replaceOp(op, newOp->getResults());
   return newOp;
-}
-
-static Value resolveTileBufViewLikeSource(Value src) {
-  if (isa<MemRefType>(src.getType()))
-    return src;
-
-  if (auto regionResult = dyn_cast<OpResult>(src)) {
-    if (auto fusionRegion =
-            dyn_cast<mlir::pto::FusionRegionOp>(regionResult.getOwner())) {
-      auto yieldOp = dyn_cast<mlir::pto::YieldOp>(
-          fusionRegion.getBody().front().getTerminator());
-      if (!yieldOp)
-        return Value();
-      unsigned resultIndex = regionResult.getResultNumber();
-      if (resultIndex >= yieldOp.getNumOperands())
-        return Value();
-      return resolveTileBufViewLikeSource(yieldOp.getOperand(resultIndex));
-    }
-  }
-
-  return Value();
 }
 
 static LogicalResult synthesizeMissingTQuantTmpOps(func::FuncOp func,
@@ -637,19 +617,6 @@ static SmallVector<int64_t> computeCompactStrides(ArrayRef<int64_t> shape) {
       stride *= shape[i];
   }
   return strides;
-}
-
-static void materializeStaticValidDims(IRRewriter &rewriter, Location loc,
-                                       mlir::pto::TileBufType tbTy, Value &vRow,
-                                       Value &vCol) {
-  ArrayRef<int64_t> validShape = tbTy.getValidShape();
-  if (tbTy.hasDynamicValid())
-    return;
-  if (!validShape.empty() && validShape[kRowDimensionIndex] >= 0)
-    vRow = makeIndexConstant(rewriter, loc, validShape[kRowDimensionIndex]);
-  if (validShape.size() >= kTileRank2D &&
-      validShape[kColumnDimensionIndex] >= 0)
-    vCol = makeIndexConstant(rewriter, loc, validShape[kColumnDimensionIndex]);
 }
 
 static bool checkMultipleOf(Operation *op, int64_t value, int64_t divisor,
@@ -1508,74 +1475,6 @@ static LogicalResult lowerSubViewOps(func::FuncOp func, MLIRContext *ctx) {
   return success();
 }
 
-static Value buildTileBufViewLikeValue(Operation *anchorOp, Value src,
-                                       mlir::pto::TileBufType tbTy,
-                                       StringRef viewSemantics,
-                                       MLIRContext *ctx) {
-  Location loc = anchorOp->getLoc();
-  IRRewriter rewriter(ctx);
-  rewriter.setInsertionPoint(anchorOp);
-
-  src = resolveTileBufViewLikeSource(src);
-  auto srcMrTy = dyn_cast_or_null<MemRefType>(src.getType());
-  if (!srcMrTy) {
-    anchorOp->emitError("tile_buf view op src must be lowered to memref first");
-    return Value();
-  }
-
-  auto targetType = dyn_cast<MemRefType>(convertPTOTypeToMemRef(tbTy));
-  if (!targetType) {
-    anchorOp->emitError("failed to convert tile_buf type to memref type");
-    return Value();
-  }
-  for (int64_t dim : targetType.getShape()) {
-    if (dim == ShapedType::kDynamic) {
-      anchorOp->emitError("dynamic shapes are not supported for tile_buf view ops");
-      return Value();
-    }
-  }
-
-  Value parentVRow;
-  Value parentVCol;
-  lookupValidDims(src, parentVRow, parentVCol);
-  Value vRow = parentVRow;
-  Value vCol = parentVCol;
-  materializeStaticValidDims(rewriter, loc, tbTy, vRow, vCol);
-
-  auto configAttr = tbTy.getConfigAttr();
-  if (!configAttr)
-    configAttr = pto::TileBufConfigAttr::getDefault(ctx);
-
-  auto bindOp = rewriter.create<pto::BindTileOp>(
-      loc, targetType, src, vRow ? vRow : Value(), vCol ? vCol : Value(),
-      configAttr);
-  markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
-  if (!viewSemantics.empty())
-    bindOp->setAttr("pto.view_semantics", rewriter.getStringAttr(viewSemantics));
-  return bindOp.getResult();
-}
-
-static LogicalResult lowerTileBufViewLikeOps(func::FuncOp func, MLIRContext *ctx) {
-  DefaultInlineVector<mlir::pto::BitcastOp> bitcasts;
-  func.walk([&](mlir::pto::BitcastOp op) { bitcasts.push_back(op); });
-  for (auto op : bitcasts) {
-    auto tbTy = dyn_cast<mlir::pto::TileBufType>(op.getResult().getType());
-    if (!tbTy) {
-      op.emitError("bitcast result must be tile_buf type");
-      return failure();
-    }
-    if (isa<mlir::pto::TileBufType>(op->getOperand(0).getType()))
-      continue;
-    Value lowered = buildTileBufViewLikeValue(op, op->getOperand(0), tbTy,
-                                              "bitcast", ctx);
-    if (!lowered)
-      return failure();
-    IRRewriter rewriter(ctx);
-    rewriter.replaceOp(op, lowered);
-  }
-  return success();
-}
-
 // =============================================================================
 // The Pass Implementation
 // =============================================================================
@@ -1886,12 +1785,8 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
-      // Stage 1.4: Lower tile_buf view-like ops (treshape/bitcast)
+      // Stage 1.4: treshape/bitcast stay tile-native.
       // ------------------------------------------------------------------
-      if (failed(lowerTileBufViewLikeOps(func, ctx))) {
-        signalPassFailure();
-        return;
-      }
       if (failed(reconcileFusionRegionResultTypes(func))) {
         signalPassFailure();
         return;
