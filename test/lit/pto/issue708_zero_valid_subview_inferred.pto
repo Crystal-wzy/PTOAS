@@ -91,21 +91,21 @@ module attributes {"pto.device-spec" = "Ascend910B3"} {
   }
 }
 
-// The bind_tile that replaces each pto.subview must carry valid operands taken
-// from the result type, i.e. 0 for an empty axis -- never the subview size.
+// The resolved subview handle must carry valid extents taken from the result
+// type, i.e. 0 for an empty axis -- never the subview size.
 
 // CHECK-LABEL: func.func @issue708_inferred_empty_store
-// CHECK: %[[BOTH:[0-9A-Za-z_]+]] = pto.subview {{.*}} -> !pto.tile_buf<vec, 5x128xf32, valid=0x0>
+// CHECK: %[[BOTH:[0-9A-Za-z_]+]] = pto.alloc_tile addr = %{{.*}} {pto.view_semantics = "subview"} : !pto.tile_buf<vec, 16x128xf32, valid=0x0>
 // CHECK: pto.tstore ins(%[[BOTH]]
 
 // CHECK-LABEL: func.func @issue708_inferred_empty_cvt
-// CHECK: %[[CVTV:[0-9A-Za-z_]+]] = pto.subview {{.*}} -> !pto.tile_buf<vec, 5x128xf32, valid=0x0>
+// CHECK: %[[CVTV:[0-9A-Za-z_]+]] = pto.alloc_tile addr = %{{.*}} {pto.view_semantics = "subview"} : !pto.tile_buf<vec, 16x128xf32, valid=0x0>
 // CHECK: pto.tcvt ins(%[[CVTV]]
 
 // CHECK-LABEL: func.func @issue708_inferred_row_empty
-// CHECK: %[[ROW:[0-9A-Za-z_]+]] = pto.subview {{.*}} -> !pto.tile_buf<vec, 5x128xf32, valid=0x128>
+// CHECK: %[[ROW:[0-9A-Za-z_]+]] = pto.alloc_tile addr = %{{.*}} {pto.view_semantics = "subview"} : !pto.tile_buf<vec, 16x128xf32, valid=0x128>
 // CHECK: pto.tstore ins(%[[ROW]]
 
 // CHECK-LABEL: func.func @issue708_inferred_partial_valid
-// CHECK: %[[PARTIAL:[0-9A-Za-z_]+]] = pto.subview {{.*}} -> !pto.tile_buf<vec, 5x128xf32, valid=3x128>
+// CHECK: %[[PARTIAL:[0-9A-Za-z_]+]] = pto.alloc_tile addr = %{{.*}} {pto.view_semantics = "subview"} : !pto.tile_buf<vec, 16x128xf32, valid=3x128>
 // CHECK: pto.tstore ins(%[[PARTIAL]]

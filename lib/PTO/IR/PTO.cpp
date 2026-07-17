@@ -6618,7 +6618,18 @@ llvm::LogicalResult mlir::pto::TCvtOp::verify() {
   if (failed(verifyTileBufCommon(*this, srcTy, "src", /*allowLowPrecision=*/true)) ||
       failed(verifyTileBufCommon(*this, dstTy, "dst", /*allowLowPrecision=*/true)))
     return failure();
-  if (failed(verifyTileBufSameLogicalExtent(*this, srcTy, dstTy, "src", "dst",
+  auto isResolvedSubview = [](Value value) {
+    auto alloc = value.getDefiningOp<pto::AllocTileOp>();
+    auto semantics =
+        alloc ? alloc->getAttrOfType<StringAttr>("pto.view_semantics")
+              : StringAttr();
+    return semantics && semantics.getValue() == "subview";
+  };
+  // A resolved subview keeps its parent's physical shape so the generated
+  // Tile retains the parent stride. Its valid shape is the logical tcvt
+  // extent, so comparing physical shapes would reject a valid sliced tile.
+  if (!isResolvedSubview(getSrc()) && !isResolvedSubview(getDst()) &&
+      failed(verifyTileBufSameLogicalExtent(*this, srcTy, dstTy, "src", "dst",
                                             /*compareValidShape=*/false)))
     return failure();
   if (failed(verifyTileBufSameLogicalExtent(*this, srcTy, dstTy, "src", "dst",

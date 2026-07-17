@@ -998,25 +998,6 @@ static Value getAllocValidOperand(TileBufType tileTy, Value operand,
   return Value();
 }
 
-static TileBufType buildPTOSubViewPhysicalTileType(pto::SubViewOp op,
-                                                   TileBufType resultTy) {
-  auto sourceTy = dyn_cast<TileBufType>(op.getSource().getType());
-  if (!sourceTy || sourceTy.getRank() != 2 || resultTy.getRank() != 2)
-    return resultTy;
-
-  SmallVector<int64_t, 2> physicalShape(sourceTy.getShape().begin(),
-                                        sourceTy.getShape().end());
-  SmallVector<int64_t, 2> validShape(resultTy.getValidShape().begin(),
-                                     resultTy.getValidShape().end());
-  if (validShape.size() != 2)
-    validShape.assign(resultTy.getShape().begin(), resultTy.getShape().end());
-
-  return TileBufType::get(op.getContext(), physicalShape,
-                          resultTy.getElementType(),
-                          resultTy.getMemorySpace(), validShape,
-                          resultTy.getConfigAttr());
-}
-
 static Attribute getAttr(ArrayRef<NamedAttribute> attrs, StringRef name) {
   for (NamedAttribute attr : attrs) {
     if (attr.getName().getValue() == name)
@@ -1029,43 +1010,6 @@ static void copyMaterializedTileAttrs(ArrayRef<NamedAttribute> attrs,
                                       Operation *to) {
   if (Attribute attr = getAttr(attrs, kForceDynamicValidShapeAttrName))
     to->setAttr(kForceDynamicValidShapeAttrName, attr);
-}
-
-static LogicalResult
-materializePTOSubViewOps(ModuleOp module, OpBuilder &builder,
-                         DenseMap<Value, Value> &tileHandles) {
-  SmallVector<pto::SubViewOp, 16> subviews;
-  module.walk([&](pto::SubViewOp op) { subviews.push_back(op); });
-
-  for (pto::SubViewOp op : subviews) {
-    auto tileTy = dyn_cast<TileBufType>(op.getResult().getType());
-    if (!tileTy) {
-      op.emitError("expected pto.subview result to be a tile_buf");
-      return failure();
-    }
-
-    builder.setInsertionPoint(op);
-    Value addr = computeExplicitAddress(op.getResult(), builder, op.getLoc());
-    if (!addr) {
-      op.emitError("cannot materialize pto.subview without a planned source "
-                   "address");
-      return failure();
-    }
-
-    TileBufType physicalTileTy = buildPTOSubViewPhysicalTileType(op, tileTy);
-    auto alloc = builder.create<AllocTileOp>(
-        op.getLoc(), physicalTileTy, addr,
-        getAllocValidOperand(physicalTileTy, op.getValidRow(), 0, builder,
-                             op.getLoc()),
-        getAllocValidOperand(physicalTileTy, op.getValidCol(), 1, builder,
-                             op.getLoc()));
-    alloc->setAttr("pto.view_semantics", builder.getStringAttr("subview"));
-    tileHandles[op.getResult()] = alloc.getResult();
-    op.replaceAllUsesWith(alloc.getResult());
-    op.erase();
-  }
-
-  return success();
 }
 
 static void updateResultTypesAfterMaterializingOperand(Operation *op,
@@ -1565,11 +1509,6 @@ struct PTOMaterializeTileHandlesPass
     }
 
     if (failedMaterialization) {
-      signalPassFailure();
-      return;
-    }
-
-    if (failed(materializePTOSubViewOps(module, builder, tileHandles))) {
       signalPassFailure();
       return;
     }

@@ -55,6 +55,150 @@ using namespace mlir;
 
 namespace {
 
+static Value ensureI64(Value value, IRRewriter &rewriter, Location loc) {
+  if (!value)
+    return {};
+  if (value.getType().isInteger(64))
+    return value;
+  if (value.getType().isIndex())
+    return rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), value);
+  if (isa<IntegerType>(value.getType()))
+    return rewriter.create<arith::ExtSIOp>(loc, rewriter.getI64Type(), value);
+  return {};
+}
+
+static bool getTilePointerStrides(pto::TileBufType type, int64_t &rowStride,
+                                  int64_t &colStride) {
+  auto shape = type.getShape();
+  if (shape.size() != 2 || llvm::is_contained(shape, ShapedType::kDynamic))
+    return false;
+
+  auto config = type.getConfigAttr();
+  int32_t bl = static_cast<int32_t>(config.getBLayout().getValue());
+  int32_t sl = static_cast<int32_t>(config.getSLayout().getValue());
+  if (sl == 0) {
+    bool rowPlusOne =
+        type.getCompactModeI32() ==
+        static_cast<int32_t>(pto::CompactMode::RowPlusOne);
+    rowStride = bl == 1 ? 1 : shape[1] + (rowPlusOne ? 1 : 0);
+    colStride = bl == 1 ? shape[0] + (rowPlusOne ? 1 : 0) : 1;
+    return true;
+  }
+
+  unsigned elemBytes = pto::getPTOStorageElemByteSize(type.getElementType());
+  if (elemBytes == 0)
+    return false;
+  int64_t innerRows = 1;
+  int64_t innerCols = 1;
+  int32_t fractal = config.getSFractalSize().getInt();
+  if (fractal == 1024) {
+    innerRows = 16;
+    innerCols = 16;
+  } else if (fractal == 32) {
+    innerRows = 16;
+    innerCols = 2;
+  } else if (fractal == 512 && sl == 1) {
+    innerRows = 16;
+    innerCols = 32 / elemBytes;
+  } else if (fractal == 512 && sl == 2) {
+    innerRows = 32 / elemBytes;
+    innerCols = 16;
+  } else {
+    return false;
+  }
+
+  if (bl == 1) {
+    if (sl != 1)
+      return false;
+    rowStride = innerCols;
+    colStride = shape[0];
+  } else {
+    rowStride = shape[1];
+    colStride = innerRows;
+  }
+  return true;
+}
+
+static Value computeTileAddress(Value value, IRRewriter &rewriter,
+                                Location loc) {
+  if (auto alloc = value.getDefiningOp<pto::AllocTileOp>())
+    return ensureI64(alloc.getAddr(), rewriter, loc);
+  if (auto subview = value.getDefiningOp<pto::SubViewOp>()) {
+    Value base = computeTileAddress(subview.getSource(), rewriter, loc);
+    auto sourceType = subview.getSource().getType();
+    int64_t rowStride = 0;
+    int64_t colStride = 0;
+    if (!base || !getTilePointerStrides(sourceType, rowStride, colStride) ||
+        subview.getOffsets().size() != 2)
+      return {};
+    Value row = ensureI64(subview.getOffsets()[0], rewriter, loc);
+    Value col = ensureI64(subview.getOffsets()[1], rewriter, loc);
+    if (!row || !col)
+      return {};
+    Value rowScale = rewriter.create<arith::ConstantIntOp>(loc, rowStride, 64);
+    Value colScale = rewriter.create<arith::ConstantIntOp>(loc, colStride, 64);
+    row = rewriter.create<arith::MulIOp>(loc, row, rowScale);
+    col = rewriter.create<arith::MulIOp>(loc, col, colScale);
+    Value elements = rewriter.create<arith::AddIOp>(loc, row, col);
+    int64_t elemBytes = static_cast<int64_t>(
+        pto::getPTOStorageElemByteSize(sourceType.getElementType()));
+    if (elemBytes == 0)
+      return {};
+    Value byteScale = rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
+    Value bytes = rewriter.create<arith::MulIOp>(loc, elements, byteScale);
+    return rewriter.create<arith::AddIOp>(loc, base, bytes);
+  }
+  return {};
+}
+
+static pto::TileBufType getSubviewPhysicalType(pto::SubViewOp op) {
+  pto::TileBufType sourceType = op.getSource().getType();
+  pto::TileBufType resultType = op.getResult().getType();
+  return pto::TileBufType::get(
+      op.getContext(), sourceType.getShape(), resultType.getElementType(),
+      resultType.getMemorySpace(), resultType.getValidShape(),
+      resultType.getConfigAttr());
+}
+
+static Value getSubviewValidOperand(pto::SubViewOp op,
+                                    pto::TileBufType physicalType,
+                                    unsigned dim, IRRewriter &rewriter) {
+  Value operand = dim == 0 ? op.getValidRow() : op.getValidCol();
+  ArrayRef<int64_t> validShape = physicalType.getValidShape();
+  if (validShape.size() <= dim || validShape[dim] >= 0)
+    return {};
+  if (operand)
+    return operand;
+  ArrayRef<int64_t> shape = physicalType.getShape();
+  if (shape.size() > dim && shape[dim] != ShapedType::kDynamic)
+    return rewriter.create<arith::ConstantIndexOp>(op.getLoc(), shape[dim]);
+  return {};
+}
+
+static LogicalResult resolveTileNativeSubviews(ModuleOp module,
+                                               MLIRContext *ctx) {
+  SmallVector<pto::SubViewOp, 16> subviews;
+  module.walk([&](pto::SubViewOp op) { subviews.push_back(op); });
+  for (pto::SubViewOp op : subviews) {
+    IRRewriter rewriter(ctx);
+    rewriter.setInsertionPoint(op);
+    Value addr = computeTileAddress(op.getResult(), rewriter, op.getLoc());
+    // A tile function argument is a symbolic runtime-bound handle. Keep its
+    // subview tile-native; only planned local roots can be normalized to an
+    // addressed alloc_tile here.
+    if (!addr)
+      continue;
+    pto::TileBufType physicalType = getSubviewPhysicalType(op);
+    auto alloc = rewriter.create<pto::AllocTileOp>(
+        op.getLoc(), physicalType, addr,
+        getSubviewValidOperand(op, physicalType, 0, rewriter),
+        getSubviewValidOperand(op, physicalType, 1, rewriter));
+    alloc->setAttr("pto.view_semantics", rewriter.getStringAttr("subview"));
+    rewriter.replaceOp(op, alloc.getResult());
+  }
+  return success();
+}
+
 static FailureOr<uint64_t> getStaticSlotBytes(pto::TileBufType slotType) {
   uint64_t elemBytes = pto::getPTOStorageElemByteSize(slotType.getElementType());
   if (elemBytes == 0)
@@ -214,6 +358,10 @@ struct PTOResolveBufferSelectPass
     MLIRContext *ctx = &getContext();
 
     if (failed(resolveTileNativeMultiGets(mod, ctx))) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(resolveTileNativeSubviews(mod, ctx))) {
       signalPassFailure();
       return;
     }

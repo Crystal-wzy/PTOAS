@@ -80,7 +80,7 @@ PTO tile/view IR
 
 | Op | 当前行为 | Tile-native 目标 | Memplan / Alias | InsertSync | Backend 与测试 |
 |---|---|---|---|---|---|
-| `pto.subview` | 通常转成 `memref.subview + pto.bind_tile`，之后再恢复 tile | 全程保留 `pto.subview` | result 与 source 同 root；按 layout/stride/offset 计算 byte range | 现有 InsertSync 已有精确 `pto.subview` 地址计算；GSS 和 BufidSync 补齐同等能力 | EmitC/VPTO 增加直接 lowering；覆盖 row/col-major、dynamic offset、valid shape |
+| `pto.subview` | 已在 memplan 和 sync 主线保持 tile-native，不再生成 `memref.subview + pto.bind_tile` | 同步完成前保留 `pto.subview` | result 与 source 同 root；按 layout/stride/offset 计算 byte range | InsertSync 已精确计算地址范围；GSS 通过通用 view alias 回溯 source | `PTOResolveBufferSelect` 在同步后解析为带偏移地址的 `alloc_tile`，供 EmitC/VPTO 共用；覆盖 row/col-major、boxed、dynamic offset 和 valid shape |
 | `pto.treshape` | 已保持 tile-native，不再生成 memref view 或 `bind_tile` | 保持原 op | result 与 source 完全 alias，size 不变；legacy/modern memplan 已传播 alias | InsertSync/GSS 已直接传播 result-to-source alias | EmitC 已直接 lowering；覆盖 tile 参数、动态 valid shape 和静态 valid shape |
 | `pto.bitcast` | 已保持 tile-native，不再生成 memref view 或 `bind_tile` | 保持原 op | result 与 source alias；legacy/modern memplan 已按 byte range 传播同一 root，并校验总容量一致 | InsertSync/GSS 已直接传播 alias，不按 element type 分裂 root | EmitC 已直接 lowering；覆盖 tile 参数和同容量 dtype 改变 |
 | `pto.set_validshape` | 已保持 tile-native，输入已收紧为 `TileBufType` | 直接更新 tile handle metadata，不改变物理 root | 不产生新 root；物理 size 使用 allocation shape，不使用 valid shape | 对原 root 建模为 metadata Write | EmitC 已直接消费；覆盖 if 和动态 valid shape |

@@ -79,7 +79,7 @@ static bool hasMigratedTileNativeView(func::FuncOp func) {
   bool found = false;
   auto result = func.walk([&](Operation *op) {
     if (isa<pto::TReshapeOp, pto::BitcastOp, pto::SetValidShapeOp,
-            pto::GetValidShapeOp>(op)) {
+            pto::GetValidShapeOp, pto::SubViewOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
@@ -132,58 +132,6 @@ using SmallInlineVector = SmallVector<T, kShapeVectorInlineCapacity>;
 
 template <typename T>
 using DefaultInlineVector = SmallVector<T, kOperationVectorInlineCapacity>;
-
-// =============================================================================
-// Helper: Metadata Backtracking (核心机制)
-// =============================================================================
-// 从一个 MemRef Value 向上回溯，找到它绑定的 TileBufConfig。
-// 这解决了 "Type Erasure" 问题：memref 类型本身不包含 config，但 SSA 定义链包含。
-static mlir::pto::TileBufConfigAttr lookupConfig(Value v) {
-  // 1. 最直接的情况：它就是 bind_tile 的结果
-  if (auto bind = v.getDefiningOp<mlir::pto::BindTileOp>()) {
-    return bind.getConfig();
-  }
-  // PointerCastOp can also carry tile metadata (used when alloc_tile specifies
-  // an explicit address).
-  if (auto pc = v.getDefiningOp<mlir::pto::PointerCastOp>()) {
-    if (auto cfg = pc.getConfig())
-      return *cfg;
-    return {};
-  }
-  
-  // 2. 穿透 View 操作 (SubView, Cast 等) 向上查找
-  if (auto subview = v.getDefiningOp<memref::SubViewOp>()) {
-    return lookupConfig(subview.getSource());
-  }
-  if (auto cast = v.getDefiningOp<memref::ReinterpretCastOp>()) {
-    return lookupConfig(cast.getSource());
-  }
-  if (auto cast = v.getDefiningOp<memref::CastOp>()) {
-    return lookupConfig(cast.getSource());
-  }
-  if (auto slot = v.getDefiningOp<mlir::pto::SlotMarkerOp>()) {
-    return lookupConfig(slot.getSource());
-  }
-
-  // 3. pto.fusion_region result 本身不携带 config；作为兜底情况，沿着
-  //    pto.yield 回溯到 region 内真正的 tile handle/memref 定义链继续查找。
-  if (auto regionResult = dyn_cast<OpResult>(v)) {
-    if (auto fusionRegion =
-            dyn_cast<mlir::pto::FusionRegionOp>(regionResult.getOwner())) {
-      auto yieldOp = dyn_cast<mlir::pto::YieldOp>(
-          fusionRegion.getBody().front().getTerminator());
-      if (!yieldOp)
-        return {};
-      unsigned resultIndex = regionResult.getResultNumber();
-      if (resultIndex >= yieldOp.getNumOperands())
-        return {};
-      return lookupConfig(yieldOp.getOperand(resultIndex));
-    }
-  }
-
-  // 如果追溯到 BlockArgument (函数参数) 或其他无法穿透的 Op，则返回空
-  return {};
-}
 
 // =============================================================================
 // Helper: Valid dims backtracking (v_row / v_col)
@@ -618,19 +566,6 @@ static SmallVector<int64_t> computeCompactStrides(ArrayRef<int64_t> shape) {
   return strides;
 }
 
-static bool checkMultipleOf(Operation *op, int64_t value, int64_t divisor,
-                            StringRef label) {
-  if (divisor <= 0) {
-    op->emitError("boxed layout requires positive divisor for ") << label;
-    return false;
-  }
-  if (value % divisor == 0)
-    return true;
-  op->emitError("boxed layout requires ")
-      << label << " multiple of " << divisor << ", got " << value;
-  return false;
-}
-
 // 确保 Value 是 Index 类型
 static Value ensureIndex(IRRewriter &rewriter, Location loc, Value v,
                          Operation *anchorOp) {
@@ -678,31 +613,6 @@ static bool foldAddPtrChainIntoOffset(IRRewriter &rewriter, Location loc,
     base = add.getOperand(0);
   }
   return folded;
-}
-
-static Value clampSubViewValidDim(IRRewriter &rewriter, Location loc,
-                                  Value explicitValid, int64_t size,
-                                  int64_t inferredValid, Operation *anchorOp) {
-  if (!explicitValid) {
-    // No explicit valid operand: take the valid extent the result type
-    // declares. For an ordinary subview this equals `size`; for an empty
-    // tail/no-op-replay tile the type carries 0, which must survive to
-    // bind_tile rather than being widened back to `size`. A dynamic declared
-    // extent is materialized via markForceDynamicValidShape, so fall back to
-    // `size` here.
-    int64_t fallback = inferredValid >= 0 ? inferredValid : size;
-    return rewriter.create<arith::ConstantIndexOp>(loc, fallback);
-  }
-
-  Value sizeVal = rewriter.create<arith::ConstantIndexOp>(loc, size);
-  int64_t cst = 0;
-  if (getConstIndexValue(explicitValid, cst))
-    return rewriter.create<arith::ConstantIndexOp>(loc, std::min(cst, size));
-
-  Value v = ensureIndex(rewriter, loc, explicitValid, anchorOp);
-  Value lt = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, v,
-                                            sizeVal);
-  return rewriter.create<arith::SelectOp>(loc, lt, v, sizeVal);
 }
 
 [[maybe_unused]] static void dumpPretty(Operation *op, llvm::raw_ostream &os) {
@@ -1325,136 +1235,6 @@ static LogicalResult lowerPartitionViewOps(func::FuncOp func, MLIRContext *ctx) 
   return success();
 }
 
-static LogicalResult lowerSubViewOps(func::FuncOp func, MLIRContext *ctx) {
-  DefaultInlineVector<mlir::pto::SubViewOp> subViews;
-  func.walk([&](mlir::pto::SubViewOp op) { subViews.push_back(op); });
-
-  for (auto op : subViews) {
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(op);
-    Location loc = op.getLoc();
-    auto resultTileTy =
-        dyn_cast<mlir::pto::TileBufType>(op.getResult().getType());
-    Value src = op->getOperand(0);
-    auto srcMrTy = dyn_cast<MemRefType>(src.getType());
-    if (!srcMrTy) {
-      // Tile-native alloc_tile roots intentionally survive this pass so that
-      // PTOPlanMemory can assign their addresses. Defer tile_buf subviews until
-      // after planning, when PTOMaterializeTileHandles can materialize the
-      // adjusted address directly.
-      if (isa<mlir::pto::TileBufType>(src.getType()))
-        continue;
-      op.emitError("pto.subview source must be lowered to memref first");
-      return failure();
-    }
-
-    ArrayAttr sizeAttr = op.getSizes();
-    SmallVector<int64_t> staticSizes;
-    SmallVector<OpFoldResult> mixedSizes;
-    for (Attribute attr : sizeAttr) {
-      int64_t size = cast<IntegerAttr>(attr).getInt();
-      staticSizes.push_back(size);
-      mixedSizes.push_back(rewriter.getIndexAttr(size));
-    }
-
-    SmallVector<OpFoldResult> mixedOffsets;
-    for (Value offset : op.getOffsets()) {
-      appendMixedIndex(rewriter, loc, offset, op, mixedOffsets);
-    }
-
-    auto configAttr = lookupConfig(src);
-    if (!configAttr)
-      configAttr = pto::TileBufConfigAttr::getDefault(ctx);
-
-    TileLayoutInfo layoutInfo;
-    if (!computeTileLayoutInfo(configAttr, srcMrTy.getElementType(),
-                               srcMrTy.getShape(), layoutInfo)) {
-      op.emitError("unsupported tile layout for pto.subview");
-      return failure();
-    }
-
-    if (layoutInfo.boxed) {
-      if (staticSizes.size() != kTileRank2D ||
-          op.getOffsets().size() != kTileRank2D) {
-        op.emitError("boxed layout subview expects 2D sizes/offsets");
-        return failure();
-      }
-      if (!checkMultipleOf(op, staticSizes[0], layoutInfo.innerRows, "row size") ||
-          !checkMultipleOf(op, staticSizes[1], layoutInfo.innerCols, "col size")) {
-        return failure();
-      }
-
-      int64_t off0 = 0;
-      int64_t off1 = 0;
-      bool off0Const = getConstIndexValue(op.getOffsets()[0], off0);
-      bool off1Const = getConstIndexValue(op.getOffsets()[1], off1);
-      if (off0Const &&
-          !checkMultipleOf(op, off0, layoutInfo.innerRows, "row offset")) {
-        return failure();
-      }
-      if (off1Const &&
-          !checkMultipleOf(op, off1, layoutInfo.innerCols, "col offset")) {
-        return failure();
-      }
-
-    }
-
-    SmallVector<int64_t> srcStrides;
-    int64_t srcOffset = ShapedType::kDynamic;
-    if (failed(mlir::pto::getPTOMemRefStridesAndOffset(srcMrTy, srcStrides,
-                                                       srcOffset)))
-      srcStrides = computeCompactStrides(srcMrTy.getShape());
-
-    // Keep parent physical shape + strides for bound tile semantics.
-    auto resultLayout =
-        StridedLayoutAttr::get(ctx, ShapedType::kDynamic, srcStrides);
-    auto parentShape = srcMrTy.getShape();
-    auto resultMemRefType =
-        MemRefType::get(parentShape, srcMrTy.getElementType(), resultLayout,
-                        srcMrTy.getMemorySpace());
-
-    // Intermediate memref.subview keeps logical subview size.
-    auto subViewMemRefType =
-        MemRefType::get(staticSizes, srcMrTy.getElementType(), resultLayout,
-                        srcMrTy.getMemorySpace());
-
-    SmallVector<OpFoldResult> mixedStrides(staticSizes.size(),
-                                           rewriter.getIndexAttr(1));
-    auto sv = rewriter.create<memref::SubViewOp>(loc, subViewMemRefType, src,
-                                                 mixedOffsets, mixedSizes,
-                                                 mixedStrides);
-
-    // When a valid operand is omitted, fall back to the extent the result type
-    // declares (which the verifier pins to either `sizes` or an empty 0 marker)
-    // rather than the physical subview size, so a no-op-replay v_row/v_col=0
-    // survives lowering.
-    ArrayRef<int64_t> resultValid =
-        resultTileTy ? resultTileTy.getValidShape() : ArrayRef<int64_t>{};
-    auto inferredValidDim = [&](unsigned d) -> int64_t {
-      return d < resultValid.size() ? resultValid[d] : ShapedType::kDynamic;
-    };
-
-    Value vRow;
-    Value vCol;
-    if (!staticSizes.empty())
-      vRow = clampSubViewValidDim(rewriter, loc, op.getValidRow(),
-                                  staticSizes[0], inferredValidDim(0), op);
-    if (staticSizes.size() > 1)
-      vCol = clampSubViewValidDim(rewriter, loc, op.getValidCol(),
-                                  staticSizes[1], inferredValidDim(1), op);
-
-    auto bindOp = rewriter.create<pto::BindTileOp>(
-        loc, resultMemRefType, sv.getResult(), vRow ? vRow : Value(),
-        vCol ? vCol : Value(), configAttr);
-    markForceDynamicValidShape(bindOp,
-                               resultTileTy && resultTileTy.hasDynamicValid(),
-                               ctx);
-    bindOp->setAttr("pto.view_semantics", rewriter.getStringAttr("subview"));
-    rewriter.replaceOp(op, bindOp.getResult());
-  }
-  return success();
-}
-
 // =============================================================================
 // The Pass Implementation
 // =============================================================================
@@ -1757,12 +1537,8 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
-      // Stage 1.35: Lower pto.subview -> memref.subview + pto.bind_tile
+      // Stage 1.35: pto.subview stays tile-native through memory and sync.
       // ------------------------------------------------------------------
-      if (failed(lowerSubViewOps(func, ctx))) {
-        signalPassFailure();
-        return;
-      }
 
       // ------------------------------------------------------------------
       // Stage 1.4: treshape/bitcast stay tile-native.

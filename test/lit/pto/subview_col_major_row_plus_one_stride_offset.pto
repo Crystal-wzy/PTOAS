@@ -22,4 +22,6 @@ module {
 
 // ColMajor + RowPlusOne: major stride should be 17 (not 16).
 // CHECK: pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<vec, 16x16xf32, blayout=col_major, compact=2>
-// CHECK: pto.subview {{.*}} sizes [8, 8] : !pto.tile_buf<vec, 16x16xf32, blayout=col_major, compact=2> -> !pto.tile_buf<vec, 8x8xf32, blayout=col_major, compact=2>
+// CHECK: %c17_i64 = arith.constant 17 : i64
+// CHECK: arith.muli %{{.*}}, %c17_i64 : i64
+// CHECK: pto.alloc_tile addr = %{{.*}} {pto.view_semantics = "subview"} : !pto.tile_buf<vec, 16x16xf32, valid=8x8, blayout=col_major, compact=2>
