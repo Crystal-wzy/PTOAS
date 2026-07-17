@@ -2771,12 +2771,10 @@ def StructSetOp : PTO_Op<"struct_set"> {
 }
 
 def DeclareTileMemRefOp : PTO_Op<"declare_tile_memref"> {
-  let summary = "Internal memref placeholder for a tile whose address is assigned later";
+  let summary = "Legacy memref placeholder for a runtime-bound tile";
   let description = [{
-    Internal lowering op used by PTOViewToMemref. This op does not allocate
-    storage; it only provides a memref-typed SSA handle so later passes can
-    attach tile metadata through pto.bind_tile before the address is filled by
-    pipe operations such as pto.tpop.
+    Compatibility op for legacy memref-based IR. New PTOViewToMemref pipelines
+    preserve `pto.declare_tile` directly instead of producing this op.
   }];
 
   let results = (outs AnyMemRef:$result);

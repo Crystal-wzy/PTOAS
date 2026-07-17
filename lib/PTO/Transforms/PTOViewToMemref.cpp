@@ -67,7 +67,7 @@ static Type convertPTOTypeToMemRef(Type t);
 static bool hasTileNativeAllocationRoot(func::FuncOp func) {
   bool found = false;
   auto result = func.walk([&](Operation *op) {
-    if (isa<pto::AllocTileOp, pto::AllocMultiTileOp>(op)) {
+    if (isa<pto::AllocTileOp, pto::AllocMultiTileOp, pto::DeclareTileOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
@@ -951,46 +951,6 @@ static void markForceDynamicValidShape(Operation *op, bool force,
   func.setFunctionType(FunctionType::get(ctx, newInputs, newResults));
 }
 
-[[maybe_unused]] static LogicalResult lowerDeclareTileOps(func::FuncOp func, MLIRContext *ctx) {
-  DefaultInlineVector<mlir::pto::DeclareTileOp> declaredTiles;
-  func.walk([&](mlir::pto::DeclareTileOp op) { declaredTiles.push_back(op); });
-
-  for (auto op : declaredTiles) {
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(op);
-    Location loc = op.getLoc();
-
-    auto tbTy = dyn_cast<mlir::pto::TileBufType>(op.getTile().getType());
-    if (!tbTy) {
-      op.emitError("declare_tile result must be tile_buf type");
-      return failure();
-    }
-
-    auto targetType = dyn_cast<MemRefType>(convertPTOTypeToMemRef(tbTy));
-    if (!targetType) {
-      op.emitError("failed to convert declare_tile result to memref type");
-      return failure();
-    }
-
-    auto configAttr = tbTy.getConfigAttr();
-    if (!configAttr)
-      configAttr = pto::TileBufConfigAttr::getDefault(ctx);
-
-    Value vRow;
-    Value vCol;
-    materializeStaticValidDims(rewriter, loc, tbTy, vRow, vCol);
-
-    auto declaredMemRef =
-        rewriter.create<pto::DeclareTileMemRefOp>(loc, targetType);
-    auto bindOp = rewriter.create<pto::BindTileOp>(
-        loc, targetType, declaredMemRef.getResult(), vRow ? vRow : Value(),
-        vCol ? vCol : Value(), configAttr);
-    markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
-    rewriter.replaceOp(op, bindOp.getResult());
-  }
-  return success();
-}
-
 static Value castIndexToI64(IRRewriter &rewriter, Location loc, Value value) {
   Type i64Ty = rewriter.getI64Type();
   if (value.getType() == i64Ty)
@@ -1778,48 +1738,10 @@ struct PTOViewToMemrefPass
       // ------------------------------------------------------------------
 
       // ------------------------------------------------------------------
-      // Stage 0.75: lower pto.declare_tile -> pto.declare_tile_memref +
-      //             pto.bind_tile
+      // Stage 0.75: keep pto.declare_tile tile-native. It is a symbolic handle
+      // whose address is assigned at runtime by tpop/tassign, not a static
+      // allocation root for PlanMemory.
       // ------------------------------------------------------------------
-      DefaultInlineVector<mlir::pto::DeclareTileOp> declaredTiles;
-      func.walk([&](mlir::pto::DeclareTileOp op) { declaredTiles.push_back(op); });
-
-      for (auto op : declaredTiles) {
-        IRRewriter rewriter(ctx);
-        rewriter.setInsertionPoint(op);
-        Location loc = op.getLoc();
-
-        auto tbTy = dyn_cast<mlir::pto::TileBufType>(op.getTile().getType());
-        if (!tbTy) {
-          op.emitError("declare_tile result must be tile_buf type");
-          signalPassFailure();
-          return;
-        }
-
-        auto targetType = dyn_cast<MemRefType>(convertPTOTypeToMemRef(tbTy));
-        if (!targetType) {
-          op.emitError("failed to convert declare_tile result to memref type");
-          signalPassFailure();
-          return;
-        }
-
-        auto configAttr = tbTy.getConfigAttr();
-        if (!configAttr)
-          configAttr = pto::TileBufConfigAttr::getDefault(ctx);
-
-        Value vRow;
-        Value vCol;
-        materializeStaticValidDims(rewriter, loc, tbTy, vRow, vCol);
-
-        auto declaredMemRef =
-            rewriter.create<pto::DeclareTileMemRefOp>(loc, targetType);
-        auto bindOp = rewriter.create<pto::BindTileOp>(
-            loc, targetType, declaredMemRef.getResult(),
-            vRow ? vRow : Value(), vCol ? vCol : Value(), configAttr);
-        markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
-
-        rewriter.replaceOp(op, bindOp.getResult());
-      }
 
       // ------------------------------------------------------------------
       // Stage 0.8: normalize pto.tassign result type to match tile operand

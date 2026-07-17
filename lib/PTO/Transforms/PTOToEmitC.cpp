@@ -13438,7 +13438,8 @@ struct PTOAllocTileToEmitC
 static FailureOr<Value>
 createEmitCTileVariable(ConversionPatternRewriter &rewriter, Location loc,
                         const TypeConverter *typeConverter,
-                        pto::TileBufType tileTy) {
+                        pto::TileBufType tileTy,
+                        bool initializeDynamicValidToShape = false) {
   auto tileTypeString = getEmitCTileTypeString(tileTy);
   if (!tileTypeString)
     return failure();
@@ -13447,6 +13448,25 @@ createEmitCTileVariable(ConversionPatternRewriter &rewriter, Location loc,
   if (!convertedTy)
     convertedTy = emitc::OpaqueType::get(rewriter.getContext(), *tileTypeString);
 
+  if (initializeDynamicValidToShape && tileTy.hasDynamicValid()) {
+    auto shape = tileTy.getShape();
+    if (shape.size() != 2 || llvm::is_contained(shape, ShapedType::kDynamic))
+      return failure();
+    Type i32Ty = emitc::OpaqueType::get(rewriter.getContext(), "int32_t");
+    pto::BLayout blayout = getTileBufBLayoutValue(tileTy.getConfigAttr());
+    SmallVector<Value, 2> constructorArgs;
+    constructorArgs.push_back(makeEmitCIntConstant(
+        rewriter, loc, i32Ty,
+        renderTileTemplateDim(shape[0], tileTy.getElementType(), blayout, 0)));
+    constructorArgs.push_back(makeEmitCIntConstant(
+        rewriter, loc, i32Ty,
+        renderTileTemplateDim(shape[1], tileTy.getElementType(), blayout, 1)));
+    return rewriter
+        .create<emitc::CallOpaqueOp>(loc, convertedTy, *tileTypeString,
+                                     ArrayAttr{}, ArrayAttr{}, constructorArgs)
+        .getResult(0);
+  }
+
   Value tile = rewriter
                    .create<emitc::VariableOp>(
                        loc, getEmitCVariableResultType(convertedTy),
@@ -13454,6 +13474,27 @@ createEmitCTileVariable(ConversionPatternRewriter &rewriter, Location loc,
                    .getResult();
   return loadEmitCVariableIfNeeded(rewriter, loc, tile);
 }
+
+struct PTODeclareTileToEmitC
+    : public OpConversionPattern<pto::DeclareTileOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::DeclareTileOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    auto tileType = dyn_cast<pto::TileBufType>(op.getTile().getType());
+    if (!tileType)
+      return rewriter.notifyMatchFailure(op, "expected a tile_buf result");
+    FailureOr<Value> tile = createEmitCTileVariable(
+        rewriter, op.getLoc(), getTypeConverter(), tileType,
+        /*initializeDynamicValidToShape=*/true);
+    if (failed(tile))
+      return rewriter.notifyMatchFailure(
+          op, "only rank-2 declare_tile handles can be converted to EmitC");
+    rewriter.replaceOp(op, *tile);
+    return success();
+  }
+};
 
 struct PTOTReshapeToEmitC : public OpConversionPattern<pto::TReshapeOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -14407,6 +14448,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
                                        PTOArch targetArch) {
   patterns.add<ArithCmpIToEmitC>(typeConverter, ctx);
   patterns.add<PTOAllocTileToEmitC>(typeConverter, ctx);
+  patterns.add<PTODeclareTileToEmitC>(typeConverter, ctx);
   patterns.add<PTOMaterializeTileToEmitC>(typeConverter, ctx);
   patterns.add<PTOTileBufAddrToEmitC>(typeConverter, ctx);
   patterns.add<PTOBindTileToEmitC>(typeConverter, ctx);

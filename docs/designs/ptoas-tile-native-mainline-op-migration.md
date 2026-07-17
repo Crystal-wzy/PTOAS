@@ -69,8 +69,8 @@ PTO tile/view IR
 | `pto.alloc_tile` | `PTOViewToMemref` 已透传；memplan 填写 `addr` | 保持现状，作为单 slot local root | legacy/modern 均继续收集无地址 root；level3 校验显式地址 | 现有 InsertSync 已读取类型、大小和常量地址；GSS 需从 `alloc_tile addr` 构造 `PointerLikeInfo` | EmitC/VPTO 已有直接 lowering；保留 level1/2 自动地址和 level3 显式地址测试 |
 | `pto.alloc_multi_tile` | 已保持 tile-native；memplan 写入内部 N-address 属性，level3 保留用户 base | op 本身作为 N-slot root，最终可由 backend 直接消费 | legacy/modern 已支持 `slotCount=N`、`slotBytes`、`totalBytes` 和每 slot offsets；禁止 sibling slot 互相 alias | InsertSync/GSS 已直接识别 multi root，不依赖 `slot_marker -> pointer_cast` | 当前由 `PTOResolveBufferSelect` 展开成带地址的 `alloc_tile`；已覆盖 constant/dynamic slot、loop/non-loop 测试 |
 | `pto.multi_tile_get` | 已保持到 sync 和 `PTOResolveBufferSelect` | 最终继续保持到 backend | result 已 alias 到 multi root，并携带 slot expression | constant slot 只访问一个地址；dynamic slot 保守访问全部地址，并保留 dyn event-id 推导 | 当前 resolve pass 根据 slot 生成带单地址的 `alloc_tile`；不再生成 `slot_marker` |
-| `pto.declare_tile` | 转成 `pto.declare_tile_memref + pto.bind_tile` | 保持 tile handle，表示地址由 `tpop` 等运行时操作绑定，不参与静态 local allocation | 不作为普通静态 root；需要单独标记 runtime-bound root | 建立 `declare_tile -> tpop/tassign -> tile users` 的 root/address 数据流 | EmitC/VPTO 直接 lowering；覆盖 tpush/tpop、分支和循环 |
-| `pto.declare_tile_memref` | `PTOViewToMemref` 生成的内部占位 op | 所有 `declare_tile` 用户迁移后删除 | 删除 legacy/modern 特判 | 删除 InsertSync 的专用 root 注册 | 删除 EmitC pattern 和相关测试 |
+| `pto.declare_tile` | 已保持 tile-native，不参与静态 local allocation | 保持现状，表示地址由 `tpop/tassign` 等运行时操作绑定 | legacy/modern 不收集为 allocation root | InsertSync 直接注册 symbolic root；GSS 按 declared SSA identity 建模 | EmitC 已直接声明 Tile；已覆盖 tpush/tpop 和 interleaved sync/GSS |
+| `pto.declare_tile_memref` | 仅保留 legacy memref IR 兼容，不再由 `PTOViewToMemref` 生成 | 其余旧兼容用户清除后删除 | legacy 仅跳过，不分配 | InsertSync 暂保兼容入口 | 暂保 legacy EmitC pattern，最终随兼容路径删除 |
 | `pto.bind_tile` | memref 与 tile metadata 的桥接和 alias anchor | local tile 不再需要；只允许迁移期兼容，最终删除或限制为外部 ABI bridge | 先统一 `getAliasSource()`，切换后删除 bind 分支 | 先统一 alias tracing，切换后删除 bind 分支 | 删除 materialize/EmitC bind lowering 测试 |
 | `pto.pointer_cast` | 表达 memref root 的物理地址或 multi-address root | 仅保留真正的 raw-address ABI bridge；普通 local allocation 改由 allocation op 持有地址 | 不再作为 `alloc_tile` 的 materialization 结果 | 若保留，sync 继续读取其地址；multi-buffer 不再必须依赖它 | 后端保留 raw-address lowering，删除 alloc fallback 用法 |
 | `pto.slot_marker` | `multi_tile_get` 在 memref 层的内部 slot 标签 | `multi_tile_get` 直接承担 slot 标签语义，最终删除 | 删除 alias 特判 | 将 slot narrowing 和 dyn event-id 逻辑迁移到 `multi_tile_get` | 删除 `PTOResolveBufferSelect` 对 slot_marker 的入口 |
@@ -267,7 +267,7 @@ op 默认不需要迁移实现；仍需通过完整 lit 确认它们没有间接
 删除两个 pass 前的支持状态：
 
 1. `pto.treshape` 和 `pto.bitcast` 的 alias 传播。
-2. `pto.declare_tile` runtime-bound root。
+2. `pto.declare_tile` runtime-bound root：已完成 EmitC、memplan、InsertSync/GSS 主路径迁移。
 3. `pto.alloc_multi_tile` 的 N-address root：已完成。
 4. `pto.multi_tile_get` 的 constant/dynamic slot narrowing：已完成。
 5. tile 类型 helper argument 和 `func.call` effects。

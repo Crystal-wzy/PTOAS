@@ -418,6 +418,9 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       if (failed(UpdateMemrefAllocOpMemInfo(memAllocOp))) {
         return WalkResult::interrupt();
       }
+    } else if (auto declareOp = dyn_cast<pto::DeclareTileOp>(op)) {
+      if (failed(UpdateDeclareTileOpMemInfo(declareOp)))
+        return WalkResult::interrupt();
     } else if (auto declareOp = dyn_cast<pto::DeclareTileMemRefOp>(op)) {
       if (failed(UpdateDeclareTileMemRefOpMemInfo(declareOp))) {
         return WalkResult::interrupt();
@@ -705,6 +708,36 @@ LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op)
       res, res, space, std::move(slotOffsets), sizeInBytes,
       isLocalAddressSpace(space));
   buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
+  return success();
+}
+
+LogicalResult
+PTOIRTranslator::UpdateDeclareTileOpMemInfo(pto::DeclareTileOp op) {
+  Value result = op.getTile();
+  auto tileType = dyn_cast<pto::TileBufType>(result.getType());
+  if (!tileType)
+    return op.emitError("requires a tile_buf result for sync analysis");
+
+  uint64_t sizeInBytes = pto::getPTOStorageElemByteSize(
+      tileType.getElementType());
+  if (sizeInBytes == 0)
+    return failure();
+  for (int64_t dim : tileType.getShape()) {
+    if (dim == ShapedType::kDynamic) {
+      sizeInBytes = 0;
+      break;
+    }
+    sizeInBytes *= static_cast<uint64_t>(dim);
+  }
+
+  pto::AddressSpace space = pto::AddressSpace::MAT;
+  if (auto attr = dyn_cast_or_null<pto::AddressSpaceAttr>(
+          tileType.getMemorySpace()))
+    space = attr.getAddressSpace();
+
+  auto info = std::make_unique<BaseMemInfo>(
+      result, result, space, SmallVector<uint64_t>{0}, sizeInBytes);
+  buffer2MemInfoMap_[result].emplace_back(info->clone());
   return success();
 }
 

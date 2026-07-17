@@ -504,10 +504,8 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
     if (mayAliasOp.has_value()) {
       auto aliasPair = mayAliasOp.value();
       UpdateBufferAlias(aliasPair.first, aliasPair.second);
-    } else if (isa<pto::DeclareTileMemRefOp>(op)) {
-      // Internal placeholder for a tile whose runtime address is assigned by
-      // pipe operations such as tpop. This op does not allocate local storage
-      // and should not participate in memory planning.
+    } else if (isa<pto::DeclareTileOp, pto::DeclareTileMemRefOp>(op)) {
+      // Runtime-bound tile handles do not allocate static local storage.
       return WalkResult::advance();
     } else if (auto bindOp = dyn_cast<pto::BindTileOp>(op)) {
       // BindTile result is only an alias of the source buffer. Treat every use

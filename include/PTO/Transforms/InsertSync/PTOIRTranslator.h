@@ -71,6 +71,7 @@ private:
   void UpdateKernelArgMemInfo();
   LogicalResult UpdateAllocTileOpMemInfo(pto::AllocTileOp op);
   LogicalResult UpdateAllocMultiTileOpMemInfo(pto::AllocMultiTileOp op);
+  LogicalResult UpdateDeclareTileOpMemInfo(pto::DeclareTileOp op);
   LogicalResult UpdateDeclareGlobalOpMemInfo(pto::DeclareGlobalOp op);
   LogicalResult UpdateDeclareTileMemRefOpMemInfo(pto::DeclareTileMemRefOp op);
   LogicalResult UpdatePointerCastOpMemInfo(pto::PointerCastOp op);
