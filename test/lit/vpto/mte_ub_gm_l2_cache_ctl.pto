@@ -36,19 +36,19 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
   }
 }
 
-// ROUNDTRIP-LABEL: func.func @mte_ub_gm_l2_cache_ctl
+// ROUNDTRIP-LABEL: func.func @mte_ub_gm_l2_cache_ctl(
 // ROUNDTRIP: %[[L2:.*]] = arith.constant 5 : i64
 // ROUNDTRIP: pto.mte_ub_gm %{{[^,]+}}, %arg0, %{{[^ ]+}} nburst(%{{[^,]+}}, %{{[^,]+}}, %{{[^)]+}}) l2_cache_ctl(%[[L2]])
 // ROUNDTRIP-SAME: : !pto.ptr<f16, ub>, !pto.ptr<f16, gm>, i64, i64, i64, i64, i64{{$}}
-// ROUNDTRIP-LABEL: func.func @mte_ub_gm_l2_cache_ctl_default
+// ROUNDTRIP-LABEL: func.func @mte_ub_gm_l2_cache_ctl_default(
 // ROUNDTRIP: pto.mte_ub_gm %{{[^,]+}}, %arg0, %{{[^ ]+}} nburst(%{{[^,]+}}, %{{[^,]+}}, %{{[^)]+}})
 // ROUNDTRIP-SAME: : !pto.ptr<f16, ub>, !pto.ptr<f16, gm>, i64, i64, i64, i64{{$}}
 
-// EXPAND-LABEL: func.func @mte_ub_gm_l2_cache_ctl
-// EXPAND: %[[L2:.*]] = arith.constant 5 : i64
-// EXPAND: pto.copy_ubuf_to_gm %{{[^,]+}}, %arg0, %{{[^,]+}}, %{{[^,]+}}, %{{[^,]+}}, %[[L2]], %{{[^,]+}}, %{{[^:]+}}
-// EXPAND-SAME: : !pto.ptr<f16, ub>, !pto.ptr<f16, gm>, i64, i64, i64, i64, i64, i64
-// EXPAND-LABEL: func.func @mte_ub_gm_l2_cache_ctl_default
+// EXPAND-LABEL: func.func @mte_ub_gm_l2_cache_ctl_default(
 // EXPAND: %[[ZERO:.*]] = arith.constant 0 : i64
 // EXPAND: pto.copy_ubuf_to_gm %{{[^,]+}}, %arg0, %[[ZERO]], %{{[^,]+}}, %{{[^,]+}}, %[[ZERO]], %{{[^,]+}}, %{{[^:]+}}
+// EXPAND-SAME: : !pto.ptr<f16, ub>, !pto.ptr<f16, gm>, i64, i64, i64, i64, i64, i64
+// EXPAND-LABEL: func.func @mte_ub_gm_l2_cache_ctl(
+// EXPAND: %[[L2:.*]] = arith.constant 5 : i64
+// EXPAND: pto.copy_ubuf_to_gm %{{[^,]+}}, %arg0, %{{[^,]+}}, %{{[^,]+}}, %{{[^,]+}}, %[[L2]], %{{[^,]+}}, %{{[^:]+}}
 // EXPAND-SAME: : !pto.ptr<f16, ub>, !pto.ptr<f16, gm>, i64, i64, i64, i64, i64, i64
