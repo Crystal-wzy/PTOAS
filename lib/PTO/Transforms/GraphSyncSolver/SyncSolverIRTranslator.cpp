@@ -85,7 +85,14 @@ llvm::SmallVector<Value> IRTranslator::tracebackMemValsStep(Value val) {
     return out;
   }
 
-  if (auto alias = pto::getOperationAliasInfo(defOp)) {
+  if (auto addPtr = dyn_cast<pto::AddPtrOp>(defOp)) {
+    out.push_back(addPtr.getPtr());
+  } else if (auto castPtr = dyn_cast<pto::CastPtrOp>(defOp);
+             castPtr &&
+             isa<pto::PtrType, MemRefType>(castPtr.getInput().getType()) &&
+             isa<pto::PtrType, MemRefType>(castPtr.getResult().getType())) {
+    out.push_back(castPtr.getInput());
+  } else if (auto alias = pto::getOperationAliasInfo(defOp)) {
     if (alias->first == result)
       out.push_back(alias->second);
   } else if (auto dsi = dyn_cast<DestinationStyleOpInterface>(defOp)) {
@@ -208,6 +215,16 @@ IRTranslator::getPipeInterfaceOp(pto::OpPipeInterface op,
   return std::make_unique<RWOperation>(
       op.getOperation(), parentOp, TCoreType::CUBE_OR_VECTOR, pipeRead,
       pipeWrite, reads, writes);
+}
+
+std::unique_ptr<OperationBase>
+IRTranslator::getScalarMemoryOp(Operation *op, OperationBase *parentOp) {
+  auto [reads, writes] = getReadWriteMemoryOps(op);
+  if (reads.empty() && writes.empty())
+    return nullptr;
+  return std::make_unique<RWOperation>(
+      op, parentOp, TCoreType::CUBE_OR_VECTOR, pto::PIPE::PIPE_S,
+      pto::PIPE::PIPE_S, reads, writes);
 }
 
 std::unique_ptr<OperationBase>
@@ -354,6 +371,9 @@ void IRTranslator::translateBlockIntoScope(Block &block, Scope *parScope,
 
     if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op)) {
       if (auto rw = getPipeInterfaceOp(pipeOp, parScope))
+        parScope->body.push_back(std::move(rw));
+    } else if (isa<pto::LoadScalarOp, pto::StoreScalarOp>(op)) {
+      if (auto rw = getScalarMemoryOp(&op, parScope))
         parScope->body.push_back(std::move(rw));
     } else if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
       if (auto rw = getLoadStoreOp(storeOp, parScope))

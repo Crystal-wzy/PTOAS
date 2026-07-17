@@ -258,13 +258,33 @@ static pto::TCoreType getPTODSLSubkernelHelperCoreType(
 // 返回值: pair<offsetInBytes, sizeInBytes>
 // 如果无法计算静态值，返回 {-1, -1} 表示这是动态的
 static std::pair<int64_t, int64_t> getStaticOffsetAndSize(Operation *op, Value src) {
-  auto srcType = dyn_cast<MemRefType>(src.getType());
-  if (!srcType) return {0, 0};
+  Type elemType;
+  if (auto srcType = dyn_cast<MemRefType>(src.getType())) {
+    elemType = srcType.getElementType();
+  } else if (auto ptrType = dyn_cast<pto::PtrType>(src.getType())) {
+    elemType = ptrType.getElementType();
+  } else {
+    return {0, 0};
+  }
 
   int64_t elemSize =
-      static_cast<int64_t>(pto::getPTOStorageElemByteSize(srcType.getElementType()));
+      static_cast<int64_t>(pto::getPTOStorageElemByteSize(elemType));
   if (elemSize == 0)
     return {-1, -1};
+
+  // === Case 0: pto.addptr ===
+  // The addptr offset is in elements. Keep the parent range size because the
+  // pointer may be wrapped into a wider tensor view later; scalar accesses are
+  // still modeled through the op's MemoryEffects below.
+  if (auto addPtr = dyn_cast<pto::AddPtrOp>(op)) {
+    int64_t offset = 0;
+    if (!getConstIndexValue(addPtr.getOffset(), offset))
+      return {-1, -1};
+    return {offset * elemSize, 0};
+  }
+
+  auto srcType = dyn_cast<MemRefType>(src.getType());
+  if (!srcType) return {0, 0};
 
   // === Case 1: memref.subview ===
   if (auto subView = dyn_cast<memref::SubViewOp>(op)) {
@@ -339,10 +359,20 @@ void PTOIRTranslator::UpdateKernelArgMemInfo() {
       continue;
     }
 
+    pto::AddressSpace space = pto::AddressSpace::GM;
+    if (auto ptrType = dyn_cast<pto::PtrType>(argType)) {
+      space = ptrType.getMemorySpace().getAddressSpace();
+    } else if (auto memRefType = dyn_cast<MemRefType>(argType)) {
+      if (auto attr = memRefType.getMemorySpace()) {
+        if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(attr))
+          space = ptoAttr.getAddressSpace();
+      }
+    }
+
     std::unique_ptr<BaseMemInfo> newMemInfo = std::make_unique<BaseMemInfo>(
         funcArg,                  // baseBuffer
         funcArg,                  // rootBuffer
-        pto::AddressSpace::GM,    // Scope
+        space,                    // Scope
         SmallVector<uint64_t>{0}, // Base Addresses
         0                         // Allocate Size
     );
@@ -402,6 +432,15 @@ void PTOIRTranslator::RecursionIR(Region *region) {
     else if (auto slotMarker = dyn_cast<pto::SlotMarkerOp>(op)) {
       UpdateSlotMarkerAliasBufferInfo(slotMarker);
     }
+    else if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(op)) {
+      UpdateAliasBufferInfo(addPtrOp.getResult(), addPtrOp.getPtr());
+    }
+    else if (auto castPtrOp = dyn_cast<pto::CastPtrOp>(op)) {
+      if (isa<pto::PtrType, MemRefType>(castPtrOp.getInput().getType()) &&
+          isa<pto::PtrType, MemRefType>(castPtrOp.getResult().getType())) {
+        UpdateAliasBufferInfo(castPtrOp.getResult(), castPtrOp.getInput());
+      }
+    }
     else if (auto castOp = dyn_cast<memref::ReinterpretCastOp>(op)) {
       UpdateAliasBufferInfo(castOp.getResult(), castOp.getSource());
     }
@@ -444,6 +483,12 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       UpdateMacroOpInfo(op);
     } else if (auto callOp = dyn_cast<func::CallOp>(op)) {
       UpdatePTODSLSubkernelCallInfo(callOp);
+    } else if (isa<pto::LoadScalarOp, pto::StoreScalarOp>(op)) {
+      // Scalar GM pointer accesses do not implement OpPipeInterface, but they
+      // execute on PIPE_S and can race with async MTE/FIX tile stores touching
+      // the same GM payload.
+      UpdatePTOOpInfoWithPipeline(op, pto::PipelineType::PIPE_S,
+                                  /*skipIfNoMemInfo=*/true);
     } else if (isa<pto::OpPipeInterface>(op)) {
       // --- Case D: 带有 OpPipeInterface 的计算/搬运指令 ---
       UpdatePTOOpInfo(op);
@@ -680,8 +725,12 @@ PTOIRTranslator::UpdateDeclareGlobalOpMemInfo(pto::DeclareGlobalOp op) {
 // ============================================================================
 void PTOIRTranslator::UpdatePTOOpInfo(Operation *op) {
   // 1. 获取流水线类型 (现在通过 Interface)
-  pto::PipelineType pipe = getOpPipeline(op);
+  UpdatePTOOpInfoWithPipeline(op, getOpPipeline(op));
+}
 
+void PTOIRTranslator::UpdatePTOOpInfoWithPipeline(Operation *op,
+                                                  pto::PipelineType pipe,
+                                                  bool skipIfNoMemInfo) {
   // 如果 Op 不属于任何关心的流水线，直接跳过，不建立 Sync 节点
   if (pipe == pto::PipelineType::PIPE_UNASSIGNED) return;
 
@@ -709,6 +758,9 @@ void PTOIRTranslator::UpdatePTOOpInfo(Operation *op) {
     LLVM_DEBUG(llvm::dbgs() << "Warning: Op " << op->getName()
                             << " has Pipe but no MemoryEffects interface.\n");
   }
+
+  if (skipIfNoMemInfo && defVec.empty() && useVec.empty())
+    return;
 
   // 3. 构建 Compound Node
   auto compoundElement = std::make_unique<CompoundInstanceElement>(

@@ -94,6 +94,9 @@ private:
   std::unique_ptr<OperationBase> getPipeInterfaceOp(pto::OpPipeInterface op,
                                                     OperationBase *parentOp);
 
+  std::unique_ptr<OperationBase> getScalarMemoryOp(Operation *op,
+                                                   OperationBase *parentOp);
+
   std::unique_ptr<OperationBase> getTensorExtractOp(tensor::ExtractOp extractOp,
                                                     OperationBase *parentOp);
 
