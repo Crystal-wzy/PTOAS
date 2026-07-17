@@ -201,10 +201,6 @@ static Location getIndexedNameHintLoc(Location fallbackLoc, unsigned index) {
                       fallbackLoc);
 }
 
-[[maybe_unused]] static constexpr llvm::StringLiteral kLoweredSetValidShapeAttrName =
-    "__pto.lowered_set_validshape";
-[[maybe_unused]] static constexpr llvm::StringLiteral kLoweredSetValidShapeConfigAttrName =
-    "__pto.lowered_set_validshape_config";
 static constexpr llvm::StringLiteral kForceDynamicValidShapeAttrName =
     "__pto.force_dynamic_valid_shape";
 static constexpr llvm::StringLiteral kGlobalTensorStridesAttrName =

@@ -83,8 +83,8 @@ PTO tile/view IR
 | `pto.subview` | 通常转成 `memref.subview + pto.bind_tile`，之后再恢复 tile | 全程保留 `pto.subview` | result 与 source 同 root；按 layout/stride/offset 计算 byte range | 现有 InsertSync 已有精确 `pto.subview` 地址计算；GSS 和 BufidSync 补齐同等能力 | EmitC/VPTO 增加直接 lowering；覆盖 row/col-major、dynamic offset、valid shape |
 | `pto.treshape` | 已保持 tile-native，不再生成 memref view 或 `bind_tile` | 保持原 op | result 与 source 完全 alias，size 不变；legacy/modern memplan 已传播 alias | InsertSync/GSS 已直接传播 result-to-source alias | EmitC 已直接 lowering；覆盖 tile 参数、动态 valid shape 和静态 valid shape |
 | `pto.bitcast` | 已保持 tile-native，不再生成 memref view 或 `bind_tile` | 保持原 op | result 与 source alias；legacy/modern memplan 已按 byte range 传播同一 root，并校验总容量一致 | InsertSync/GSS 已直接传播 alias，不按 element type 分裂 root | EmitC 已直接 lowering；覆盖 tile 参数和同容量 dtype 改变 |
-| `pto.set_validshape` | 在 memref 层通过 bind metadata 记录，materialize 后恢复 tile 类型 | 直接更新/产生 tile handle metadata，不改变物理 root | result 与 source alias，物理 size 使用 allocation shape，不使用 valid shape | 同一物理范围；repeat 分析读取更新后的 valid shape | 两后端直接消费；覆盖 if/for 和动态 valid shape |
-| `pto.get_validshape` | materialize 后依赖 tile handle 读取 metadata | 直接读取 tile operand metadata | 不产生 root | 无内存 effect | 两后端直接 lowering；覆盖静态折叠和动态值 |
+| `pto.set_validshape` | 已保持 tile-native，输入已收紧为 `TileBufType` | 直接更新 tile handle metadata，不改变物理 root | 不产生新 root；物理 size 使用 allocation shape，不使用 valid shape | 对原 root 建模为 metadata Write | EmitC 已直接消费；覆盖 if 和动态 valid shape |
+| `pto.get_validshape` | 已保持 tile-native，输入已收紧为 `TileBufType` | 直接读取 tile operand metadata | 不产生 root | 对原 root 建模为 metadata Read | EmitC 已直接 lowering；覆盖 tile 参数和动态值 |
 | `pto.tile_buf_addr` | ptr-like 形式转成线性 memref，后续 materialize 可能恢复 | 直接从 tile root/view 计算地址；返回 pointer-like PTO 类型 | 不产生新 root | 若结果参与 load/store，需要保留到原 root 的 provenance | EmitC/VPTO 直接生成地址表达式；覆盖 alloc、subview、multi slot |
 
 ## 6. GM Tensor View 与地址 Op

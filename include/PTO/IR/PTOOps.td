@@ -562,7 +562,7 @@ def SetValidShapeOp : PTO_Op<"set_validshape", [
   }];
 
   let arguments = (ins
-    TileBufOrMemRef:$source,
+    TileBufType:$source,
     Index:$valid_row,
     Index:$valid_col
   );
@@ -586,7 +586,7 @@ def GetValidShapeOp : PTO_Op<"get_validshape", [
   }];
 
   let arguments = (ins
-    TileBufOrMemRef:$source
+    TileBufType:$source
   );
 
   let results = (outs

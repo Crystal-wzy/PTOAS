@@ -52,8 +52,6 @@ using namespace mlir;
 namespace mlir {
 namespace pto {
 
-static constexpr llvm::StringLiteral kLoweredSetValidShapeAttrName =
-    "__pto.lowered_set_validshape";
 static constexpr llvm::StringLiteral kForceDynamicValidShapeAttrName =
     "__pto.force_dynamic_valid_shape";
 
@@ -80,7 +78,8 @@ static bool hasTileNativeAllocationRoot(func::FuncOp func) {
 static bool hasMigratedTileNativeView(func::FuncOp func) {
   bool found = false;
   auto result = func.walk([&](Operation *op) {
-    if (isa<pto::TReshapeOp, pto::BitcastOp>(op)) {
+    if (isa<pto::TReshapeOp, pto::BitcastOp, pto::SetValidShapeOp,
+            pto::GetValidShapeOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
@@ -879,25 +878,6 @@ static LogicalResult reconcileFusionRegionResultTypes(func::FuncOp func) {
   }
 
   return success();
-}
-
-static LogicalResult markLoweredSetValidShapeOps(func::FuncOp func,
-                                                 MLIRContext *ctx) {
-  WalkResult result = func.walk([&](mlir::pto::SetValidShapeOp op) {
-    if (isa<MemRefType>(op.getSource().getType())) {
-      if (!lookupConfig(op.getSource())) {
-        op.emitError(
-            "set_validshape requires a locally bound tile source; function "
-            "arguments/results are unsupported");
-        return WalkResult::interrupt();
-      }
-      op->setAttr(kLoweredSetValidShapeAttrName, UnitAttr::get(ctx));
-      return WalkResult::advance();
-    }
-    op->removeAttr(kLoweredSetValidShapeAttrName);
-    return WalkResult::advance();
-  });
-  return result.wasInterrupted() ? failure() : success();
 }
 
 static void markForceDynamicValidShape(Operation *op, bool force,
@@ -3880,13 +3860,6 @@ struct PTOViewToMemrefPass
         return;
       }
       if (failed(reconcileSCFForResultTypes(func))) {
-        signalPassFailure();
-        return;
-      }
-      // Mark memref-form set_validshape only after control-flow result-type
-      // reconciliation. Values such as scf.if results can stay tile_buf until
-      // this late stage.
-      if (failed(markLoweredSetValidShapeOps(func, ctx))) {
         signalPassFailure();
         return;
       }

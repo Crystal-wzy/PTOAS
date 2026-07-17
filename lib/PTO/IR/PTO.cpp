@@ -11388,9 +11388,6 @@ static std::optional<int64_t> getElemBytes(Type elemTy) {
   return mlir::isa<MemRefType, pto::TileBufType>(ty);
 }
 
-static constexpr llvm::StringLiteral kLoweredSetValidShapeAttrName =
-    "__pto.lowered_set_validshape";
-
 static bool isLocallyBoundTileSource(Value value) {
   if (!value || isa<BlockArgument>(value))
     return false;
@@ -11430,32 +11427,22 @@ static std::optional<int64_t> getConstIndexLike(Value v) {
 
 mlir::LogicalResult mlir::pto::SetValidShapeOp::verify() {
   SmallVector<int64_t> shape;
-  if (auto srcTy = llvm::dyn_cast<TileBufType>(getSource().getType())) {
-    if (srcTy.getRank() != 2)
-      return emitOpError("expects rank-2 tile_buf source");
+  auto srcTy = getSource().getType();
+  if (srcTy.getRank() != 2)
+    return emitOpError("expects rank-2 tile_buf source");
 
-    ArrayRef<int64_t> validShape = srcTy.getValidShape();
-    if (validShape.size() != 2)
-      return emitOpError("expects source validShape to be rank-2");
-    if (!srcTy.hasDynamicValid())
-      return emitOpError("expects source tile_buf to have dynamic validShape (?, ?)");
+  ArrayRef<int64_t> validShape = srcTy.getValidShape();
+  if (validShape.size() != 2)
+    return emitOpError("expects source validShape to be rank-2");
+  if (!srcTy.hasDynamicValid())
+    return emitOpError("expects source tile_buf to have dynamic validShape (?, ?)");
 
-    shape.assign(srcTy.getShape().begin(), srcTy.getShape().end());
+  shape.assign(srcTy.getShape().begin(), srcTy.getShape().end());
 
-    if (!isLocallyBoundTileSource(getSource()))
-      return emitOpError(
-          "requires a locally bound tile source; function arguments/results "
-          "are unsupported");
-  } else if (auto srcTy = llvm::dyn_cast<MemRefType>(getSource().getType())) {
-    if (!(*this)->hasAttr(kLoweredSetValidShapeAttrName))
-      return emitOpError(
-          "expects tile_buf source; memref source is only valid for the internal lowered form");
-    if (srcTy.getRank() != 2)
-      return emitOpError("expects rank-2 memref source after tile lowering");
-    shape.assign(srcTy.getShape().begin(), srcTy.getShape().end());
-  } else {
-    return emitOpError("expects tile_buf source (or lowered memref source)");
-  }
+  if (!isLocallyBoundTileSource(getSource()))
+    return emitOpError(
+        "requires a locally bound tile source; function arguments/results "
+        "are unsupported");
 
   auto checkDim = [&](Value operand, unsigned dimIdx,
                       StringRef dimName) -> LogicalResult {
@@ -11482,19 +11469,12 @@ mlir::LogicalResult mlir::pto::SetValidShapeOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::GetValidShapeOp::verify() {
-  if (auto srcTy = llvm::dyn_cast<TileBufType>(getSource().getType())) {
-    if (srcTy.getRank() != 2)
-      return emitOpError("expects rank-2 tile_buf source");
-    if (srcTy.getValidShape().size() != 2)
-      return emitOpError("expects source validShape to be rank-2");
-    return success();
-  }
-  if (auto srcTy = llvm::dyn_cast<MemRefType>(getSource().getType())) {
-    if (srcTy.getRank() != 2)
-      return emitOpError("expects rank-2 memref source after tile lowering");
-    return success();
-  }
-  return emitOpError("expects tile_buf source (or lowered memref source)");
+  auto srcTy = getSource().getType();
+  if (srcTy.getRank() != 2)
+    return emitOpError("expects rank-2 tile_buf source");
+  if (srcTy.getValidShape().size() != 2)
+    return emitOpError("expects source validShape to be rank-2");
+  return success();
 }
 
 
