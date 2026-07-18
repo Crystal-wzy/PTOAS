@@ -79,7 +79,9 @@ static bool hasMigratedTileNativeView(func::FuncOp func) {
   bool found = false;
   auto result = func.walk([&](Operation *op) {
     if (isa<pto::TReshapeOp, pto::BitcastOp, pto::SetValidShapeOp,
-            pto::GetValidShapeOp, pto::SubViewOp, pto::TileBufAddrOp>(op)) {
+            pto::GetValidShapeOp, pto::SubViewOp, pto::TileBufAddrOp,
+            pto::MakeTensorViewOp, pto::PartitionViewOp,
+            pto::GetTensorViewDimOp, pto::GetTensorViewStrideOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
@@ -1437,8 +1439,13 @@ struct PTOViewToMemrefPass
       // ------------------------------------------------------------------
       // Stage 1: Lower pto.make_tensor_view -> memref.reinterpret_cast
       // ------------------------------------------------------------------
+      // GM view ops stay authored until PTOResolveBufferSelect when a
+      // function contains the migrated view family. Legacy functions keep
+      // the established memref lowering below.
       DefaultInlineVector<mlir::pto::MakeTensorViewOp> makeViews;
       func.walk([&](mlir::pto::MakeTensorViewOp op) { makeViews.push_back(op); });
+      if (preserveTileABI)
+        makeViews.clear();
 
       for (auto op : makeViews) {
         IRRewriter rewriter(ctx);
@@ -1531,7 +1538,7 @@ struct PTOViewToMemrefPass
       // ------------------------------------------------------------------
       // Stage 1.3: Lower pto.partition_view -> memref.subview
       // ------------------------------------------------------------------
-      if (failed(lowerPartitionViewOps(func, ctx))) {
+      if (!preserveTileABI && failed(lowerPartitionViewOps(func, ctx))) {
         signalPassFailure();
         return;
       }
@@ -1546,7 +1553,6 @@ struct PTOViewToMemrefPass
       if (failed(reconcileFusionRegionResultTypes(func))) {
         signalPassFailure();
         return;
-      }
 
       // ------------------------------------------------------------------
       // Stage 1.5: Lower pto.get_tensor_view_stride -> strided memref metadata
@@ -1590,6 +1596,7 @@ struct PTOViewToMemrefPass
         auto metadata =
             rewriter.create<memref::ExtractStridedMetadataOp>(loc, view);
         rewriter.replaceOp(op, metadata.getStrides()[dimIndex]);
+      }
       }
 
       // ------------------------------------------------------------------

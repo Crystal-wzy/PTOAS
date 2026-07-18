@@ -2466,13 +2466,19 @@ LogicalResult mlir::pto::MakeTensorViewOp::verify() {
   if (!tvTy)
     return emitOpError("result must be pto.tensor_view<...>");
 
-  auto pty = dyn_cast<mlir::pto::PtrType>(getPtr().getType());
-  if (!pty)
-    return emitOpError("ptr operand must be !pto.ptr<...>");
+  Type ptrElemTy;
+  if (auto pty = dyn_cast<mlir::pto::PtrType>(getPtr().getType()))
+    ptrElemTy = pty.getElementType();
+  else if (auto memrefTy = dyn_cast<BaseMemRefType>(getPtr().getType()))
+    ptrElemTy = memrefTy.getElementType();
+  else
+    return emitOpError(
+        "ptr operand must be !pto.ptr<...> or a memref-backed pointer");
 
-  if (pty.getElementType() != tvTy.getElementType())
-    return emitOpError() << "ptr element type must match tensor_view element type, but got ptr="
-                         << pty.getElementType() << " view=" << tvTy.getElementType();
+  if (ptrElemTy != tvTy.getElementType())
+    return emitOpError() << "ptr element type must match tensor_view element "
+                            "type, but got ptr="
+                         << ptrElemTy << " view=" << tvTy.getElementType();
 
   int64_t rank = tvTy.getRank();
 

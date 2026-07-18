@@ -91,10 +91,10 @@ PTO tile/view IR
 
 | Op | 当前行为 | Tile-native 目标 | Memplan / Sync | Backend 与测试 |
 |---|---|---|---|---|
-| `pto.make_tensor_view` | 转成 `memref.reinterpret_cast` | 保持 PTO tensor view 到 backend | 不参与 local memplan；InsertSync 已能把 result alias 到 pointer source | EmitC 增加完整 direct pattern；VPTO 保持 canonical rank/layout lowering；覆盖 addptr base、dynamic shape/stride |
-| `pto.partition_view` | 转成 `memref.subview` | 保持 PTO partition view | 不参与 local memplan；sync result alias source，并根据 offset/size缩小 GM range | EmitC 已有部分 direct pattern，补齐全部 layout；VPTO 增加直接支持 |
-| `pto.get_tensor_view_dim` | 转成 `memref.dim` | 直接读取 PTO view shape | 不影响 memplan/sync | backend 支持静态折叠和动态 dim |
-| `pto.get_tensor_view_stride` | 转成 strided memref metadata | 直接读取 PTO view stride | 不影响 memplan/sync | backend 支持静态折叠和动态 stride |
+| `pto.make_tensor_view` | 已保持 PTO 形态穿过 `PTOViewToMemref`、memplan 和 sync | 最终保持到 backend | 不参与 local memplan；InsertSync 已把 result alias 到 pointer source | 当前在 `PTOResolveBufferSelect` 与完整 GM view 链一起转成 `memref.reinterpret_cast`，复用成熟 backend lowering |
+| `pto.partition_view` | 已保持 PTO 形态穿过 memplan 和 sync | 最终保持到 backend | 不参与 local memplan；sync result alias source，并根据 offset/size 缩小 GM range | memref-backed source 在 `PTOResolveBufferSelect` 转成 `memref.subview`；`declare_global` 等运行时 source 保持 PTO op 走已有直接 EmitC lowering |
+| `pto.get_tensor_view_dim` | 已保持 PTO 形态穿过 memplan 和 sync | 直接读取 PTO view shape | 不影响 memplan/sync | 当前在 `PTOResolveBufferSelect` 随所属 view 转成 `memref.dim` |
+| `pto.get_tensor_view_stride` | 已保持 PTO 形态穿过 memplan 和 sync | 直接读取 PTO view stride | 不影响 memplan/sync | 当前在 `PTOResolveBufferSelect` 随所属 view 转成 strided memref metadata |
 | `pto.inttoptr` | 结果改成 GM memref，并限制用途 | 保持 PTO pointer-like value | 不参与 local memplan；sync 将其视作 GM provenance | 保留 restricted-use verifier；EmitC/VPTO 直接 lowering |
 | `pto.ptrtoint` | 折叠 `addptr` 链并生成 byte offset | 保持 PTO op，或迁移到独立 address-canonicalization pass | 不影响 local memplan；不能丢失 GM provenance | backend 生成整数地址；覆盖 ptr、addptr、view base |
 | `pto.addptr` | 折叠进 tensor view、scalar load/store 或 pipe init | 保持到独立 address canonicalization/backend | sync 需要把 result alias 到 base，并记录 offset | EmitC/VPTO 直接 lowering；保留非法 escape 校验 |
