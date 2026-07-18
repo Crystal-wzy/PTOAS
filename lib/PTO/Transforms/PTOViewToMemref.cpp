@@ -82,7 +82,8 @@ static bool hasMigratedTileNativeOp(func::FuncOp func) {
             pto::GetValidShapeOp, pto::SubViewOp, pto::TileBufAddrOp,
             pto::MakeTensorViewOp, pto::PartitionViewOp,
             pto::GetTensorViewDimOp, pto::GetTensorViewStrideOp,
-            pto::TAbsOp, pto::TNegOp, pto::TNotOp>(op)) {
+            pto::TAbsOp, pto::TNegOp, pto::TNotOp, pto::TExpOp,
+            pto::TLogOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
