@@ -30,12 +30,34 @@ module {
                  outs(%dst : !pto.tile_buf<vec, 16x16xf32>)
     return
   }
+
+  func.func private @tpartmax_arg(
+      %src0: !pto.tile_buf<vec, 16x16xf32>,
+      %src1: !pto.tile_buf<vec, 16x16xf32>,
+      %dst: !pto.tile_buf<vec, 16x16xf32>) {
+    pto.tpartmax ins(%src0, %src1 : !pto.tile_buf<vec, 16x16xf32>, !pto.tile_buf<vec, 16x16xf32>)
+                 outs(%dst : !pto.tile_buf<vec, 16x16xf32>)
+    return
+  }
+
+  func.func private @tpartmin_arg(
+      %src0: !pto.tile_buf<vec, 16x16xf32>,
+      %src1: !pto.tile_buf<vec, 16x16xf32>,
+      %dst: !pto.tile_buf<vec, 16x16xf32>) {
+    pto.tpartmin ins(%src0, %src1 : !pto.tile_buf<vec, 16x16xf32>, !pto.tile_buf<vec, 16x16xf32>)
+                 outs(%dst : !pto.tile_buf<vec, 16x16xf32>)
+    return
+  }
 }
 
 // NATIVE-LABEL: func.func private @tpartadd_arg(
 // NATIVE: pto.tpartadd ins(%arg0, %arg1 : !pto.tile_buf<vec, 16x16xf32>, !pto.tile_buf<vec, 16x16xf32>) outs(%arg2 : !pto.tile_buf<vec, 16x16xf32>)
 // NATIVE-LABEL: func.func private @tpartmul_arg(
 // NATIVE: pto.tpartmul ins(%arg0, %arg1 : !pto.tile_buf<vec, 16x16xf32>, !pto.tile_buf<vec, 16x16xf32>) outs(%arg2 : !pto.tile_buf<vec, 16x16xf32>)
+// NATIVE-LABEL: func.func private @tpartmax_arg(
+// NATIVE: pto.tpartmax ins(%arg0, %arg1 : !pto.tile_buf<vec, 16x16xf32>, !pto.tile_buf<vec, 16x16xf32>) outs(%arg2 : !pto.tile_buf<vec, 16x16xf32>)
+// NATIVE-LABEL: func.func private @tpartmin_arg(
+// NATIVE: pto.tpartmin ins(%arg0, %arg1 : !pto.tile_buf<vec, 16x16xf32>, !pto.tile_buf<vec, 16x16xf32>) outs(%arg2 : !pto.tile_buf<vec, 16x16xf32>)
 // NATIVE-NOT: memref<
 // NATIVE-NOT: pto.bind_tile
 
@@ -43,3 +65,7 @@ module {
 // EMITC: TPARTADD(
 // EMITC-LABEL: tpartmul_arg(
 // EMITC: TPARTMUL(
+// EMITC-LABEL: tpartmax_arg(
+// EMITC: TPARTMAX(
+// EMITC-LABEL: tpartmin_arg(
+// EMITC: TPARTMIN(
