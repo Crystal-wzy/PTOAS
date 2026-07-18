@@ -98,7 +98,7 @@ static bool hasMigratedTileNativeOp(func::FuncOp func) {
             pto::TColMaxOp, pto::TColMinOp, pto::TColSumOp,
             pto::TCvtOp, pto::TGatherOp, pto::TGatherBOp, pto::TCIOp,
             pto::TPrintOp, pto::TQuantOp, pto::TTransOp,
-            pto::TMrgSortOp>(op)) {
+            pto::TMrgSortOp, pto::TAssignOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
