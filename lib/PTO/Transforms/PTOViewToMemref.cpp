@@ -75,13 +75,14 @@ static bool hasTileNativeAllocationRoot(func::FuncOp func) {
   return found;
 }
 
-static bool hasMigratedTileNativeView(func::FuncOp func) {
+static bool hasMigratedTileNativeOp(func::FuncOp func) {
   bool found = false;
   auto result = func.walk([&](Operation *op) {
     if (isa<pto::TReshapeOp, pto::BitcastOp, pto::SetValidShapeOp,
             pto::GetValidShapeOp, pto::SubViewOp, pto::TileBufAddrOp,
             pto::MakeTensorViewOp, pto::PartitionViewOp,
-            pto::GetTensorViewDimOp, pto::GetTensorViewStrideOp>(op)) {
+            pto::GetTensorViewDimOp, pto::GetTensorViewStrideOp,
+            pto::TAbsOp, pto::TNegOp, pto::TNotOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
@@ -1290,7 +1291,7 @@ struct PTOViewToMemrefPass
         continue;
 
       auto fnTy = func.getFunctionType();
-      bool preserveTileABI = hasMigratedTileNativeView(func);
+      bool preserveTileABI = hasMigratedTileNativeOp(func);
       bool tileNativeMainline =
           preserveTileABI || hasTileNativeAllocationRoot(func);
 
