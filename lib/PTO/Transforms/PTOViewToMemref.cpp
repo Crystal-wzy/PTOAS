@@ -113,7 +113,8 @@ static bool hasMigratedTileNativeOp(func::FuncOp func) {
             pto::TRowProdOp, pto::TColProdOp, pto::TColArgMaxOp,
             pto::TColArgMinOp, pto::TRowArgMaxOp, pto::TRowArgMinOp,
             pto::TPartArgMaxOp, pto::TPartArgMinOp, pto::TPowOp,
-            pto::TPowSOp, pto::TRsqrtOp>(op)) {
+            pto::TPowSOp, pto::TRsqrtOp, pto::TPReluOp,
+            pto::TRemOp, pto::TRemSOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
