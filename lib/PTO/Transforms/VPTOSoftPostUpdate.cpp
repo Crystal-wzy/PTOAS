@@ -196,12 +196,76 @@ static Value computeDelta(Value v, scf::ForOp forOp, OpBuilder &builder) {
 // Rewrite: create new ForOp with additional iter_arg
 //===----------------------------------------------------------------------===//
 
+// Compute the value of `v` at the first iteration (IV = lower bound) by
+// cloning the def-chain with IV replaced by the lower bound.  Returns nullptr
+// if `v` cannot be materialized outside the loop.
+static Value materializeAtLoopEntry(Value v, scf::ForOp forOp,
+                                    OpBuilder &builder) {
+  // IV → lower bound
+  if (v == forOp.getInductionVar())
+    return forOp.getLowerBound();
+
+  // Already defined outside the loop — use directly.
+  if (forOp.isDefinedOutsideOfLoop(v))
+    return v;
+
+  // iter_arg → its init value
+  if (auto blockArg = dyn_cast<BlockArgument>(v)) {
+    if (blockArg.getOwner() == forOp.getBody() &&
+        blockArg.getArgNumber() > 0) {
+      unsigned idx = blockArg.getArgNumber() - 1;
+      return forOp.getInitArgs()[idx];
+    }
+  }
+
+  Operation *defOp = v.getDefiningOp();
+  if (!defOp || !forOp->isAncestor(defOp))
+    return nullptr;
+
+  // Clone the defining op with operands materialized at loop entry.
+  SmallVector<Value> newOperands;
+  for (Value operand : defOp->getOperands()) {
+    Value materialized = materializeAtLoopEntry(operand, forOp, builder);
+    if (!materialized)
+      return nullptr;
+    newOperands.push_back(materialized);
+  }
+  builder.setInsertionPoint(forOp);
+  Operation *cloned = builder.clone(*defOp);
+  for (auto [i, operand] : llvm::enumerate(newOperands))
+    cloned->setOperand(i, operand);
+  return cloned->getResult(0);
+}
+
+// Compute the initial pointer for a post-update rewrite: base + offset_at_iter0.
+// For post-update, the op loads/stores from the pointer directly (offset is
+// repurposed as the stride), so the initial pointer must equal the first
+// iteration's effective address.
+static Value computeInitialPtr(Value base, Value offset, scf::ForOp forOp,
+                               OpBuilder &builder) {
+  if (!offset)
+    return base;
+
+  Value offsetAtEntry = materializeAtLoopEntry(offset, forOp, builder);
+  if (!offsetAtEntry)
+    return nullptr;
+
+  // If initial offset is known to be zero, just use base.
+  if (auto constVal = getConstantIntValue(offsetAtEntry);
+      constVal && *constVal == 0)
+    return base;
+
+  builder.setInsertionPoint(forOp);
+  return builder.create<pto::AddPtrOp>(forOp.getLoc(), base, offsetAtEntry);
+}
+
 // Information about a post-update transformation to apply.
 struct PostUpdateRewrite {
   Operation *op;
   Value base;
   Value offset;
-  Value stride; // loop-invariant stride value
+  Value stride;  // loop-invariant stride value
+  Value initPtr; // base + offset_at_iter0
 };
 
 // A unique key for grouping rewrites that can share an iter_arg.
@@ -225,23 +289,23 @@ static scf::ForOp applyPostUpdateRewrites(
   // + vsts both accessing %base[%iv]).
   DenseMap<IterArgGroupKey, unsigned> groupToIdx; // group key -> iter_arg index
   SmallVector<unsigned> rwGroupIdx(rewrites.size()); // rewrite -> group index
-  SmallVector<Value> groupBases; // one base per group
+  SmallVector<Value> groupInitPtrs; // initial pointer per group (base + offset_at_iter0)
 
   for (auto [i, rw] : llvm::enumerate(rewrites)) {
     auto key = getGroupKey(rw);
-    auto [it, inserted] = groupToIdx.try_emplace(key, groupBases.size());
+    auto [it, inserted] = groupToIdx.try_emplace(key, groupInitPtrs.size());
     if (inserted)
-      groupBases.push_back(rw.base);
+      groupInitPtrs.push_back(rw.initPtr);
     rwGroupIdx[i] = it->second;
   }
 
-  unsigned numGroups = groupBases.size();
+  unsigned numGroups = groupInitPtrs.size();
 
   // Build new init args: original + one new pointer per group.
   SmallVector<Value> newInitArgs(forOp.getInitArgs().begin(),
                                 forOp.getInitArgs().end());
-  for (Value base : groupBases)
-    newInitArgs.push_back(base);
+  for (Value ptr : groupInitPtrs)
+    newInitArgs.push_back(ptr);
 
   unsigned origIterArgCount = forOp.getInitArgs().size();
 
@@ -417,7 +481,12 @@ private:
       if (!forOp.isDefinedOutsideOfLoop(stride))
         continue;
 
-      rewrites.push_back({&op, base, offset, stride});
+      // Compute initial pointer: base + offset_at_iter0.
+      Value initPtr = computeInitialPtr(base, offset, forOp, builder);
+      if (!initPtr)
+        continue;
+
+      rewrites.push_back({&op, base, offset, stride, initPtr});
     }
 
     if (!rewrites.empty())
