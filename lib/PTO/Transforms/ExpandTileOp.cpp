@@ -342,6 +342,11 @@ static std::optional<pto::Layout> resolveViewLayout(Value value) {
       def = value.getDefiningOp();
       continue;
     }
+    if (auto partition = dyn_cast<pto::PartitionViewOp>(def)) {
+      value = partition.getSource();
+      def = value.getDefiningOp();
+      continue;
+    }
     break;
   }
   return std::nullopt;
@@ -603,6 +608,35 @@ static void populateViewShapeAndStrides(Value value,
   if (!value)
     return;
 
+  if (auto partition = value.getDefiningOp<pto::PartitionViewOp>()) {
+    populateViewShapeAndStrides(partition.getSource(), shape, strides);
+    SmallVector<int64_t> partitionShape;
+    partitionShape.reserve(partition.getSizes().size());
+    for (Value size : partition.getSizes()) {
+      int64_t staticSize = ShapedType::kDynamic;
+      (void)getStaticIntFromValue(size, staticSize);
+      partitionShape.push_back(staticSize);
+    }
+    shape = std::move(partitionShape);
+    return;
+  }
+
+  if (auto makeView = value.getDefiningOp<pto::MakeTensorViewOp>()) {
+    shape.clear();
+    strides.clear();
+    for (Value dim : makeView.getShape()) {
+      int64_t staticDim = ShapedType::kDynamic;
+      (void)getStaticIntFromValue(dim, staticDim);
+      shape.push_back(staticDim);
+    }
+    for (Value stride : makeView.getStrides()) {
+      int64_t staticStride = ShapedType::kDynamic;
+      (void)getStaticIntFromValue(stride, staticStride);
+      strides.push_back(staticStride);
+    }
+    return;
+  }
+
   if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
     populateViewShapeAndStrides(subview.getSource(), shape, strides);
     SmallVector<int64_t> subviewShape;
@@ -690,6 +724,22 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
         // strides populated — dynamic dims remain ShapedType::kDynamic.
       }
     }
+    return info;
+  }
+
+  if (auto viewTy = dyn_cast<pto::PartitionTensorViewType>(ty)) {
+    OperandTypeInfo info;
+    info.kind = OperandKind::View;
+    info.dtype = getDtypeString(viewTy.getElementType());
+    if (info.dtype.empty())
+      return std::nullopt;
+    info.viewMemorySpace = "gm";
+    info.viewLayout = resolveViewLayout(value);
+    populateViewShapeAndStrides(value, info.viewShape, info.viewStrides);
+    if (info.viewShape.empty())
+      info.viewShape.assign(viewTy.getShape().begin(), viewTy.getShape().end());
+    if (info.viewStrides.empty())
+      info.viewStrides.assign(viewTy.getRank(), ShapedType::kDynamic);
     return info;
   }
 

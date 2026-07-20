@@ -226,7 +226,8 @@ def StoreScalarOp : PTO_Op<"store_scalar", [
   }];
 }
 
-def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments]> {
+def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments,
+                                                    Pure]> {
   let summary = "Wrap a pointer as a tensor_view descriptor (no allocation, no copy).";
 
   let arguments = (ins
@@ -245,7 +246,8 @@ def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments]> {
 // =============================================================================
 // PartitionViewOp
 // =============================================================================
-def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
+def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments,
+                                                Pure]> {
   let summary = "Partition a tensor view into a smaller logical view (logical slicing).";
   let description = [{
     Captures a specific calculation region from a large view.

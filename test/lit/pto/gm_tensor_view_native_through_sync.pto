@@ -10,7 +10,8 @@
 // RUN: ptoas --pto-arch=a3 --mlir-print-ir-after=pto-resolve-buffer-select %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=RESOLVED
 
 module {
-  func.func @gm_tensor_view_native_through_sync(%ptr: !pto.ptr<f32, gm>) {
+  func.func @gm_tensor_view_native_through_sync(%ptr: !pto.ptr<f32, gm>)
+      -> !pto.partition_tensor_view<32x16xf32> {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c16 = arith.constant 16 : index
@@ -24,7 +25,7 @@ module {
     %part = pto.partition_view %view, offsets = [%c0, %stride],
       sizes = [%dim, %c16]
       : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<32x16xf32>
-    return
+    return %part : !pto.partition_tensor_view<32x16xf32>
   }
 }
 
@@ -37,11 +38,9 @@ module {
 // NATIVE-NOT: memref.subview
 
 // RESOLVED: IR Dump After PTOResolveBufferSelect
-// RESOLVED: memref.reinterpret_cast
-// RESOLVED: memref.dim
-// RESOLVED: memref.subview
-// RESOLVED: memref.extract_strided_metadata
-// RESOLVED-NOT: pto.make_tensor_view
-// RESOLVED-NOT: pto.get_tensor_view_dim
-// RESOLVED-NOT: pto.get_tensor_view_stride
-// RESOLVED-NOT: pto.partition_view
+// RESOLVED: pto.make_tensor_view
+// RESOLVED: pto.get_tensor_view_dim
+// RESOLVED: pto.get_tensor_view_stride
+// RESOLVED: pto.partition_view
+// RESOLVED-NOT: memref.reinterpret_cast
+// RESOLVED-NOT: memref.subview

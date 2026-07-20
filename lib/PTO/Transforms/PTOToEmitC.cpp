@@ -80,14 +80,10 @@ static void buildGlobalTensorShapeAndStride(ArrayRef<int64_t> shape,
                                             SmallVectorImpl<int64_t> &stride5D);
 static std::string joinIntTemplateParams(ArrayRef<int64_t> values);
 static SmallVector<int64_t> buildRowMajorStrides(ArrayRef<int64_t> shape);
-static std::string getGlobalTensorTypeStringFromShape(Type elemTy,
-                                                      ArrayRef<int64_t> shape,
-                                                      StringRef layoutEnum =
-                                                          "pto::Layout::ND");
 static std::string getGlobalTensorTypeStringFromShapeAndStrides(
     Type elemTy, ArrayRef<int64_t> shape, ArrayRef<int64_t> strides,
     StringRef layoutEnum = "pto::Layout::ND");
-static emitc::OpaqueType getGlobalTensorOpaqueTypeFromShape(
+static emitc::OpaqueType getRuntimeGlobalTensorOpaqueType(
     MLIRContext *ctx, Type elemTy, ArrayRef<int64_t> shape,
     StringRef layoutEnum = "pto::Layout::ND");
 
@@ -995,13 +991,13 @@ public:
     });
 
     addConversion([Ctx](pto::TensorViewType type) -> Type {
-      return getGlobalTensorOpaqueTypeFromShape(
-          Ctx, type.getElementType(), type.getShape());
+      return getRuntimeGlobalTensorOpaqueType(Ctx, type.getElementType(),
+                                              type.getShape());
     });
 
     addConversion([Ctx](pto::PartitionTensorViewType type) -> Type {
-      return getGlobalTensorOpaqueTypeFromShape(
-          Ctx, type.getElementType(), type.getShape());
+      return getRuntimeGlobalTensorOpaqueType(Ctx, type.getElementType(),
+                                              type.getShape());
     });
 
     addConversion([Ctx](pto::TileBufType type) -> std::optional<Type> {
@@ -4320,14 +4316,6 @@ static SmallVector<int64_t> buildRowMajorStrides(ArrayRef<int64_t> shape) {
   return strides;
 }
 
-static std::string getGlobalTensorTypeStringFromShape(Type elemTy,
-                                                      ArrayRef<int64_t> shape,
-                                                      StringRef layoutEnum) {
-  SmallVector<int64_t> strides = buildRowMajorStrides(shape);
-  return getGlobalTensorTypeStringFromShapeAndStrides(elemTy, shape, strides,
-                                                      layoutEnum);
-}
-
 static std::string getGlobalTensorTypeStringFromShapeAndStrides(
     Type elemTy, ArrayRef<int64_t> shape, ArrayRef<int64_t> strides,
     StringRef layoutEnum) {
@@ -4343,11 +4331,23 @@ static std::string getGlobalTensorTypeStringFromShapeAndStrides(
          strideType + ", " + layoutEnum.str() + ">";
 }
 
-static emitc::OpaqueType getGlobalTensorOpaqueTypeFromShape(
+static emitc::OpaqueType getRuntimeGlobalTensorOpaqueType(
     MLIRContext *ctx, Type elemTy, ArrayRef<int64_t> shape,
     StringRef layoutEnum) {
+  SmallVector<int64_t, 5> shape5D(5, 1);
+  SmallVector<int64_t, 5> stride5D(5, -1);
+  int64_t shift = 5 - static_cast<int64_t>(shape.size());
+  for (auto [index, dim] : llvm::enumerate(shape))
+    shape5D[shift + static_cast<int64_t>(index)] =
+        ShapedType::isDynamic(dim) ? -1 : dim;
+
+  std::string elemTypeStr = getElemTypeStringForGT(elemTy);
+  std::string shapeType = "pto::Shape<" + joinIntTemplateParams(shape5D) + ">";
+  std::string strideType =
+      "pto::Stride<" + joinIntTemplateParams(stride5D) + ">";
   return emitc::OpaqueType::get(
-      ctx, getGlobalTensorTypeStringFromShape(elemTy, shape, layoutEnum));
+      ctx, "GlobalTensor<" + elemTypeStr + ", " + shapeType + ", " +
+               strideType + ", " + layoutEnum.str() + ">");
 }
 
 static std::string inferFallbackGlobalTensorLayout(ArrayRef<int64_t> shape5D,
@@ -4851,6 +4851,21 @@ struct CastPtrConversion : public OpConversionPattern<pto::CastPtrOp> {
     }
 
     return rewriter.notifyMatchFailure(op, "unsupported castptr conversion");
+  }
+};
+
+struct PTOAddPtrToEmitC : public OpConversionPattern<pto::AddPtrOp> {
+  using OpConversionPattern<pto::AddPtrOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::AddPtrOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return rewriter.notifyMatchFailure(op, "failed to convert pointer type");
+    Value ptr = peelUnrealized(adaptor.getPtr());
+    Value offset = peelUnrealized(adaptor.getOffset());
+    rewriter.replaceOpWithNewOp<emitc::AddOp>(op, resultType, ptr, offset);
+    return success();
   }
 };
 
@@ -8400,6 +8415,140 @@ static bool parseIntegerTemplateList(StringRef token, StringRef marker,
   return true;
 }
 
+static Value castViewIndexToEmitC(ConversionPatternRewriter &rewriter,
+                                  Location loc, Value value) {
+  Type indexTy = emitc::OpaqueType::get(rewriter.getContext(), "int64_t");
+  value = peelUnrealized(value);
+  if (value.getType() == indexTy)
+    return value;
+  return rewriter.create<emitc::CastOp>(loc, indexTy, value).getResult();
+}
+
+static Value makeViewIndexConstant(ConversionPatternRewriter &rewriter,
+                                   Location loc, int64_t value) {
+  return makeEmitCIntConstant(
+      rewriter, loc, emitc::OpaqueType::get(rewriter.getContext(), "int64_t"),
+      value);
+}
+
+static Value getRuntimeGlobalTensorMetadata(
+    ConversionPatternRewriter &rewriter, Location loc, Value tensor,
+    Value logicalDim, int64_t rank, StringRef helper) {
+  Value dim = castViewIndexToEmitC(rewriter, loc, logicalDim);
+  int64_t shift = 5 - rank;
+  if (shift != 0) {
+    dim = rewriter
+              .create<emitc::AddOp>(loc, dim.getType(), dim,
+                                    makeViewIndexConstant(rewriter, loc, shift))
+              .getResult();
+  }
+  return rewriter
+      .create<emitc::CallOpaqueOp>(loc, dim.getType(), helper, ArrayAttr{},
+                                   ArrayAttr{}, ValueRange{tensor, dim})
+      .getResult(0);
+}
+
+static FailureOr<Value> buildRuntimeGlobalTensor(
+    ConversionPatternRewriter &rewriter, Location loc, Value ptr, Type elemTy,
+    ArrayRef<int64_t> staticShape, ValueRange runtimeShape,
+    ValueRange runtimeStrides, StringRef layoutEnum = "pto::Layout::ND") {
+  if (staticShape.size() > 5 || runtimeShape.size() != staticShape.size() ||
+      runtimeStrides.size() != staticShape.size())
+    return failure();
+
+  SmallVector<int64_t, 5> shape5D(5, 1);
+  SmallVector<int64_t, 5> stride5D(5, -1);
+  int64_t shift = 5 - static_cast<int64_t>(staticShape.size());
+  for (auto [index, dim] : llvm::enumerate(staticShape))
+    shape5D[shift + static_cast<int64_t>(index)] =
+        ShapedType::isDynamic(dim) ? -1 : dim;
+
+  std::string shapeType = "pto::Shape<" + joinIntTemplateParams(shape5D) + ">";
+  std::string strideType =
+      "pto::Stride<" + joinIntTemplateParams(stride5D) + ">";
+  SmallVector<Value, 5> shapeValues;
+  SmallVector<Value, 5> strideValues;
+  for (int64_t dim = 0; dim < shift; ++dim) {
+    shapeValues.push_back(makeViewIndexConstant(rewriter, loc, 1));
+    strideValues.push_back(makeViewIndexConstant(rewriter, loc, 1));
+  }
+  for (Value value : runtimeShape)
+    shapeValues.push_back(castViewIndexToEmitC(rewriter, loc, value));
+  for (Value value : runtimeStrides)
+    strideValues.push_back(castViewIndexToEmitC(rewriter, loc, value));
+
+  Value shape = rewriter
+                    .create<emitc::CallOpaqueOp>(
+                        loc, emitc::OpaqueType::get(rewriter.getContext(),
+                                                   shapeType),
+                        shapeType, ArrayAttr{}, ArrayAttr{}, shapeValues)
+                    .getResult(0);
+  Value stride = rewriter
+                     .create<emitc::CallOpaqueOp>(
+                         loc, emitc::OpaqueType::get(rewriter.getContext(),
+                                                    strideType),
+                         strideType, ArrayAttr{}, ArrayAttr{}, strideValues)
+                     .getResult(0);
+  auto resultType = getRuntimeGlobalTensorOpaqueType(
+      rewriter.getContext(), elemTy, staticShape, layoutEnum);
+  return rewriter
+      .create<emitc::CallOpaqueOp>(loc, resultType, resultType.getValue(),
+                                   ArrayAttr{}, ArrayAttr{},
+                                   ValueRange{ptr, shape, stride})
+      .getResult(0);
+}
+
+struct PTOMakeTensorViewToEmitC
+    : public OpConversionPattern<mlir::pto::MakeTensorViewOp> {
+  using OpConversionPattern<mlir::pto::MakeTensorViewOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(mlir::pto::MakeTensorViewOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto resultType = dyn_cast<pto::TensorViewType>(op.getResult().getType());
+    if (!resultType)
+      return rewriter.notifyMatchFailure(op, "expected tensor_view result");
+    auto layout = op.getLayoutAttr()
+                      ? layoutToEmitCString(op.getLayoutAttr().getLayout())
+                      : "pto::Layout::ND";
+    auto result = buildRuntimeGlobalTensor(
+        rewriter, op.getLoc(), peelUnrealized(adaptor.getPtr()),
+        resultType.getElementType(), resultType.getShape(), adaptor.getShape(),
+        adaptor.getStrides(), layout);
+    if (failed(result))
+      return rewriter.notifyMatchFailure(
+          op, "failed to build runtime GlobalTensor descriptor");
+    rewriter.replaceOp(op, *result);
+    return success();
+  }
+};
+
+template <typename OpTy, bool IsStride>
+struct PTOGetTensorViewMetadataToEmitC : public OpConversionPattern<OpTy> {
+  using OpConversionPattern<OpTy>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      OpTy op, typename OpTy::Adaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    Type sourceType = op.getTensorView().getType();
+    int64_t rank = 0;
+    if (auto type = dyn_cast<pto::TensorViewType>(sourceType))
+      rank = type.getRank();
+    else if (auto type = dyn_cast<pto::PartitionTensorViewType>(sourceType))
+      rank = type.getRank();
+    else
+      return rewriter.notifyMatchFailure(op, "expected PTO tensor view");
+
+    Value result = getRuntimeGlobalTensorMetadata(
+        rewriter, op.getLoc(), peelUnrealized(adaptor.getTensorView()),
+        adaptor.getDimIndex(), rank,
+        IsStride ? "PTOAS__GLOBAL_TENSOR_GET_STRIDE"
+                 : "PTOAS__GLOBAL_TENSOR_GET_SHAPE");
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 static LogicalResult getStaticTensorViewStrides(
     Value source, Value convertedSource, pto::TensorViewType sourceType,
     SmallVectorImpl<int64_t> &strides) {
@@ -8436,6 +8585,73 @@ static LogicalResult getStaticTensorViewStrides(
 }
 
 struct PTOPartitionViewToEmitC
+    : public OpConversionPattern<mlir::pto::PartitionViewOp> {
+  using OpConversionPattern<mlir::pto::PartitionViewOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(mlir::pto::PartitionViewOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto sourceType = dyn_cast<pto::TensorViewType>(op.getSource().getType());
+    auto resultType =
+        dyn_cast<pto::PartitionTensorViewType>(op.getResult().getType());
+    if (!sourceType || !resultType)
+      return rewriter.notifyMatchFailure(op, "expected PTO tensor view types");
+
+    Value source = peelUnrealized(adaptor.getSource());
+    SmallVector<Value, 5> sourceStrides;
+    sourceStrides.reserve(sourceType.getRank());
+    for (int64_t dim = 0; dim < sourceType.getRank(); ++dim) {
+      Value logicalDim = makeViewIndexConstant(rewriter, op.getLoc(), dim);
+      sourceStrides.push_back(getRuntimeGlobalTensorMetadata(
+          rewriter, op.getLoc(), source, logicalDim, sourceType.getRank(),
+          "PTOAS__GLOBAL_TENSOR_GET_STRIDE"));
+    }
+
+    Value linearOffset = makeViewIndexConstant(rewriter, op.getLoc(), 0);
+    for (auto [offset, stride] :
+         llvm::zip(adaptor.getOffsets(), sourceStrides)) {
+      Value term = rewriter
+                       .create<emitc::MulOp>(
+                           op.getLoc(), linearOffset.getType(),
+                           castViewIndexToEmitC(rewriter, op.getLoc(), offset),
+                           stride)
+                       .getResult();
+      linearOffset = rewriter
+                         .create<emitc::AddOp>(op.getLoc(),
+                                               linearOffset.getType(),
+                                               linearOffset, term)
+                         .getResult();
+    }
+
+    std::string elemTypeStr =
+        getElemTypeStringForGT(sourceType.getElementType());
+    auto ptrType = emitc::PointerType::get(emitc::OpaqueType::get(
+        rewriter.getContext(), "__gm__ " + elemTypeStr));
+    Value data = rewriter
+                     .create<emitc::CallOpaqueOp>(
+                         op.getLoc(), ptrType, "PTOAS__GLOBAL_TENSOR_DATA",
+                         ArrayAttr{}, ArrayAttr{}, ValueRange{source})
+                     .getResult(0);
+    Value ptr = rewriter
+                    .create<emitc::AddOp>(op.getLoc(), ptrType, data,
+                                          linearOffset)
+                    .getResult();
+
+    auto layout = resolveLayoutForGlobalTensor(op.getOperation(), op.getSource());
+    std::string layoutString =
+        layout ? layoutToEmitCString(*layout) : "pto::Layout::ND";
+    auto result = buildRuntimeGlobalTensor(
+        rewriter, op.getLoc(), ptr, resultType.getElementType(),
+        resultType.getShape(), adaptor.getSizes(), sourceStrides, layoutString);
+    if (failed(result))
+      return rewriter.notifyMatchFailure(
+          op, "failed to build partition GlobalTensor descriptor");
+    rewriter.replaceOp(op, *result);
+    return success();
+  }
+};
+
+struct PTOPartitionViewStaticToEmitC
     : public OpConversionPattern<mlir::pto::PartitionViewOp> {
   using OpConversionPattern<
       mlir::pto::PartitionViewOp>::OpConversionPattern;
@@ -14553,7 +14769,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOMrgSortToEmitC>(typeConverter, ctx);
   patterns.add<PTORandomToEmitC>(typeConverter, ctx);
   patterns.add<SubviewToEmitCPattern>(typeConverter, ctx);
-  patterns.add<CastPtrConversion, PointerCastConversion>(typeConverter, ctx);
+  patterns.add<CastPtrConversion, PTOAddPtrToEmitC, PointerCastConversion>(
+      typeConverter, ctx);
   patterns.add<PTOSetValToSETVAL, PTOGetValToGETVAL, PTOSetValidShapeToEmitC,
                PTOGetValidShapeToEmitC, PTOTAssignToEmitC,
                PTOPtrToIntToEmitC, PTOIntToPtrToEmitC, PTOLoadScalarToEmitC,
@@ -14674,7 +14891,10 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOInitializeL2LPipeToEmitC>(typeConverter, ctx, targetArch);
   patterns.add<PTODeclareTileMemRefToEmitC>(typeConverter, ctx);
   patterns.add<PTODeclareGlobalToEmitC>(typeConverter, ctx);
-  patterns.add<PTOPartitionViewToEmitC>(typeConverter, ctx);
+  patterns.add<PTOMakeTensorViewToEmitC, PTOPartitionViewToEmitC,
+               PTOGetTensorViewMetadataToEmitC<pto::GetTensorViewDimOp, false>,
+               PTOGetTensorViewMetadataToEmitC<pto::GetTensorViewStrideOp,
+                                                true>>(typeConverter, ctx);
   patterns.add<PTODeclareEventIdArrayToEmitC>(typeConverter, ctx);
   patterns.add<PTOEventIdArrayGetToEmitC>(typeConverter, ctx);
   patterns.add<PTOEventIdArraySetToEmitC>(typeConverter, ctx);
@@ -14795,6 +15015,8 @@ struct EmitPTOManualPass
             if (isa<mlir::pto::TensorViewType>(init.getGmAddr().getType()))
               needsGlobalTensorDataHelper = true;
           }
+          if (isa<mlir::pto::PartitionViewOp>(op))
+            needsGlobalTensorDataHelper = true;
           if (isa<mlir::pto::BuildAsyncSessionOp, mlir::pto::TPutAsyncOp,
                   mlir::pto::TGetAsyncOp, mlir::pto::TPrefetchAsyncOp,
                   mlir::pto::WaitAsyncEventOp, mlir::pto::TestAsyncEventOp,
@@ -14855,6 +15077,18 @@ template <typename Tensor>
 static AICORE inline auto PTOAS__GLOBAL_TENSOR_DATA(Tensor &tensor)
     -> decltype(tensor.data()) {
   return tensor.data();
+}
+
+template <typename Tensor>
+static AICORE inline int64_t PTOAS__GLOBAL_TENSOR_GET_SHAPE(Tensor &tensor,
+                                                            int64_t dim) {
+  return tensor.GetShape(static_cast<int>(dim));
+}
+
+template <typename Tensor>
+static AICORE inline int64_t PTOAS__GLOBAL_TENSOR_GET_STRIDE(Tensor &tensor,
+                                                             int64_t dim) {
+  return tensor.GetStride(static_cast<int>(dim));
 }
 )cpp"));
         }
@@ -15105,6 +15339,13 @@ static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
       }
 
       if (inTy == outTy) {
+        output.replaceAllUsesWith(input);
+        castsToErase.push_back(cast);
+        return;
+      }
+
+      if (Type convertedOutTy = typeConverter.convertType(outTy);
+          convertedOutTy && convertedOutTy == inTy) {
         output.replaceAllUsesWith(input);
         castsToErase.push_back(cast);
         return;

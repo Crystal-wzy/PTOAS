@@ -1344,14 +1344,20 @@ struct PTOViewToMemrefPass
       // ------------------------------------------------------------------
       SmallVector<Type> newInputs;
       for (Type t : fnTy.getInputs()) {
-        newInputs.push_back(preserveTileABI && isa<pto::TileBufType>(t)
+        newInputs.push_back(preserveTileABI &&
+                                    isa<pto::TileBufType, pto::PtrType,
+                                        pto::TensorViewType,
+                                        pto::PartitionTensorViewType>(t)
                                 ? t
                                 : convertPTOTypeToMemRef(t));
       }
 
       SmallVector<Type> newResults;
       for (Type t : fnTy.getResults()) {
-        newResults.push_back(preserveTileABI && isa<pto::TileBufType>(t)
+        newResults.push_back(preserveTileABI &&
+                                     isa<pto::TileBufType, pto::PtrType,
+                                         pto::TensorViewType,
+                                         pto::PartitionTensorViewType>(t)
                                  ? t
                                  : convertPTOTypeToMemRef(t));
       }
@@ -1375,7 +1381,7 @@ struct PTOViewToMemrefPass
       // ------------------------------------------------------------------
       // Stage 0.20: lower pto.inttoptr result types to GM memrefs.
       // ------------------------------------------------------------------
-      if (failed(lowerIntToPtrOps(func, ctx))) {
+      if (!preserveTileABI && failed(lowerIntToPtrOps(func, ctx))) {
         signalPassFailure();
         return;
       }
@@ -1391,7 +1397,7 @@ struct PTOViewToMemrefPass
       // ------------------------------------------------------------------
       // Stage 0.30: materialize pto.ptrtoint(addptr ...) byte offsets.
       // ------------------------------------------------------------------
-      if (failed(lowerPtrToIntOps(func, ctx))) {
+      if (!preserveTileABI && failed(lowerPtrToIntOps(func, ctx))) {
         signalPassFailure();
         return;
       }
@@ -1777,7 +1783,16 @@ struct PTOViewToMemrefPass
       for (auto *op : addPtrs) {
         if (!op)
           continue;
-        op->emitError("addptr must feed make_tensor_view,  initialize_l2g2l_pipe(gm_addr) or load/store_scalar for lowering");
+        if (llvm::all_of(op->getUsers(), [op](Operation *user) {
+              if (isa<mlir::pto::MakeTensorViewOp>(user))
+                return true;
+              auto init = dyn_cast<mlir::pto::InitializeL2G2LPipeOp>(user);
+              return init && init.getGmAddr() == op->getResult(0);
+            }))
+          continue;
+        op->emitError("addptr must feed make_tensor_view, "
+                      "initialize_l2g2l_pipe(gm_addr) or load/store_scalar "
+                      "for lowering");
         signalPassFailure();
         return;
       }

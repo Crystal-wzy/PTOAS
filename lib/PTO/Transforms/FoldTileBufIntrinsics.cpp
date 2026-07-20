@@ -40,6 +40,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -435,6 +436,187 @@ static Value computeLinearOffset(OpBuilder &builder, Location loc,
   return rcPart ? rcPart : svPart;
 }
 
+static Value unwrapPTOViewBridge(Value value) {
+  while (auto cast = value.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (cast.getNumOperands() != 1 || cast.getNumResults() != 1)
+      break;
+    value = cast.getOperand(0);
+  }
+  return value;
+}
+
+enum class PTOViewProjectionKind { Dim, Stride, Address };
+
+static Value projectSCFIfViewResult(Value view, PTOViewProjectionKind kind,
+                                    int64_t dim, pto::PtrType resultPtrType,
+                                    OpBuilder &builder, Operation *user);
+
+static Value resolvePTOViewDim(Value view, int64_t dim, OpBuilder &builder,
+                               Operation *user) {
+  view = unwrapPTOViewBridge(view);
+  if (Value projected = projectSCFIfViewResult(
+          view, PTOViewProjectionKind::Dim, dim, {}, builder, user))
+    return projected;
+  if (auto partition = view.getDefiningOp<pto::PartitionViewOp>()) {
+    if (dim < 0 || dim >= static_cast<int64_t>(partition.getSizes().size()))
+      return {};
+    return partition.getSizes()[dim];
+  }
+  if (auto makeView = view.getDefiningOp<pto::MakeTensorViewOp>()) {
+    if (dim < 0 || dim >= static_cast<int64_t>(makeView.getShape().size()))
+      return {};
+    return makeView.getShape()[dim];
+  }
+  (void)builder;
+  (void)user;
+  return {};
+}
+
+static Value resolvePTOViewStride(Value view, int64_t dim, OpBuilder &builder,
+                                  Operation *user) {
+  view = unwrapPTOViewBridge(view);
+  if (Value projected = projectSCFIfViewResult(
+          view, PTOViewProjectionKind::Stride, dim, {}, builder, user))
+    return projected;
+  if (auto partition = view.getDefiningOp<pto::PartitionViewOp>())
+    return resolvePTOViewStride(partition.getSource(), dim, builder, user);
+  if (auto makeView = view.getDefiningOp<pto::MakeTensorViewOp>()) {
+    if (dim < 0 || dim >= static_cast<int64_t>(makeView.getStrides().size()))
+      return {};
+    return makeView.getStrides()[dim];
+  }
+  return {};
+}
+
+static Value resolvePTOViewAddress(Value view, pto::PtrType resultType,
+                                   OpBuilder &builder, Operation *user) {
+  view = unwrapPTOViewBridge(view);
+  if (Value projected = projectSCFIfViewResult(
+          view, PTOViewProjectionKind::Address, 0, resultType, builder, user))
+    return projected;
+  if (auto makeView = view.getDefiningOp<pto::MakeTensorViewOp>()) {
+    Value ptr = makeView.getPtr();
+    if (ptr.getType() == resultType)
+      return ptr;
+    return builder.create<pto::CastPtrOp>(user->getLoc(), resultType, ptr);
+  }
+  auto partition = view.getDefiningOp<pto::PartitionViewOp>();
+  if (!partition)
+    return {};
+
+  Value linearOffset;
+  for (unsigned index = 0; index < partition.getOffsets().size(); ++index) {
+    Value stride = resolvePTOViewStride(partition.getSource(), index, builder,
+                                        user);
+    if (!stride)
+      return {};
+    Value offset = partition.getOffsets()[index];
+    Value term = builder.create<arith::MulIOp>(user->getLoc(), offset, stride);
+    linearOffset = linearOffset
+                       ? builder.create<arith::AddIOp>(user->getLoc(),
+                                                       linearOffset, term)
+                       : term;
+  }
+  Value base =
+      resolvePTOViewAddress(partition.getSource(), resultType, builder, user);
+  if (!base)
+    return {};
+  if (!linearOffset)
+    return base;
+  return builder.create<pto::AddPtrOp>(user->getLoc(), resultType, base,
+                                       linearOffset);
+}
+
+static void cloneBlockWithoutTerminator(Block *source, Block *target,
+                                        IRMapping &mapping,
+                                        OpBuilder &builder) {
+  builder.setInsertionPointToStart(target);
+  for (Operation &op : source->without_terminator())
+    builder.clone(op, mapping);
+}
+
+static Value projectSCFIfViewResult(Value view, PTOViewProjectionKind kind,
+                                    int64_t dim, pto::PtrType resultPtrType,
+                                    OpBuilder &builder, Operation *user) {
+  auto result = dyn_cast<OpResult>(view);
+  auto ifOp = result ? dyn_cast<scf::IfOp>(result.getOwner()) : scf::IfOp();
+  if (!ifOp || ifOp.getNumRegions() != 2)
+    return {};
+  if (kind == PTOViewProjectionKind::Address && !resultPtrType)
+    return {};
+  auto thenYield = dyn_cast<scf::YieldOp>(ifOp.thenBlock()->getTerminator());
+  auto elseYield = dyn_cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
+  unsigned resultIndex = result.getResultNumber();
+  if (!thenYield || !elseYield ||
+      resultIndex >= thenYield.getNumOperands() ||
+      resultIndex >= elseYield.getNumOperands())
+    return {};
+
+  Type projectionType = kind == PTOViewProjectionKind::Address
+                            ? Type(resultPtrType)
+                            : Type(builder.getIndexType());
+  if (!projectionType)
+    return {};
+  SmallVector<Type> resultTypes(ifOp.getResultTypes().begin(),
+                                ifOp.getResultTypes().end());
+  resultTypes.push_back(projectionType);
+
+  OpBuilder ifBuilder(ifOp);
+  auto newIf = ifBuilder.create<scf::IfOp>(
+      ifOp.getLoc(), resultTypes, ifOp.getCondition(),
+      /*addThenBlock=*/true, /*addElseBlock=*/true);
+  newIf->setAttrs(ifOp->getAttrs());
+
+  auto cloneBranch = [&](Block *source, Block *target, scf::YieldOp oldYield,
+                         bool &failed) {
+    IRMapping mapping;
+    cloneBlockWithoutTerminator(source, target, mapping, ifBuilder);
+    SmallVector<Value> yields;
+    yields.reserve(oldYield.getNumOperands() + 1);
+    for (Value operand : oldYield.getOperands())
+      yields.push_back(mapping.lookupOrDefault(operand));
+    Value yieldedView = yields[resultIndex];
+    ifBuilder.setInsertionPointToEnd(target);
+    Value projection;
+    switch (kind) {
+    case PTOViewProjectionKind::Dim:
+      projection =
+          resolvePTOViewDim(yieldedView, dim, ifBuilder, user);
+      break;
+    case PTOViewProjectionKind::Stride:
+      projection =
+          resolvePTOViewStride(yieldedView, dim, ifBuilder, user);
+      break;
+    case PTOViewProjectionKind::Address:
+      projection = resolvePTOViewAddress(yieldedView, resultPtrType, ifBuilder,
+                                         user);
+      break;
+    }
+    if (!projection) {
+      failed = true;
+      return;
+    }
+    yields.push_back(projection);
+    ifBuilder.create<scf::YieldOp>(oldYield.getLoc(), yields);
+  };
+
+  bool failed = false;
+  cloneBranch(ifOp.thenBlock(), newIf.thenBlock(), thenYield, failed);
+  cloneBranch(ifOp.elseBlock(), newIf.elseBlock(), elseYield, failed);
+  if (failed) {
+    newIf.erase();
+    return {};
+  }
+
+  for (auto [oldResult, newResult] :
+       llvm::zip_equal(ifOp.getResults(), newIf.getResults().take_front(
+                                               ifOp.getNumResults())))
+    oldResult.replaceAllUsesWith(newResult);
+  Value projection = newIf.getResult(newIf.getNumResults() - 1);
+  ifOp.erase();
+  return projection;
+}
+
 struct FoldTileBufIntrinsicsPass
     : public pto::impl::FoldTileBufIntrinsicsBase<FoldTileBufIntrinsicsPass> {
   using FoldTileBufIntrinsicsBase::FoldTileBufIntrinsicsBase;
@@ -691,10 +873,6 @@ struct FoldTileBufIntrinsicsPass
       }
 
       for (auto dimOp : tvDimOps) {
-        auto chain = traceViewChain(dimOp.getTensorView(), dimOp);
-        if (!chain)
-          return signalPassFailure();
-
         int64_t dimIdx = 0;
         if (!getConstIndexValue(dimOp.getDimIndex(), dimIdx)) {
           dimOp.emitError(
@@ -702,6 +880,18 @@ struct FoldTileBufIntrinsicsPass
               "dim index");
           return signalPassFailure();
         }
+
+        builder.setInsertionPoint(dimOp);
+        if (Value direct = resolvePTOViewDim(dimOp.getTensorView(), dimIdx,
+                                             builder, dimOp)) {
+          dimOp.getResult().replaceAllUsesWith(direct);
+          dimOp.erase();
+          continue;
+        }
+
+        auto chain = traceViewChain(dimOp.getTensorView(), dimOp);
+        if (!chain)
+          return signalPassFailure();
 
         auto svTy = cast<MemRefType>(chain->subview.getType());
         if (dimIdx < 0 || dimIdx >= svTy.getRank()) {
@@ -727,10 +917,6 @@ struct FoldTileBufIntrinsicsPass
       }
 
       for (auto strideOp : tvStrideOps) {
-        auto chain = traceViewChain(strideOp.getTensorView(), strideOp);
-        if (!chain)
-          return signalPassFailure();
-
         int64_t dimIdx = 0;
         if (!getConstIndexValue(strideOp.getDimIndex(), dimIdx)) {
           strideOp.emitError(
@@ -738,6 +924,18 @@ struct FoldTileBufIntrinsicsPass
               "constant dim index");
           return signalPassFailure();
         }
+
+        builder.setInsertionPoint(strideOp);
+        if (Value direct = resolvePTOViewStride(
+                strideOp.getTensorView(), dimIdx, builder, strideOp)) {
+          strideOp.getResult().replaceAllUsesWith(direct);
+          strideOp.erase();
+          continue;
+        }
+
+        auto chain = traceViewChain(strideOp.getTensorView(), strideOp);
+        if (!chain)
+          return signalPassFailure();
 
         auto svTy = cast<MemRefType>(chain->subview.getType());
         if (dimIdx < 0 || dimIdx >= svTy.getRank()) {
@@ -760,13 +958,22 @@ struct FoldTileBufIntrinsicsPass
 
     if (shouldFoldAddrFamily(*mode)) {
       for (auto addrOp : tvAddrOps) {
+        builder.setInsertionPoint(addrOp);
+
+        auto resultPtrType = dyn_cast<pto::PtrType>(addrOp.getDst().getType());
+        if (resultPtrType) {
+          if (Value direct = resolvePTOViewAddress(
+                  addrOp.getSrc(), resultPtrType, builder, addrOp)) {
+            addrOp.getDst().replaceAllUsesWith(direct);
+            addrOp.erase();
+            continue;
+          }
+        }
+
         auto chain = traceViewChain(addrOp.getSrc(), addrOp);
         if (!chain)
           return signalPassFailure();
 
-        builder.setInsertionPoint(addrOp);
-
-        auto resultPtrType = dyn_cast<pto::PtrType>(addrOp.getDst().getType());
         if (!resultPtrType) {
           if (auto resultMemrefType =
                   dyn_cast<MemRefType>(addrOp.getDst().getType())) {

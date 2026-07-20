@@ -34,11 +34,7 @@
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -198,171 +194,6 @@ static LogicalResult resolveTileNativeSubviews(ModuleOp module,
     rewriter.replaceOp(op, alloc.getResult());
   }
   return success();
-}
-
-static LogicalResult reconcileSCFViewResultTypes(ModuleOp module) {
-  SmallVector<scf::IfOp, 8> ifOps;
-  module.walk([&](scf::IfOp op) { ifOps.push_back(op); });
-  for (scf::IfOp op : llvm::reverse(ifOps)) {
-    if (op.getNumResults() == 0)
-      continue;
-    auto thenYield = dyn_cast<scf::YieldOp>(op.thenBlock()->getTerminator());
-    auto elseYield = dyn_cast<scf::YieldOp>(op.elseBlock()->getTerminator());
-    if (!thenYield || !elseYield ||
-        thenYield.getNumOperands() != op.getNumResults() ||
-        elseYield.getNumOperands() != op.getNumResults())
-      return op.emitError("cannot reconcile scf.if view result types");
-    for (unsigned i = 0; i < op.getNumResults(); ++i) {
-      Type thenType = thenYield.getOperand(i).getType();
-      if (thenType != elseYield.getOperand(i).getType())
-        return op.emitError("scf.if branches yield different view types");
-      op.getResult(i).setType(thenType);
-    }
-  }
-  return success();
-}
-
-static LogicalResult resolveGMTensorViews(ModuleOp module, MLIRContext *ctx) {
-  SmallVector<pto::MakeTensorViewOp, 16> makeViews;
-  module.walk([&](pto::MakeTensorViewOp op) { makeViews.push_back(op); });
-  DenseMap<Value, Value> loweredViews;
-  for (pto::MakeTensorViewOp op : makeViews) {
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(op);
-    Value base = op.getPtr();
-    OpFoldResult offset = rewriter.getIndexAttr(0);
-    Value totalOffset;
-    while (auto add = base.getDefiningOp<pto::AddPtrOp>()) {
-      Value term = add.getOffset();
-      totalOffset =
-          totalOffset
-              ? rewriter.create<arith::AddIOp>(op.getLoc(), totalOffset, term)
-              : term;
-      base = add.getPtr();
-    }
-    if (totalOffset)
-      offset = totalOffset;
-
-    auto baseType = dyn_cast<BaseMemRefType>(base.getType());
-    if (!baseType)
-      continue;
-    int64_t rank = static_cast<int64_t>(op.getShape().size());
-    SmallVector<int64_t> dynamicShape(rank, ShapedType::kDynamic);
-    SmallVector<int64_t> dynamicStrides(rank, ShapedType::kDynamic);
-    auto layout =
-        StridedLayoutAttr::get(ctx, ShapedType::kDynamic, dynamicStrides);
-    auto resultType = MemRefType::get(dynamicShape, baseType.getElementType(),
-                                      layout, baseType.getMemorySpace());
-    SmallVector<OpFoldResult> sizes(op.getShape().begin(), op.getShape().end());
-    SmallVector<OpFoldResult> strides(op.getStrides().begin(),
-                                      op.getStrides().end());
-    auto view = rewriter.create<memref::ReinterpretCastOp>(
-        op.getLoc(), resultType, base, offset, sizes, strides);
-    if (totalOffset)
-      view->setAttr("pto.addptr_trace", rewriter.getUnitAttr());
-    if (auto layoutAttr = op.getLayoutAttr())
-      view->setAttr("layout", layoutAttr);
-    loweredViews[op.getResult()] = view.getResult();
-  }
-
-  SmallVector<pto::GetTensorViewDimOp, 8> dimOps;
-  module.walk([&](pto::GetTensorViewDimOp op) { dimOps.push_back(op); });
-  for (pto::GetTensorViewDimOp op : dimOps) {
-    Value view = op.getTensorView();
-    if (Value lowered = loweredViews.lookup(view))
-      view = lowered;
-    if (!isa<BaseMemRefType>(view.getType()))
-      continue;
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(op);
-    rewriter.replaceOpWithNewOp<memref::DimOp>(op, view, op.getDimIndex());
-  }
-
-  SmallVector<pto::PartitionViewOp, 16> partitions;
-  module.walk([&](pto::PartitionViewOp op) { partitions.push_back(op); });
-  for (pto::PartitionViewOp op : partitions) {
-    Value source = op.getSource();
-    if (Value lowered = loweredViews.lookup(source))
-      source = lowered;
-    auto sourceType = dyn_cast<MemRefType>(source.getType());
-    if (!sourceType)
-      continue;
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(op);
-    SmallVector<int64_t> staticSizes;
-    SmallVector<OpFoldResult> sizes;
-    for (Value size : op.getSizes()) {
-      IntegerAttr attr;
-      if (matchPattern(size, m_Constant(&attr))) {
-        int64_t value = attr.getValue().getSExtValue();
-        staticSizes.push_back(value);
-        sizes.push_back(rewriter.getIndexAttr(value));
-      } else {
-        staticSizes.push_back(ShapedType::kDynamic);
-        sizes.push_back(size);
-      }
-    }
-    SmallVector<OpFoldResult> offsets(op.getOffsets().begin(),
-                                      op.getOffsets().end());
-    SmallVector<OpFoldResult> strides(sourceType.getRank(),
-                                      rewriter.getIndexAttr(1));
-    SmallVector<int64_t> dynamicStrides(sourceType.getRank(),
-                                        ShapedType::kDynamic);
-    auto layout =
-        StridedLayoutAttr::get(ctx, ShapedType::kDynamic, dynamicStrides);
-    auto resultType = MemRefType::get(staticSizes, sourceType.getElementType(),
-                                      layout, sourceType.getMemorySpace());
-    auto subview = rewriter.create<memref::SubViewOp>(
-        op.getLoc(), resultType, source, offsets, sizes, strides);
-    if (Operation *def = source.getDefiningOp())
-      if (auto attr = def->getAttrOfType<pto::LayoutAttr>("layout"))
-        subview->setAttr("layout", attr);
-    rewriter.replaceOp(op, subview.getResult());
-  }
-
-  SmallVector<pto::GetTensorViewStrideOp, 8> strideOps;
-  module.walk([&](pto::GetTensorViewStrideOp op) { strideOps.push_back(op); });
-  for (pto::GetTensorViewStrideOp op : strideOps) {
-    Value view = op.getTensorView();
-    if (Value lowered = loweredViews.lookup(view))
-      view = lowered;
-    auto type = dyn_cast<MemRefType>(view.getType());
-    if (!type)
-      continue;
-    IntegerAttr dimAttr;
-    if (!matchPattern(op.getDimIndex(), m_Constant(&dimAttr)))
-      return op.emitError(
-          "get_tensor_view_stride expects a constant dim index");
-    int64_t dim = dimAttr.getValue().getSExtValue();
-    if (dim < 0 || dim >= type.getRank())
-      return op.emitError("get_tensor_view_stride dim index is out of bounds");
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(op);
-    SmallVector<int64_t> staticStrides;
-    int64_t staticOffset = ShapedType::kDynamic;
-    if (succeeded(pto::getPTOMemRefStridesAndOffset(type, staticStrides,
-                                                    staticOffset)) &&
-        staticStrides[dim] != ShapedType::kDynamic) {
-      rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(op,
-                                                          staticStrides[dim]);
-      continue;
-    }
-    auto metadata =
-        rewriter.create<memref::ExtractStridedMetadataOp>(op.getLoc(), view);
-    rewriter.replaceOp(op, metadata.getStrides()[dim]);
-  }
-
-  // Replace roots only after all strongly typed PTO view users have been
-  // removed. This avoids constructing an intermediate partition_view whose
-  // source has already changed from tensor_view to memref.
-  for (pto::MakeTensorViewOp op : makeViews) {
-    Value lowered = loweredViews.lookup(op.getResult());
-    if (!lowered)
-      continue;
-    IRRewriter rewriter(ctx);
-    rewriter.replaceOp(op, lowered);
-  }
-  return reconcileSCFViewResultTypes(module);
 }
 
 static FailureOr<uint64_t> getStaticSlotBytes(pto::TileBufType slotType) {
@@ -531,11 +362,6 @@ struct PTOResolveBufferSelectPass
       signalPassFailure();
       return;
     }
-    if (failed(resolveGMTensorViews(mod, ctx))) {
-      signalPassFailure();
-      return;
-    }
-
     SmallVector<pto::SlotMarkerOp, 8> markers;
     mod.walk([&](pto::SlotMarkerOp op) { markers.push_back(op); });
     if (markers.empty())
