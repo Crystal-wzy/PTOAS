@@ -707,88 +707,6 @@ static Type convertPTOTypeToMemRef(Type t) {
   return t;
 }
 
-// Ensure scf.if result types follow the rewritten yield operand types.
-// PTOViewToMemref rewrites tile values to memref in branch bodies, but scf.if
-// result types are not auto-updated by those op-local rewrites.
-static LogicalResult reconcileSCFIfResultTypes(func::FuncOp func) {
-  DefaultInlineVector<scf::IfOp> ifOps;
-  func.walk([&](scf::IfOp ifOp) { ifOps.push_back(ifOp); });
-
-  for (scf::IfOp ifOp : ifOps) {
-    if (ifOp.getNumResults() == 0)
-      continue;
-
-    auto thenYield = dyn_cast<scf::YieldOp>(ifOp.thenBlock()->getTerminator());
-    auto elseYield = dyn_cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
-    if (!thenYield || !elseYield) {
-      ifOp.emitError("result-bearing scf.if must end with scf.yield in both "
-                     "then/else regions");
-      return failure();
-    }
-
-    if (thenYield.getNumOperands() != ifOp.getNumResults() ||
-        elseYield.getNumOperands() != ifOp.getNumResults()) {
-      ifOp.emitError("scf.if result count does not match yielded values");
-      return failure();
-    }
-
-    for (unsigned i = 0; i < ifOp.getNumResults(); ++i) {
-      Type thenTy = thenYield.getOperand(i).getType();
-      Type elseTy = elseYield.getOperand(i).getType();
-      if (thenTy != elseTy) {
-        ifOp.emitError() << "scf.if branch yield type mismatch at result #" << i
-                         << ": then=" << thenTy << ", else=" << elseTy;
-        return failure();
-      }
-
-      if (ifOp.getResult(i).getType() != thenTy)
-        ifOp.getResult(i).setType(thenTy);
-    }
-  }
-
-  return success();
-}
-
-static LogicalResult reconcileSCFForResultTypes(func::FuncOp func) {
-  DefaultInlineVector<scf::ForOp> forOps;
-  func.walk([&](scf::ForOp forOp) { forOps.push_back(forOp); });
-
-  for (scf::ForOp forOp : forOps) {
-    if (forOp.getNumResults() == 0)
-      continue;
-
-    auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
-    if (!yield) {
-      forOp.emitError("result-bearing scf.for must end with scf.yield");
-      return failure();
-    }
-
-    if (yield.getNumOperands() != forOp.getNumResults() ||
-        forOp.getInitArgs().size() != forOp.getNumResults()) {
-      forOp.emitError("scf.for result count does not match iter/yield values");
-      return failure();
-    }
-
-    for (unsigned i = 0; i < forOp.getNumResults(); ++i) {
-      Type initTy = forOp.getInitArgs()[i].getType();
-      Type yieldTy = yield.getOperand(i).getType();
-      if (initTy != yieldTy) {
-        forOp.emitError() << "scf.for init/yield type mismatch at result #" << i
-                          << ": init=" << initTy << ", yield=" << yieldTy;
-        return failure();
-      }
-
-      BlockArgument iterArg = forOp.getRegionIterArg(i);
-      if (iterArg.getType() != initTy)
-        iterArg.setType(initTy);
-      if (forOp.getResult(i).getType() != initTy)
-        forOp.getResult(i).setType(initTy);
-    }
-  }
-
-  return success();
-}
-
 // Ensure pto.fusion_region result types follow the rewritten pto.yield operand
 // types. PTOViewToMemref rewrites region-local tile values to memref, but the
 // region result types are not auto-updated by those op-local rewrites.
@@ -3256,17 +3174,6 @@ struct PTOViewToMemrefPass
       }
       }
 
-      // ------------------------------------------------------------------
-      // Stage 4: Reconcile control-flow result types
-      // ------------------------------------------------------------------
-      if (failed(reconcileSCFIfResultTypes(func))) {
-        signalPassFailure();
-        return;
-      }
-      if (failed(reconcileSCFForResultTypes(func))) {
-        signalPassFailure();
-        return;
-      }
     }
 
     if (failed(bridgeCallOperandsToConvertedCallees(mod, ctx))) {

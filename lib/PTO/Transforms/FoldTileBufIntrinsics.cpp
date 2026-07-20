@@ -200,6 +200,16 @@ static Value unwrapBridgingCasts(Value v) {
   return v;
 }
 
+static bool isSCFTileCarrier(Value value) {
+  if (auto result = dyn_cast<OpResult>(value)) {
+    return isa<scf::IfOp, scf::ForOp, arith::SelectOp>(result.getOwner());
+  }
+
+  auto blockArg = dyn_cast<BlockArgument>(value);
+  return blockArg &&
+         isa_and_nonnull<scf::ForOp>(blockArg.getOwner()->getParentOp());
+}
+
 static std::optional<TileHandleInfo> resolveTileHandle(Value tileBuf,
                                                        Operation *user) {
   if (auto regionResult = dyn_cast<OpResult>(tileBuf)) {
@@ -680,23 +690,29 @@ struct FoldTileBufIntrinsicsPass
         if (!isa<pto::TileBufType>(gvsOp.getSource().getType()))
           continue;
 
-        auto handleInfo = resolveTileHandle(gvsOp.getSource(), gvsOp);
-        if (!handleInfo)
-          return signalPassFailure();
-
         builder.setInsertionPoint(gvsOp);
         auto tileTy = cast<pto::TileBufType>(gvsOp.getSource().getType());
         auto validShape = tileTy.getValidShape();
 
-        Value rowReplacement = handleInfo->validRow;
+        Value rowReplacement;
         if (!validShape.empty() && validShape[0] != ShapedType::kDynamic)
           rowReplacement =
               builder.create<arith::ConstantIndexOp>(gvsOp.getLoc(), validShape[0]);
 
-        Value colReplacement = handleInfo->validCol;
+        Value colReplacement;
         if (validShape.size() >= 2 && validShape[1] != ShapedType::kDynamic)
           colReplacement =
               builder.create<arith::ConstantIndexOp>(gvsOp.getLoc(), validShape[1]);
+
+        if (!rowReplacement || !colReplacement) {
+          auto handleInfo = resolveTileHandle(gvsOp.getSource(), gvsOp);
+          if (!handleInfo)
+            return signalPassFailure();
+          if (!rowReplacement)
+            rowReplacement = handleInfo->validRow;
+          if (!colReplacement)
+            colReplacement = handleInfo->validCol;
+        }
 
         if (!rowReplacement || !colReplacement) {
           gvsOp.emitError("FoldTileBufIntrinsics: pto.get_validshape could not "
@@ -716,6 +732,13 @@ struct FoldTileBufIntrinsicsPass
       // When the requested result type is already !pto.ptr<...>, cast from the
       // recovered memref instead of leaving tile_buf_addr in the IR.
       for (auto addrOp : addrOps) {
+        // An SCF result/iter_arg is already a runtime-selected tile handle.
+        // Keep tile_buf_addr attached to that handle; VPTO pointer
+        // normalization converts it directly without choosing one branch's
+        // allocation address here.
+        if (isSCFTileCarrier(addrOp.getSrc()))
+          continue;
+
         auto handleInfo = resolveTileHandle(addrOp.getSrc(), addrOp);
         if (!handleInfo)
           return signalPassFailure();
