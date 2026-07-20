@@ -368,7 +368,9 @@ static void configureAccStoreScalarPreOps(Location loc, Value preQuant,
     }
   };
 
-  if (preQuantMode && !isVectorQuantMode(*preQuantMode)) {
+  if (preQuantMode &&
+      *preQuantMode != pto::AccStoreQuantPreMode::NoConvert &&
+      !isVectorQuantMode(*preQuantMode)) {
     if (Value quantValue = materializeAccStoreScalarPayload(preQuant, rewriter, loc))
       rewriter.create<pto::SetQuantPreOp>(loc, quantValue);
   }

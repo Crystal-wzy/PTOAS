@@ -418,6 +418,15 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             self.assertEqual(_ops._mad_sat_attr(pto.SatMode.OFF), "#pto<mad_sat_mode nosat>")
             self.assertEqual(_ops._acc_store_sat_attr(pto.SatMode.PRESERVE_NAN), "#pto<acc_store_sat_mode sat_preserve_nan>")
 
+    def test_acc_store_no_convert_skips_payload_kind_check(self):
+        payload = object()
+        with patch.object(_ops, "Attribute") as attr:
+            attr.parse.side_effect = lambda text: text
+            value, mode = _ops._acc_store_pre_quant((payload, "no_convert"))
+
+        self.assertIs(value, payload)
+        self.assertEqual(mode, "#pto<quant_pre_mode no_convert>")
+
     def test_tile_selection_surface_exposes_optional_tmp(self):
         for func, expected in [
             (_ops.tsel, ["mask", "src0", "src1", "dst", "tmp"]),

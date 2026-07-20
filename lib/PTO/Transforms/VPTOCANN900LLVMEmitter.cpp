@@ -8254,27 +8254,29 @@ private:
   LoweringState &state;
 };
 
-static std::string buildRepeatedInlineAsmConstraints(StringRef constraint,
-                                                     size_t count) {
+struct SimtKeepResumePhysicalRegister {
+  int64_t baseRegister;
+  unsigned registerCount;
+};
+
+// TPERn names one 32-bit register, while TPERLn names the 64-bit pair whose
+// base register is R(2n). Keep uses tied inputs so the compiler models the
+// value captured by each fixed output without inline assembly instructions.
+static std::string buildSimtKeepResumeConstraints(
+    ArrayRef<SimtKeepResumePhysicalRegister> physicalRegs, bool tieInputs) {
   std::string result;
   llvm::raw_string_ostream os(result);
-  for (size_t i = 0; i < count; ++i) {
-    if (i != 0)
+  for (auto [index, physicalReg] : llvm::enumerate(physicalRegs)) {
+    if (index != 0)
       os << ",";
-    os << constraint;
+    if (physicalReg.registerCount == 2)
+      os << "={TPERL" << physicalReg.baseRegister / 2 << "}";
+    else
+      os << "={TPER" << physicalReg.baseRegister << "}";
   }
-  return os.str();
-}
-
-static std::string appendSimtKeepResumeClobbers(std::string constraints,
-                                                ArrayRef<std::pair<int64_t, unsigned>> physicalRegs) {
-  llvm::raw_string_ostream os(constraints);
-  // The asm body names fixed SIMT R registers directly. Model those registers
-  // as clobbers so LLVM does not allocate a different operand/result into a
-  // slot that another keep/resume line reads or overwrites in the same asm.
-  for (auto [reg, registerCount] : physicalRegs) {
-    for (unsigned offset = 0; offset < registerCount; ++offset)
-      os << ",~{R" << (reg + offset) << "}";
+  if (tieInputs) {
+    for (size_t index = 0; index < physicalRegs.size(); ++index)
+      os << "," << index;
   }
   return os.str();
 }
@@ -8356,11 +8358,12 @@ static unsigned getSimtKeepResumeRegisterCount(Type type) {
   return width && *width > 32 ? 2 : 1;
 }
 
-static FailureOr<SmallVector<int64_t, 4>> computeSimtKeepResumePhysicalRegs(
+static FailureOr<SmallVector<SimtKeepResumePhysicalRegister, 4>>
+computeSimtKeepResumePhysicalRegs(
     ArrayRef<std::pair<int64_t, unsigned>> logicalSlots) {
-  SmallVector<int64_t, 4> physicalRegs(logicalSlots.size(), -1);
-  for (auto [index, logicalSlot] : llvm::enumerate(logicalSlots)) {
-    auto [slot, registerCount] = logicalSlot;
+  SmallVector<SimtKeepResumePhysicalRegister, 4> physicalRegs;
+  physicalRegs.reserve(logicalSlots.size());
+  for (auto [slot, registerCount] : logicalSlots) {
     if (slot < 0 || slot >= 123)
       return failure();
     if (registerCount == 2 && ((slot % 2) != 0 || slot + 1 >= 123))
@@ -8368,10 +8371,10 @@ static FailureOr<SmallVector<int64_t, 4>> computeSimtKeepResumePhysicalRegs(
     // Slots are user-assigned storage words, not dense ordinals in the current
     // keep/resume group. This keeps a consumer that resumes only a subset of
     // slots from changing where the remaining slots are read from.
-    int64_t reg = 4 + slot;
-    if (reg + static_cast<int64_t>(registerCount) - 1 > 126)
+    int64_t baseRegister = 4 + slot;
+    if (baseRegister + static_cast<int64_t>(registerCount) - 1 > 126)
       return failure();
-    physicalRegs[index] = reg;
+    physicalRegs.push_back({baseRegister, registerCount});
   }
   return physicalRegs;
 }
@@ -8386,8 +8389,8 @@ static bool isValidSimtKeepResumeSlot(int64_t slot, unsigned registerCount) {
 
 class LowerKeepOpPattern final : public OpConversionPattern<pto::KeepOp> {
 public:
-  explicit LowerKeepOpPattern(TypeConverter &typeConverter, MLIRContext *context,
-                              LoweringState &)
+  explicit LowerKeepOpPattern(TypeConverter &typeConverter,
+                              MLIRContext *context, LoweringState &)
       : OpConversionPattern<pto::KeepOp>(typeConverter, context) {}
 
   LogicalResult
@@ -8400,9 +8403,8 @@ public:
 
     SmallVector<pto::KeepOp, 4> keepOps = collectConsecutiveOps(op);
     SmallVector<Value, 4> payloads;
+    SmallVector<Type, 4> asmResultTypes;
     SmallVector<std::pair<int64_t, unsigned>, 4> logicalSlots;
-    std::string asmString;
-    llvm::raw_string_ostream asmOS(asmString);
     for (pto::KeepOp keep : keepOps) {
       Value payload = rewriter.getRemappedValue(keep.getPayload());
       if (!payload)
@@ -8412,40 +8414,31 @@ public:
         return rewriter.notifyMatchFailure(
             keep, "expected integer scalar up to 64 bits or f16/bf16/f32");
       int64_t slot = keep.getSlot();
-      unsigned registerCount = getSimtKeepResumeRegisterCount(payload.getType());
+      unsigned registerCount =
+          getSimtKeepResumeRegisterCount(payload.getType());
       if (!isValidSimtKeepResumeSlot(slot, registerCount))
-        return rewriter.notifyMatchFailure(keep,
-                                           "slot must be in range [0, 122] and 64-bit slots must be even");
+        return rewriter.notifyMatchFailure(
+            keep,
+            "slot must be in range [0, 122] and 64-bit slots must be even");
       logicalSlots.push_back({slot, registerCount});
       payloads.push_back(payload);
+      asmResultTypes.push_back(payload.getType());
     }
-    FailureOr<SmallVector<int64_t, 4>> physicalRegs =
+    FailureOr<SmallVector<SimtKeepResumePhysicalRegister, 4>> physicalRegs =
         computeSimtKeepResumePhysicalRegs(logicalSlots);
     if (failed(physicalRegs))
       return rewriter.notifyMatchFailure(
           op, "keep slots must map to valid non-overlapping SIMT registers");
 
-    SmallVector<std::pair<int64_t, unsigned>, 4> clobbers;
-    for (auto [index, keep] : llvm::enumerate(keepOps)) {
-      (void)keep;
-      if (index != 0)
-        asmOS << "\n";
-      if (logicalSlots[index].second == 2)
-        asmOS << "IMAD.WIDE.u32 R" << (*physicalRegs)[index]
-              << ", RZ, RZ, $" << index << " wait:0b0000000 stall:1";
-      else
-        asmOS << "MOV R" << (*physicalRegs)[index] << ", $" << index
-              << " wait:0b0000000 stall:1";
-      clobbers.push_back({(*physicalRegs)[index], logicalSlots[index].second});
-    }
-    asmOS.flush();
-
+    Type asmResultType = asmResultTypes.front();
+    if (asmResultTypes.size() > 1)
+      asmResultType =
+          LLVM::LLVMStructType::getLiteral(op.getContext(), asmResultTypes);
     rewriter.setInsertionPoint(op);
     rewriter.create<LLVM::InlineAsmOp>(
-        op.getLoc(), TypeRange{}, payloads, asmString,
-        appendSimtKeepResumeClobbers(
-            buildRepeatedInlineAsmConstraints("R", payloads.size()), clobbers),
-        true, false, LLVM::tailcallkind::TailCallKind::None,
+        op.getLoc(), TypeRange{asmResultType}, payloads, "",
+        buildSimtKeepResumeConstraints(*physicalRegs, true), true, false,
+        LLVM::tailcallkind::TailCallKind::None,
         LLVM::AsmDialectAttr::get(op.getContext(), LLVM::AsmDialect::AD_ATT),
         ArrayAttr{});
     for (pto::KeepOp keep : llvm::reverse(keepOps))
@@ -8471,8 +8464,6 @@ public:
     SmallVector<pto::ResumeOp, 4> resumeOps = collectConsecutiveOps(op);
     SmallVector<std::pair<int64_t, unsigned>, 4> logicalSlots;
     SmallVector<Type, 4> asmResultTypes;
-    std::string asmString;
-    llvm::raw_string_ostream asmOS(asmString);
     for (pto::ResumeOp resume : resumeOps) {
       Type resultType = getTypeConverter()->convertType(resume.getType());
       if (!resultType || !getSimtKeepResumeBitWidth(resultType))
@@ -8481,32 +8472,18 @@ public:
       int64_t slot = resume.getSlot();
       unsigned registerCount = getSimtKeepResumeRegisterCount(resultType);
       if (!isValidSimtKeepResumeSlot(slot, registerCount))
-        return rewriter.notifyMatchFailure(resume,
-                                           "slot must be in range [0, 122] and 64-bit slots must be even");
+        return rewriter.notifyMatchFailure(
+            resume,
+            "slot must be in range [0, 122] and 64-bit slots must be even");
       logicalSlots.push_back({slot, registerCount});
       asmResultTypes.push_back(rewriter.getIntegerType(
           *getSimtKeepResumeBitWidth(resultType) > 32 ? 64 : 32));
     }
-    FailureOr<SmallVector<int64_t, 4>> physicalRegs =
+    FailureOr<SmallVector<SimtKeepResumePhysicalRegister, 4>> physicalRegs =
         computeSimtKeepResumePhysicalRegs(logicalSlots);
     if (failed(physicalRegs))
       return rewriter.notifyMatchFailure(
           op, "resume slots must map to valid non-overlapping SIMT registers");
-
-    SmallVector<std::pair<int64_t, unsigned>, 4> clobbers;
-    for (auto [index, resume] : llvm::enumerate(resumeOps)) {
-      (void)resume;
-      if (index != 0)
-        asmOS << "\n";
-      if (logicalSlots[index].second == 2)
-        asmOS << "IMAD.WIDE.u32 $" << index << ", RZ, RZ, R"
-              << (*physicalRegs)[index] << " wait:0b0000000 stall:1";
-      else
-        asmOS << "MOV $" << index << ", R" << (*physicalRegs)[index]
-              << " wait:0b0000000 stall:1";
-      clobbers.push_back({(*physicalRegs)[index], logicalSlots[index].second});
-    }
-    asmOS.flush();
 
     Type asmResultType = asmResultTypes.front();
     if (asmResultTypes.size() > 1) {
@@ -8515,10 +8492,9 @@ public:
     }
     rewriter.setInsertionPoint(op);
     auto asmOp = rewriter.create<LLVM::InlineAsmOp>(
-        op.getLoc(), TypeRange{asmResultType}, ValueRange{}, asmString,
-        appendSimtKeepResumeClobbers(
-            buildRepeatedInlineAsmConstraints("=R", resumeOps.size()), clobbers),
-        true, false, LLVM::tailcallkind::TailCallKind::None,
+        op.getLoc(), TypeRange{asmResultType}, ValueRange{}, "",
+        buildSimtKeepResumeConstraints(*physicalRegs, false), true, false,
+        LLVM::tailcallkind::TailCallKind::None,
         LLVM::AsmDialectAttr::get(op.getContext(), LLVM::AsmDialect::AD_ATT),
         ArrayAttr{});
 
@@ -8539,9 +8515,8 @@ public:
           resume.getLoc(), asmOp.getRes(),
           ArrayRef<int64_t>{static_cast<int64_t>(index)});
       Type resultType = getTypeConverter()->convertType(resume.getType());
-      Value result = unpackSimtKeepResumePayload(resume.getLoc(),
-                                                 extract.getRes(), resultType,
-                                                 rewriter);
+      Value result = unpackSimtKeepResumePayload(
+          resume.getLoc(), extract.getRes(), resultType, rewriter);
       if (!result)
         return rewriter.notifyMatchFailure(resume, "failed to unpack result");
       results.push_back(result);
