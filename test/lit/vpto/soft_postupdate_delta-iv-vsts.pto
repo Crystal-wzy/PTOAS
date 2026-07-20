@@ -1,4 +1,4 @@
-// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --enable-vpto-soft-postupdate --emit-vpto %s -o - | FileCheck %s
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --emit-vpto %s -o - | FileCheck %s
 
 // CHECK-LABEL: func.func @delta_iv_vsts
 // CHECK: scf.for

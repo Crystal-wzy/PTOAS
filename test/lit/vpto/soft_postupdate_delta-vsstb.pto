@@ -1,4 +1,4 @@
-// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --enable-vpto-soft-postupdate --emit-vpto %s -o - | FileCheck %s
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --emit-vpto %s -o - | FileCheck %s
 
 // vsstb with repeat_stride derived from IV (step=64): delta(dest)=0, delta(rs)=64.
 // stride = delta(dest) + 32*delta(rs) = 0 + 32*64 = 2048.
