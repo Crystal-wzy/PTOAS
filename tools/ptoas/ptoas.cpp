@@ -209,7 +209,6 @@ void mlir::pto::registerPTOASPassesAndCLOptions() {
   mlir::registerTransformsPasses();
 
   mlir::pto::registerPTOPasses();
-  mlir::pto::registerPTOViewToMemrefPass();
   mlir::pto::registerPTOInlineLibCall();
   mlir::pto::registerFoldTileBufIntrinsics();
   mlir::pto::registerExpandTileOp();
@@ -3341,7 +3340,6 @@ int mlir::pto::compilePTOASModule(
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
   }
 
-  pm.addPass(pto::createPTOViewToMemrefPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTORematerializeFixpipeVectorQuantPass());
 

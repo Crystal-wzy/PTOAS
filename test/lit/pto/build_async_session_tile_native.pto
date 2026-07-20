@@ -7,7 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // RUN: ptoas --pto-arch=a3 --pto-level=level3 \
-// RUN:   --mlir-print-ir-after=pto-view-to-memref %s -o /dev/null 2>&1 \
+// RUN:   --mlir-print-ir-after=pto-resolve-reserved-buffers %s -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=NATIVE
 // RUN: ptoas --pto-arch=a3 --pto-level=level3 %s -o - 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=EMITC
@@ -23,7 +23,7 @@ module {
   }
 }
 
-// NATIVE: IR Dump After PTOViewToMemref
+// NATIVE: IR Dump After PTOResolveReservedBuffers
 // NATIVE-LABEL: func.func @build_async_session_tile_native(
 // NATIVE-SAME: %[[SCRATCH:.*]]: !pto.tile_buf<vec, 1x256xi8>
 // NATIVE-SAME: %[[WORKSPACE:.*]]: !pto.ptr<i8, gm>

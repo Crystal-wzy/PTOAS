@@ -11,7 +11,7 @@
 // and stays non-fused when op fusion is disabled.
 //
 // RUN: ptoas --pto-arch=a5 --pto-level=level3 %s --emit-pto-ir -o - | FileCheck %s --check-prefix=NOFUSE
-// RUN: { ptoas --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-pto-ir %s --mlir-print-ir-after=pto-view-to-memref -o /dev/null 2>&1 || true; } | FileCheck %s --check-prefix=SEAM
+// RUN: { ptoas --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-pto-ir %s --mlir-print-ir-after=pto-resolve-reserved-buffers -o /dev/null 2>&1 || true; } | FileCheck %s --check-prefix=SEAM
 
 module {
   func.func @fusion_adapter_placement_level3_tadd(%dst_ptr: !pto.ptr<f32>) {
@@ -60,7 +60,7 @@ module {
 // NOFUSE: pto.tstore ins(
 // NOFUSE: return
 
-// SEAM: // -----// IR Dump After PTOViewToMemref (pto-view-to-memref) //----- //
+// SEAM: // -----// IR Dump After PTOResolveReservedBuffers (pto-resolve-reserved-buffers) //----- //
 // SEAM-LABEL: func.func @fusion_adapter_placement_level3_tadd(
 // SEAM-NOT: pto.fusion_region
 // SEAM: pto.alloc_tile addr = %c0_i64

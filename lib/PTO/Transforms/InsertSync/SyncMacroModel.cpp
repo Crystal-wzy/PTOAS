@@ -196,8 +196,8 @@ std::optional<SyncMacroModel> getTGatherSyncMacroModel(pto::TGatherOp op) {
 }
 
 // Resolve the PTO address space of an MGatherOp operand type. Mirrors the
-// getAddressSpace helper used by MGatherOp::getPipe() so the model matches the
-// post-PTOViewToMemref (memref<...,mat>) form that InsertSync actually sees.
+// getAddressSpace helper used by MGatherOp::getPipe() and retain compatibility
+// with legacy imported memref<...,mat> IR.
 static std::optional<pto::AddressSpace>
 getMGatherOperandAddressSpace(::mlir::Type ty) {
   if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(ty)) {

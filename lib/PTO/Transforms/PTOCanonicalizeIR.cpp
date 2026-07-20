@@ -34,7 +34,7 @@ namespace {
 //
 // This pass canonicalizes rank-2 TensorViewType / PartitionTensorViewType
 // into the right-aligned rank-5 form [1, 1, 1, R, C] used by all backends
-// (A3, A5, VPTO EmitC codegen and the 5D memref rank in PTOViewToMemref).
+// (A3, A5, and VPTO EmitC codegen).
 //
 // Ops that carry **rank-dependent operands** must be structurally rewritten
 // (their operand count or operand values change when rank changes):

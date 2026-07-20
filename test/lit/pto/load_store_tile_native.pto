@@ -7,7 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // RUN: ptoas --pto-level=level3 --pto-arch=a5 \
-// RUN:   --mlir-print-ir-after=pto-view-to-memref %s -o /dev/null 2>&1 \
+// RUN:   --mlir-print-ir-after=pto-resolve-reserved-buffers %s -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=NATIVE
 // RUN: ptoas --pto-level=level3 --pto-arch=a3 --enable-insert-sync %s \
 // RUN:   | FileCheck %s --check-prefix=EMITC
@@ -31,9 +31,9 @@ module {
 }
 
 // NATIVE-LABEL: func.func private @tload_arg(
-// NATIVE: pto.tload ins(%arg0 : memref<16x16xf32>) outs(%arg1 : !pto.tile_buf<vec, 16x16xf32>)
+// NATIVE: pto.tload ins(%arg0 : !pto.partition_tensor_view<16x16xf32>) outs(%arg1 : !pto.tile_buf<vec, 16x16xf32>)
 // NATIVE-LABEL: func.func private @tstore_arg(
-// NATIVE: pto.tstore ins(%arg0 : !pto.tile_buf<vec, 16x16xf32>) outs(%arg1 : memref<16x16xf32>)
+// NATIVE: pto.tstore ins(%arg0 : !pto.tile_buf<vec, 16x16xf32>) outs(%arg1 : !pto.partition_tensor_view<16x16xf32>)
 
 // EMITC-LABEL: tload_arg(
 // EMITC: TLOAD(

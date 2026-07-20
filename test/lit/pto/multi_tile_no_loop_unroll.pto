@@ -6,7 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: ptoas --mlir-print-ir-after=pto-view-to-memref %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --mlir-print-ir-after=pto-resolve-reserved-buffers %s 2>&1 1>/dev/null | FileCheck %s
 
 // Verifies that tile-native multi-buffer selection works without an enclosing
 // `scf.for`; the two constant slots do not depend on a loop induction value.
@@ -36,7 +36,7 @@ module {
   }
 }
 
-// CHECK: IR Dump After PTOViewToMemref
+// CHECK: IR Dump After PTOResolveReservedBuffers
 // CHECK-LABEL: func.func @unroll_two_slots
 // CHECK-NOT: scf.for
 // CHECK: %[[MULTI:.*]] = pto.alloc_multi_tile

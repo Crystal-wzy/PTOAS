@@ -8640,7 +8640,7 @@ dst[i, j] = Quantize(src[i, j]; fp, quant_type)
 | `fp` | `pto.tile_buf` | Scaling parameter tile (`f32`) |
 | `offset` | `pto.tile_buf` | Optional asymmetric offset tile (`f32`, required for `INT8_ASYM`) |
 | `dst` | `pto.tile_buf` | Destination tile (`i8` for SYM, `ui8` for ASYM) |
-| `tmp` | `pto.tile_buf` | Optional scratch tile. A2/A3 uses it for row-broadcast and fp32-to-s32 conversion scratch; PTOAS auto-synthesizes it when omitted. A5 accepts it as a placeholder but does not require it. |
+| `tmp` | `pto.tile_buf` | Optional scratch tile. A2/A3 uses it for row-broadcast and fp32-to-s32 conversion scratch. When omitted, PTOAS preserves the no-tmp form and selects the 4-argument backend overload. A5 accepts it as a placeholder but does not require it. |
 
 **Attributes:**
 

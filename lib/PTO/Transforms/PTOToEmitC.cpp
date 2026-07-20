@@ -10309,9 +10309,7 @@ struct PTOFillPadToEmitC : public OpConversionPattern<pto::TFillPadOp> {
     ArrayAttr templateArgs{};
     if (auto padValueAttr = op.getPadValueAttr()) {
       // The verifier only accepts explicit padValue for loc=mat tile-form
-      // tfillpad. PTOViewToMemref preserves that attribute after rewriting the
-      // operands to memref form, so lowering must trust the preserved semantic
-      // contract instead of re-checking the now-erased TileBufType.
+      // tfillpad, so lowering can trust the preserved semantic contract.
       templateArgs = rewriter.getArrayAttr(
           {emitc::OpaqueAttr::get(ctx, padValueTok(padValueAttr.getValue()))});
     }

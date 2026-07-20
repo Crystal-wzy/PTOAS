@@ -6,7 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: ptoas --pto-level=level3 --pto-arch=a5 --mlir-print-ir-after=pto-view-to-memref %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --pto-level=level3 --pto-arch=a5 --mlir-print-ir-after=pto-resolve-reserved-buffers %s 2>&1 1>/dev/null | FileCheck %s
 // RUN: ptoas --pto-level=level3 --pto-arch=a5 --mlir-print-ir-after=pto-resolve-buffer-select %s 2>&1 1>/dev/null | FileCheck %s --check-prefix=SELECT
 // RUN: not ptoas --pto-level=level1 --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=LVERR
 // RUN: not ptoas --pto-level=level2 --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=LVERR
@@ -41,8 +41,8 @@ module {
   }
 }
 
-// PTOViewToMemref preserves the tile-native allocation and selections.
-// CHECK: IR Dump After PTOViewToMemref
+// PTOResolveReservedBuffers preserves the tile-native allocation and selections.
+// CHECK: IR Dump After PTOResolveReservedBuffers
 // CHECK-LABEL: func.func @l3_two_buffers
 // CHECK: %[[BASE:.*]] = arith.constant 0 : i64
 // CHECK: %[[MULTI:.*]] = pto.alloc_multi_tile addr = %[[BASE]]

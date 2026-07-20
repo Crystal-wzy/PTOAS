@@ -7,7 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // A5 elem-coalesced 1x1 GM->UB mgather lowers to the scalar overload even when
-// InsertSync sees the dst after PTOViewToMemref lowering. The macro model must
+// InsertSync sees the dst after PTOResolveReservedBuffers lowering. The macro model must
 // recover the 1x1 shape from MemRefType instead of requiring TileBufType.
 //
 // RUN: ptoas --pto-arch=a5 --enable-insert-sync --pto-insert-sync-debug=2 %s -o - 2>&1 | FileCheck %s

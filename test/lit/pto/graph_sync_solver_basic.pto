@@ -6,7 +6,7 @@
 // directly instead of going through the CCEC backend renderer.
 //
 // All three functions live in the same module: ptoas's pipeline contains
-// ModuleOp-scoped passes (pto-view-to-memref, pto-resolve-reserved-buffers)
+// ModuleOp-scoped passes (pto-resolve-reserved-buffers, pto-resolve-reserved-buffers)
 // that won't visit nested modules introduced by `-split-input-file`.
 
 module {

@@ -6,7 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: ptoas --pto-arch=a3 --mlir-print-ir-after=pto-view-to-memref %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=NATIVE
+// RUN: ptoas --pto-arch=a3 --mlir-print-ir-after=pto-resolve-reserved-buffers %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=NATIVE
 // RUN: ptoas --pto-arch=a3 --mlir-print-ir-after=pto-resolve-buffer-select %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=RESOLVED
 
 module {
@@ -29,7 +29,7 @@ module {
   }
 }
 
-// NATIVE: IR Dump After PTOViewToMemref
+// NATIVE: IR Dump After PTOResolveReservedBuffers
 // NATIVE: pto.make_tensor_view
 // NATIVE: pto.get_tensor_view_dim
 // NATIVE: pto.get_tensor_view_stride

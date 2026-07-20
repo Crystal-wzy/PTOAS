@@ -1380,8 +1380,8 @@ def TMovOp  : PTO_TOp<"tmov", [
             return as.getAddressSpace();
           return std::nullopt;
         }
-        // Post PTOViewToMemref: tile_buf is erased to memref but memorySpace is
-        // preserved in memref's memorySpace attribute.
+        // Legacy imported IR may carry memref values with the address space in
+        // the memref memorySpace attribute.
         if (auto mr = llvm::dyn_cast<::mlir::MemRefType>(ty)) {
           if (auto ms = mr.getMemorySpace()) {
             if (auto as =
@@ -1418,8 +1418,7 @@ def TMovOp  : PTO_TOp<"tmov", [
         // PTOAS uses SCALING for two distinct PTO-ISA destinations. A5 MX
         // scale tiles are ScaleLeft/ScaleRight loads into L0A/L0B and run on
         // MTE1. Regular Scaling tiles are FBUF loads (TMOV_M2S) and run on
-        // FIX. PTOViewToMemref preserves the element type but erases the tile
-        // role before sync insertion, so distinguish the MX-only f8E8M0 type.
+        // Distinguish the MX-only f8E8M0 type from regular scaling tiles.
         Type dstElemTy;
         if (auto tb = llvm::dyn_cast<::mlir::pto::TileBufType>(getDst().getType()))
           dstElemTy = tb.getElementType();
@@ -2438,9 +2437,7 @@ def TAllocOp : PTO_TOp<"talloc", [
   }];
 }
 
-def TAssignOp : PTO_Op<"tassign", [
-    Pure
-  ]> {
+def TAssignOp : PTO_Op<"tassign", [Pure, AllTypesMatch<["tile", "result"]>]> {
   let summary = "Rebind a declared tile handle to a runtime address";
   let description = [{
     Rebinds an existing tile handle to a new address. This op is intended for
@@ -3218,9 +3215,8 @@ def MGatherOp : PTO_TOp<"mgather", [
       // MTE2 pipe on every arch, mirroring pto.tload. The GM -> UB (VEC) path
       // below keeps its A5 SIMT (PIPE_V) / A2A3 MTE2 selection.
       //
-      // Resolve the dst address space from BOTH the tile_buf and the lowered
-      // memref form: PTOViewToMemref rewrites dst into a memref<...,mat> before
-      // InsertSync / GraphSyncSolver run, and both consume getPipe() through the
+      // Resolve the dst address space from both tile_buf and legacy imported
+      // memref forms. InsertSync / GraphSyncSolver consume getPipe() through the
       // OpPipeInterface. A tile-only check would fall through to PIPE_V on A5.
       auto getAddressSpace =
           [](::mlir::Type ty) -> std::optional<::mlir::pto::AddressSpace> {
@@ -5757,9 +5753,10 @@ def TQuantOp : PTO_TOp<"tquant", [
     TQUANT_IMPL row-wise broadcast (the fp->s32 conversion reuses it). On
     pto-isa builds where the 4-arg TQUANT overload routes through the fixed
     TMP_UB_OFFSET scratch area, supplying tmp selects the tmp-aware 5-arg
-    overload and avoids the fixed-address collision. PTOAS auto-synthesizes
-    this scratch tile for A2/A3 only. On A5 the tmp operand is accepted as a
-    placeholder and does not add extra shape or memory-planning constraints.
+    overload and avoids the fixed-address collision. PTOAS preserves an omitted
+    tmp and lowers it through the 4-arg overload. On A5 the tmp operand is
+    accepted as a placeholder and does not add extra shape or memory-planning
+    constraints.
 
     DPS form (INT8_SYM):
       pto.tquant ins(%src, %fp : <src_type>, <fp_type>)

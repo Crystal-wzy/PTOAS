@@ -72,7 +72,6 @@ createPlanMemoryPass(const PlanMemoryOptions &options = {});
 std::unique_ptr<Pass>
 createPlanMemoryModernPass(const PlanMemoryOptions &options);
 std::unique_ptr<Pass> createPTORemoveRedundantBarrierPass();
-std::unique_ptr<Pass> createPTOViewToMemrefPass();
 std::unique_ptr<Pass> createPTOValidateIntToPtrUsesPass();
 std::unique_ptr<Pass> createPTORematerializeFixpipeVectorQuantPass();
 std::unique_ptr<Pass> createPTOMaterializeTileHandlesPass();
@@ -142,7 +141,6 @@ std::unique_ptr<Pass>
 createPTOInlineLibCallPass(const PTOInlineLibCallOptions &options = {});
 std::unique_ptr<Pass> createPTOInlineBackendHelpersPass(
     const PTOInlineBackendHelpersOptions &options = {});
-void registerPTOViewToMemrefPass();
 
 //===----------------------------------------------------------------------===//
 // Registration

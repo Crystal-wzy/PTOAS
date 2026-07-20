@@ -6,20 +6,18 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: ptoas --pto-level=level3 --pto-arch=a5 --mlir-print-ir-after=pto-resolve-reserved-buffers %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=NATIVE
-// RUN: ptoas --pto-level=level3 --pto-arch=a5 --enable-insert-sync %s | FileCheck %s --check-prefix=EMITC
+// RUN: not ptoas --pto-level=level3 --pto-arch=a5 %s -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s
 
 module {
-  func.func private @tmov_arg(%src: !pto.tile_buf<vec, 16x16xf32>, %dst: !pto.tile_buf<vec, 16x16xf32>) {
-    pto.tmov ins(%src : !pto.tile_buf<vec, 16x16xf32>) outs(%dst : !pto.tile_buf<vec, 16x16xf32>)
-    return
+  func.func private @tassign_reject_memref()
+      -> memref<16x16xf16, #pto.address_space<vec>> {
+    %addr = arith.constant 0 : i64
+    %tile = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
+    // CHECK: error: 'pto.tassign' op expects tile operand and result to be !pto.tile_buf
+    %rebound = pto.tassign %tile, %addr
+      : memref<16x16xf16, #pto.address_space<vec>>
+        -> memref<16x16xf16, #pto.address_space<vec>>
+    return %rebound : memref<16x16xf16, #pto.address_space<vec>>
   }
 }
-
-// NATIVE-LABEL: @tmov_arg
-// NATIVE-SAME: !pto.tile_buf<vec, 16x16xf32>
-// NATIVE: pto.tmov
-// NATIVE-NOT: memref<
-
-// EMITC-LABEL: tmov_arg(
-// EMITC: TMOV(

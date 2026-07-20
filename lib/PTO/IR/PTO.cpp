@@ -3200,8 +3200,8 @@ LogicalResult AllocMultiTileOp::verify() {
     return failure();
 
   // Multi-buffer slots are placed at product(shape) * element_size byte
-  // intervals -- both the --pto-level=level3 lowering (PTOViewToMemref) and
-  // PTOPlanMemory size them that way. `row_plus_one` compaction inflates the
+  // intervals -- both level3 validation and PTOPlanMemory size them that way.
+  // `row_plus_one` compaction inflates the
   // major stride by one element per row, so the slot's physical strided
   // footprint exceeds product(shape) and adjacent slots would silently overlap
   // (data corruption). Reject it until the slot stride is derived from the true
@@ -3331,16 +3331,13 @@ LogicalResult TAssignOp::verify() {
     return emitOpError("result type must match tile operand type");
   }
 
-  Type tileType = getTile().getType();
-  if (auto tileTy = dyn_cast<TileBufType>(tileType)) {
-    if (failed(verifyConstantLocalAddress(getOperation(), getAddr(),
-                                          tileTy.getMemorySpace())))
-      return failure();
-  } else if (auto memRefTy = dyn_cast<BaseMemRefType>(tileType)) {
-    if (failed(verifyConstantLocalAddress(getOperation(), getAddr(),
-                                          memRefTy.getMemorySpace())))
-      return failure();
-  }
+  auto tileTy = dyn_cast<TileBufType>(getTile().getType());
+  if (!tileTy)
+    return emitOpError("expects tile operand and result to be !pto.tile_buf");
+
+  if (failed(verifyConstantLocalAddress(getOperation(), getAddr(),
+                                        tileTy.getMemorySpace())))
+    return failure();
 
   return success();
 }

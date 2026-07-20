@@ -728,20 +728,29 @@ def PTOVerifyTFree : Pass<"pto-verify-tfree", "func::FuncOp"> {
   ];
 }
 
-def PTOViewToMemref : Pass<"pto-view-to-memref", "ModuleOp"> {
-  let summary = "Lower PTO views to memref with Metadata Binding";
+def PTOVerifySubkernelPipeContract
+    : Pass<"pto-verify-subkernel-pipe-contract", "func::FuncOp"> {
+  let summary = "Verify PTODSL subkernel helpers stay within one InsertSync pipe contract";
   let description = [{
-    Lower PTO tile/view operations to memref-based IR while preserving tile
-    metadata through binding ops and SSA backtracking.
+    Verifies PTODSL subkernel helpers marked with `pto.ptodsl.subkernel_helper`
+    and their same-module local call closure stay within one role-consistent PTO
+    compute contract before InsertSync models the call boundary as one compound
+    node.
+
+    Current contract:
+    - `simd` helpers may only contain PTO ops on `PIPE_V`
+    - `cube` helpers may only contain PTO ops on `PIPE_M`
+    - both reject role-mismatched PTO pipe ops (including MTE/FIX/S) and
+      nested PTODSL subkernel calls
+    - local helper `func.call` is allowed only when the transitive callee closure
+      satisfies the same contract
   }];
 
-  let constructor = "mlir::pto::createPTOViewToMemrefPass()";
+  let constructor = "mlir::pto::createPTOVerifySubkernelPipeContractPass()";
 
   let dependentDialects = [
-    "mlir::pto::PTODialect",
-    "mlir::memref::MemRefDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::func::FuncDialect"
+    "mlir::func::FuncDialect",
+    "mlir::pto::PTODialect"
   ];
 }
 
