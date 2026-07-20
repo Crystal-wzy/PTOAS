@@ -80,6 +80,8 @@ static bool hasMigratedTileNativeOp(func::FuncOp func) {
   auto result = func.walk([&](Operation *op) {
     if (isa<pto::TReshapeOp, pto::BitcastOp, pto::SetValidShapeOp,
             pto::GetValidShapeOp, pto::SubViewOp, pto::TileBufAddrOp,
+            pto::IntToPtrOp, pto::PtrToIntOp, pto::AddPtrOp,
+            pto::CastPtrOp,
             pto::MakeTensorViewOp, pto::PartitionViewOp,
             pto::GetTensorViewDimOp, pto::GetTensorViewStrideOp,
             pto::TAbsOp, pto::TNegOp, pto::TNotOp, pto::TExpOp,
@@ -649,19 +651,6 @@ static void appendMixedIndex(IRRewriter &rewriter, Location loc, Value v,
   mixedVals.push_back(ensureIndex(rewriter, loc, v, anchorOp));
 }
 
-static bool foldAddPtrChainIntoOffset(IRRewriter &rewriter, Location loc,
-                                      Value &base, Value &totalOffset) {
-  bool folded = false;
-  while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
-    folded = true;
-    Value off = ensureIndex(rewriter, loc, add.getOperand(1), add);
-    totalOffset =
-        totalOffset ? rewriter.create<arith::AddIOp>(loc, totalOffset, off) : off;
-    base = add.getOperand(0);
-  }
-  return folded;
-}
-
 [[maybe_unused]] static void dumpPretty(Operation *op, llvm::raw_ostream &os) {
   OpPrintingFlags flags;
   flags.useLocalScope();            
@@ -865,188 +854,6 @@ static void markForceDynamicValidShape(Operation *op, bool force,
   func.setFunctionType(FunctionType::get(ctx, newInputs, newResults));
 }
 
-static Value castIndexToI64(IRRewriter &rewriter, Location loc, Value value) {
-  Type i64Ty = rewriter.getI64Type();
-  if (value.getType() == i64Ty)
-    return value;
-  return rewriter.create<arith::IndexCastOp>(loc, i64Ty, value).getResult();
-}
-
-static FailureOr<Value>
-materializePtrToIntAddPtrAddress(IRRewriter &rewriter, Location loc,
-                                 mlir::pto::PtrToIntOp anchor, Value source) {
-  SmallVector<mlir::pto::AddPtrOp, 4> addPtrChain;
-  Value base = source;
-  while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
-    addPtrChain.push_back(add);
-    base = add.getOperand(0);
-  }
-
-  if (addPtrChain.empty())
-    return failure();
-
-  auto baseMemTy = dyn_cast<MemRefType>(base.getType());
-  if (!baseMemTy) {
-    anchor.emitOpError(
-        "pto.addptr source base could not be lowered to a GM memref");
-    return failure();
-  }
-
-  Value byteAddress = rewriter.create<mlir::pto::PtrToIntOp>(
-      loc, rewriter.getI64Type(), base);
-  for (auto add : addPtrChain) {
-    auto addPtrTy = dyn_cast<mlir::pto::PtrType>(add.getResult().getType());
-    if (!addPtrTy) {
-      anchor.emitOpError("requires pto.addptr source to have !pto.ptr result "
-                         "type before byte-address lowering");
-      return failure();
-    }
-
-    unsigned elemBytes =
-        mlir::pto::getPTOStorageElemByteSize(addPtrTy.getElementType());
-    if (elemBytes == 0) {
-      anchor.emitOpError("cannot lower pto.addptr source with unknown element "
-                         "byte size to a byte address");
-      return failure();
-    }
-
-    Value byteOffset = castIndexToI64(rewriter, loc, add.getOffset());
-    if (elemBytes != 1) {
-      Value elemBytesValue =
-          rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
-      byteOffset =
-          rewriter.create<arith::MulIOp>(loc, byteOffset, elemBytesValue)
-              .getResult();
-    }
-    byteAddress =
-        rewriter.create<arith::AddIOp>(loc, byteAddress, byteOffset).getResult();
-  }
-
-  return byteAddress;
-}
-
-static LogicalResult lowerIntToPtrOps(func::FuncOp func, MLIRContext *ctx) {
-  DefaultInlineVector<mlir::pto::IntToPtrOp> intToPtrs;
-  func.walk([&](mlir::pto::IntToPtrOp op) { intToPtrs.push_back(op); });
-
-  for (auto op : intToPtrs) {
-    if (!isa<mlir::pto::PtrType>(op.getResult().getType()))
-      continue;
-
-    auto targetTy =
-        dyn_cast<MemRefType>(convertPTOTypeToMemRef(op.getResult().getType()));
-    if (!targetTy) {
-      op.emitError("failed to convert inttoptr result to memref type");
-      return failure();
-    }
-
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(op);
-    auto lowered =
-        rewriter.create<mlir::pto::IntToPtrOp>(op.getLoc(), targetTy,
-                                               op.getAddr());
-    lowered->setAttrs(op->getAttrs());
-    rewriter.replaceOp(op, lowered.getResult());
-  }
-
-  return success();
-}
-
-static LogicalResult lowerPtrToIntOps(func::FuncOp func, MLIRContext *ctx) {
-  DefaultInlineVector<mlir::pto::PtrToIntOp> ptrToInts;
-  func.walk([&](mlir::pto::PtrToIntOp op) { ptrToInts.push_back(op); });
-
-  for (auto op : ptrToInts) {
-    Value source = op.getPtr();
-    if (source.getDefiningOp<mlir::pto::AddPtrOp>()) {
-      IRRewriter rewriter(ctx);
-      rewriter.setInsertionPoint(op);
-      FailureOr<Value> byteAddress =
-          materializePtrToIntAddPtrAddress(rewriter, op.getLoc(), op, source);
-      if (failed(byteAddress))
-        return failure();
-      rewriter.replaceOp(op, *byteAddress);
-      continue;
-    }
-
-    if (isa<mlir::pto::PtrType>(source.getType()))
-      continue;
-  }
-
-  DefaultInlineVector<mlir::pto::PtrToIntOp> remaining;
-  func.walk([&](mlir::pto::PtrToIntOp op) {
-    if (isa<mlir::pto::PtrType>(op.getPtr().getType()))
-      remaining.push_back(op);
-  });
-  for (auto op : remaining) {
-    op.emitError("ptrtoint source could not be lowered to a GM memref");
-    return failure();
-  }
-
-  return success();
-}
-
-[[maybe_unused]] static LogicalResult lowerMakeTensorViewOps(func::FuncOp func, MLIRContext *ctx) {
-  DefaultInlineVector<mlir::pto::MakeTensorViewOp> makeViews;
-  func.walk([&](mlir::pto::MakeTensorViewOp op) { makeViews.push_back(op); });
-
-  for (auto op : makeViews) {
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(op);
-    Location loc = op.getLoc();
-
-    Value baseBuf = op.getOperand(0);
-    OpFoldResult off0 = rewriter.getIndexAttr(0);
-    bool foldedAddPtr = false;
-    {
-      Value cur = baseBuf;
-      Value totalOffset;
-      while (auto add = cur.getDefiningOp<mlir::pto::AddPtrOp>()) {
-        foldedAddPtr = true;
-        Value off = ensureIndex(rewriter, loc, add.getOperand(1), add);
-        totalOffset = totalOffset ? rewriter.create<arith::AddIOp>(loc, totalOffset, off)
-                                  : off;
-        cur = add.getOperand(0);
-      }
-      if (cur != baseBuf) {
-        baseBuf = cur;
-        off0 = totalOffset ? OpFoldResult(totalOffset) : off0;
-      }
-    }
-
-    auto baseMr = dyn_cast<BaseMemRefType>(baseBuf.getType());
-    if (!baseMr) {
-      op.emitError("make_tensor_view base must be memref");
-      return failure();
-    }
-
-    size_t rank = op.getShape().size();
-    int64_t dyn = ShapedType::kDynamic;
-    SmallVector<int64_t> dynStrides(rank, dyn);
-    auto layout =
-        StridedLayoutAttr::get(ctx, /*offset=*/dyn, /*strides=*/dynStrides);
-    SmallVector<int64_t> dynShape(rank, dyn);
-    auto mrTy = MemRefType::get(dynShape, baseMr.getElementType(), layout,
-                                baseMr.getMemorySpace());
-
-    SmallInlineVector<OpFoldResult> sizes;
-    for (Value value : op.getShape())
-      sizes.push_back(ensureIndex(rewriter, loc, value, op));
-    SmallInlineVector<OpFoldResult> strides;
-    for (Value value : op.getStrides())
-      strides.push_back(ensureIndex(rewriter, loc, value, op));
-
-    auto rc = rewriter.create<memref::ReinterpretCastOp>(loc, mrTy, baseBuf, off0,
-                                                         sizes, strides);
-    if (foldedAddPtr)
-      rc->setAttr("pto.addptr_trace", rewriter.getUnitAttr());
-    if (auto layoutAttr = op.getLayoutAttr())
-      rc->setAttr("layout", layoutAttr);
-    rewriter.replaceOp(op, rc.getResult());
-  }
-  return success();
-}
-
 static LogicalResult lowerPtrLikeTileBufAddrOps(func::FuncOp func,
                                                 MLIRContext *ctx) {
   SmallVector<mlir::pto::TileBufAddrOp, 8> addrOps;
@@ -1159,66 +966,6 @@ static LogicalResult bridgeCallOperandsToConvertedCallees(ModuleOp mod,
       continue;
     Value dim = rewriter.create<memref::DimOp>(op.getLoc(), view, op.getDimIndex());
     rewriter.replaceOp(op, dim);
-  }
-  return success();
-}
-
-[[maybe_unused]] static LogicalResult foldAddPtrIntoScalarOps(func::FuncOp func, MLIRContext *ctx) {
-  DefaultInlineVector<mlir::pto::LoadScalarOp> loadScalars;
-  func.walk([&](mlir::pto::LoadScalarOp op) { loadScalars.push_back(op); });
-  for (auto op : loadScalars) {
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(op);
-    Location loc = op.getLoc();
-
-    Value base = op.getPtr();
-    Value totalOffset = ensureIndex(rewriter, loc, op.getOffset(), op);
-    bool foldedAddPtr = foldAddPtrChainIntoOffset(rewriter, loc, base, totalOffset);
-    if (foldedAddPtr) {
-      auto newOp =
-          rewriter.create<pto::LoadScalarOp>(loc, op.getValue().getType(), base,
-                                             totalOffset);
-      rewriter.replaceOp(op, newOp.getValue());
-    }
-  }
-
-  DefaultInlineVector<mlir::pto::StoreScalarOp> storeScalars;
-  func.walk([&](mlir::pto::StoreScalarOp op) { storeScalars.push_back(op); });
-  for (auto op : storeScalars) {
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(op);
-    Location loc = op.getLoc();
-
-    Value base = op.getPtr();
-    Value totalOffset = ensureIndex(rewriter, loc, op.getOffset(), op);
-    bool foldedAddPtr = foldAddPtrChainIntoOffset(rewriter, loc, base, totalOffset);
-    if (foldedAddPtr) {
-      rewriter.create<pto::StoreScalarOp>(loc, base, totalOffset, op.getValue());
-      rewriter.eraseOp(op);
-    }
-  }
-
-  DefaultInlineVector<Operation *> addPtrs;
-  func.walk([&](mlir::pto::AddPtrOp op) { addPtrs.push_back(op.getOperation()); });
-  bool changed = true;
-  while (changed) {
-    changed = false;
-    for (auto &op : addPtrs) {
-      if (!op)
-        continue;
-      if (op->use_empty()) {
-        op->erase();
-        op = nullptr;
-        changed = true;
-      }
-    }
-  }
-  for (Operation *op : addPtrs) {
-    if (!op)
-      continue;
-    op->emitError(
-        "addptr must feed make_tensor_view or load/store_scalar for lowering");
-    return failure();
   }
   return success();
 }
@@ -1379,25 +1126,9 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
-      // Stage 0.20: lower pto.inttoptr result types to GM memrefs.
-      // ------------------------------------------------------------------
-      if (!preserveTileABI && failed(lowerIntToPtrOps(func, ctx))) {
-        signalPassFailure();
-        return;
-      }
-
-      // ------------------------------------------------------------------
       // Stage 0.25: synthesize missing A2/A3 tquant tmp tiles before type lowering.
       // ------------------------------------------------------------------
       if (failed(synthesizeMissingTQuantTmpOps(func, ctx))) {
-        signalPassFailure();
-        return;
-      }
-
-      // ------------------------------------------------------------------
-      // Stage 0.30: materialize pto.ptrtoint(addptr ...) byte offsets.
-      // ------------------------------------------------------------------
-      if (!preserveTileABI && failed(lowerPtrToIntOps(func, ctx))) {
         signalPassFailure();
         return;
       }
@@ -1506,26 +1237,6 @@ struct PTOViewToMemrefPass
         Value baseBuf = op.getOperand(0);
         OpFoldResult off0 = rewriter.getIndexAttr(0);
 
-        // Fold pto.addptr chains into the view base to avoid nested reinterpret_cast.
-        bool foldedAddPtr = false;
-        {
-          Value cur = baseBuf;
-          Value totalOffset;
-          while (auto add = cur.getDefiningOp<mlir::pto::AddPtrOp>()) {
-            foldedAddPtr = true;
-            Value off = ensureIndex(rewriter, loc, add.getOperand(1), add);
-            if (totalOffset)
-              totalOffset = rewriter.create<arith::AddIOp>(loc, totalOffset, off);
-            else
-              totalOffset = off;
-            cur = add.getOperand(0);
-          }
-          if (cur != baseBuf) {
-            baseBuf = cur;
-            off0 = totalOffset ? OpFoldResult(totalOffset) : off0;
-          }
-        }
-
         auto baseMr = dyn_cast<BaseMemRefType>(baseBuf.getType());
         if (!baseMr) {
              op.emitError("make_tensor_view base must be memref"); signalPassFailure(); return;
@@ -1555,9 +1266,6 @@ struct PTOViewToMemrefPass
 
         auto rc = rewriter.create<memref::ReinterpretCastOp>(
             loc, mrTy, baseBuf, off0, sizes, strides);
-        if (foldedAddPtr) {
-          rc->setAttr("pto.addptr_trace", rewriter.getUnitAttr());
-        }
         if (auto layoutAttr = op.getLayoutAttr()) {
           rc->setAttr("layout", layoutAttr);
         }
@@ -1648,153 +1356,6 @@ struct PTOViewToMemrefPass
             rewriter.create<memref::ExtractStridedMetadataOp>(loc, view);
         rewriter.replaceOp(op, metadata.getStrides()[dimIndex]);
       }
-      }
-
-      // ------------------------------------------------------------------
-      // Stage 1.6: Fold pto.addptr chains into load/store_scalar.
-      // ------------------------------------------------------------------
-      DefaultInlineVector<mlir::pto::LoadScalarOp> loadScalars;
-      func.walk([&](mlir::pto::LoadScalarOp op) { loadScalars.push_back(op); });
-
-      for (auto op : loadScalars) {
-        IRRewriter rewriter(ctx);
-        rewriter.setInsertionPoint(op);
-        Location loc = op.getLoc();
-
-        Value base = op.getPtr();
-        Value totalOffset = ensureIndex(rewriter, loc, op.getOffset(), op);
-
-        bool foldedAddPtr = false;
-        while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
-          foldedAddPtr = true;
-          Value off = ensureIndex(rewriter, loc, add.getOperand(1), add);
-          if (totalOffset)
-            totalOffset = rewriter.create<arith::AddIOp>(loc, totalOffset, off);
-          else
-            totalOffset = off;
-          base = add.getOperand(0);
-        }
-
-        if (foldedAddPtr) {
-          auto newOp = rewriter.create<pto::LoadScalarOp>(
-              loc, op.getValue().getType(), base, totalOffset);
-          rewriter.replaceOp(op, newOp.getValue());
-        }
-      }
-
-      DefaultInlineVector<mlir::pto::StoreScalarOp> storeScalars;
-      func.walk([&](mlir::pto::StoreScalarOp op) { storeScalars.push_back(op); });
-
-      for (auto op : storeScalars) {
-        IRRewriter rewriter(ctx);
-        rewriter.setInsertionPoint(op);
-        Location loc = op.getLoc();
-
-        Value base = op.getPtr();
-        Value totalOffset = ensureIndex(rewriter, loc, op.getOffset(), op);
-
-        bool foldedAddPtr = false;
-        while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
-          foldedAddPtr = true;
-          Value off = ensureIndex(rewriter, loc, add.getOperand(1), add);
-          if (totalOffset)
-            totalOffset = rewriter.create<arith::AddIOp>(loc, totalOffset, off);
-          else
-            totalOffset = off;
-          base = add.getOperand(0);
-        }
-
-        if (foldedAddPtr) {
-          rewriter.create<pto::StoreScalarOp>(
-              loc, base, totalOffset, op.getValue());
-          rewriter.eraseOp(op);
-        }
-      }
-
-      // ------------------------------------------------------------------
-      // Stage 1.75: Fold addptr used by initialize_l2g2l_pipe(gm_addr).
-      // This keeps IR well-typed after function arguments are rewritten from
-      // !pto.ptr<T> to memref<?xT>.
-      // ------------------------------------------------------------------
-      bool foldedPipeInitAddPtr = true;
-      while (foldedPipeInitAddPtr) {
-        foldedPipeInitAddPtr = false;
-        DefaultInlineVector<mlir::pto::AddPtrOp> addPtrsForPipeInit;
-        func.walk([&](mlir::pto::AddPtrOp op) {
-          bool eligible = !op->use_empty();
-          for (Operation *user : op->getUsers()) {
-            auto init = dyn_cast<mlir::pto::InitializeL2G2LPipeOp>(user);
-            if (!init || init.getGmAddr() != op->getResult(0)) {
-              eligible = false;
-              break;
-            }
-          }
-          if (eligible)
-            addPtrsForPipeInit.push_back(op);
-        });
-
-        for (auto op : addPtrsForPipeInit) {
-          IRRewriter rewriter(ctx);
-          rewriter.setInsertionPoint(op);
-          Location loc = op.getLoc();
-
-          Value base = op->getOperand(0);
-          Value totalOffset = ensureIndex(rewriter, loc, op->getOperand(1), op);
-          while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
-            Value off = ensureIndex(rewriter, loc, add->getOperand(1), add);
-            totalOffset = rewriter.create<arith::AddIOp>(loc, totalOffset, off);
-            base = add->getOperand(0);
-          }
-
-          auto baseMrTy = dyn_cast<MemRefType>(base.getType());
-          if (!baseMrTy || baseMrTy.getRank() != 1)
-            continue;
-
-          int64_t dyn = ShapedType::kDynamic;
-          auto layout = StridedLayoutAttr::get(ctx, dyn, {dyn});
-          auto targetTy = MemRefType::get({dyn}, baseMrTy.getElementType(), layout,
-                                          baseMrTy.getMemorySpace());
-          SmallVector<OpFoldResult, 1> sizes{rewriter.getIndexAttr(1)};
-          SmallVector<OpFoldResult, 1> strides{rewriter.getIndexAttr(1)};
-          auto rc = rewriter.create<memref::ReinterpretCastOp>(
-              loc, targetTy, base, OpFoldResult(totalOffset), sizes, strides);
-          rc->setAttr("pto.addptr_trace", rewriter.getUnitAttr());
-          rewriter.replaceOp(op, rc.getResult());
-          foldedPipeInitAddPtr = true;
-        }
-      }
-
-      // Clean up: addptr should be folded into make_tensor_view.
-      DefaultInlineVector<Operation *> addPtrs;
-      func.walk([&](mlir::pto::AddPtrOp op) { addPtrs.push_back(op.getOperation()); });
-      bool changed = true;
-      while (changed) {
-        changed = false;
-        for (auto &op : addPtrs) {
-          if (!op)
-            continue;
-          if (op->use_empty()) {
-            op->erase();
-            op = nullptr;
-            changed = true;
-          }
-        }
-      }
-      for (auto *op : addPtrs) {
-        if (!op)
-          continue;
-        if (llvm::all_of(op->getUsers(), [op](Operation *user) {
-              if (isa<mlir::pto::MakeTensorViewOp>(user))
-                return true;
-              auto init = dyn_cast<mlir::pto::InitializeL2G2LPipeOp>(user);
-              return init && init.getGmAddr() == op->getResult(0);
-            }))
-          continue;
-        op->emitError("addptr must feed make_tensor_view, "
-                      "initialize_l2g2l_pipe(gm_addr) or load/store_scalar "
-                      "for lowering");
-        signalPassFailure();
-        return;
       }
 
       // ------------------------------------------------------------------

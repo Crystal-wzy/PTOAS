@@ -113,9 +113,8 @@ def AddPtrOp : PTO_Op<"addptr", [
 def PtrToIntOp : PTO_Op<"ptrtoint", [Pure]> {
   let summary = "Convert a global pointer to a byte address";
   let description = [{
-    Converts a global pointer value to an i64 byte address. If the source
-    pointer is produced by `pto.addptr`, lowering materializes the addptr
-    offset as an explicit byte offset before converting to EmitC.
+    Converts a global pointer value to an i64 byte address. Pointer arithmetic
+    such as `pto.addptr` remains explicit until backend lowering.
   }];
 
   let arguments = (ins

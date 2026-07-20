@@ -371,7 +371,8 @@ struct ConvertPointerCastToCastPtrPattern
   LogicalResult
   matchAndRewrite(pto::PointerCastOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    Type convertedType = getTypeConverter()->convertType(op.getResult().getType());
+    Type convertedType =
+        getTypeConverter()->convertType(op.getResult().getType());
     auto ptrType = dyn_cast<pto::PtrType>(convertedType);
     if (!ptrType)
       return failure();
@@ -381,6 +382,43 @@ struct ConvertPointerCastToCastPtrPattern
 
     rewriter.replaceOpWithNewOp<pto::CastPtrOp>(op, ptrType,
                                                 adaptor.getAddrs().front());
+    return success();
+  }
+};
+
+struct ConvertIntToPtrToCastPtrPattern
+    : public OpConversionPattern<pto::IntToPtrOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::IntToPtrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type convertedType =
+        getTypeConverter()->convertType(op.getResult().getType());
+    if (!isa<pto::PtrType>(convertedType))
+      return rewriter.notifyMatchFailure(op, "expected pointer result type");
+
+    rewriter.replaceOpWithNewOp<pto::CastPtrOp>(op, convertedType,
+                                                adaptor.getAddr());
+    return success();
+  }
+};
+
+struct ConvertPtrToIntToCastPtrPattern
+    : public OpConversionPattern<pto::PtrToIntOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::PtrToIntOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type convertedType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!isa<IntegerType>(convertedType))
+      return rewriter.notifyMatchFailure(op, "expected integer result type");
+    if (!isa<pto::PtrType>(adaptor.getPtr().getType()))
+      return rewriter.notifyMatchFailure(op, "expected pointer input type");
+
+    rewriter.replaceOpWithNewOp<pto::CastPtrOp>(op, convertedType,
+                                                adaptor.getPtr());
     return success();
   }
 };
@@ -925,7 +963,8 @@ struct VPTOPtrNormalizePass
                            scf::SCFDialect>();
     target.addDynamicallyLegalDialect<pto::PTODialect>([](Operation *op) {
       return !isa<pto::TileBufAddrOp, pto::PointerCastOp, pto::CastPtrOp,
-                  pto::BindTileOp, pto::VldsOp, pto::VstsOp, pto::VsstbOp>(op);
+                  pto::IntToPtrOp, pto::PtrToIntOp, pto::BindTileOp,
+                  pto::VldsOp, pto::VstsOp, pto::VsstbOp>(op);
     });
     target.addLegalOp<ModuleOp>();
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
@@ -1057,7 +1096,9 @@ struct VPTOPtrNormalizePass
     populateCallOpTypeConversionPattern(patterns, typeConverter);
     populateReturnOpTypeConversionPattern(patterns, typeConverter);
     patterns.add<ConvertTileBufAddrToPtrPattern,
-                 ConvertPointerCastToCastPtrPattern, ConvertCastPtrPattern,
+                 ConvertPointerCastToCastPtrPattern,
+                 ConvertIntToPtrToCastPtrPattern,
+                 ConvertPtrToIntToCastPtrPattern, ConvertCastPtrPattern,
                  ConvertBindTileToPtrPattern,
                  ConvertSubviewToAddPtrPattern, ConvertVldsSubviewOperandPattern,
                  ConvertVstsSubviewOperandPattern,
