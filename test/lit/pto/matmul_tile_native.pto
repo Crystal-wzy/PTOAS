@@ -17,9 +17,9 @@ module {
 }
 
 // NATIVE-LABEL: @tmatmul_arg
-// NATIVE-SAME: !pto.tile_buf<loc=left
-// NATIVE-SAME: !pto.tile_buf<loc=right
-// NATIVE-SAME: !pto.tile_buf<loc=acc
+// NATIVE-SAME: !pto.tile_buf<left
+// NATIVE-SAME: !pto.tile_buf<right
+// NATIVE-SAME: !pto.tile_buf<acc
 // NATIVE: pto.tmatmul
 // NATIVE-NOT: memref<
 // NATIVE-NOT: pto.bind_tile
