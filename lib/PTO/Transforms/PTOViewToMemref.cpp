@@ -122,7 +122,9 @@ static bool hasMigratedTileNativeOp(func::FuncOp func) {
             pto::TStoreFPOp, pto::THistogramOp, pto::TRandomOp,
             pto::TScatterOp, pto::TTriOp, pto::TMatmulOp,
             pto::TMatmulAccOp, pto::TMatmulBiasOp, pto::TMatmulMxOp,
-            pto::TMatmulMxAccOp, pto::TMatmulMxBiasOp>(op)) {
+            pto::TMatmulMxAccOp, pto::TMatmulMxBiasOp, pto::TGemvOp,
+            pto::TGemvAccOp, pto::TGemvBiasOp, pto::TGemvMxOp,
+            pto::TGemvMxAccOp, pto::TGemvMxBiasOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
