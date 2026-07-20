@@ -20,7 +20,6 @@ module {
 // NATIVE-SAME: !pto.tile_buf<
 // NATIVE: pto.tquant.mx
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tquant_mx_arg(
 // EMITC: TQUANT<pto::QuantType::MXFP8

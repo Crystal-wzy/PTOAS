@@ -19,7 +19,6 @@ module {
 // NATIVE-LABEL: @tsync_tile_arg
 // NATIVE-SAME: !pto.tile_buf<vec
 // NATIVE: pto.tsync
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tsync_tile_arg(
 // EMITC: TSYNC(

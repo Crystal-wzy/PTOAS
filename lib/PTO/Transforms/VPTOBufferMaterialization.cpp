@@ -68,10 +68,6 @@ Value materializeBufferPointer(Value value, Type elementType,
   if (value.getType() == ptrType)
     return value;
 
-  if (auto bind = value.getDefiningOp<BindTileOp>())
-    return materializeBufferPointer(bind.getSource(), elementType, memorySpace,
-                                    rewriter, loc);
-
   if (auto cast = value.getDefiningOp<PointerCastOp>()) {
     if (cast.getAddrs().empty())
       return {};

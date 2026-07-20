@@ -43,7 +43,6 @@ module {
 // NATIVE: pto.tor ins(%arg0, %arg1 : !pto.tile_buf<vec, 16x16xi16>, !pto.tile_buf<vec, 16x16xi16>) outs(%arg2 : !pto.tile_buf<vec, 16x16xi16>)
 // NATIVE: pto.tor ins(%arg0, %arg1 : !pto.tile_buf<vec, 16x16xi16>, !pto.tile_buf<vec, 16x16xi16>) outs(%arg0 : !pto.tile_buf<vec, 16x16xi16>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tand_arg(
 // EMITC-COUNT-2: TAND(

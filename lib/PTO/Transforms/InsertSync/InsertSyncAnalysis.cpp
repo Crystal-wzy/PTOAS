@@ -75,30 +75,10 @@ static std::optional<RepeatAccessShape> getKnownRepeatAccessShapeFromType(Type t
   return std::nullopt;
 }
 
-static std::optional<int64_t> getConstantIndex(Value value) {
-  if (!value) return std::nullopt;
-  APInt intValue;
-  if (!matchPattern(value, m_ConstantInt(&intValue))) return std::nullopt;
-  return intValue.getSExtValue();
-}
-
 static std::optional<RepeatAccessShape> getKnownRepeatAccessShape(Value access) {
   if (!access) return std::nullopt;
   auto shape = getKnownRepeatAccessShapeFromType(access.getType());
   if (!shape) return std::nullopt;
-
-  if (auto bind = access.getDefiningOp<BindTileOp>()) {
-    auto row = getConstantIndex(bind.getValidRow());
-    auto col = getConstantIndex(bind.getValidCol());
-    if (row && col) {
-      if (*row < 0 || *col < 0 || *row > shape->fullShape[0] ||
-          *col > shape->fullShape[1])
-        return std::nullopt;
-      shape->validShape = SmallVector<int64_t, 2>{*row, *col};
-    } else if (bind.getValidRow() || bind.getValidCol()) {
-      return std::nullopt;
-    }
-  }
 
   return shape;
 }

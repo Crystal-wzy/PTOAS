@@ -433,8 +433,6 @@ void PTOIRTranslator::RecursionIR(Region *region) {
     // --- Case B: 别名/视图操作 ---
     else if (auto makeViewOp = dyn_cast<pto::MakeTensorViewOp>(op)) {
       UpdateAliasBufferInfo(makeViewOp.getResult(), makeViewOp.getPtr());
-    } else if (auto bindTileOp = dyn_cast<pto::BindTileOp>(op)) {
-      UpdateAliasBufferInfo(bindTileOp.getResult(), bindTileOp.getSource());
     } else if (auto subViewOp = dyn_cast<pto::PartitionViewOp>(op)) {
       UpdateAliasBufferInfo(subViewOp.getResult(), subViewOp.getSource());
     } else if (auto subViewOp = dyn_cast<pto::SubViewOp>(op)) {

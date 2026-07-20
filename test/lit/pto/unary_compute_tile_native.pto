@@ -47,7 +47,6 @@ module {
 // NATIVE-LABEL: func.func private @tnot_arg(
 // NATIVE: pto.tnot ins(%arg0 : !pto.tile_buf<vec, 16x16xi16>) outs(%arg1 : !pto.tile_buf<vec, 16x16xi16>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tabs_arg(
 // EMITC: TABS(

@@ -39,7 +39,6 @@ module {
 // NATIVE-LABEL: func.func private @tinsert_arg(
 // NATIVE: pto.tinsert ins(%arg0, %arg1, %arg2 : !pto.tile_buf<vec, 16x16xf32>, index, index) outs(%arg3 : !pto.tile_buf<vec, 32x32xf32>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: textract_arg(
 // EMITC: TEXTRACT(

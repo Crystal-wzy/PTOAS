@@ -186,8 +186,6 @@ std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
     return std::make_pair(bitcastOp.getResult(), bitcastOp.getSrc());
   } else if (auto reshapeOp = dyn_cast<pto::TReshapeOp>(op)) {
     return std::make_pair(reshapeOp.getResult(), reshapeOp.getSrc());
-  } else if (auto bindTileOp = dyn_cast<pto::BindTileOp>(op)) {
-    return std::make_pair(bindTileOp.getResult(), bindTileOp.getSource());
   } else if (auto multiGetOp = dyn_cast<pto::MultiTileGetOp>(op)) {
     return std::make_pair(multiGetOp.getResult(), multiGetOp.getSource());
   } else if (auto extSliceOp = dyn_cast<tensor::ExtractSliceOp>(op)) {
@@ -268,8 +266,6 @@ Value tracebackImpl(Value memrefVal) {
   } else if (auto op = dyn_cast<scf::ForOp>(def)) {
     // trace back memref.alloc support scf.for
     result = op.getInitArgs()[cast<OpResult>(memrefVal).getResultNumber()];
-  } else if (auto op = dyn_cast<pto::BindTileOp>(def)) {
-    result = op.getSource();
   }
 
   if (result) {

@@ -25,7 +25,6 @@ module {
 // NATIVE-LABEL: @tget_scale_addr_arg
 // NATIVE: pto.tget_scale_addr
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tfillpad_expand_arg(
 // EMITC: TFILLPAD_EXPAND(

@@ -132,7 +132,7 @@ static LogicalResult computeSubviewElementOffset(memref::SubViewOp op,
   if (failed(mlir::pto::getPTOMemRefStridesAndOffset(sourceType, strides,
                                                      baseOffset)))
     return failure();
-  // The SSA source already names the base address after bind_tile/pointer_cast
+  // The SSA source already names the base address after pointer_cast
   // normalization. A dynamic memref layout offset here is metadata we can
   // ignore for ptr normalization and model as zero.
   if (baseOffset == ShapedType::kDynamic)
@@ -274,9 +274,6 @@ static Value materializeScalarAccessPtr(Value source, PatternRewriter &rewriter,
       basePtr = rewriter.create<pto::CastPtrOp>(loc, ptrType, basePtr);
     return rewriter.create<pto::AddPtrOp>(loc, ptrType, basePtr, offset);
   }
-
-  if (auto bind = source.getDefiningOp<pto::BindTileOp>())
-    return materializeScalarAccessPtr(bind.getSource(), rewriter, loc);
 
   if (auto pointerCast = source.getDefiningOp<pto::PointerCastOp>()) {
     if (pointerCast.getAddrs().empty())
@@ -451,31 +448,6 @@ struct ConvertCastPtrPattern : public OpConversionPattern<pto::CastPtrOp> {
     }
 
     rewriter.replaceOpWithNewOp<pto::CastPtrOp>(op, convertedResultType, input);
-    return success();
-  }
-};
-
-struct ConvertBindTileToPtrPattern : public OpConversionPattern<pto::BindTileOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(pto::BindTileOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Type convertedType = getTypeConverter()->convertType(op.getResult().getType());
-    auto ptrType = dyn_cast<pto::PtrType>(convertedType);
-    if (!ptrType)
-      return failure();
-
-    Value ptr =
-        materializeSubviewInputPtr(adaptor.getSource(), rewriter, op.getLoc());
-    if (!ptr)
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to materialize bind_tile input ptr");
-
-    if (ptr.getType() != ptrType)
-      ptr = rewriter.create<pto::CastPtrOp>(op.getLoc(), ptrType, ptr);
-
-    rewriter.replaceOp(op, ptr);
     return success();
   }
 };
@@ -963,7 +935,7 @@ struct VPTOPtrNormalizePass
                            scf::SCFDialect>();
     target.addDynamicallyLegalDialect<pto::PTODialect>([](Operation *op) {
       return !isa<pto::TileBufAddrOp, pto::PointerCastOp, pto::CastPtrOp,
-                  pto::IntToPtrOp, pto::PtrToIntOp, pto::BindTileOp,
+                  pto::IntToPtrOp, pto::PtrToIntOp,
                   pto::VldsOp, pto::VstsOp, pto::VsstbOp>(op);
     });
     target.addLegalOp<ModuleOp>();
@@ -996,10 +968,6 @@ struct VPTOPtrNormalizePass
     target.addDynamicallyLegalOp<pto::CastPtrOp>([&](pto::CastPtrOp op) {
       return !isMemRefType(op.getInput().getType()) &&
              !isMemRefType(op.getResult().getType());
-    });
-    target.addDynamicallyLegalOp<pto::BindTileOp>([&](pto::BindTileOp op) {
-      return op.getResult().getType() ==
-             typeConverter.convertType(op.getResult().getType());
     });
     target.addDynamicallyLegalOp<pto::VldsOp>(
         [&](pto::VldsOp op) {
@@ -1099,7 +1067,6 @@ struct VPTOPtrNormalizePass
                  ConvertPointerCastToCastPtrPattern,
                  ConvertIntToPtrToCastPtrPattern,
                  ConvertPtrToIntToCastPtrPattern, ConvertCastPtrPattern,
-                 ConvertBindTileToPtrPattern,
                  ConvertSubviewToAddPtrPattern, ConvertVldsSubviewOperandPattern,
                  ConvertVstsSubviewOperandPattern,
                  ConvertVsstbSubviewOperandPattern,

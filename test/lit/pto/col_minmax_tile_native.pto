@@ -35,7 +35,6 @@ module {
 // NATIVE-LABEL: func.func private @tcolmin_arg(
 // NATIVE: pto.tcolmin ins(%arg0 : !pto.tile_buf<vec, 16x64xf32>) outs(%arg1 : !pto.tile_buf<vec, 1x64xf32>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tcolmax_arg(
 // EMITC: TCOLMAX(

@@ -10,6 +10,7 @@
 // RUN: not ptoas %t/materialize.pto -o /dev/null 2>&1 | FileCheck %s --check-prefix=MATERIALIZE
 // RUN: not ptoas %t/declare.pto -o /dev/null 2>&1 | FileCheck %s --check-prefix=DECLARE
 // RUN: not ptoas %t/slot.pto -o /dev/null 2>&1 | FileCheck %s --check-prefix=SLOT
+// RUN: not ptoas %t/bind.pto -o /dev/null 2>&1 | FileCheck %s --check-prefix=BIND
 
 //--- materialize.pto
 module {
@@ -40,3 +41,13 @@ module {
 }
 
 // SLOT: error: unregistered operation 'pto.slot_marker' found in dialect ('pto')
+
+//--- bind.pto
+module {
+  func.func @bind() {
+    %0 = "pto.bind_tile"() : () -> i32
+    return
+  }
+}
+
+// BIND: error: unregistered operation 'pto.bind_tile' found in dialect ('pto')

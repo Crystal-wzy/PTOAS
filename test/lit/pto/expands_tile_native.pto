@@ -25,7 +25,6 @@ module {
 // NATIVE-LABEL: func.func private @texpands_arg(
 // NATIVE: pto.texpands ins(%arg0 : f32) outs(%arg1 : !pto.tile_buf<vec, 16x16xf32>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: texpands_arg(
 // EMITC: TEXPANDS(

@@ -507,11 +507,6 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
     } else if (isa<pto::DeclareTileOp>(op)) {
       // Runtime-bound tile handles do not allocate static local storage.
       return WalkResult::advance();
-    } else if (auto bindOp = dyn_cast<pto::BindTileOp>(op)) {
-      // BindTile result is only an alias of the source buffer. Treat every use
-      // of the result as a use of the source in liveness analysis.
-      UpdateBufferAlias(bindOp.getResult(), bindOp.getSource());
-      return WalkResult::advance();
     } else if (isLocalMemPlan() && dyn_cast<pto::AllocTileOp>(op)) {
       auto allocTileOp = cast<pto::AllocTileOp>(op);
       if (allocTileOp.getAddr()) {

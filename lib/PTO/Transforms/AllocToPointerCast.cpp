@@ -29,26 +29,6 @@ static uint64_t alignUpToDefault(uint64_t value) {
          kDefaultAllocAlignmentBytes;
 }
 
-static TileBufConfigAttr inferBindTileConfig(Value root, Operation *diagOp) {
-  TileBufConfigAttr configAttr;
-  for (Operation *user : root.getUsers()) {
-    auto bind = dyn_cast<pto::BindTileOp>(user);
-    if (!bind || bind.getSource() != root)
-      continue;
-    if (!configAttr) {
-      configAttr = bind.getConfigAttr();
-      continue;
-    }
-    if (configAttr != bind.getConfigAttr()) {
-      diagOp->emitWarning(
-          "alloc has multiple bind_tile users with different configs; "
-          "using the first one");
-      break;
-    }
-  }
-  return configAttr;
-}
-
 static SmallVector<uint64_t> getAllocatedOffsets(
     Value root, Operation *allocLikeOp, BaseMemRefType memRefType,
     const DenseMap<Value, SmallVector<uint64_t>> &buffer2Offsets,
@@ -114,7 +94,6 @@ static std::pair<Value, Value> getDynamicValidShapeValues(memref::AllocOp op) {
 LogicalResult MemrefAllocaOpToPointerCastOpPattern::matchAndRewrite(
     memref::AllocOp op, PatternRewriter &rewriter) const {
   const auto &currentMemRefType = cast<BaseMemRefType>(op.getType());
-  TileBufConfigAttr configAttr = inferBindTileConfig(op.getResult(), op);
   SmallVector<uint64_t> offsets =
       getAllocatedOffsets(op.getResult(), op, currentMemRefType,
                           buffer2Offsets, fallbackNextOffset);
@@ -129,7 +108,7 @@ LogicalResult MemrefAllocaOpToPointerCastOpPattern::matchAndRewrite(
   auto [vRow, vCol] = getDynamicValidShapeValues(op);
   auto ptoPointerCastOp = rewriter.create<pto::PointerCastOp>(
       op.getLoc(), currentMemRefType, ValueRange(addrs), vRow ? vRow : Value(),
-      vCol ? vCol : Value(), configAttr);
+      vCol ? vCol : Value(), Attribute());
 
   rewriter.replaceOp(op, ptoPointerCastOp->getResults());
   return success();

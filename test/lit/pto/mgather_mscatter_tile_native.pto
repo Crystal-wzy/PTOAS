@@ -44,7 +44,6 @@ module {
 // NATIVE-SAME: !pto.tile_buf<vec, 8x16xi32>
 // NATIVE-SAME: memref<1x1x1x8x16xf16, #pto.address_space<gm>>
 // NATIVE: pto.mscatter
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: mgather_arg(
 // EMITC: MGATHER<pto::Coalesce::Elem, pto::GatherOOB::Zero>(

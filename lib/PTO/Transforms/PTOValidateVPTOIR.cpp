@@ -343,7 +343,7 @@ public:
   }
 
   static bool isResidualEmissionScaffold(Operation *op) {
-    return isa<BindTileOp, memref::SubViewOp, memref::ReinterpretCastOp,
+    return isa<memref::SubViewOp, memref::ReinterpretCastOp,
                memref::MemorySpaceCastOp>(op) ||
            isTrivialEmissionCastPtr(op);
   }

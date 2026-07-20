@@ -46,7 +46,6 @@ module {
 // NATIVE: pto.tmin ins(%arg0, %arg1 : !pto.tile_buf<vec, 16x16xf32>, !pto.tile_buf<vec, 16x16xf32>) outs(%arg2 : !pto.tile_buf<vec, 16x16xf32>)
 // NATIVE: pto.tmin ins(%arg0, %arg1 : !pto.tile_buf<vec, 16x16xf32>, !pto.tile_buf<vec, 16x16xf32>) outs(%arg0 : !pto.tile_buf<vec, 16x16xf32>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tmax_arg(
 // EMITC-COUNT-2: TMAX(

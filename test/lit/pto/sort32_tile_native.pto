@@ -25,7 +25,6 @@ module {
 // NATIVE-LABEL: @tsort32_tmp_arg
 // NATIVE: pto.tsort32
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tsort32_arg(
 // EMITC: TSORT32(

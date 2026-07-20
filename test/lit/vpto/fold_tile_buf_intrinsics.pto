@@ -37,7 +37,6 @@
 // ADDR-NOT: pto.tile_buf_addr
 // ADDR-NOT: pto.tile_valid_rows
 // ADDR-NOT: pto.tile_valid_cols
-// ADDR-NOT: pto.bind_tile
 // ADDR: pto.vsts
 
 module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {

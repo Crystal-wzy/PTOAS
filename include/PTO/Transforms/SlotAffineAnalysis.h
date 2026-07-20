@@ -36,8 +36,7 @@ enum class SlotRelation {
   kUnknown,  // can neither prove equal nor disjoint
 };
 
-/// Walk back through metadata-only ops (`pto.bind_tile`) to the nearest
-/// `pto.multi_tile_get` and return its slot SSA value. Returns a null Value
+/// Return the slot SSA value carried by `pto.multi_tile_get`. Returns null
 /// if the chain does not pass through a multi_tile_get.
 mlir::Value findMultiTileSlotExpr(mlir::Value v);
 

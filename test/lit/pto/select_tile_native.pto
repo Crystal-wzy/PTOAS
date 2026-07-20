@@ -25,7 +25,6 @@ module {
 // NATIVE-LABEL: @tsels_arg
 // NATIVE: pto.tsels
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tsel_arg(
 // EMITC: TSEL(

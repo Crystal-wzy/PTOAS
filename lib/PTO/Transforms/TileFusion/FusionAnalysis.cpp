@@ -317,13 +317,6 @@ static void bindExplicitValidDims(ShapeConstraintSolver &solver,
                    dims.cols, alloc.getValidCol());
     return;
   }
-  if (auto bind = value.getDefiningOp<pto::BindTileOp>()) {
-    bindDimToValue(solver, symbolDimByValue, canonicalByValue, signatureMap,
-                   dims.rows, bind.getValidRow());
-    bindDimToValue(solver, symbolDimByValue, canonicalByValue, signatureMap,
-                   dims.cols, bind.getValidCol());
-    return;
-  }
   if (auto subview = value.getDefiningOp<pto::SubViewOp>()) {
     bindDimToValue(solver, symbolDimByValue, canonicalByValue, signatureMap,
                    dims.rows, subview.getValidRow());

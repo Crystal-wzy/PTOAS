@@ -37,7 +37,6 @@ module {
 // NATIVE-LABEL: func.func private @tcmps_arg(
 // NATIVE: pto.tcmps ins(%arg0, %arg1 {cmpMode = #pto<cmp lt>} : !pto.tile_buf<vec, 16x16xf32>, f32) outs(%arg2 : !pto.tile_buf<vec, 16x16xi8>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tcmp_arg(
 // EMITC: TCMP(

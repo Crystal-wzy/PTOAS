@@ -48,7 +48,6 @@ module {
 // NATIVE-LABEL: func.func private @tgatherb_arg(
 // NATIVE: pto.tgatherb ins(%arg0, %arg1
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tgather_mask_arg(
 // EMITC: TGATHER<

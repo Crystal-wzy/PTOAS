@@ -41,7 +41,6 @@ module {
 // NATIVE-SAME: !pto.tile_buf<vec, 1x64xi16>
 // NATIVE: pto.tshrs
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tshl_arg(
 // EMITC: TSHL(

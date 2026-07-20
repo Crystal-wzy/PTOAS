@@ -33,7 +33,6 @@ module {
 // NATIVE-LABEL: func.func private @tfillpad_inplace_arg(
 // NATIVE: pto.tfillpad_inplace ins(%arg0
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tfillpad_arg(
 // EMITC: TFILLPAD(

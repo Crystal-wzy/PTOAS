@@ -36,7 +36,6 @@ module {
 // NATIVE-LABEL: func.func private @tcolsum_binary_arg(
 // NATIVE: pto.tcolsum ins(%arg0, %arg1 {isBinary = true} : !pto.tile_buf<vec, 16x64xf32>, !pto.tile_buf<vec, 8x64xf32>) outs(%arg2 : !pto.tile_buf<vec, 1x64xf32>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tcolsum_arg(
 // EMITC: TCOLSUM(

@@ -26,7 +26,6 @@ module {
 // NATIVE-SAME: (%[[TILE:.*]]: !pto.tile_buf<vec, 16x16xf16>)
 // NATIVE: %{{.*}} = pto.tassign %[[TILE]], %{{.*}} : !pto.tile_buf<vec, 16x16xf16> -> !pto.tile_buf<vec, 16x16xf16>
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tassign_arg(
 // EMITC: TASSIGN(

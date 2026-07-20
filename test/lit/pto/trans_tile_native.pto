@@ -27,7 +27,6 @@ module {
 // NATIVE-SAME: (%[[SRC:[^:]+]]: !pto.tile_buf<vec, 16x16xf16>, %[[TMP:[^:]+]]: !pto.tile_buf<vec, 16x16xf16>, %[[DST:[^:]+]]: !pto.tile_buf<vec, 16x16xf16>)
 // NATIVE: pto.ttrans ins(%[[SRC]], %[[TMP]] : !pto.tile_buf<vec, 16x16xf16>, !pto.tile_buf<vec, 16x16xf16>) outs(%[[DST]] : !pto.tile_buf<vec, 16x16xf16>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: ttrans_arg(
 // EMITC: TTRANS(

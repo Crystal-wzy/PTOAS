@@ -31,5 +31,4 @@ module attributes {"pto.target_arch" = "a3"} {
 // PLAN: %[[ADDR:.*]] = arith.constant 0 : i64
 // PLAN-NEXT: {{%.*}} = pto.alloc_tile addr = %[[ADDR]]
 // PLAN-NOT: pto.pointer_cast
-// PLAN-NOT: pto.bind_tile
 // PLAN-NOT: memref.alloc

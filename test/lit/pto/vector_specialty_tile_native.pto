@@ -37,7 +37,6 @@ module {
 // NATIVE-LABEL: @ttri_arg
 // NATIVE: pto.ttri
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: thistogram_arg(
 // EMITC: THISTOGRAM<

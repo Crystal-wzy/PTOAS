@@ -49,7 +49,6 @@ module {
 // NATIVE-LABEL: @tpartargmin_arg
 // NATIVE: pto.tpartargmin
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tcolargmax_arg(
 // EMITC: TCOLARGMAX(

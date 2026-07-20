@@ -21,7 +21,6 @@ module {
 // NATIVE-SAME: !pto.tile_buf<scaling
 // NATIVE-SAME: memref<1x32xf16, #pto.address_space<gm>>
 // NATIVE: pto.tstore_fp
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tstore_fp_arg(
 // EMITC: TSTORE_FP(

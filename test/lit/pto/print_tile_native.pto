@@ -32,7 +32,6 @@ module {
 // NATIVE: pto.tprint ins(%arg0 : !pto.tile_buf<vec, 16x16xf32>)
 // NATIVE-LABEL: func.func private @tprint_tmp_arg(
 // NATIVE: pto.tprint ins(%arg0, %arg1 : !pto.tile_buf<vec, 16x16xf32>, memref<16x16xf32>)
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tprint_arg(
 // EMITC: TPRINT(

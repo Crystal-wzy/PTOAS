@@ -11,7 +11,7 @@
 // Mirrors PyPTO's dual-AIV no-op replay: the inactive lane rewrites a subview
 // chain so the result *type* carries an empty valid region (v_row=0 / v_col=0)
 // with NO explicit valid operand. The verifier must accept this inferred-empty
-// form, and lowering must take the bind_tile valid extent from the result type
+// form, and lowering must take the tile valid extent from the result type
 // (0) rather than widening it back to the subview size (which would re-emit
 // real work on the no-op lane).
 
@@ -73,7 +73,7 @@ module attributes {"pto.device-spec" = "Ascend910B3"} {
 
   // Inferred partial valid: no valid operand, result type declares a non-zero,
   // non-size static valid (v_row=3). The result type is authoritative, so
-  // lowering threads 3 (not the subview size 5) into the bind_tile.
+  // lowering threads 3 (not the subview size 5) into the tile handle.
   func.func @issue708_inferred_partial_valid(
       %dst: memref<5x128xf32, #pto.address_space<gm>>)
       attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {

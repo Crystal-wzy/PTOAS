@@ -31,7 +31,6 @@ module {
 // NATIVE-LABEL: @trsqrt_arg
 // NATIVE: pto.trsqrt
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tpow_arg(
 // EMITC: TPOW(

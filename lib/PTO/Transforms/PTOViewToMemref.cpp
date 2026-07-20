@@ -185,11 +185,6 @@ static void lookupValidDims(Value v, Value &vRow, Value &vCol) {
     vCol = alloc.getValidCol();
     return;
   }
-  if (auto bind = v.getDefiningOp<mlir::pto::BindTileOp>()) {
-    vRow = bind.getValidRow();
-    vCol = bind.getValidCol();
-    return;
-  }
   if (auto pc = v.getDefiningOp<mlir::pto::PointerCastOp>()) {
     vRow = pc.getValidRow();
     vCol = pc.getValidCol();
@@ -870,7 +865,7 @@ struct PTOViewToMemrefPass
       //
       // Explicit-address alloc_tile already carries the physical address for
       // level3. No-address alloc_tile is assigned an address by PTOPlanMemory.
-      // Neither case needs a pointer_cast + bind_tile detour here.
+      // Neither case needs a pointer_cast detour here.
       // ------------------------------------------------------------------
 
       // ------------------------------------------------------------------

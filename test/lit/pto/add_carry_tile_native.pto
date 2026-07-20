@@ -39,7 +39,6 @@ module {
 // NATIVE-LABEL: func.func private @taddsc_arg(
 // NATIVE: pto.taddsc ins(%arg0, %arg1, %arg2 : !pto.tile_buf<vec, 16x16xf32>, f32, !pto.tile_buf<vec, 16x16xf32>) outs(%arg3 : !pto.tile_buf<vec, 16x16xf32>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: taddc_arg(
 // EMITC-COUNT-2: TADD(

@@ -439,36 +439,6 @@ def MultiTileGetOp : PTO_Op<"multi_tile_get", [
 }
 
 
-// ============================================================================
-// BindTileOp: 将 Config 和 Valid Dims 绑定到 MemRef 上
-// ============================================================================
-def BindTileOp : PTO_Op<"bind_tile", [
-    Pure,
-    AttrSizedOperandSegments
-    // 允许输入 offset:0 -> 输出 offset:?
-  ]> {
-  let summary = "Binds metadata and implicitly casts layout";
-  let description = [{
-    Wraps a memref with PTO metadata (valid dimensions and config).
-  }];
-
-  // [修改] 以前是 Variadic<Index>:$valid_dims
-  // 现在改为明确的 Optional Row/Col，与 PointerCastOp 保持一致
-  let arguments = (ins
-    AnyMemRef:$source,
-    Optional<Index>:$valid_row,
-    Optional<Index>:$valid_col,
-    TileBufConfigAttr:$config
-  );
-
-  let results = (outs AnyMemRef:$result);
-
-  // [修改] assemblyFormat: 去掉 valid_dims，改为 ($row, $col)?
-  let assemblyFormat = [{
-    $source (`,` $valid_row^ `,` $valid_col)? attr-dict `:` qualified(type($source)) `->` qualified(type($result))
-  }];
-}
-
 def SubViewOp : PTO_Op<"subview", [
     Pure,
     ViewLikeOpInterface,

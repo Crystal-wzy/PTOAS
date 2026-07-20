@@ -39,7 +39,6 @@ module {
 // NATIVE-LABEL: func.func private @tlog_arg(
 // NATIVE: pto.tlog ins(%arg0 : !pto.tile_buf<vec, 16x16xf32>) outs(%arg1 : !pto.tile_buf<vec, 16x16xf32>) {precisionType = #pto<log_precision high_precision>}
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: texp_arg(
 // EMITC: TEXP<pto::ExpAlgorithm::HIGH_PRECISION>(

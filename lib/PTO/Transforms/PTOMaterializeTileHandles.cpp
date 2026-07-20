@@ -93,7 +93,7 @@ static bool isLocalTileMemRef(Type type) {
 }
 
 static bool shouldMaterializeOperand(Operation *owner) {
-  if (isa<AllocTileOp, BindTileOp, PointerCastOp>(owner))
+  if (isa<AllocTileOp, PointerCastOp>(owner))
     return false;
 
   StringRef name = owner->getName().getStringRef();
@@ -237,16 +237,6 @@ static TileHandleMetadata getTileHandleMetadata(Value value,
   TileHandleMetadata meta;
   meta.source = value;
   meta.config = TileBufConfigAttr::getDefault(ctx);
-
-  if (auto bind = value.getDefiningOp<BindTileOp>()) {
-    meta.source = bind.getSource();
-    meta.validRow = bind.getValidRow();
-    meta.validCol = bind.getValidCol();
-    meta.config = bind.getConfig();
-    meta.explicitConfig = true;
-    copyTileHandleAttrs(bind, meta.attrs);
-    return meta;
-  }
 
   if (auto cast = value.getDefiningOp<PointerCastOp>()) {
     meta.validRow = cast.getValidRow();
@@ -404,7 +394,7 @@ static TileBufType buildTileTypeFromMemRef(MemRefType memTy,
 }
 
 static bool isMaterializedTileAnchor(Operation *op) {
-  return isa<BindTileOp, PointerCastOp>(op);
+  return isa<PointerCastOp>(op);
 }
 
 static Value makeI64Constant(OpBuilder &builder, Location loc, int64_t value) {
@@ -549,9 +539,6 @@ static Value computeExplicitAddress(Value value, OpBuilder &builder,
   if (auto alloc = value.getDefiningOp<AllocTileOp>())
     return ensureI64(alloc.getAddr(), builder, loc);
 
-  if (auto bind = value.getDefiningOp<BindTileOp>())
-    return computeExplicitAddress(bind.getSource(), builder, loc);
-
   if (auto cast = value.getDefiningOp<PointerCastOp>()) {
     if (cast.getAddrs().empty())
       return Value();
@@ -596,11 +583,6 @@ static bool isControlFlowAddressProducer(Operation *op) {
 
 static Value peelAddressSource(Value value) {
   while (true) {
-    if (auto bind = value.getDefiningOp<BindTileOp>()) {
-      value = bind.getSource();
-      continue;
-    }
-
     if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
       value = subview.getSource();
       continue;
@@ -893,20 +875,6 @@ struct PTOMaterializeTileHandlesPass
     if (failedMaterialization) {
       signalPassFailure();
       return;
-    }
-
-    bool erasedBind = true;
-    while (erasedBind) {
-      erasedBind = false;
-      SmallVector<Operation *, 16> deadBinds;
-      module.walk([&](BindTileOp op) {
-        if (op.getResult().use_empty())
-          deadBinds.push_back(op);
-      });
-      for (Operation *op : deadBinds) {
-        op->erase();
-        erasedBind = true;
-      }
     }
 
   }

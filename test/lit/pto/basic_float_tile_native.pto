@@ -48,7 +48,6 @@ module {
 // NATIVE-SAME: !pto.tile_buf<vec, 1x16xf32>
 // NATIVE: pto.tfmods
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: trelu_arg(
 // EMITC: TRELU(

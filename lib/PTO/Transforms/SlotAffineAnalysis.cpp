@@ -30,10 +30,6 @@ Value findMultiTileSlotExpr(Value v) {
       return {};
     if (auto get = dyn_cast<pto::MultiTileGetOp>(op))
       return get.getSlot();
-    if (auto bind = dyn_cast<pto::BindTileOp>(op)) {
-      v = bind.getSource();
-      continue;
-    }
     return {};
   }
   return {};

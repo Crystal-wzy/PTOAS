@@ -25,7 +25,6 @@ module {
 // NATIVE-LABEL: @tdequant_arg
 // NATIVE: pto.tdequant
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: taxpy_arg(
 // EMITC: TAXPY(

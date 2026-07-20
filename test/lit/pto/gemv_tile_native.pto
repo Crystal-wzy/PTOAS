@@ -22,7 +22,6 @@ module {
 // NATIVE-SAME: !pto.tile_buf<acc
 // NATIVE: pto.tgemv
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tgemv_arg(
 // EMITC: TGEMV

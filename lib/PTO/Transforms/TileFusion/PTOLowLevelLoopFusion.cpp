@@ -159,8 +159,6 @@ static Value traceAliasRootOneStep(Value value) {
     return cast.getSource();
   if (auto transpose = dyn_cast<memref::TransposeOp>(def))
     return transpose.getIn();
-  if (auto bind = dyn_cast<pto::BindTileOp>(def))
-    return bind.getSource();
   if (auto subview = dyn_cast<pto::SubViewOp>(def))
     return subview.getSource();
   if (auto bitcast = dyn_cast<pto::BitcastOp>(def))

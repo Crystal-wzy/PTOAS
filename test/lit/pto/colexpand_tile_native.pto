@@ -91,7 +91,6 @@ module {
 // NATIVE-LABEL: func.func private @tcolexpandexpdif_arg(
 // NATIVE: pto.tcolexpandexpdif
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tcolexpand_arg(
 // EMITC: TCOLEXPAND(

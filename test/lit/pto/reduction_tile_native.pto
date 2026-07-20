@@ -43,7 +43,6 @@ module {
 // NATIVE-LABEL: @tcolprod_arg
 // NATIVE: pto.tcolprod
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: trowmax_arg(
 // EMITC: TROWMAX(

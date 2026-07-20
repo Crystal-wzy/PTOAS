@@ -517,8 +517,6 @@ static bool shouldBypassDecodedMemrefVerifier(Operation *op) {
   for (Value operand : op->getOperands()) {
     if (isa<MemRefType>(operand.getType()))
       return true;
-    if (operand.getDefiningOp<pto::BindTileOp>())
-      return true;
   }
   return false;
 }
@@ -4054,26 +4052,10 @@ static SmallVector<int64_t, 4> getLogicalTileExtentVec(Type ty,
   return dims;
 }
 
-static int64_t getConstantIndexOrDynamic(Value value) {
-  if (!value)
-    return ShapedType::kDynamic;
-  if (auto cst = value.getDefiningOp<arith::ConstantIndexOp>())
-    return cst.value();
-  if (auto cst = value.getDefiningOp<arith::ConstantIntOp>())
-    return cst.value();
-  return ShapedType::kDynamic;
-}
-
 static SmallVector<int64_t, 4> getValidShapeVec(Value value) {
   if (!value)
     return {};
   auto valid = getValidShapeVec(value.getType());
-  if (auto bind = value.getDefiningOp<pto::BindTileOp>()) {
-    if (valid.size() >= 1 && bind.getValidRow())
-      valid[0] = getConstantIndexOrDynamic(bind.getValidRow());
-    if (valid.size() >= 2 && bind.getValidCol())
-      valid[1] = getConstantIndexOrDynamic(bind.getValidCol());
-  }
   return valid;
 }
 
@@ -11366,7 +11348,7 @@ static bool isLocallyBoundTileSource(Value value) {
   if (!value || isa<BlockArgument>(value))
     return false;
 
-  if (isa<AllocTileOp, DeclareTileOp, BindTileOp, PointerCastOp>(
+  if (isa<AllocTileOp, DeclareTileOp, PointerCastOp>(
           value.getDefiningOp()))
     return true;
 
@@ -12775,9 +12757,7 @@ mlir::LogicalResult mlir::pto::TStoreFPOp::verify() {
   auto shouldBypassDecoded = [&]() -> bool {
     Value src = getSrc();
     Value fp = getFp();
-    return isa<MemRefType>(src.getType()) || isa<MemRefType>(fp.getType()) ||
-           src.getDefiningOp<pto::BindTileOp>() ||
-           fp.getDefiningOp<pto::BindTileOp>();
+    return isa<MemRefType>(src.getType()) || isa<MemRefType>(fp.getType());
   };
 
   auto verifySrcDtypeAlways = [&]() -> LogicalResult {
@@ -14345,8 +14325,7 @@ mlir::LogicalResult mlir::pto::SubViewOp::verify() {
     return emitOpError("expects result to have rank-2 valid_shape");
   // With the valid operand omitted, the result type is authoritative for the
   // valid extent: accept any static value in [0, size] (this subsumes both the
-  // full-size default and the v=0 no-op-replay empty marker). Lowering derives
-  // the bind_tile valid operand from this type. A dynamic result valid still
+  // full-size default and the v=0 no-op-replay empty marker). A dynamic result valid still
   // requires an explicit operand to supply the runtime extent, so it stays
   // rejected on this path.
   bool rowInferred = !getValidRow() && dstValid[0] != ShapedType::kDynamic &&

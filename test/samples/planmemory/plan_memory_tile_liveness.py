@@ -9,7 +9,7 @@
 PTO_IR = r"""
 
 module {
-  func.func @bind_tile_alias_liveness(%arg0: memref<16x256xf16, #pto.address_space<gm>>,
+  func.func @tile_liveness(%arg0: memref<16x256xf16, #pto.address_space<gm>>,
                                       %arg1: memref<16x256xf16, #pto.address_space<gm>>) {
     %c16 = arith.constant 16 : index
 

@@ -32,4 +32,3 @@ module {
 // NATIVE: IR Dump After PTOViewToMemref
 // NATIVE: pto.subview %{{.*}}[%c0, %{{.*}}] sizes [1, 64] : !pto.tile_buf<vec, 8x64xf32> -> !pto.tile_buf<vec, 1x64xf32>
 // NATIVE-NOT: memref.subview
-// NATIVE-NOT: pto.bind_tile

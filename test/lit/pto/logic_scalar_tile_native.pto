@@ -37,7 +37,6 @@ module {
 // NATIVE-LABEL: func.func private @tors_arg(
 // NATIVE: pto.tors ins(%arg0, %arg1 : !pto.tile_buf<vec, 16x16xi16>, i16) outs(%arg2 : !pto.tile_buf<vec, 16x16xi16>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tands_arg(
 // EMITC: TANDS(

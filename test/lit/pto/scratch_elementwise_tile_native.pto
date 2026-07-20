@@ -31,7 +31,6 @@ module {
 // NATIVE-LABEL: @trems_arg
 // NATIVE: pto.trems
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tprelu_arg(
 // EMITC: TPRELU(

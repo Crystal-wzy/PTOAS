@@ -20,7 +20,6 @@ module {
 // NATIVE-SAME: !pto.tile_buf<vec, 16x16xf32>
 // NATIVE: pto.tmov
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tmov_arg(
 // EMITC: TMOV(

@@ -25,7 +25,6 @@ module {
 // NATIVE-LABEL: @txors_arg
 // NATIVE: pto.txors
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: txor_arg(
 // EMITC: TXOR(

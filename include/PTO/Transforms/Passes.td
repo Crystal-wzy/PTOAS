@@ -1190,7 +1190,7 @@ def PTOVPTOPtrBoundary
     rewrites eligible memref function arguments to same-space `!pto.ptr`,
     rejects memref function results, canonicalizes supported body-level VPTO
     buffer-like ops to ptr-form, and drops dead boundary/view scaffold such as
-    trivial `pto.castptr`, `pto.bind_tile`, `memref.subview`,
+    trivial `pto.castptr`, `memref.subview`,
     `memref.reinterpret_cast`, and `memref.memory_space_cast` once they become
     unused.
   }];

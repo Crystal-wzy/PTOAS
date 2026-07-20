@@ -44,7 +44,6 @@ module {
 // NATIVE-SAME: !pto.tile_buf<vec, 8x16xi16>
 // NATIVE: pto.tsubsc
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tsub_arg(
 // EMITC: TSUB(

@@ -26,7 +26,6 @@ module {
 // NATIVE-LABEL: func.func private @tmov_fp_arg(
 // NATIVE: pto.tmov.fp ins(%arg0, %arg1
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tmov_fp_arg(
 // EMITC: TMOV_FP<

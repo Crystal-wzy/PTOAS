@@ -51,7 +51,6 @@ module {
 // NATIVE-LABEL: func.func private @tdivs_scalar_tile_arg(
 // NATIVE: pto.tdivs ins(%arg0, %arg1 : f32, !pto.tile_buf<vec, 16x16xf32>) outs(%arg2 : !pto.tile_buf<vec, 16x16xf32>) {precisionType = #pto<div_precision high_precision>}
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tdiv_arg(
 // EMITC: TDIV<pto::DivAlgorithm::HIGH_PRECISION>(

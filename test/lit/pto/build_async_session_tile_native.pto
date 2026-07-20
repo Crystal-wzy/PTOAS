@@ -30,7 +30,6 @@ module {
 // NATIVE: pto.comm.build_async_session(%[[SCRATCH]], %[[WORKSPACE]]
 // NATIVE-SAME: !pto.tile_buf<vec, 1x256xi8>, !pto.ptr<i8, gm>
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: AICORE void build_async_session_tile_native(
 // EMITC: pto::comm::BuildAsyncSession<pto::comm::DmaEngine::SDMA>(

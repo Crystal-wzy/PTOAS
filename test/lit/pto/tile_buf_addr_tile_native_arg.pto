@@ -28,7 +28,6 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 // NATIVE: %[[PTR:.*]] = pto.tile_buf_addr %[[TILE]] : !pto.tile_buf<vec, 1x16xf32> -> !pto.ptr<f32, ub>
 // NATIVE: call @consume(%[[PTR]]) : (!pto.ptr<f32, ub>) -> ()
 // NATIVE-NOT: memref.reinterpret_cast
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: AICORE void tile_buf_addr_tile_native_arg(
 // EMITC: __ubuf__ float* {{.*}} = {{.*}}.data();

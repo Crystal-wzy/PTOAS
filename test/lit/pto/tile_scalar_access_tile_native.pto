@@ -38,7 +38,6 @@ module {
 // NATIVE: %0 = pto.tgetval ins(%arg0, %arg1 : !pto.tile_buf<vec, 16x16xf32>, index) outs : f32
 // NATIVE: return %0 : f32
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tsetval_arg(
 // EMITC: .SetValue(

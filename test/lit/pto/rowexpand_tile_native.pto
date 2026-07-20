@@ -62,7 +62,6 @@ module {
 // NATIVE-LABEL: @trowexpandexpdif_arg
 // NATIVE: pto.trowexpandexpdif
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: trowexpand_arg(
 // EMITC: TROWEXPAND(

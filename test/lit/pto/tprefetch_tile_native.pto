@@ -21,7 +21,6 @@ module {
 // NATIVE-SAME: %{{.*}}: memref<16x16xf16, #pto.address_space<gm>>
 // NATIVE-SAME: %{{.*}}: !pto.tile_buf<vec
 // NATIVE: pto.tprefetch
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tprefetch_arg(
 // EMITC: TPREFETCH(

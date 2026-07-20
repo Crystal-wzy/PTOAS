@@ -40,4 +40,3 @@ module attributes {pto.target_arch = "a5"} {
 // NATIVE: pto.set_validshape {{.*}}, %[[ROW]], %[[COL]]
 // NATIVE: return
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile

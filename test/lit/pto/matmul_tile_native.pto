@@ -22,7 +22,6 @@ module {
 // NATIVE-SAME: !pto.tile_buf<acc
 // NATIVE: pto.tmatmul
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tmatmul_arg(
 // EMITC: TMATMUL

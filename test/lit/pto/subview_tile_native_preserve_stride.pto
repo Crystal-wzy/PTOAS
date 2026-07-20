@@ -1,7 +1,7 @@
 // RUN: ptoas %s 2>&1 | FileCheck %s
 
 module {
-  func.func @subview_bind_tile_preserve_stride(
+  func.func @subview_tile_native_preserve_stride(
       %src: memref<16x16xf32, #pto.address_space<gm>>,
       %dst0: memref<8x8xf32, #pto.address_space<gm>>,
       %dst1: memref<8x8xf32, #pto.address_space<gm>>,

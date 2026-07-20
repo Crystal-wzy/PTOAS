@@ -38,4 +38,3 @@ module attributes {pto.target_arch = "a5"} {
 // NATIVE-SAME: -> !pto.tile_buf<vec, 1x16xf32>
 // NATIVE: return %[[RESULT]] : !pto.tile_buf<vec, 1x16xf32>
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile

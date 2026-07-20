@@ -39,7 +39,6 @@ module {
 // NATIVE-LABEL: func.func private @tinsert_fp_arg(
 // NATIVE: pto.tinsert_fp ins(%arg0, %arg1, %arg2, %arg3
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: textract_fp_arg(
 // EMITC: TEXTRACT_FP(

@@ -5081,10 +5081,8 @@ LogicalResult TileBufAddrOp::verify() {
     srcMemorySpace = srcTileType.getMemorySpace();
     srcRank = static_cast<int64_t>(srcTileType.getShape().size());
   } else if (auto srcMemRefType = dyn_cast<BaseMemRefType>(getSrc().getType())) {
-    // PTOViewToMemref may lower tile_buf producers to memref + pto.bind_tile
-    // before the shared materialization bridge restores tile handles.
-    // Hand-written pto.tile_buf_addr may therefore temporarily see a tile-bound
-    // memref operand in that intermediate form.
+    // Hand-written legacy IR may use tile_buf_addr directly on an addressed
+    // memref before the shared materialization bridge restores tile handles.
     elementType = srcMemRefType.getElementType();
     srcMemorySpace = srcMemRefType.getMemorySpace();
     srcRank = srcMemRefType.getRank();

@@ -41,7 +41,6 @@ module {
 // NATIVE-LABEL: func.func @declare_tile_native
 // NATIVE: pto.declare_tile -> !pto.tile_buf<vec, 8x16xf32>
 // NATIVE: pto.tpop({{.*}} : !pto.tile_buf<vec, 8x16xf32>
-// NATIVE-NOT: pto.bind_tile
 // NATIVE-NOT: memref.alloc
 
 // EMITC-LABEL: AICORE void declare_tile_native

@@ -294,7 +294,7 @@ def TileBufAddrOp : PTO_Op<"tile_buf_addr", [Pure]> {
     This op is emitted by TileLang DSL templates and resolved by the
     FoldTileBufIntrinsics pass after inlining. Tile-native uses remain in PTO
     IR through memory planning and sync. Hand-written legacy `.pto` may also
-    use it directly on the memref result of `pto.bind_tile`.
+    use it directly on an addressed memref.
   }];
 
   let arguments = (ins AnyTypeOf<[TileBufType, AnyMemRef],

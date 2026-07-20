@@ -39,7 +39,6 @@ module {
 // NATIVE-LABEL: func.func private @tmrgsort_format2_arg
 // NATIVE: pto.tmrgsort ins(%{{.*}}, %{{.*}}, %{{.*}} {exhausted = true} : !pto.tile_buf<vec, 1x128xf32>, !pto.tile_buf<vec, 1x128xf32>, !pto.tile_buf<vec, 1x256xf32>) outs(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 1x256xf32>, vector<4xi16>)
 // NATIVE-NOT: memref<
-// NATIVE-NOT: pto.bind_tile
 
 // EMITC-LABEL: tmrgsort_format1_arg(
 // EMITC: TMRGSORT(
