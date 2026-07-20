@@ -126,7 +126,7 @@ static bool hasMigratedTileNativeOp(func::FuncOp func) {
             pto::TGemvAccOp, pto::TGemvBiasOp, pto::TGemvMxOp,
             pto::TGemvMxAccOp, pto::TGemvMxBiasOp,
             pto::TPrefetchOp, pto::TPushOp, pto::TPopOp,
-            pto::TFreeOp>(op)) {
+            pto::TFreeOp, pto::TSyncOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
