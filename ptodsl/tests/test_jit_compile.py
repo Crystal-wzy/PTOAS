@@ -839,7 +839,7 @@ def simt_grouped_query_probe():
     pto.keep(grid_z, slot=8)
 
 
-@pto.simt(max_threads=256, max_regs=48)
+@pto.simt(max_threads=256)
 def simt_resource_attr_probe():
     pto.get_tid_x()
 
@@ -1961,6 +1961,96 @@ def public_cube_surface_probe(
     pto.mte_l0c_ub(acc_tile.as_ptr(), out_tile.as_ptr(), m, n, n, n, split=pto.SplitMode.M, layout="nz2nd")
 
 
+@pto.jit(target="a5", mode="explicit")
+def acc_store_pre_quant_surface_probe(
+    dst: pto.ptr(pto.bf16, "gm"),
+):
+    size = pto.const(16)
+    zero = pto.const(0)
+    src = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    pto.mte_l0c_gm(
+        src.as_ptr(),
+        dst,
+        size,
+        size,
+        size,
+        size,
+        zero,
+        zero,
+        pre_quant=(pto.bf16(1.0), "f32_bf16"),
+        layout="nz2nd",
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def acc_store_bad_pre_quant_mode_probe(
+    dst: pto.ptr(pto.bf16, "gm"),
+):
+    size = pto.const(16)
+    zero = pto.const(0)
+    src = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    pto.mte_l0c_gm(
+        src.as_ptr(),
+        dst,
+        size,
+        size,
+        size,
+        size,
+        zero,
+        zero,
+        pre_quant=(pto.bf16(1.0), "not_a_mode"),
+        layout="nz2nd",
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def acc_store_bad_pre_quant_payload_probe(
+    dst: pto.ptr(pto.bf16, "gm"),
+):
+    size = pto.const(16)
+    zero = pto.const(0)
+    src = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    payload = pto.alloc_tile(
+        shape=[16],
+        dtype=pto.bf16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[16],
+    )
+    pto.mte_l0c_gm(
+        src.as_ptr(),
+        dst,
+        size,
+        size,
+        size,
+        size,
+        zero,
+        zero,
+        pre_quant=(payload.as_ptr(), "f32_bf16"),
+        layout="nz2nd",
+    )
+
+
 @pto.cube
 def public_cube_tile_mx_probe(
     mat_lhs: pto.Tile,
@@ -2528,6 +2618,8 @@ def public_data_movement_surface_probe():
     pto.mte_gm_ub(gm_src, ub_dst, 0, 256, nburst=(8, 256, 256), loops=[(4, 2048, 2048)])
     pto.mte_gm_ub(gm_src, ub_dst, 0, 200, nburst=(64, 200, 256), pad=(0.0, 0, 0))
     pto.mte_ub_gm(ub_src, gm_dst, 256, nburst=(64, 256, 1024))
+    pto.mte_ub_gm(ub_src, gm_dst, 128, nburst=(1, 128, 128), l2_cache="nared")
+    pto.mte_ub_gm(ub_src, gm_dst, 64, nburst=(1, 64, 64), l2_cache="wtsred")
     pto.mte_ub_ub(ub_src, ub_dst, 8, nburst=(16, 0, 4))
     pto.mte_ub_l1(ub_src, l1_dst, 8, nburst=(16, 0, 4))
     pto.mte_gm_l1(gm_src, l1_dst, 256, nburst=(8, 256, 256), loops=[(2, 2048, 2048)])
@@ -4583,20 +4675,15 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(simt_resource_attr_text, "simt resource attr launch specialization")
     expect(
         re.search(
-            r"func\.func @simt_resource_attr_probe__simt_\d+\(\) attributes \{pto\.simt_entry, pto\.simt_max_regs = 48 : i32, pto\.simt_max_threads = 256 : i32\}",
+            r"func\.func @simt_resource_attr_probe__simt_\d+\(\) attributes \{pto\.simt_entry, pto\.simt_max_threads = 256 : i32\}",
             simt_resource_attr_text,
         ) is not None,
-        "@pto.simt(max_threads=..., max_regs=...) should attach resource attrs to the helper function",
+        "@pto.simt(max_threads=...) should attach resource attrs to the helper function",
     )
     expect_raises(
         ValueError,
         lambda: pto.simt(max_threads=0)(lambda: None),
         "max_threads",
-    )
-    expect_raises(
-        TypeError,
-        lambda: pto.simt(max_regs=True)(lambda: None),
-        "max_regs",
     )
 
     def _enter_inline_simt_with_resource_attr():
@@ -5335,6 +5422,22 @@ def main() -> None:
 
     public_surface_text = public_surface_exports_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(public_surface_text, "public surface export specialization")
+    acc_store_pre_quant_text = acc_store_pre_quant_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(acc_store_pre_quant_text, "acc-store pre_quant public mode specialization")
+    expect(
+        "pre_quant(%" in acc_store_pre_quant_text and "mode = f32_bf16" in acc_store_pre_quant_text,
+        "mte_l0c_gm pre_quant should preserve the f32_bf16 public mode",
+    )
+    expect_raises(
+        ValueError,
+        lambda: acc_store_bad_pre_quant_mode_probe.compile().mlir_text(),
+        "unsupported acc store pre_quant mode",
+    )
+    expect_raises(
+        TypeError,
+        lambda: acc_store_bad_pre_quant_payload_probe.compile().mlir_text(),
+        "acc store scalar pre_quant payload must be an f16, bf16, or f32 scalar",
+    )
     compile_time_query_text = compile_time_query_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(compile_time_query_text, "compile-time query specialization")
     eager_scalar_text = eager_scalar_constructor_probe.compile().mlir_text()
@@ -5386,6 +5489,10 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(fixed_width_integer_text, "fixed-width integer specialization")
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
+    expect(
+        re.search(r"pto\.mte_ub_gm [^\n]+ nburst\([^)]+\) l2_cache_ctl\(%c0[^)\n]*\)", public_surface_text) is not None,
+        "mte_store(...) should pass default l2_cache_ctl through the pto.mte_ub_gm l2_cache_ctl group",
+    )
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")
     expect("pto.barrier <PIPE_ALL>" in public_surface_text, "pipe_barrier(Pipe.ALL) should lower to pto.barrier")
     expect("pto.vexp" in public_surface_text, "vexp(...) should lower to pto.vexp")
@@ -5468,6 +5575,14 @@ def main() -> None:
     expect("pto.sync.wait <PIPE_V>, %c3" in sync_surface_text, "wait_intra_flag(Pipe.V, dynamic_event) should lower dynamic event ids through pto.sync.wait")
     expect(data_movement_surface_text.count("pto.mte_gm_ub") == 2, "public grouped GM->UB wrappers should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in data_movement_surface_text, "public grouped UB->GM wrapper should lower to pto.mte_ub_gm")
+    expect(
+        re.search(r"pto\.mte_ub_gm [^\n]+ nburst\([^)]+\) l2_cache_ctl\(%c7[^)\n]*\)", data_movement_surface_text) is not None,
+        "mte_ub_gm(..., l2_cache='nared') should map to the l2_cache_ctl group",
+    )
+    expect(
+        re.search(r"pto\.mte_ub_gm [^\n]+ nburst\([^)]+\) l2_cache_ctl\(%c15[^)\n]*\)", data_movement_surface_text) is not None,
+        "mte_ub_gm(..., l2_cache='wtsred') should map to the l2_cache_ctl group",
+    )
     expect("pto.mte_ub_ub" in data_movement_surface_text, "public grouped UB->UB wrapper should lower to pto.mte_ub_ub")
     expect("pto.mte_ub_l1" in data_movement_surface_text, "public grouped UB->L1 wrapper should lower to pto.mte_ub_l1")
     expect("pto.mte_gm_l1" in data_movement_surface_text, "public grouped GM->L1 wrapper should lower to pto.mte_gm_l1")

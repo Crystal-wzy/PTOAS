@@ -62,7 +62,6 @@ add_mlir_dialect_library(PTOTransforms
   PTORemoveIdentityTMov.cpp
   PTOCanonicalizeIR.cpp
   PTOMaterializeTileHandles.cpp
-  PTOMemoryConsistency.cpp
   BufferizableOpInterfaceImpl.cpp
   ConvertToPTOOp.cpp
   PTOAssignDefaultFrontendPipeIdPass.cpp

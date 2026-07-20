@@ -6,15 +6,11 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Regression for issue #711: pto.comm.tnotify lowering must drain MTE-side
-// pipes before emitting pto::comm::TNOTIFY(...). TNOTIFY_IMPL writes the
-// signal on the scalar pipe and only does pipe_barrier(PIPE_ALL) *after* the
-// store, so without an MTE drain the signal can overtake an in-flight
-// pto.tload / pto.tstore (local or peer) and the receiver's matching TWAIT
-// returns before the data is visible. For prior MTE3 stores, the notification
-// also needs a DDR-domain barrier_all before publishing the signal. The drain
-// should be precise: only MTE pipes that may have prior in-flight work are
-// drained before TNOTIFY, and MTE2-only cases do not emit a DDR fence.
+// Regression for issue #711 under the explicit memory-consistency contract:
+// TNotify release requires the producer side to drain local producer pipes
+// before the GM fence and before pto.comm.tnotify. PTOAS no longer runs the
+// historical MemoryConsistency analysis pass, so the explicit GM fence lowering
+// conservatively drains MTE2, MTE3, and FIX before dsb(DSB_DDR).
 
 // RUN: ptoas --pto-arch=a3 %s -o - 2>&1 | FileCheck %s
 
@@ -49,8 +45,6 @@ module {
               outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
                outs(%dst : !pto.partition_tensor_view<1x32xf32>)
-    pto.barrier <PIPE_MTE2>
-    pto.cmo.cacheinvalid %dst single_cache_line : !pto.partition_tensor_view<1x32xf32>
     pto.fence.barrier_all #pto.fence_scope<gm>
 
     %sig_view = pto.make_tensor_view %signal_ptr,
@@ -85,7 +79,6 @@ module {
 
     pto.tstore ins(%acc : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
                outs(%dst : !pto.partition_tensor_view<16x16xf32>)
-    pto.cmo.cacheinvalid %dst single_cache_line : !pto.partition_tensor_view<16x16xf32>
     pto.fence.barrier_all #pto.fence_scope<gm>
 
     %sig_view = pto.make_tensor_view %signal_ptr,
@@ -120,7 +113,7 @@ module {
 
     pto.tload ins(%src : !pto.partition_tensor_view<1x32xf32>)
               outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.cmo.cacheinvalid %src single_cache_line : !pto.partition_tensor_view<1x32xf32>
+    pto.barrier <PIPE_MTE2>
 
     %sig_view = pto.make_tensor_view %signal_ptr,
       shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
@@ -154,7 +147,6 @@ module {
 
     pto.tload ins(%src : !pto.partition_tensor_view<1x32xf32>)
               outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.cmo.cacheinvalid %src single_cache_line : !pto.partition_tensor_view<1x32xf32>
     pto.barrier <PIPE_MTE2>
 
     %sig_view = pto.make_tensor_view %signal_ptr,
@@ -167,8 +159,8 @@ module {
     return
   }
 
-  // A user/pass-provided MTE3 barrier drains the pending store; the explicit
-  // barrier_all completes the publish sequence.
+  // The explicit barrier_all conservatively drains MTE2, MTE3 and FIX, then
+  // completes the publish sequence with a DDR fence.
   func.func @tnotify_after_existing_mte3_barrier_and_release(
       %src_ptr: !pto.ptr<f32>,
       %dst_ptr: !pto.ptr<f32>,
@@ -199,8 +191,6 @@ module {
     pto.barrier <PIPE_MTE2>
     pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
                outs(%dst : !pto.partition_tensor_view<1x32xf32>)
-    pto.cmo.cacheinvalid %dst single_cache_line : !pto.partition_tensor_view<1x32xf32>
-    pto.barrier <PIPE_MTE3>
     pto.fence.barrier_all #pto.fence_scope<gm>
 
     %sig_view = pto.make_tensor_view %signal_ptr,
@@ -213,8 +203,8 @@ module {
     return
   }
 
-  // If the user already writes the complete release sequence, the pass should
-  // not emit a second DDR fence before TNotify.
+  // The GM fence lowering is conservative and self-contained; no analysis pass
+  // needs to add a second DDR fence before TNotify.
   func.func @tnotify_after_existing_mte3_barrier_and_fence(
       %dst_ptr: !pto.ptr<f32>,
       %signal_ptr: !pto.ptr<i32>)
@@ -235,8 +225,6 @@ module {
 
     pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
                outs(%dst : !pto.partition_tensor_view<1x32xf32>)
-    pto.cmo.cacheinvalid %dst single_cache_line : !pto.partition_tensor_view<1x32xf32>
-    pto.barrier <PIPE_MTE3>
     pto.fence.barrier_all #pto.fence_scope<gm>
 
     %sig_view = pto.make_tensor_view %signal_ptr,
@@ -294,12 +282,15 @@ module {
 // CHECK:      TSTORE(
 // CHECK:      pipe_barrier(PIPE_MTE2);
 // CHECK-NEXT: pipe_barrier(PIPE_MTE3);
+// CHECK-NEXT: pipe_barrier(PIPE_FIX);
 // CHECK-NEXT: dsb(DSB_DDR);
 // CHECK:      pto::comm::TNOTIFY(
 
 // CHECK-LABEL: AICORE void tnotify_drain_after_acc_tstore(
 // CHECK:      TSTORE
-// CHECK:      pipe_barrier(PIPE_FIX);
+// CHECK:      pipe_barrier(PIPE_MTE2);
+// CHECK-NEXT: pipe_barrier(PIPE_MTE3);
+// CHECK-NEXT: pipe_barrier(PIPE_FIX);
 // CHECK-NEXT: dsb(DSB_DDR);
 // CHECK:      pto::comm::TNOTIFY(
 
@@ -318,13 +309,17 @@ module {
 
 // CHECK-LABEL: AICORE void tnotify_after_existing_mte3_barrier_and_release(
 // CHECK:      TSTORE(
-// CHECK:      pipe_barrier(PIPE_MTE3);
+// CHECK:      pipe_barrier(PIPE_MTE2);
+// CHECK-NEXT: pipe_barrier(PIPE_MTE3);
+// CHECK-NEXT: pipe_barrier(PIPE_FIX);
 // CHECK-NEXT: dsb(DSB_DDR);
 // CHECK:      pto::comm::TNOTIFY(
 
 // CHECK-LABEL: AICORE void tnotify_after_existing_mte3_barrier_and_fence(
 // CHECK:      TSTORE(
-// CHECK:      pipe_barrier(PIPE_MTE3);
+// CHECK:      pipe_barrier(PIPE_MTE2);
+// CHECK-NEXT: pipe_barrier(PIPE_MTE3);
+// CHECK-NEXT: pipe_barrier(PIPE_FIX);
 // CHECK-NEXT: dsb(DSB_DDR);
 // CHECK:      pto::comm::TNOTIFY(
 

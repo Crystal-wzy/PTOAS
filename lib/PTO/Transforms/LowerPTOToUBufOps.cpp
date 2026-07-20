@@ -1466,7 +1466,7 @@ private:
           i64c(elemSize, loc, b)).getResult();
       loops.push_back({count, srcStride, dstStride});
     }
-    b.create<pto::MteUbGmOp>(loc, ubPtr, gmPtr, lenBurst, nburst,
+    b.create<pto::MteUbGmOp>(loc, ubPtr, gmPtr, lenBurst, nburst, Value{},
                              llvm::ArrayRef(loops));
     return success();
   }

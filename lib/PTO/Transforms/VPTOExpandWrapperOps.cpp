@@ -380,7 +380,9 @@ static void configureAccStoreScalarPreOps(Location loc, Value preQuant,
     }
   };
 
-  if (preQuantMode && !isVectorQuantMode(*preQuantMode)) {
+  if (preQuantMode &&
+      *preQuantMode != pto::AccStoreQuantPreMode::NoConvert &&
+      !isVectorQuantMode(*preQuantMode)) {
     if (Value quantValue = materializeAccStoreScalarPayload(preQuant, rewriter, loc))
       rewriter.create<pto::SetQuantPreOp>(loc, quantValue);
   }
@@ -1247,9 +1249,10 @@ struct ExpandDmaStorePattern : public OpRewritePattern<pto::MteUbGmOp> {
           Value source = offsetPointerByBytes(op.getSource(), srcOffset, rewriter, loc);
           Value destination =
               offsetPointerByBytes(op.getDestination(), dstOffset, rewriter, loc);
+          Value l2CacheCtl = op.getL2CacheCtl() ? op.getL2CacheCtl() : zero;
           rewriter.create<pto::CopyUbufToGmOp>(
               loc, source, destination, zero, effectiveNBurst, op.getLenBurst(),
-              zero, op.getNburstDstStride(), op.getNburstSrcStride());
+              l2CacheCtl, op.getNburstDstStride(), op.getNburstSrcStride());
         });
     if (dmaArch == DmaArch::A5 &&
         shouldRestoreDmaLoopSize(loop1Count, loop2Size))

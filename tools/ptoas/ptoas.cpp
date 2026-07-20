@@ -3151,7 +3151,6 @@ int mlir::pto::compilePTOASModule(
     pm.addPass(createNarrowUnusedMultiResultProvenancePass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
-  pm.addPass(pto::createPTOMemoryConsistencyPass());
   if (failed(applyConfiguredPassManagerCLOptions(pm, "main PTOAS pipeline")))
     return 1;
 

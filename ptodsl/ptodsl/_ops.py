@@ -4099,6 +4099,82 @@ def _acc_store_unit_flag_attr(unit_flag):
         context="acc store unit_flag",
     )
 
+_ACC_STORE_PRE_QUANT_MODES = frozenset({
+    "no_convert",
+    "f32_f16",
+    "qf322hif8_pre_vec",
+    "qf322hif8_pre_scalar",
+    "qf322hif8_pre_hybrid_vec",
+    "qf322hif8_pre_hybrid_scalar",
+    "deqs32_int_vec",
+    "deqs32_int_scalar",
+    "req8_vec",
+    "req8_scalar",
+    "deqf16_vec",
+    "deqf16_scalar",
+    "qf322fp8_pre_vec",
+    "qf322fp8_pre_scalar",
+    "qf322f32_pre_vec",
+    "qf322f32_pre_scalar",
+    "f32_bf16",
+    "qf162b8_pre_vec",
+    "qf162b8_pre_scalar",
+    "qf162s4_pre_vec",
+    "qf162s4_pre_scalar",
+    "req4_vec",
+    "req4_scalar",
+    "qf322b8_pre_vec",
+    "qf322b8_pre_scalar",
+    "qf322s4_pre_vec",
+    "qf322s4_pre_scalar",
+    "deqs16_vec",
+    "deqs16_scalar",
+    "qf162s16_pre_vec",
+    "qf162s16_pre_scalar",
+    "qf322f16_pre_vec",
+    "qf322f16_pre_scalar",
+    "qf322bf16_pre_vec",
+    "qf322bf16_pre_scalar",
+    "qs322bf16_pre_vec",
+    "qs322bf16_pre_scalar",
+})
+
+_ACC_STORE_PRE_QUANT_SKIP_PAYLOAD_KIND_CHECK = frozenset({
+    "no_convert",
+})
+
+_ACC_STORE_VECTOR_PRE_QUANT_MODES = frozenset({
+    mode for mode in _ACC_STORE_PRE_QUANT_MODES if mode.endswith("_vec")
+})
+
+
+def _is_acc_store_float_scalar_payload(value) -> bool:
+    raw_value = unwrap_surface_value(value)
+    return hasattr(raw_value, "type") and any(
+        cls.isinstance(raw_value.type) for cls in (F16Type, BF16Type, F32Type)
+    )
+
+
+def _is_acc_store_scaling_pointer_payload(value) -> bool:
+    raw_value = unwrap_surface_value(value)
+    if not hasattr(raw_value, "type"):
+        return False
+    try:
+        ptr_type = _pto.PtrType(raw_value.type)
+    except Exception:
+        return False
+    scaling_attr = _pto.AddressSpaceAttr.get(_pto.AddressSpace.SCALING)
+    memory_space = getattr(ptr_type, "memory_space", None)
+    if (
+        memory_space != scaling_attr
+        and getattr(memory_space, "value", None) != _pto.AddressSpace.SCALING
+    ):
+        return False
+    return any(
+        cls.isinstance(ptr_type.element_type)
+        for cls in (F16Type, BF16Type, F32Type)
+    )
+
 
 def _acc_store_pre_quant(pre_quant):
     if pre_quant is None:
@@ -4106,9 +4182,25 @@ def _acc_store_pre_quant(pre_quant):
     if not isinstance(pre_quant, tuple) or len(pre_quant) != 2:
         raise TypeError("acc store pre_quant expects (payload, mode)")
     payload, mode = pre_quant
+    normalized_mode = _normalize_token(mode, context="acc store pre_quant mode")
+    if normalized_mode not in _ACC_STORE_PRE_QUANT_MODES:
+        raise ValueError(f"unsupported acc store pre_quant mode: {normalized_mode}")
+    if normalized_mode in _ACC_STORE_PRE_QUANT_SKIP_PAYLOAD_KIND_CHECK:
+        pass
+    elif normalized_mode in _ACC_STORE_VECTOR_PRE_QUANT_MODES:
+        if not _is_acc_store_scaling_pointer_payload(payload):
+            raise TypeError(
+                "acc store vector pre_quant payload must be a scaling pointer "
+                "with f16, bf16, or f32 elements"
+            )
+    else:
+        if not _is_acc_store_float_scalar_payload(payload):
+            raise TypeError(
+                "acc store scalar pre_quant payload must be an f16, bf16, or f32 scalar"
+            )
     return (
         unwrap_surface_value(payload),
-        Attribute.parse(f"#pto<quant_pre_mode {_normalize_token(mode, context='acc store pre_quant mode')}>"),
+        Attribute.parse(f"#pto<quant_pre_mode {normalized_mode}>"),
     )
 
 
@@ -4472,7 +4564,15 @@ def mte_load(source, destination, l2_cache_ctl, len_burst, *, nburst, loops=None
 
 
 @_explicit_mode_only("pto.mte_store(...)")
-def mte_store(source, destination, len_burst, *, nburst, loops=None):
+def mte_store(
+    source,
+    destination,
+    len_burst,
+    *,
+    nburst,
+    loops=None,
+    l2_cache="nmfv",
+):
     """Ptr-based UB->GM DMA wrapper aligned with the underlying ``pto.dma_store`` surface."""
     n_burst, nburst_src_stride, nburst_dst_stride = _normalize_dma_group(
         "nburst",
@@ -4493,6 +4593,10 @@ def mte_store(source, destination, len_burst, *, nburst, loops=None):
         loop_counts,
         loop_src_strides,
         loop_dst_strides,
+        l2_cache_ctl=_coerce_i64(
+            _normalize_mte_store_l2_cache(l2_cache, context="mte_store(...) l2_cache"),
+            context="mte_store l2 cache control",
+        ),
     )
 
 
@@ -4582,7 +4686,15 @@ def mte_gm_ub(source, destination, l2_cache_ctl, len_burst, *, nburst, loops=Non
 
 
 @_explicit_mode_only("pto.mte_ub_gm(...)")
-def mte_ub_gm(source, destination, len_burst, *, nburst, loops=None):
+def mte_ub_gm(
+    source,
+    destination,
+    len_burst,
+    *,
+    nburst,
+    loops=None,
+    l2_cache="nmfv",
+):
     """``pto.mte_ub_gm`` – grouped UB-to-GM DMA surface."""
     n_burst, nburst_src_stride, nburst_dst_stride = _normalize_dma_group(
         "nburst",
@@ -4603,6 +4715,10 @@ def mte_ub_gm(source, destination, len_burst, *, nburst, loops=None):
         loop_counts,
         loop_src_strides,
         loop_dst_strides,
+        l2_cache_ctl=_coerce_i64(
+            _normalize_mte_store_l2_cache(l2_cache, context="mte_ub_gm(...) l2_cache"),
+            context="mte_ub_gm l2 cache control",
+        ),
     )
 
 
@@ -5264,6 +5380,24 @@ _ST_L2_CACHE_TOKENS = {
     "wbhfv", "wbhlv", "wbhprs", "wbhred",
     "wtsfv", "wtslv", "wtsprs", "wtsred",
 }
+_ST_L2_CACHE_CONTROL_VALUES = {
+    "nmfv": 0,
+    "nmlv": 1,
+    "nmprs": 2,
+    "nmred": 3,
+    "naci": 4,
+    "napw": 5,
+    "napi": 6,
+    "nared": 7,
+    "wbhfv": 8,
+    "wbhlv": 9,
+    "wbhprs": 10,
+    "wbhred": 11,
+    "wtsfv": 12,
+    "wtslv": 13,
+    "wtsprs": 14,
+    "wtsred": 15,
+}
 _ROUNDING_TOKENS = {"r", "a", "f", "c", "z", "o", "h"}
 _SATURATION_TOKENS = {"sat", "nosat"}
 
@@ -5290,6 +5424,14 @@ def _ld_l2_cache_attr(value, *, context: str):
 
 def _st_l2_cache_attr(value, *, context: str):
     return _simt_enum_attr("st_l2cache", value, supported=_ST_L2_CACHE_TOKENS, context=context)
+
+
+def _normalize_mte_store_l2_cache(l2_cache, *, context: str):
+    token = _normalize_token(l2_cache, context=context)
+    if token not in _ST_L2_CACHE_CONTROL_VALUES:
+        expected = ", ".join(sorted(_ST_L2_CACHE_CONTROL_VALUES))
+        raise ValueError(f"{context} does not support {l2_cache!r}; expected one of {expected}")
+    return _ST_L2_CACHE_CONTROL_VALUES[token]
 
 
 def _rounding_attr(value, *, context: str):
