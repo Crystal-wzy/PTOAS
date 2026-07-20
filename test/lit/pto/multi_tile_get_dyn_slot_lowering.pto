@@ -53,7 +53,6 @@ module {
 // CHECK: pto.multi_tile_get %[[MULTI]][%[[NEXT_IDX]]
 // CHECK: pto.multi_tile_get %[[MULTI]][%[[CUR_IDX]]
 // CHECK-NOT: memref.alloc
-// CHECK-NOT: pto.slot_marker
 
 // ResolveBufferSelect creates an addressed alloc_tile from an arith.select
 // chain driven by the user SSA (not an implicit iv mod N).

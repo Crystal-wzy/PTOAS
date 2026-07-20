@@ -18,7 +18,7 @@
 // Because the producing `tadd` touches *two* multi-buffers at different
 // phases, the dyn event lane for B's hazard must be keyed off B's slot
 // (i%2), NOT the tadd's first read operand A (which is (i+1)%2). The earlier
-// code grabbed the op's first slot_marker memref and would have keyed the
+// code grabbed the op's first multi_tile_get and would have keyed the
 // wait off A's slot -- selecting the wrong event lane and letting the real
 // cross-iter dependency on B through.
 

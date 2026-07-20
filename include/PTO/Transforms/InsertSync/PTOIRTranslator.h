@@ -73,7 +73,6 @@ private:
   LogicalResult UpdateAllocMultiTileOpMemInfo(pto::AllocMultiTileOp op);
   LogicalResult UpdateDeclareTileOpMemInfo(pto::DeclareTileOp op);
   LogicalResult UpdateDeclareGlobalOpMemInfo(pto::DeclareGlobalOp op);
-  LogicalResult UpdateDeclareTileMemRefOpMemInfo(pto::DeclareTileMemRefOp op);
   LogicalResult UpdatePointerCastOpMemInfo(pto::PointerCastOp op);
   LogicalResult UpdateMemrefAllocOpMemInfo(memref::AllocOp op);
   
@@ -82,7 +81,6 @@ private:
   void UpdateConservativeAliasBufferInfo(Value result, Value source);
   void UpdateMemrefSubViewAliasBufferInfo(memref::SubViewOp op);
   void UpdateTileSubViewAliasBufferInfo(pto::SubViewOp op);
-  void UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op);
   LogicalResult UpdateIntToPtrOpMemInfo(pto::IntToPtrOp op);
   void UpdateMultiTileGetAliasBufferInfo(pto::MultiTileGetOp op);
   void UpdateSlotSelectedAliasBufferInfo(Value result, Value source,

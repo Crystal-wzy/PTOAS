@@ -9,7 +9,7 @@
 //===- SlotAffineAnalysis.h - Multi-buffer slot affine compare --*- C++ -*-===//
 //
 // Small affine helper used by the multi-buffer sync path. Both InsertSync
-// and GraphSyncSolver consume it to decide, for two `pto.slot_marker`
+// and GraphSyncSolver consume it to decide, for two `pto.multi_tile_get`
 // slot-index SSA expressions, whether they are provably equal modulo N,
 // provably disjoint modulo N, or indeterminate. The result lets sync
 // shrink event-id count or skip same-iter forward syncs entirely when
@@ -37,9 +37,9 @@ enum class SlotRelation {
 };
 
 /// Walk back through metadata-only ops (`pto.bind_tile`) to the nearest
-/// `pto.slot_marker` and return its slot SSA value. Returns a null Value
-/// if the chain does not pass through a slot_marker.
-mlir::Value findSlotMarkerExpr(mlir::Value v);
+/// `pto.multi_tile_get` and return its slot SSA value. Returns a null Value
+/// if the chain does not pass through a multi_tile_get.
+mlir::Value findMultiTileSlotExpr(mlir::Value v);
 
 /// Compare two slot SSA expressions modulo `N`. The analysis is
 /// intentionally narrow: it accepts the forms commonly produced by

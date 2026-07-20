@@ -324,13 +324,6 @@ static void bindExplicitValidDims(ShapeConstraintSolver &solver,
                    dims.cols, bind.getValidCol());
     return;
   }
-  if (auto materialize = value.getDefiningOp<pto::MaterializeTileOp>()) {
-    bindDimToValue(solver, symbolDimByValue, canonicalByValue, signatureMap,
-                   dims.rows, materialize.getValidRow());
-    bindDimToValue(solver, symbolDimByValue, canonicalByValue, signatureMap,
-                   dims.cols, materialize.getValidCol());
-    return;
-  }
   if (auto subview = value.getDefiningOp<pto::SubViewOp>()) {
     bindDimToValue(solver, symbolDimByValue, canonicalByValue, signatureMap,
                    dims.rows, subview.getValidRow());

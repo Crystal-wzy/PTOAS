@@ -356,10 +356,6 @@ def AllocTileOp : PTO_Op<"alloc_tile", [AttrSizedOperandSegments]> {
 // may be a constant or any SSA `index` value; PTOAS does not synthesize
 // `iv mod N` automatically -- the user expression IS the slot selector.
 //
-// `pto.slot_marker` remains as an internal compatibility op for legacy
-// memref-based multi-buffer IR. PTOViewToMemref does not create it for
-// tile-native `pto.multi_tile_get`.
-
 def AllocMultiTileOp : PTO_Op<"alloc_multi_tile", [AttrSizedOperandSegments]> {
   let summary = "Allocate an N-slot multi-buffer tile";
   let description = [{
@@ -468,34 +464,6 @@ def BindTileOp : PTO_Op<"bind_tile", [
   let results = (outs AnyMemRef:$result);
 
   // [修改] assemblyFormat: 去掉 valid_dims，改为 ($row, $col)?
-  let assemblyFormat = [{
-    $source (`,` $valid_row^ `,` $valid_col)? attr-dict `:` qualified(type($source)) `->` qualified(type($result))
-  }];
-}
-
-def MaterializeTileOp : PTO_Op<"materialize_tile", [
-    Pure,
-    AttrSizedOperandSegments
-  ]> {
-  let summary = "Materializes a tile buffer handle from a planned memref";
-  let description = [{
-    Bridges the memref-based memory-planning/sync IR back into tile-buffer
-    handle IR immediately before EmitC. The source remains the planned memref
-    address, while the result carries the tile type, valid dims, and config
-    expected by tile operations and C++ tile codegen.
-  }];
-
-  let arguments = (ins
-    AnyMemRef:$source,
-    Optional<Index>:$valid_row,
-    Optional<Index>:$valid_col,
-    TileBufConfigAttr:$config
-  );
-
-  let results = (outs TileBufType:$result);
-
-  let hasVerifier = 1;
-
   let assemblyFormat = [{
     $source (`,` $valid_row^ `,` $valid_col)? attr-dict `:` qualified(type($source)) `->` qualified(type($result))
   }];
@@ -1549,40 +1517,6 @@ def PointerCastOp : PTO_Op<"pointer_cast", [AttrSizedOperandSegments, Pure]> {
 
   let extraClassDeclaration = [{
     ::mlir::LogicalResult verify();
-  }];
-}
-
-def SlotMarkerOp : PTO_Op<"slot_marker", [
-    Pure,
-    ViewLikeOpInterface,
-    AllTypesMatch<["source", "result"]>
-  ]> {
-  let summary = "Tag a memref view as referring to one slot of a multi_tile_buf";
-  let description = [{
-    Internal compatibility op for legacy memref-based multi-buffer IR. It
-    carries a slot SSA index so sync analysis (InsertSync / GraphSyncSolver)
-    and the buffer-select lowering pass can identify which physical slot a
-    memref reference touches.
-
-    The op is metadata-only (no data movement, no extra address arithmetic);
-    its result memref aliases the source memref byte-for-byte. Frontends do
-    not produce this op directly -- use `pto.multi_tile_get` instead.
-  }];
-
-  let arguments = (ins
-    AnyMemRef:$source,
-    Index:$slot
-  );
-
-  let results = (outs AnyMemRef:$result);
-
-  let assemblyFormat = [{
-    $source `[` $slot `]` attr-dict
-    `:` qualified(type($source)) `->` qualified(type($result))
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::Value getViewSource() { return getSource(); }
   }];
 }
 
@@ -2768,20 +2702,6 @@ def StructSetOp : PTO_Op<"struct_set"> {
   let assemblyFormat = [{
     $s custom<StructPath>($path) `,` $value attr-dict
       `:` qualified(type($s)) `,` type($value)
-  }];
-}
-
-def DeclareTileMemRefOp : PTO_Op<"declare_tile_memref"> {
-  let summary = "Legacy memref placeholder for a runtime-bound tile";
-  let description = [{
-    Compatibility op for legacy memref-based IR. New PTOViewToMemref pipelines
-    preserve `pto.declare_tile` directly instead of producing this op.
-  }];
-
-  let results = (outs AnyMemRef:$result);
-
-  let assemblyFormat = [{
-    attr-dict `->` qualified(type($result))
   }];
 }
 

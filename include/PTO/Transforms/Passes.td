@@ -762,11 +762,11 @@ def PTOValidateIntToPtrUses : Pass<"pto-validate-inttoptr-uses", "func::FuncOp">
 }
 
 def PTOMaterializeTileHandles : Pass<"pto-materialize-tile-handles", "ModuleOp"> {
-  let summary = "Materialize tile_buf handles from planned memrefs before EmitC";
+  let summary = "Restore tile_buf handles for remaining legacy memref values";
   let description = [{
-    Re-wraps local memref values used by tile operations into explicit
-    pto.materialize_tile ops. This keeps PlanMemory and InjectSync in memref IR
-    while making the tile handle boundary visible to EmitC lowering.
+    Re-wraps any remaining local memref values used by tile operations as
+    addressed `pto.alloc_tile` handles before backend lowering. Tile-native
+    operations already bypass this compatibility path.
   }];
 
   let constructor = "mlir::pto::createPTOMaterializeTileHandlesPass()";
@@ -787,10 +787,6 @@ def PTOResolveBufferSelect : Pass<"pto-resolve-buffer-select", "ModuleOp"> {
     slot addresses or a level3 base address. Each selection is replaced by a
     `pto.alloc_tile` carrying the selected address; constant slots select one
     address directly, while dynamic slots use an N-way `arith.select` chain.
-
-    The pass also retains compatibility with legacy memref-based
-    `pto.slot_marker` IR, where the selection is materialized as a
-    single-address `pto.pointer_cast`.
 
     This pass does not rewrite `%k` into `iv mod N`; the frontend expression
     remains the slot selector.

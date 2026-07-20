@@ -93,7 +93,7 @@ static bool isLocalTileMemRef(Type type) {
 }
 
 static bool shouldMaterializeOperand(Operation *owner) {
-  if (isa<AllocTileOp, MaterializeTileOp, BindTileOp, PointerCastOp>(owner))
+  if (isa<AllocTileOp, BindTileOp, PointerCastOp>(owner))
     return false;
 
   StringRef name = owner->getName().getStringRef();

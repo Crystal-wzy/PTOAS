@@ -22,9 +22,8 @@
 //   - pto.get_tensor_view_stride → extract dimension stride
 //
 // This pass resolves them against the concrete values at the call site.
-// For tile_buf intrinsics, the active VPTO path folds against materialized tile
-// handles produced by the shared tile-handle bridge (`pto.alloc_tile` or
-// `pto.materialize_tile`).
+// For tile_buf intrinsics, the active VPTO path folds against addressed
+// `pto.alloc_tile` handles produced by the shared tile-handle bridge.
 // For tensor_view intrinsics, the pass traces through the full
 // unrealized_conversion_cast → memref.subview → memref.reinterpret_cast
 // chain to fold directly to constants or SSA operands from the
@@ -154,7 +153,6 @@ static void eraseDeadViewChains(func::FuncOp func) {
 }
 
 struct TileHandleInfo {
-  Value sourceMemref;
   Value addr;
   Value validRow;
   Value validCol;
@@ -240,14 +238,8 @@ static std::optional<TileHandleInfo> resolveTileHandle(Value tileBuf,
           "FoldTileBufIntrinsics: pto.alloc_tile must produce !pto.tile_buf");
       return std::nullopt;
     }
-    return TileHandleInfo{Value(), alloc.getAddr(), alloc.getValidRow(),
+    return TileHandleInfo{alloc.getAddr(), alloc.getValidRow(),
                           alloc.getValidCol(), tileTy.getConfigAttr()};
-  }
-
-  if (auto materialize = tileBuf.getDefiningOp<pto::MaterializeTileOp>()) {
-    return TileHandleInfo{materialize.getSource(), Value(),
-                          materialize.getValidRow(), materialize.getValidCol(),
-                          materialize.getConfig()};
   }
 
   if (auto reshape = tileBuf.getDefiningOp<pto::TReshapeOp>()) {
@@ -263,8 +255,7 @@ static std::optional<TileHandleInfo> resolveTileHandle(Value tileBuf,
     }
 
     auto [validRow, validCol] = findSetValidShapeOverride(tileBuf);
-    return TileHandleInfo{sourceInfo->sourceMemref,
-                          sourceInfo->addr,
+    return TileHandleInfo{sourceInfo->addr,
                           validRow ? validRow : sourceInfo->validRow,
                           validCol ? validCol : sourceInfo->validCol,
                           tileTy.getConfigAttr()};
@@ -272,7 +263,7 @@ static std::optional<TileHandleInfo> resolveTileHandle(Value tileBuf,
 
   user->emitError("FoldTileBufIntrinsics: expected tile_buf to be defined by "
                   "the active materialized tile-handle bridge "
-                  "(pto.alloc_tile, pto.materialize_tile, or pto.treshape, "
+                  "(pto.alloc_tile or pto.treshape, "
                   "or a pto.fusion_region result that yields one of them)");
   return std::nullopt;
 }
@@ -727,8 +718,7 @@ struct FoldTileBufIntrinsicsPass
 
       // Fold pto.tile_buf_addr by recovering the active materialized tile
       // handle contract:
-      //   - pto.materialize_tile → use the source memref directly
-      //   - pto.alloc_tile       → rebuild a memref from the explicit addr
+      //   - pto.alloc_tile → rebuild a memref from the explicit addr
       // When the requested result type is already !pto.ptr<...>, cast from the
       // recovered memref instead of leaving tile_buf_addr in the IR.
       for (auto addrOp : addrOps) {
@@ -752,23 +742,6 @@ struct FoldTileBufIntrinsicsPass
 
         if (auto resultMemrefType =
                 dyn_cast<MemRefType>(addrOp.getDst().getType())) {
-          if (handleInfo->sourceMemref) {
-            Value srcMemref = handleInfo->sourceMemref;
-            if (!isa<MemRefType>(srcMemref.getType())) {
-              addrOp.emitError("FoldTileBufIntrinsics: pto.materialize_tile "
-                               "source is not a memref");
-              return signalPassFailure();
-            }
-
-            // The declared tile_buf_addr result type may differ from the actual
-            // materialized source layout (e.g. plain shape vs. strided layout).
-            if (srcMemref.getType() != resultMemrefType)
-              addrOp.getDst().setType(cast<MemRefType>(srcMemref.getType()));
-            addrOp.getDst().replaceAllUsesWith(srcMemref);
-            addrOp.erase();
-            continue;
-          }
-
           if (!handleInfo->addr) {
             addrOp.emitError("FoldTileBufIntrinsics: pto.alloc_tile used by "
                              "tile_buf_addr must carry an addr operand on the "
@@ -794,30 +767,20 @@ struct FoldTileBufIntrinsicsPass
           return signalPassFailure();
         }
 
-        Value memrefValue;
-        if (handleInfo->sourceMemref) {
-          memrefValue = handleInfo->sourceMemref;
-          if (!isa<MemRefType>(memrefValue.getType())) {
-            addrOp.emitError("FoldTileBufIntrinsics: pto.materialize_tile "
-                             "source is not a memref");
-            return signalPassFailure();
-          }
-        } else {
-          if (!handleInfo->addr) {
-            addrOp.emitError("FoldTileBufIntrinsics: pto.alloc_tile used by "
-                             "tile_buf_addr must carry an addr operand on the "
-                             "VPTO path");
-            return signalPassFailure();
-          }
-
-          builder.setInsertionPoint(addrOp);
-          auto canonicalMemrefType = getCanonicalMemRefTypeForTileBuf(tileTy);
-          memrefValue = builder.create<pto::PointerCastOp>(
-              addrOp.getLoc(), canonicalMemrefType, ValueRange{handleInfo->addr},
-              handleInfo->validRow ? handleInfo->validRow : Value(),
-              handleInfo->validCol ? handleInfo->validCol : Value(),
-              handleInfo->config);
+        if (!handleInfo->addr) {
+          addrOp.emitError("FoldTileBufIntrinsics: pto.alloc_tile used by "
+                           "tile_buf_addr must carry an addr operand on the "
+                           "VPTO path");
+          return signalPassFailure();
         }
+
+        builder.setInsertionPoint(addrOp);
+        auto canonicalMemrefType = getCanonicalMemRefTypeForTileBuf(tileTy);
+        Value memrefValue = builder.create<pto::PointerCastOp>(
+            addrOp.getLoc(), canonicalMemrefType, ValueRange{handleInfo->addr},
+            handleInfo->validRow ? handleInfo->validRow : Value(),
+            handleInfo->validCol ? handleInfo->validCol : Value(),
+            handleInfo->config);
 
         builder.setInsertionPoint(addrOp);
         Value replacement =
@@ -1080,7 +1043,7 @@ struct FoldTileBufIntrinsicsPass
     }
 
     // DCE tile-handle view / alloc ops left behind after valid-shape
-    // folding (treshape / materialize_tile / alloc_tile / bridging casts).
+    // folding (treshape / alloc_tile / bridging casts).
     bool tileDceChanged = true;
     while (tileDceChanged) {
       tileDceChanged = false;
@@ -1088,7 +1051,7 @@ struct FoldTileBufIntrinsicsPass
       func.walk([&](Operation *op) {
         if (!op->use_empty())
           return;
-        if (isa<pto::TReshapeOp, pto::MaterializeTileOp, pto::AllocTileOp>(op))
+        if (isa<pto::TReshapeOp, pto::AllocTileOp>(op))
           deadTileOps.push_back(op);
         else if (auto castOp = dyn_cast<UnrealizedConversionCastOp>(op)) {
           if (castOp.getNumOperands() == 1 &&

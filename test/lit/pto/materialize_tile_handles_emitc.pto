@@ -16,7 +16,6 @@ module {
 // IR: IR Dump After PTOMaterializeTileHandles
 // IR: pto.alloc_tile addr = {{.*}} : !pto.tile_buf<vec, 16x16xf16>
 // IR: pto.alloc_tile addr = {{.*}} : !pto.tile_buf<vec, 16x16xf32>
-// IR-NOT: pto.materialize_tile
 
 // EMITC-LABEL: AICORE void materialize_tile_handles_emitc()
 // EMITC: Tile<TileType::Vec, half, 16, 16, BLayout::RowMajor, 16, 16, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>

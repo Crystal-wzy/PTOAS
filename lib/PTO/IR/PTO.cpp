@@ -3328,49 +3328,6 @@ LogicalResult PointerCastOp::verify() {
   return success();
 }
 
-LogicalResult MaterializeTileOp::verify() {
-  auto sourceTy = cast<MemRefType>(getSource().getType());
-  auto resultTy = cast<TileBufType>(getResult().getType());
-
-  if (sourceTy.getRank() != 2)
-    return emitOpError("source memref must be rank-2 to materialize a tile handle");
-  if (resultTy.getRank() != 2)
-    return emitOpError("result tile_buf must be rank-2");
-  if (failed(verifyTileBufLayoutConstraints(*this, resultTy, "result")))
-    return failure();
-
-  auto viewSemantics = (*this)->getAttrOfType<StringAttr>("pto.view_semantics");
-  bool isSubview = viewSemantics && viewSemantics.getValue() == "subview";
-  if (!isSubview && sourceTy.getShape() != resultTy.getShape())
-    return emitOpError() << "source/result shape mismatch: source="
-                         << sourceTy << " result=" << resultTy;
-
-  if (sourceTy.getElementType() != resultTy.getElementType())
-    return emitOpError() << "source/result element type mismatch: source="
-                         << sourceTy.getElementType()
-                         << " result=" << resultTy.getElementType();
-
-  if (sourceTy.getMemorySpace() != resultTy.getMemorySpace())
-    return emitOpError() << "source/result memory space mismatch";
-
-  if (getConfig() != resultTy.getConfigAttr())
-    return emitOpError("config attribute must match the result tile_buf config");
-
-  auto shape = resultTy.getShape();
-  auto validShape = resultTy.getValidShape();
-  if (validShape.size() != 2)
-    return emitOpError("result tile_buf must have rank-2 validShape");
-  for (unsigned i = 0; i < 2; ++i) {
-    if (shape[i] != ShapedType::kDynamic &&
-        validShape[i] != ShapedType::kDynamic && validShape[i] > shape[i]) {
-      return emitOpError() << "valid_shape[" << i << "] must be <= shape["
-                           << i << "]";
-    }
-  }
-
-  return success();
-}
-
 LogicalResult TAssignOp::verify() {
   if (getTile().getType() != getResult().getType()) {
     return emitOpError("result type must match tile operand type");
@@ -11409,8 +11366,7 @@ static bool isLocallyBoundTileSource(Value value) {
   if (!value || isa<BlockArgument>(value))
     return false;
 
-  if (isa<AllocTileOp, DeclareTileOp, BindTileOp, PointerCastOp,
-          MaterializeTileOp>(
+  if (isa<AllocTileOp, DeclareTileOp, BindTileOp, PointerCastOp>(
           value.getDefiningOp()))
     return true;
 

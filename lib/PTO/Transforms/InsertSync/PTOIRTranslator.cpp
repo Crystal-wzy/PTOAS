@@ -421,10 +421,6 @@ void PTOIRTranslator::RecursionIR(Region *region) {
     } else if (auto declareOp = dyn_cast<pto::DeclareTileOp>(op)) {
       if (failed(UpdateDeclareTileOpMemInfo(declareOp)))
         return WalkResult::interrupt();
-    } else if (auto declareOp = dyn_cast<pto::DeclareTileMemRefOp>(op)) {
-      if (failed(UpdateDeclareTileMemRefOpMemInfo(declareOp))) {
-        return WalkResult::interrupt();
-      }
     } else if (auto declareGlobalOp = dyn_cast<pto::DeclareGlobalOp>(op)) {
       if (failed(UpdateDeclareGlobalOpMemInfo(declareGlobalOp))) {
         return WalkResult::interrupt();
@@ -445,8 +441,6 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       UpdateTileSubViewAliasBufferInfo(subViewOp);
     } else if (auto memrefSubView = dyn_cast<memref::SubViewOp>(op)) {
       UpdateMemrefSubViewAliasBufferInfo(memrefSubView);
-    } else if (auto slotMarker = dyn_cast<pto::SlotMarkerOp>(op)) {
-      UpdateSlotMarkerAliasBufferInfo(slotMarker);
     } else if (auto intToPtrOp = dyn_cast<pto::IntToPtrOp>(op)) {
       if (failed(UpdateIntToPtrOpMemInfo(intToPtrOp)))
         return WalkResult::interrupt();
@@ -683,13 +677,8 @@ LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op)
     return success();
   }
 
-  // Multi-address (multi-buffer) cast. Use the cast result as `rootBuffer`
-  // so every downstream `pto.slot_marker` from the same alloc shares one
-  // root, and populate `baseAddresses` with each slot's physical offset
-  // (extracted from the constant i64 operands emitted by
-  // AllocToPointerCast). `pto.slot_marker` then narrows or keeps these
-  // offsets according to its slot SSA; MemAlias's existing
-  // `isBufferAddressRangeOverlap` does the per-slot disambiguation.
+  // Multi-address cast. Use the cast result as `rootBuffer` and retain every
+  // constant physical offset for conservative range-overlap analysis.
   SmallVector<uint64_t> slotOffsets;
   slotOffsets.reserve(op.getAddrs().size());
   for (Value a : op.getAddrs()) {
@@ -742,42 +731,6 @@ PTOIRTranslator::UpdateDeclareTileOpMemInfo(pto::DeclareTileOp op) {
   auto info = std::make_unique<BaseMemInfo>(
       result, result, space, SmallVector<uint64_t>{0}, sizeInBytes);
   buffer2MemInfoMap_[result].emplace_back(info->clone());
-  return success();
-}
-
-LogicalResult
-PTOIRTranslator::UpdateDeclareTileMemRefOpMemInfo(pto::DeclareTileMemRefOp op) {
-  Value res = op.getResult();
-  auto memRefType = dyn_cast<MemRefType>(res.getType());
-  if (!memRefType)
-    return failure();
-
-  uint64_t sizeInBytes = 0;
-  if (memRefType.hasStaticShape()) {
-    int64_t elemSize = static_cast<int64_t>(
-        pto::getPTOStorageElemByteSize(memRefType.getElementType()));
-    if (elemSize == 0)
-      return failure();
-
-    int64_t numElements = 1;
-    for (auto dim : memRefType.getShape())
-      numElements *= dim;
-    sizeInBytes = numElements * elemSize;
-  }
-
-  pto::AddressSpace space = pto::AddressSpace::MAT;
-  if (auto attr = memRefType.getMemorySpace()) {
-    if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(attr))
-      space = ptoAttr.getAddressSpace();
-  }
-
-  // declare_tile_memref is only a symbolic placeholder. Use its SSA result as
-  // both base/root so later bind_tile aliases and tpop consumers can be
-  // connected by InsertSync without inventing a fake allocation.
-  auto newMemInfo = std::make_unique<BaseMemInfo>(
-      res, res, space, SmallVector<uint64_t>{0}, sizeInBytes);
-
-  buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
   return success();
 }
 
@@ -1181,11 +1134,6 @@ LogicalResult PTOIRTranslator::UpdateIntToPtrOpMemInfo(pto::IntToPtrOp op) {
       /*aliasesUnknownRange=*/true);
   buffer2MemInfoMap_[result].emplace_back(newMemInfo->clone());
   return success();
-}
-
-void PTOIRTranslator::UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op) {
-  UpdateSlotSelectedAliasBufferInfo(op.getResult(), op.getSource(),
-                                    op.getSlot());
 }
 
 void PTOIRTranslator::UpdateMultiTileGetAliasBufferInfo(

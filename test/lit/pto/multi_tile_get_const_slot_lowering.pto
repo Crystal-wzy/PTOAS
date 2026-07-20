@@ -48,7 +48,6 @@ module {
 // CHECK: pto.multi_tile_get %[[MULTI]][%c0
 // CHECK: pto.multi_tile_get %[[MULTI]][%c1
 // CHECK-NOT: memref.alloc
-// CHECK-NOT: pto.slot_marker
 
 // Stage 2 -- PTOPlanMemory records two physical slot addresses.
 // PLAN: IR Dump After PlanMemory

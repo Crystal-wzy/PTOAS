@@ -504,20 +504,13 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
     if (mayAliasOp.has_value()) {
       auto aliasPair = mayAliasOp.value();
       UpdateBufferAlias(aliasPair.first, aliasPair.second);
-    } else if (isa<pto::DeclareTileOp, pto::DeclareTileMemRefOp>(op)) {
+    } else if (isa<pto::DeclareTileOp>(op)) {
       // Runtime-bound tile handles do not allocate static local storage.
       return WalkResult::advance();
     } else if (auto bindOp = dyn_cast<pto::BindTileOp>(op)) {
       // BindTile result is only an alias of the source buffer. Treat every use
       // of the result as a use of the source in liveness analysis.
       UpdateBufferAlias(bindOp.getResult(), bindOp.getSource());
-      return WalkResult::advance();
-    } else if (auto slotOp = dyn_cast<pto::SlotMarkerOp>(op)) {
-      // SlotMarker is metadata-only: it tags which physical slot of a
-      // multi-buffer alloc this view refers to. From the planner's point of
-      // view its result aliases the source; the slot index travels with the
-      // op and is consumed later by PTOResolveBufferSelect / sync.
-      UpdateBufferAlias(slotOp.getResult(), slotOp.getSource());
       return WalkResult::advance();
     } else if (isLocalMemPlan() && dyn_cast<pto::AllocTileOp>(op)) {
       auto allocTileOp = cast<pto::AllocTileOp>(op);
@@ -862,15 +855,7 @@ bool MemLivenessAnalysis::isSkippableOp(Operation *op) const {
   // Call-like ops are still modeled explicitly. Only pure terminators and
   // dim queries are skipped here.
   //
-  // `pto.slot_marker` is a metadata-only view added by PTOViewToMemref to
-  // thread multi-buffer slot selection through the memref layer. Until
-  // PlanMemory acquires first-class multi-buffer support (the design's
-  // §5.2 work), treat it as a passthrough so the rest of the pipeline can
-  // still be exercised. The N-way physical fan-out lives on the
-  // `pto.multi_buffer` attr of the underlying `memref.alloc` and is a
-  // follow-up.
-  return isa<func::ReturnOp, scf::YieldOp, pto::YieldOp, memref::DimOp,
-             mlir::pto::SlotMarkerOp>(op);
+  return isa<func::ReturnOp, scf::YieldOp, pto::YieldOp, memref::DimOp>(op);
 }
 
 LogicalResult

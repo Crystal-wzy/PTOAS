@@ -35,7 +35,6 @@ module {
 // IR: %[[BYTE_OFFSET:.*]] = arith.muli %[[ELEM_OFFSET]], %[[ELEM_BYTES]] : i64
 // IR: %[[ADDR:.*]] = arith.addi %{{.*}}, %[[BYTE_OFFSET]] : i64
 // IR: pto.alloc_tile addr = %[[ADDR]] {pto.view_semantics = "subview"} : !pto.tile_buf<right, 64x256xf32, valid=64x128, slayout=col_major>
-// IR-NOT: pto.materialize_tile
 
 // EMITC: Tile<TileType::Right, float, 64, 256, BLayout::RowMajor, 64, 128, SLayout::ColMajor, 512, PadValue::Null, CompactMode::Null>
 // EMITC-NOT: Tile<TileType::Right, float, 64, 128, BLayout::RowMajor, 64, 128, SLayout::ColMajor, 512, PadValue::Null, CompactMode::Null>

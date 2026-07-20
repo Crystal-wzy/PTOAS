@@ -207,11 +207,6 @@ static void lookupValidDims(Value v, Value &vRow, Value &vCol) {
     lookupValidDims(cast.getSource(), vRow, vCol);
     return;
   }
-  if (auto slot = v.getDefiningOp<mlir::pto::SlotMarkerOp>()) {
-    lookupValidDims(slot.getSource(), vRow, vCol);
-    return;
-  }
-
   // pto.fusion_region result 不直接携带 valid dims；作为兜底情况，沿着
   // pto.yield 回溯到 region 内真正的 tile handle/memref 定义链继续查找。
   if (auto regionResult = dyn_cast<OpResult>(v)) {

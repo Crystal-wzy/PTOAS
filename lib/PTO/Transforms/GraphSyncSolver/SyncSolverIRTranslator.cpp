@@ -76,12 +76,9 @@ llvm::SmallVector<Value> IRTranslator::tracebackMemValsStep(Value val) {
       out.push_back(whileOp.getYieldedValues()[resultNo]);
   }
 
-  // Stop the walk at `pto.slot_marker` so the multi-buffer slot index is
-  // preserved for `getMemInfo`. Without this special case, the generic
-  // `getOperationAliasInfo` path below would treat slot_marker as a
-  // transparent view and let the trace fall through to the underlying
-  // multi-address `pto.pointer_cast`, dropping the slot.
-  if (isa<pto::SlotMarkerOp, pto::MultiTileGetOp>(defOp)) {
+  // Stop at `pto.multi_tile_get` so getMemInfo preserves the selected slot
+  // instead of tracing through the metadata-only view.
+  if (isa<pto::MultiTileGetOp>(defOp)) {
     return out;
   }
 
@@ -136,14 +133,10 @@ llvm::SmallVector<Value> IRTranslator::tracebackMemVals(Value val) {
     if (!result)
       continue;
     Operation *defOp = result.getDefiningOp();
-    // `pto.slot_marker` is a multi-buffer slot tag and stops traversal so
-    // `getMemInfo` can extract slot-narrowed addresses below. Without this
-    // stop, `getOperationAliasInfo` would let the walk slip past slot_marker
-    // and reach the underlying multi-address `pto.pointer_cast`, dropping
-    // the slot index.
+    // `pto.multi_tile_get` stops traversal so getMemInfo can extract the
+    // slot-narrowed physical addresses.
     if (isa<pto::PointerCastOp, pto::AllocTileOp, pto::AllocMultiTileOp,
-            tensor::EmptyOp, memref::AllocOp, pto::SlotMarkerOp,
-            pto::MultiTileGetOp>(defOp)) {
+            tensor::EmptyOp, memref::AllocOp, pto::MultiTileGetOp>(defOp)) {
       leaves.insert(result);
       continue;
     }

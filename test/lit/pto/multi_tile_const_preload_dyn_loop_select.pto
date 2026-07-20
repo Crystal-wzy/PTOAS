@@ -51,7 +51,6 @@ module {
 // CHECK: %[[IDX:.*]] = arith.remui %arg{{.*}}, %c2
 // CHECK: pto.multi_tile_get %[[MULTI]][%[[IDX]]
 // CHECK-NOT: memref.alloc
-// CHECK-NOT: pto.slot_marker
 
 // After ResolveBufferSelect, the const preload slot becomes a directly
 // addressed alloc_tile, while the loop slot is chosen with arith.select.

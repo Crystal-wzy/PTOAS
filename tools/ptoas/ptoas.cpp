@@ -3370,8 +3370,8 @@ int mlir::pto::compilePTOASModule(
   // Conditionally add one automatic synchronization mode. Barrier-all is a
   // conservative standalone pass; InsertSync and GraphSyncSolver are set/wait
   // solvers. Sync runs BEFORE PTOResolveBufferSelect so it sees per-use
-  // `pto.slot_marker` ops and can keep multi-buffer slot identity (const slot
-  // K vs slot K' or dynamic slot) for the alias / event-id analysis.
+  // `pto.multi_tile_get` operations and keeps their slot identity for alias
+  // and event-id analysis.
   // solvers, while BufidSync is A5-only get_buf/rls_buf synchronization.
   if (enableInsertSync)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
@@ -3390,10 +3390,8 @@ int mlir::pto::compilePTOASModule(
         pto::createPTOGraphSyncSolverPass(graphSyncOpts));
   }
 
-  // Materialize per-slot single-address `pto.pointer_cast` (constant slot)
-  // or an `arith.select` chain (dynamic slot). The multi-address cast
-  // produced by explicit-address lowering or PTOPlanMemory survives as
-  // the alloc anchor.
+  // Materialize each `pto.multi_tile_get` as an addressed `pto.alloc_tile`;
+  // dynamic selections use an `arith.select` chain over planned addresses.
   pm.addPass(pto::createPTOResolveBufferSelectPass());
   if (effectiveBackend == PTOBackend::EmitC)
     pm.addPass(createNarrowUnusedMultiResultProvenancePass());

@@ -454,8 +454,8 @@ static bool isForwardDepDroppableBySlotAffine(const BaseMemInfo *a,
   size_t n = std::max(aN, bN);
   if (n < 2)
     return false;
-  Value slotA = findSlotMarkerExpr(a->baseBuffer);
-  Value slotB = findSlotMarkerExpr(b->baseBuffer);
+  Value slotA = findMultiTileSlotExpr(a->baseBuffer);
+  Value slotB = findMultiTileSlotExpr(b->baseBuffer);
   if (!slotA || !slotB)
     return false;
   return compareSlotSSA(slotA, slotB, static_cast<uint32_t>(n)) ==
@@ -629,9 +629,9 @@ void InsertSyncAnalysis::InsertSyncOperation(
         Value consumerSlot;
         for (auto &pair : depBaseMemInfosVec) {
           if (pair.second && pair.second->baseBuffer)
-            producerSlot = findSlotMarkerExpr(pair.second->baseBuffer);
+            producerSlot = findMultiTileSlotExpr(pair.second->baseBuffer);
           if (pair.first && pair.first->baseBuffer)
-            consumerSlot = findSlotMarkerExpr(pair.first->baseBuffer);
+            consumerSlot = findMultiTileSlotExpr(pair.first->baseBuffer);
           if (producerSlot && consumerSlot)
             break;
         }

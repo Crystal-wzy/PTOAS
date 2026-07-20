@@ -1,0 +1,42 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: split-file %s %t
+// RUN: not ptoas %t/materialize.pto -o /dev/null 2>&1 | FileCheck %s --check-prefix=MATERIALIZE
+// RUN: not ptoas %t/declare.pto -o /dev/null 2>&1 | FileCheck %s --check-prefix=DECLARE
+// RUN: not ptoas %t/slot.pto -o /dev/null 2>&1 | FileCheck %s --check-prefix=SLOT
+
+//--- materialize.pto
+module {
+  func.func @materialize() {
+    %0 = "pto.materialize_tile"() : () -> i32
+    return
+  }
+}
+
+// MATERIALIZE: error: unregistered operation 'pto.materialize_tile' found in dialect ('pto')
+
+//--- declare.pto
+module {
+  func.func @declare() {
+    %0 = "pto.declare_tile_memref"() : () -> i32
+    return
+  }
+}
+
+// DECLARE: error: unregistered operation 'pto.declare_tile_memref' found in dialect ('pto')
+
+//--- slot.pto
+module {
+  func.func @slot() {
+    %0 = "pto.slot_marker"() : () -> i32
+    return
+  }
+}
+
+// SLOT: error: unregistered operation 'pto.slot_marker' found in dialect ('pto')

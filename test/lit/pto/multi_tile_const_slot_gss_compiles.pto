@@ -10,9 +10,8 @@
 
 // Smoke test: a constant-slot multi-buffer program compiles cleanly through
 // the GraphSyncSolver pipeline as well. GSS uses its own IR translator
-// distinct from InsertSync's, so this guards against regressions when
-// adding new view-like ops (here `pto.bind_tile` and `pto.slot_marker`)
-// into the shared `getOperationAliasInfo` helper. We don't FileCheck
+// distinct from InsertSync's, so this guards the tile-native
+// `pto.multi_tile_get` alias path. We don't FileCheck
 // flag-emission specifics: a follow-up will teach GSS multi-buffer
 // event-id allocation, after which we can lock in optimization patterns.
 

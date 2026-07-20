@@ -188,11 +188,6 @@ std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
     return std::make_pair(reshapeOp.getResult(), reshapeOp.getSrc());
   } else if (auto bindTileOp = dyn_cast<pto::BindTileOp>(op)) {
     return std::make_pair(bindTileOp.getResult(), bindTileOp.getSource());
-  } else if (auto slotMarkerOp = dyn_cast<pto::SlotMarkerOp>(op)) {
-    // `pto.slot_marker` is a metadata-only view that tags a memref with the
-    // physical slot of a multi-buffer alloc. From an alias-walking
-    // standpoint it behaves like any other view-like op.
-    return std::make_pair(slotMarkerOp.getResult(), slotMarkerOp.getSource());
   } else if (auto multiGetOp = dyn_cast<pto::MultiTileGetOp>(op)) {
     return std::make_pair(multiGetOp.getResult(), multiGetOp.getSource());
   } else if (auto extSliceOp = dyn_cast<tensor::ExtractSliceOp>(op)) {

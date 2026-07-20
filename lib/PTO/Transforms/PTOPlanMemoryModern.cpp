@@ -686,10 +686,6 @@ struct PlannerAnalysis {
         if (auto bind = dyn_cast<pto::BindTileOp>(op)) {
           setRoots(bind.getResult(), getRoots(bind.getSource()));
           propagateSplitTpopDerived(bind.getResult(), ValueRange{bind.getSource()});
-        } else if (auto slotMarker = dyn_cast<pto::SlotMarkerOp>(op)) {
-          setRoots(slotMarker.getResult(), getRoots(slotMarker.getSource()));
-          propagateSplitTpopDerived(slotMarker.getResult(),
-                                    ValueRange{slotMarker.getSource()});
         } else if (auto multiGet = dyn_cast<pto::MultiTileGetOp>(op)) {
           setRoots(multiGet.getResult(), getRoots(multiGet.getSource()));
           propagateSplitTpopDerived(multiGet.getResult(),
