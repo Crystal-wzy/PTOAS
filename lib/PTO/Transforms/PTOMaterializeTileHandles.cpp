@@ -670,72 +670,6 @@ static Value lookupMaterializedTileHandle(
   return it->second;
 }
 
-static FailureOr<bool>
-materializeFusionRegionResults(ModuleOp module,
-                               DenseMap<Value, Value> &tileHandles) {
-  bool changed = false;
-
-  SmallVector<pto::FusionRegionOp, 8> fusionRegions;
-  module.walk([&](pto::FusionRegionOp fusionRegion) {
-    fusionRegions.push_back(fusionRegion);
-  });
-
-  for (pto::FusionRegionOp fusionRegion : llvm::reverse(fusionRegions)) {
-    if (fusionRegion.getNumResults() == 0)
-      continue;
-
-    auto yield =
-        dyn_cast<pto::YieldOp>(fusionRegion.getBody().front().getTerminator());
-    if (!yield) {
-      fusionRegion.emitOpError(
-          "result-bearing pto.fusion_region must terminate with pto.yield");
-      return failure();
-    }
-    if (yield.getNumOperands() != fusionRegion.getNumResults()) {
-      fusionRegion.emitOpError()
-          << "cannot materialize tile results because yield/result arity "
-             "mismatch: "
-          << yield.getNumOperands() << " vs " << fusionRegion.getNumResults();
-      return failure();
-    }
-
-    for (auto [idx, result] : llvm::enumerate(fusionRegion.getResults())) {
-      if (!isLocalTileMemRef(result.getType()))
-        continue;
-
-      Value yieldTile =
-          lookupMaterializedTileHandle(yield.getOperand(idx), tileHandles);
-      if (!yieldTile)
-        continue;
-
-      Type tileTy = yieldTile.getType();
-      yield->setOperand(idx, yieldTile);
-      result.setType(tileTy);
-      tileHandles[result] = result;
-      changed = true;
-    }
-  }
-
-  return changed;
-}
-
-static LogicalResult
-materializeFusionRegionTileResults(ModuleOp module,
-                                   DenseMap<Value, Value> &tileHandles) {
-  bool changed = false;
-  do {
-    changed = false;
-
-    FailureOr<bool> fusionChanged =
-        materializeFusionRegionResults(module, tileHandles);
-    if (failed(fusionChanged))
-      return failure();
-    changed |= *fusionChanged;
-  } while (changed);
-
-  return success();
-}
-
 static Value getAllocValidOperand(TileBufType tileTy, Value operand,
                                   unsigned dim, OpBuilder &builder,
                                   Location loc) {
@@ -1281,11 +1215,6 @@ struct PTOMaterializeTileHandlesPass
 
     restoreMaterializedTileBufAddrOps(module, builder, ctx, tileHandles);
 
-    if (failed(materializeFusionRegionTileResults(module, tileHandles))) {
-      signalPassFailure();
-      return;
-    }
-
     SmallVector<std::pair<Operation *, unsigned>, 32> operandsToRewrite;
     module.walk([&](Operation *op) {
       if (!shouldMaterializeOperand(op))
@@ -1338,11 +1267,6 @@ struct PTOMaterializeTileHandlesPass
     }
 
     if (failedMaterialization) {
-      signalPassFailure();
-      return;
-    }
-
-    if (failed(materializeFusionRegionTileResults(module, tileHandles))) {
       signalPassFailure();
       return;
     }

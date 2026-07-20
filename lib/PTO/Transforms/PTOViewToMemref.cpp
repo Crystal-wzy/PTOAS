@@ -707,43 +707,6 @@ static Type convertPTOTypeToMemRef(Type t) {
   return t;
 }
 
-// Ensure pto.fusion_region result types follow the rewritten pto.yield operand
-// types. PTOViewToMemref rewrites region-local tile values to memref, but the
-// region result types are not auto-updated by those op-local rewrites.
-static LogicalResult reconcileFusionRegionResultTypes(func::FuncOp func) {
-  SmallVector<pto::FusionRegionOp, 8> fusionRegions;
-  func.walk([&](pto::FusionRegionOp fusionRegion) {
-    fusionRegions.push_back(fusionRegion);
-  });
-
-  for (pto::FusionRegionOp fusionRegion : fusionRegions) {
-    if (fusionRegion.getNumResults() == 0)
-      continue;
-
-    auto yieldOp =
-        dyn_cast<pto::YieldOp>(fusionRegion.getBody().front().getTerminator());
-    if (!yieldOp) {
-      fusionRegion.emitError("result-bearing pto.fusion_region must end with "
-                             "pto.yield");
-      return failure();
-    }
-
-    if (yieldOp.getNumOperands() != fusionRegion.getNumResults()) {
-      fusionRegion.emitError(
-          "pto.fusion_region result count does not match yielded values");
-      return failure();
-    }
-
-    for (unsigned i = 0; i < fusionRegion.getNumResults(); ++i) {
-      Type yieldedTy = yieldOp.getOperand(i).getType();
-      if (fusionRegion.getResult(i).getType() != yieldedTy)
-        fusionRegion.getResult(i).setType(yieldedTy);
-    }
-  }
-
-  return success();
-}
-
 static void markForceDynamicValidShape(Operation *op, bool force,
                                        MLIRContext *ctx) {
   if (force) {
@@ -1227,10 +1190,6 @@ struct PTOViewToMemrefPass
       // ------------------------------------------------------------------
       // Stage 1.4: treshape/bitcast stay tile-native.
       // ------------------------------------------------------------------
-      if (failed(reconcileFusionRegionResultTypes(func))) {
-        signalPassFailure();
-        return;
-
       // ------------------------------------------------------------------
       // Stage 1.5: Lower pto.get_tensor_view_stride -> strided memref metadata
       // ------------------------------------------------------------------
@@ -1273,7 +1232,6 @@ struct PTOViewToMemrefPass
         auto metadata =
             rewriter.create<memref::ExtractStridedMetadataOp>(loc, view);
         rewriter.replaceOp(op, metadata.getStrides()[dimIndex]);
-      }
       }
 
       // ------------------------------------------------------------------
