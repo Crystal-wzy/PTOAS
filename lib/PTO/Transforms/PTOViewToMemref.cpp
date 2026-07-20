@@ -52,13 +52,7 @@ using namespace mlir;
 namespace mlir {
 namespace pto {
 
-static constexpr llvm::StringLiteral kForceDynamicValidShapeAttrName =
-    "__pto.force_dynamic_valid_shape";
-
 namespace {
-
-static void markForceDynamicValidShape(Operation *op, bool force,
-                                       MLIRContext *ctx);
 
 static Type convertPTOTypeToMemRef(Type t);
 
@@ -707,34 +701,6 @@ static Type convertPTOTypeToMemRef(Type t) {
   return t;
 }
 
-static void markForceDynamicValidShape(Operation *op, bool force,
-                                       MLIRContext *ctx) {
-  if (force) {
-    op->setAttr(kForceDynamicValidShapeAttrName, UnitAttr::get(ctx));
-    return;
-  }
-  op->removeAttr(kForceDynamicValidShapeAttrName);
-}
-
-[[maybe_unused]] static void rewriteFunctionSignature(func::FuncOp func, MLIRContext *ctx) {
-  Block &entry = func.front();
-  auto fnTy = func.getFunctionType();
-
-  SmallVector<Type> newInputs;
-  for (Type type : fnTy.getInputs())
-    newInputs.push_back(convertPTOTypeToMemRef(type));
-
-  SmallVector<Type> newResults;
-  for (Type type : fnTy.getResults())
-    newResults.push_back(convertPTOTypeToMemRef(type));
-
-  for (unsigned i = 0; i < entry.getNumArguments(); ++i) {
-    if (entry.getArgument(i).getType() != newInputs[i])
-      entry.getArgument(i).setType(newInputs[i]);
-  }
-  func.setFunctionType(FunctionType::get(ctx, newInputs, newResults));
-}
-
 static LogicalResult lowerPtrLikeTileBufAddrOps(func::FuncOp func,
                                                 MLIRContext *ctx) {
   SmallVector<mlir::pto::TileBufAddrOp, 8> addrOps;
@@ -764,73 +730,6 @@ static LogicalResult lowerPtrLikeTileBufAddrOps(func::FuncOp func,
       return failure();
     rewriter.replaceOp(op, replacement);
   }
-  return success();
-}
-
-static LogicalResult bridgeMemRefOperandsToExternalPtrCallees(ModuleOp mod,
-                                                              func::FuncOp func,
-                                                              MLIRContext *ctx) {
-  SmallVector<func::CallOp, 8> callOps;
-  func.walk([&](func::CallOp callOp) { callOps.push_back(callOp); });
-
-  for (auto callOp : callOps) {
-    auto callee = mod.lookupSymbol<func::FuncOp>(callOp.getCallee());
-    if (!callee || !callee.isExternal())
-      continue;
-
-    FunctionType calleeType = callee.getFunctionType();
-    if (calleeType.getNumInputs() != callOp.getNumOperands()) {
-      callOp.emitError("callee signature does not match call operands");
-      return failure();
-    }
-
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(callOp);
-    for (auto [index, expectedType] :
-         llvm::enumerate(calleeType.getInputs())) {
-      Value operand = callOp.getOperand(index);
-      if (!isa<mlir::pto::PtrType>(expectedType) ||
-          !isa<BaseMemRefType>(operand.getType()))
-        continue;
-
-      auto castOp = rewriter.create<pto::CastPtrOp>(
-          callOp.getLoc(), expectedType, operand);
-      callOp->setOperand(index, castOp.getResult());
-    }
-  }
-  return success();
-}
-
-static LogicalResult bridgeCallOperandsToConvertedCallees(ModuleOp mod,
-                                                          MLIRContext *ctx) {
-  SmallVector<func::CallOp, 16> callOps;
-  mod.walk([&](func::CallOp callOp) { callOps.push_back(callOp); });
-
-  for (func::CallOp callOp : callOps) {
-    auto callee = mod.lookupSymbol<func::FuncOp>(callOp.getCallee());
-    if (!callee || callee.isExternal())
-      continue;
-
-    FunctionType calleeType = callee.getFunctionType();
-    if (calleeType.getNumInputs() != callOp.getNumOperands()) {
-      callOp.emitError("callee signature does not match call operands");
-      return failure();
-    }
-
-    IRRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(callOp);
-    for (auto [index, expectedType] :
-         llvm::enumerate(calleeType.getInputs())) {
-      Value operand = callOp.getOperand(index);
-      if (operand.getType() == expectedType)
-        continue;
-
-      auto bridge = rewriter.create<UnrealizedConversionCastOp>(
-          callOp.getLoc(), expectedType, operand);
-      callOp->setOperand(index, bridge.getResult(0));
-    }
-  }
-
   return success();
 }
 
@@ -956,55 +855,12 @@ struct PTOViewToMemrefPass
         return;
       }
 
-      // Keep external declarations in the authored ABI. PTOViewToMemref does
-      // not rewrite func.call operands for external/private helpers, so changing
-      // only the callee type can leave pointer-like call users mismatched.
       if (func.isExternal())
         continue;
 
-      auto fnTy = func.getFunctionType();
       bool preserveTileABI = hasMigratedTileNativeOp(func);
       bool tileNativeMainline =
           preserveTileABI || hasTileNativeAllocationRoot(func);
-
-      // ------------------------------------------------------------------
-      // Stage 0.10: Rewrite Function Signature
-      // ------------------------------------------------------------------
-      SmallVector<Type> newInputs;
-      for (Type t : fnTy.getInputs()) {
-        newInputs.push_back(preserveTileABI &&
-                                    isa<pto::TileBufType, pto::PtrType,
-                                        pto::TensorViewType,
-                                        pto::PartitionTensorViewType>(t)
-                                ? t
-                                : convertPTOTypeToMemRef(t));
-      }
-
-      SmallVector<Type> newResults;
-      for (Type t : fnTy.getResults()) {
-        newResults.push_back(preserveTileABI &&
-                                     isa<pto::TileBufType, pto::PtrType,
-                                         pto::TensorViewType,
-                                         pto::PartitionTensorViewType>(t)
-                                 ? t
-                                 : convertPTOTypeToMemRef(t));
-      }
-
-      func.setFunctionType(FunctionType::get(ctx, newInputs, newResults));
-
-      Block &entry = func.front();
-
-      // Update entry block arguments
-      for (unsigned i = 0; i < entry.getNumArguments(); ++i) {
-        if (entry.getArgument(i).getType() != newInputs[i]) {
-            entry.getArgument(i).setType(newInputs[i]);
-        }
-      }
-
-      if (failed(bridgeMemRefOperandsToExternalPtrCallees(mod, func, ctx))) {
-        signalPassFailure();
-        return;
-      }
 
       // ------------------------------------------------------------------
       // Stage 0.25: synthesize missing A2/A3 tquant tmp tiles before type lowering.
@@ -1012,41 +868,6 @@ struct PTOViewToMemrefPass
       if (failed(synthesizeMissingTQuantTmpOps(func, ctx))) {
         signalPassFailure();
         return;
-      }
-
-      // Stage 0.40 Insert pto.bind_tile for function args that were tile_buf.
-      // ------------------------------------------------------------------
-      // Later materialization and intrinsic folding use BindTileOp as the
-      // anchor to recover tile metadata after the Stage-0 type rewrite.
-      {
-        IRRewriter rewriter(ctx);
-        // Insert after existing block args, before any existing ops.
-        rewriter.setInsertionPointToStart(&entry);
-        for (unsigned i = 0; i < entry.getNumArguments(); ++i) {
-          Type origTy = fnTy.getInputs()[i];
-          auto tbTy = dyn_cast<mlir::pto::TileBufType>(origTy);
-          if (!tbTy || newInputs[i] == origTy)
-            continue;
-
-          auto configAttr = tbTy.getConfigAttr();
-          if (!configAttr) configAttr = pto::TileBufConfigAttr::getDefault(ctx);
-
-          Value vRow, vCol;
-          auto vs = tbTy.getValidShape();
-          if (vs.size() == 2) {
-            if (vs[0] != ShapedType::kDynamic)
-              vRow = rewriter.create<arith::ConstantIndexOp>(func.getLoc(), vs[0]);
-            if (vs[1] != ShapedType::kDynamic)
-              vCol = rewriter.create<arith::ConstantIndexOp>(func.getLoc(), vs[1]);
-          }
-
-          auto bindOp = rewriter.create<pto::BindTileOp>(
-              func.getLoc(), newInputs[i], entry.getArgument(i),
-              vRow ? vRow : Value(), vCol ? vCol : Value(), configAttr);
-          markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
-
-          entry.getArgument(i).replaceAllUsesExcept(bindOp.getResult(), bindOp);
-        }
       }
 
       // ------------------------------------------------------------------
@@ -3134,11 +2955,6 @@ struct PTOViewToMemrefPass
 
     }
 
-    if (failed(bridgeCallOperandsToConvertedCallees(mod, ctx))) {
-      signalPassFailure();
-      return;
-    }
-    
     // Debug Output
     LLVM_DEBUG(llvm::dbgs() << mod.getOperation());
   }
