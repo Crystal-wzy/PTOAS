@@ -692,6 +692,11 @@ mlir::pto::PTOASContext::initializeEnvironment(bool requiresToolchain,
 }
 
 void mlir::pto::PTOASContext::initializeMLIRContext() {
+  // Some PTOAS pipelines still contain module-level bookkeeping in nested
+  // function passes. Keep the driver single-threaded until those passes are
+  // audited; otherwise parallel lit runs can expose nondeterministic MLIR block
+  // iterator invalidation in A5 EmitC tests.
+  mlirContext.disableMultithreading();
   // Be tolerant: ptobc decode may materialize ops from dialects that aren't
   // explicitly registered/loaded in this tool yet.
   mlirContext.allowUnregisteredDialects(true);
