@@ -101,8 +101,6 @@ static bool shouldMaterializeOperand(Operation *owner) {
     return true;
   if (name == "pto.get_validshape")
     return true;
-  if (name == "pto.build_async_session")
-    return true;
   if (!name.consume_front("pto."))
     return false;
   return name.starts_with("t");
