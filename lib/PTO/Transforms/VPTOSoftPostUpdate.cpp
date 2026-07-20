@@ -364,9 +364,13 @@ static scf::ForOp applyPostUpdateRewrites(
 
     Operation *newOp = builder.create(state);
 
-    // Replace old results with new (original results at same indices).
-    for (unsigned r = 0; r < clonedOp->getNumResults(); ++r)
+    // Replace old results with new and update the mapping so that later
+    // yield construction via mapping.lookupOrDefault sees the new results
+    // instead of dangling pointers to the erased clonedOp.
+    for (unsigned r = 0; r < clonedOp->getNumResults(); ++r) {
       clonedOp->getResult(r).replaceAllUsesWith(newOp->getResult(r));
+      mapping.map(rw.op->getResult(r), newOp->getResult(r));
+    }
 
     // updated_base is the last result.
     groupYieldPtrs[gIdx] = newOp->getResult(newOp->getNumResults() - 1);
