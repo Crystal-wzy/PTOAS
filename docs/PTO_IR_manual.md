@@ -322,6 +322,29 @@ would make the callee's writes land in a copy, and an `!emitc.lvalue` is
 rejected outright as a function argument type by both `emitc.func` and the C++
 emitter — the pointer is what makes helper functions expressible at all.
 
+**A struct must not escape the scope that declares it.** Because the value is a
+pointer to stack storage, passing it to a terminator would publish that address
+outside the scope that owns it, so `pto.declare_struct` rejects it:
+
+```mlir
+// Rejected: hands the caller a pointer into a dead frame.
+func.func @make() -> !pto.struct<f32, i8> {
+  %s = pto.declare_struct -> !pto.struct<f32, i8>
+  return %s : !pto.struct<f32, i8>
+}
+
+// Rejected: carries the address out of the region that owns the storage.
+%r = scf.if %c -> (!pto.struct<f32, i8>) {
+  %a = pto.declare_struct -> !pto.struct<f32, i8>
+  scf.yield %a : !pto.struct<f32, i8>
+} else { ... }
+```
+
+This costs nothing in expressiveness: `pto.struct_set` mutates in place, so a
+struct never needs to be returned or yielded. Declare it in the outer scope and
+pass it down as a function argument instead — the callee writes through the
+pointer and the caller sees the result.
+
 **Generated type name.** The C++ name is derived from the MLIR type spelling of
 the fields (`!pto.struct<f16, i8>` → `PtoStruct_f16_i8`), not from their C++
 spellings. That mapping is injective, so two distinct `!pto.struct` types never
@@ -10503,6 +10526,14 @@ Section 2.7 for type-level constraints.
 **Arguments:** None.
 
 **Results:** `!pto.struct<T0, ..., Tn-1>`
+
+**Constraints & Verification:**
+
+- The result must not be passed to a terminator (`func.return`, `scf.yield`,
+  ...). The value is a pointer to stack storage owned by the declaring scope, so
+  letting it out would expose the address of storage that is about to die. See
+  [Section 2.7](#27-ptostructt0-t1--tn-1); mutation is in place, so declare the
+  struct in the outer scope and pass it down instead.
 
 **Basic Example:**
 

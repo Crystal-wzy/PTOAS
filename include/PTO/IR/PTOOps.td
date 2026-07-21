@@ -2673,9 +2673,19 @@ def DeclareStructOp : PTO_Op<"declare_struct"> {
 
     This op does not participate in PTO memory planning. The resulting struct's
     address is determined by the host C++ compiler.
+
+    The struct is stack storage owned by the scope that declares it, and a
+    `!pto.struct` value lowers to a pointer to that storage. Handing the value
+    to a terminator would publish the address outside the owning scope, so it is
+    rejected: returning it would leave the caller holding a pointer to a dead
+    frame. Since `pto.struct_set` mutates in place, a struct never needs to be
+    returned or yielded — declare it in the outer scope and pass it down as a
+    function argument instead.
   }];
 
   let results = (outs StructType:$s);
+
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
     attr-dict `->` qualified(type($s))

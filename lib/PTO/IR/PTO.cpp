@@ -2674,6 +2674,28 @@ static LogicalResult walkStructPath(Operation *op, mlir::pto::StructType root,
   return success();
 }
 
+// The declared struct is stack storage owned by the enclosing scope, and the
+// value lowers to a pointer to that storage. Letting it reach a terminator
+// would publish that address outside the owning scope: `return %s` hands the
+// caller a pointer into a dead frame, and `scf.yield %s` carries it out of the
+// region that owns it. Both are rejected here rather than emitted as C++ that
+// looks fine and is undefined at run time.
+LogicalResult mlir::pto::DeclareStructOp::verify() {
+  for (Operation *user : getS().getUsers()) {
+    if (!user->hasTrait<mlir::OpTrait::IsTerminator>())
+      continue;
+    return emitOpError()
+           << "stack-local struct must not escape the scope that declares it, "
+              "but its value is passed to '"
+           << user->getName()
+           << "', which would expose the address of storage that is about to "
+              "die; declare the struct in the outer scope and pass it down as "
+              "a function argument instead (pto.struct_set mutates in place, "
+              "so a struct never needs to be returned or yielded)";
+  }
+  return success();
+}
+
 // Both accessors bottom out at a scalar. A path ending on a nested !pto.struct
 // is rejected: the member chain lowers to `emitc.member`, which yields an
 // lvalue, and handing a whole aggregate back as an SSA value would mean copying
