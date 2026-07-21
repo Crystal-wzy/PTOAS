@@ -54,7 +54,6 @@ module {
 // PLAN: IR Dump After PlanMemory
 // PLAN-LABEL: func.func @n4_rotate
 // PLAN: pto.alloc_multi_tile {pto.multi_buffer_addrs = array<i64: 0, 512, 1024, 1536>}
-// PLAN-NOT: pto.pointer_cast
 
 // PTOResolveBufferSelect: four addressed alloc_tile ops, no multi-buffer ops.
 // SELECT: IR Dump After PTOResolveBufferSelect

@@ -73,12 +73,6 @@ static bool isShapeComputableOp(Operation *op) {
            opName == "arith.divui" || opName == "arith.index_cast";
   }
 
-  // pto.pointer_cast is a pure, regionless op used in interstage setup;
-  // it is not directly a shape computation but may appear in valid-shape
-  // expression trees after lowering.
-  if (opName == "pto.pointer_cast")
-    return true;
-
   return false;
 }
 

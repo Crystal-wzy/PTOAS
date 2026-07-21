@@ -1440,51 +1440,6 @@ def TMovOp  : PTO_TOp<"tmov", [
 }
 
 
-//===----------------------------------------------------------------------===//
-// Pointer Cast Op (existing)
-//===----------------------------------------------------------------------===//
-
-def PointerCastOp : PTO_Op<"pointer_cast", [AttrSizedOperandSegments, Pure]> {
-  let summary = "Casts an integer address to a MemRef with optional valid dims";
-  
-  // 参数定义 (保持 Optional)
-  let arguments = (ins 
-    Variadic<I64>:$addrs,
-    Optional<Index>:$valid_row,
-    Optional<Index>:$valid_col,
-    OptionalAttr<TileBufConfigAttr>:$config
-  );
-  
-  let results = (outs Res<AnyMemRef, "", [MemAlloc]>:$result);
-
-  // Assembly Format (去掉了 [])
-  let assemblyFormat = [{
-    `(` $addrs `)` ($valid_row^ `,` $valid_col)? attr-dict `:` qualified(type($result))
-  }];
-
-  // Builder (修复 addOperand -> addOperands)
-  let builders = [
-    OpBuilder<(ins "Type":$result, "ValueRange":$addrs, "Value":$vRow, "Value":$vCol, "Attribute":$config), [{
-      $_state.addTypes(result);
-      $_state.addOperands(addrs);
-      // [关键修复] addOperand -> addOperands
-      if (vRow) $_state.addOperands(vRow);
-      if (vCol) $_state.addOperands(vCol);
-      if (config) $_state.addAttribute("config", config);
-
-      int32_t addrsSize = addrs.size();
-      int32_t vRowSize = vRow ? 1 : 0;
-      int32_t vColSize = vCol ? 1 : 0;
-      $_state.addAttribute("operandSegmentSizes",
-        $_builder.getDenseI32ArrayAttr({addrsSize, vRowSize, vColSize}));
-    }]>
-  ];
-
-  let extraClassDeclaration = [{
-    ::mlir::LogicalResult verify();
-  }];
-}
-
 // =============================================================================
 // System/Runtime Query Ops
 // =============================================================================
@@ -2507,7 +2462,7 @@ def EventIdArraySetOp : PTO_Op<"eventid_array_set"> {
 // Mirrors the `eventid_array` triad (declare / get / set) for a generic
 // statically-shaped scalar stack array. Disjoint from the tile-buf / scratch
 // memory world: the array's address is decided by the host C++ compiler at
-// codegen time, never by PTO memory planning or `pto.pointer_cast`.
+// codegen time, never by PTO memory planning.
 
 def DeclareLocalArrayOp : PTO_Op<"declare_local_array"> {
   let summary = "Declare a stack-local statically-shaped array";

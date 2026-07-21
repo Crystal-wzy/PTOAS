@@ -10477,7 +10477,7 @@ pto.comm.treduce(%dst, %acc, recv(%ping, %pong), group(%g0, %g1, %g2) :
 Minimum support for **C++ stack-local statically-shaped arrays of scalars** —
 suitable for small auxiliary buffers in host scalar code. Disjoint from the
 tile-buf world: these values do not participate in PTO memory planning or
-`pto.pointer_cast`, and their underlying address is decided by the host C++
+tile address materialization, and their underlying address is decided by the host C++
 compiler. Naming and asm style mirror the `eventid_array` triad.
 
 Operates on the [`!pto.local_array<...>`](#26-ptolocal_arrayd1-x-d2-x--x-dk-x-t) type. See Section 2.6 for type-level constraints.

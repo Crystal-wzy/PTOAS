@@ -10,7 +10,7 @@
 
 // Confirms that two constant-slot uses of a `multi_tile_buf` are recognised
 // as disjoint by InsertSync: the two MTE2 loads land on distinct physical
-// slots (different `pto.pointer_cast` rootBuffer i64 constants), so no
+// slots (different planner-assigned physical addresses), so no
 // inter-slot `set_flag` / `wait_flag` is needed between them. Only the
 // pipeline tail barrier remains. Without slot-aware buffer planning this
 // would otherwise emit redundant MTE2-MTE2 synchronization between the

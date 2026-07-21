@@ -42,4 +42,3 @@ module {
 // CHECK-LABEL: func.func @n3_three_slots
 // CHECK: pto.alloc_multi_tile {pto.multi_buffer_addrs = array<i64: 0, 512, 1024>}
 // CHECK: pto.multi_tile_get
-// CHECK-NOT: pto.pointer_cast

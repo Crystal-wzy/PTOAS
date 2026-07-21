@@ -3265,21 +3265,6 @@ LogicalResult MultiTileGetOp::verify() {
   return success();
 }
 
-LogicalResult PointerCastOp::verify() {
-  auto memRefTy = dyn_cast<BaseMemRefType>(getResult().getType());
-  if (!memRefTy)
-    return emitOpError("result must be a memref type");
-
-  for (auto [idx, addr] : llvm::enumerate(getAddrs())) {
-    if (failed(verifyConstantLocalAddress(getOperation(), addr,
-                                          memRefTy.getMemorySpace(),
-                                          static_cast<int>(idx))))
-      return failure();
-  }
-
-  return success();
-}
-
 LogicalResult TAssignOp::verify() {
   if (getTile().getType() != getResult().getType()) {
     return emitOpError("result type must match tile operand type");
@@ -11117,8 +11102,7 @@ static bool isLocallyBoundTileSource(Value value) {
   if (!value || isa<BlockArgument>(value))
     return false;
 
-  if (isa<AllocTileOp, DeclareTileOp, PointerCastOp>(
-          value.getDefiningOp()))
+  if (isa<AllocTileOp, DeclareTileOp>(value.getDefiningOp()))
     return true;
 
   if (auto bitcast = value.getDefiningOp<BitcastOp>())

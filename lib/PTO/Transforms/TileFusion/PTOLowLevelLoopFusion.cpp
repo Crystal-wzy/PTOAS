@@ -81,10 +81,7 @@ static bool isInterstageSetupOp(Operation *op) {
   if (isPureNoRegionOp(op))
     return true;
 
-  // Tile-native buffers lower to backend memrefs through pto.pointer_cast
-  // between adjacent stage loops. Treat these address materializations as
-  // stage-boundary-transparent so loop-run collection can keep walking.
-  return isa<pto::PointerCastOp>(op);
+  return false;
 }
 
 static bool areEquivalentOperations(Operation *lhs, Operation *rhs) {

@@ -57,5 +57,4 @@ module attributes {"pto.target_arch" = "a3"} {
 // CHECK: pto.alloc_tile addr = %[[B1024]]
 // CHECK: pto.alloc_tile addr = %[[B2048]]
 // CHECK: pto.alloc_tile addr = %[[B1536]]
-// CHECK-NOT: pto.pointer_cast
 // CHECK-NOT: memref.alloc

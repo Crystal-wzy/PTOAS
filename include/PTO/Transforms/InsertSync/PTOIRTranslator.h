@@ -73,7 +73,6 @@ private:
   LogicalResult UpdateAllocMultiTileOpMemInfo(pto::AllocMultiTileOp op);
   LogicalResult UpdateDeclareTileOpMemInfo(pto::DeclareTileOp op);
   LogicalResult UpdateDeclareGlobalOpMemInfo(pto::DeclareGlobalOp op);
-  LogicalResult UpdatePointerCastOpMemInfo(pto::PointerCastOp op);
   LogicalResult UpdateMemrefAllocOpMemInfo(memref::AllocOp op);
   
   // 处理 View/Alias (MakeTensorView, Subview, Mov)

@@ -239,8 +239,6 @@ static std::optional<int64_t> getConstantIndex(Value value) {
 }
 
 static std::optional<SmallVector<Value, 2>> lookupMGatherValidDims(Value value) {
-  if (auto pc = value.getDefiningOp<pto::PointerCastOp>())
-    return SmallVector<Value, 2>{pc.getValidRow(), pc.getValidCol()};
   if (auto subview = value.getDefiningOp<memref::SubViewOp>())
     return lookupMGatherValidDims(subview.getSource());
   if (auto cast = value.getDefiningOp<memref::ReinterpretCastOp>())

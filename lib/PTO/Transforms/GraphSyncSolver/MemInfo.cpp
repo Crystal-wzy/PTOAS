@@ -69,23 +69,6 @@ llvm::SmallVector<int64_t> getAddresses(const llvm::SmallVector<Value> &addrs) {
   return offsets;
 }
 
-PointerLikeInfo getPointerLikeInfo(pto::PointerCastOp pointerCastOp) {
-  PointerLikeInfo pointerLikeInfo(pointerCastOp);
-  pointerLikeInfo.addresses = getAddresses(pointerCastOp.getAddrs());
-  pointerLikeInfo.allocateSize = getBufferBitSize(pointerCastOp.getResult());
-  if (!pointerLikeInfo.allocateSize.has_value()) {
-    pointerCastOp.emitError("unknown buffer size");
-    llvm_unreachable("unknown buffer size");
-  }
-  if (auto spaceAttr = GetBufferSpaceAttr(pointerCastOp.getResult())) {
-    pointerLikeInfo.addressSpace = spaceAttr->getAddressSpace();
-  }
-  if (auto parentLoop = pointerCastOp->getParentOfType<LoopLikeOpInterface>()) {
-    pointerLikeInfo.parentLoop = parentLoop;
-  }
-  return pointerLikeInfo;
-}
-
 static std::optional<pto::AddressSpace> getValueAddressSpace(Value value) {
   if (!value)
     return std::nullopt;
@@ -160,9 +143,6 @@ static MemInfo getMemInfoForMultiTileGet(pto::MultiTileGetOp get) {
 
 MemInfo getMemInfo(Value val) {
   if (auto *defOp = val.getDefiningOp()) {
-    if (auto pointerCastOp = llvm::dyn_cast<pto::PointerCastOp>(defOp)) {
-      return MemInfo(val, getPointerLikeInfo(pointerCastOp));
-    }
     if (auto intToPtr = llvm::dyn_cast<pto::IntToPtrOp>(defOp)) {
       return getConservativeIntToPtrMemInfo(intToPtr);
     }

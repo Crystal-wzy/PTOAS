@@ -63,8 +63,8 @@ static LogicalResult eraseDeadVPTOMemRefScaffold(ModuleOp module) {
 
       if (!op->use_empty())
         return;
-      if (isa<pto::PointerCastOp, memref::ReinterpretCastOp,
-              memref::SubViewOp, memref::MemorySpaceCastOp>(op))
+      if (isa<memref::ReinterpretCastOp, memref::SubViewOp,
+              memref::MemorySpaceCastOp>(op))
         deadOps.push_back(op);
     });
 

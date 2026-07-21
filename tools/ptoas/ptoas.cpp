@@ -3203,9 +3203,7 @@ int mlir::pto::compilePTOASModule(
   if (effectiveLevel == PTOBuildLevel::Level3) {
     // In level3 the caller owns local memory and PTOPlanMemory is skipped, so
     // every allocation must carry an explicit physical address. For
-    // multi-buffer, `addr` is the base of the contiguous N-slot region; the
-    // alloc lowering fans it out into the multi-address `pto.pointer_cast`
-    // PlanMemory would otherwise produce.
+    // multi-buffer, `addr` is the base of the contiguous N-slot region.
     bool missing = false;
     module->walk([&](pto::AllocTileOp op) {
       if (!op.getAddr()) {

@@ -425,11 +425,7 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       if (failed(UpdateDeclareGlobalOpMemInfo(declareGlobalOp))) {
         return WalkResult::interrupt();
       }
-    } else if (auto castOp = dyn_cast<pto::PointerCastOp>(op)) {
-      if (failed(UpdatePointerCastOpMemInfo(castOp)))
-        return WalkResult::interrupt();
     }
-
     // --- Case B: 别名/视图操作 ---
     else if (auto makeViewOp = dyn_cast<pto::MakeTensorViewOp>(op)) {
       UpdateAliasBufferInfo(makeViewOp.getResult(), makeViewOp.getPtr());
@@ -622,83 +618,6 @@ PTOIRTranslator::UpdateAllocMultiTileOpMemInfo(pto::AllocMultiTileOp op) {
       result, result, space, std::move(addresses), slotBytes,
       hasKnownAddresses && isLocalAddressSpace(space));
   buffer2MemInfoMap_[result].emplace_back(info->clone());
-  return success();
-}
-
-LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op) {
-  Value res = op.getResult();
-  auto memRefType = dyn_cast<MemRefType>(res.getType());
-  if (!memRefType)
-    return failure();
-
-  if (op.getAddrs().empty()) {
-    return op.emitError("PointerCast must have at least one address operand");
-  }
-
-  uint64_t sizeInBytes = 0;
-  if (memRefType.hasStaticShape()) {
-    int64_t elemSize = static_cast<int64_t>(
-        pto::getPTOStorageElemByteSize(memRefType.getElementType()));
-    if (elemSize == 0)
-      return failure();
-    int64_t numElements = 1;
-    for (auto dim : memRefType.getShape())
-      numElements *= dim;
-    sizeInBytes = numElements * elemSize;
-  }
-
-  pto::AddressSpace space = pto::AddressSpace::GM;
-  if (auto attr = memRefType.getMemorySpace()) {
-    if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(attr)) {
-      space = ptoAttr.getAddressSpace();
-    }
-  }
-
-  if (op.getAddrs().size() == 1) {
-    // Keep the address SSA as the root so dynamic pointer casts retain their
-    // historical identity-based behavior. For a static local cast, also keep
-    // its byte address for cross-root physical range analysis; downstream view
-    // ops accumulate their delta into baseAddresses[0].
-    Value rootSrc = op.getAddrs().front();
-    SmallVector<uint64_t> baseAddresses{0};
-    bool hasKnownPhysicalAddresses = false;
-    if (isLocalAddressSpace(space)) {
-      if (std::optional<uint64_t> address = getKnownPhysicalAddress(rootSrc)) {
-        baseAddresses[0] = *address;
-        hasKnownPhysicalAddresses = true;
-      }
-    }
-    auto newMemInfo = std::make_unique<BaseMemInfo>(
-        res, rootSrc, space, std::move(baseAddresses), sizeInBytes,
-        hasKnownPhysicalAddresses);
-    buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
-    return success();
-  }
-
-  // Multi-address cast. Use the cast result as `rootBuffer` and retain every
-  // constant physical offset for conservative range-overlap analysis.
-  SmallVector<uint64_t> slotOffsets;
-  slotOffsets.reserve(op.getAddrs().size());
-  for (Value a : op.getAddrs()) {
-    std::optional<uint64_t> address = getKnownPhysicalAddress(a);
-    if (!address) {
-      // Non-constant slot address: fall back to single-address semantics
-      // with the first operand as rootBuffer so existing non-multi-buffer
-      // codepaths that happen to feed non-constant i64s keep their
-      // historical behavior.
-      Value rootSrc = op.getAddrs().front();
-      auto newMemInfo = std::make_unique<BaseMemInfo>(
-          res, rootSrc, space, SmallVector<uint64_t>{0}, sizeInBytes);
-      buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
-      return success();
-    }
-    slotOffsets.push_back(*address);
-  }
-
-  auto newMemInfo = std::make_unique<BaseMemInfo>(
-      res, res, space, std::move(slotOffsets), sizeInBytes,
-      isLocalAddressSpace(space));
-  buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
   return success();
 }
 
@@ -1156,8 +1075,7 @@ void PTOIRTranslator::UpdateSlotSelectedAliasBufferInfo(Value result,
   for (auto &parentInfo : buffer2MemInfoMap_[source]) {
     auto newInfo = parentInfo->clone(result);
     // Multi-buffer parent: `baseAddresses` lists every physical slot's
-    // offset (populated by `UpdatePointerCastOpMemInfo` for multi-address
-    // casts). For a constant slot index, narrow `baseAddresses` to just
+    // planner-assigned offset. For a constant slot index, narrow it to just
     // that one slot so MemAlias's range-overlap check returns false when
     // two const-slot uses pick different slots. For a dynamic slot index,
     // keep all addresses -- the runtime SSA could resolve to any slot, so

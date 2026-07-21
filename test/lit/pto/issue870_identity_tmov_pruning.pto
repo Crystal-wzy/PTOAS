@@ -46,7 +46,7 @@ module attributes {pto.target_arch = "a2a3", pto.kernel_kind = #pto.kernel_kind<
     return
   }
 
-  func.func @identity_tmov_pointer_cast_same_addr_index_cast() {
+  func.func @identity_tmov_same_addr_index_cast() {
     %c0_i64 = arith.constant 0 : i64
     %c0_idx = arith.constant 0 : index
     %c0_alt = arith.index_cast %c0_idx : index to i64
@@ -106,7 +106,7 @@ module attributes {pto.target_arch = "a2a3", pto.kernel_kind = #pto.kernel_kind<
 // CPP-LABEL: AICORE void non_identity_tmov_different_addr
 // CPP: TMOV(
 
-// CPP-LABEL: AICORE void identity_tmov_pointer_cast_same_addr_index_cast
+// CPP-LABEL: AICORE void identity_tmov_same_addr_index_cast
 // CPP-NOT: pipe_barrier(PIPE_V)
 // CPP-NOT: TMOV(
 // CPP: return;

@@ -767,7 +767,7 @@ void InsertSyncAnalysis::InsertLastPipeAll() {
 // ==============================================================================
 
 bool InsertSyncAnalysis::IsMemAllocOp(Operation *op) const {
-  return isa<memref::AllocOp>(op) || isa<pto::PointerCastOp>(op);
+  return isa<memref::AllocOp>(op);
 }
 
 SmallVector<Value> InsertSyncAnalysis::GetMemInfoBuffers(

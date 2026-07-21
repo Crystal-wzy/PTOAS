@@ -199,7 +199,7 @@ MLIR op，最终生成 `pto::SetFlagOp` / `pto::WaitFlagOp` / `pto::BarrierOp`�
 - 主要逻辑：
   1. `UpdateKernelArgMemInfo()`：把 kernel 参数登记为 GM root buffer。
   2. `RecursionIR(&func.getBody())`：前序遍历 region：
-     - `pto::AllocTileOp` / `DeclareTileMemRefOp` / `PointerCastOp` /
+     - `pto::AllocTileOp` / `DeclareTileMemRefOp` /
        `memref::AllocOp` 经 `Update*MemInfo` 写入 `buffer2MemInfoMap_`。
      - View / Subview / Cast / Mov 调 `UpdateAliasBufferInfo(result, source)`，
        把派生 buffer 的 `BaseMemInfo` 链回到原 root。

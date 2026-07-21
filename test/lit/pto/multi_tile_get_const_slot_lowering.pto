@@ -54,7 +54,6 @@ module {
 // PLAN-LABEL: func.func @const_slot_two_buffers
 // PLAN: pto.alloc_multi_tile {pto.multi_buffer_addrs = array<i64: 0, 512>}
 // PLAN: pto.multi_tile_get
-// PLAN-NOT: pto.pointer_cast
 
 // Stage 3 -- ResolveBufferSelect materializes one addressed tile per use.
 // SELECT: IR Dump After PTOResolveBufferSelect

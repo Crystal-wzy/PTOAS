@@ -132,7 +132,7 @@ static LogicalResult computeSubviewElementOffset(memref::SubViewOp op,
   if (failed(mlir::pto::getPTOMemRefStridesAndOffset(sourceType, strides,
                                                      baseOffset)))
     return failure();
-  // The SSA source already names the base address after pointer_cast
+  // The SSA source already names the base address after ptr-boundary
   // normalization. A dynamic memref layout offset here is metadata we can
   // ignore for ptr normalization and model as zero.
   if (baseOffset == ShapedType::kDynamic)
@@ -275,22 +275,6 @@ static Value materializeScalarAccessPtr(Value source, PatternRewriter &rewriter,
     return rewriter.create<pto::AddPtrOp>(loc, ptrType, basePtr, offset);
   }
 
-  if (auto pointerCast = source.getDefiningOp<pto::PointerCastOp>()) {
-    if (pointerCast.getAddrs().empty())
-      return {};
-    Value addr = pointerCast.getAddrs().front();
-    if (isa<pto::PtrType>(addr.getType()))
-      return addr;
-    if (isa<IntegerType>(addr.getType())) {
-      auto ptrType = dyn_cast<pto::PtrType>(
-          convertSubviewResultType(source.getType()));
-      if (!ptrType)
-        return {};
-      return rewriter.create<pto::CastPtrOp>(loc, ptrType, addr);
-    }
-    return materializeScalarAccessPtr(addr, rewriter, loc);
-  }
-
   // Restrict normalization to memref views that already sit on top of a ptr-like
   // boundary bridge. Materializing fresh memref -> ptr casts here would leave
   // illegal pto.castptr(memref) behind in this pass.
@@ -357,28 +341,6 @@ struct ConvertTileBufAddrToPtrPattern
 
     rewriter.replaceOpWithNewOp<pto::TileBufAddrOp>(op, convertedType,
                                                     adaptor.getSrc());
-    return success();
-  }
-};
-
-struct ConvertPointerCastToCastPtrPattern
-    : public OpConversionPattern<pto::PointerCastOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(pto::PointerCastOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Type convertedType =
-        getTypeConverter()->convertType(op.getResult().getType());
-    auto ptrType = dyn_cast<pto::PtrType>(convertedType);
-    if (!ptrType)
-      return failure();
-
-    if (adaptor.getAddrs().empty())
-      return rewriter.notifyMatchFailure(op, "expected at least one address");
-
-    rewriter.replaceOpWithNewOp<pto::CastPtrOp>(op, ptrType,
-                                                adaptor.getAddrs().front());
     return success();
   }
 };
@@ -934,7 +896,7 @@ struct VPTOPtrNormalizePass
     target.addLegalDialect<arith::ArithDialect, func::FuncDialect,
                            scf::SCFDialect>();
     target.addDynamicallyLegalDialect<pto::PTODialect>([](Operation *op) {
-      return !isa<pto::TileBufAddrOp, pto::PointerCastOp, pto::CastPtrOp,
+      return !isa<pto::TileBufAddrOp, pto::CastPtrOp,
                   pto::IntToPtrOp, pto::PtrToIntOp,
                   pto::VldsOp, pto::VstsOp, pto::VsstbOp>(op);
     });
@@ -960,11 +922,6 @@ struct VPTOPtrNormalizePass
       return op.getDst().getType() ==
              typeConverter.convertType(op.getDst().getType());
     });
-    target.addDynamicallyLegalOp<pto::PointerCastOp>(
-        [&](pto::PointerCastOp op) {
-          return op.getResult().getType() ==
-                 typeConverter.convertType(op.getResult().getType());
-        });
     target.addDynamicallyLegalOp<pto::CastPtrOp>([&](pto::CastPtrOp op) {
       return !isMemRefType(op.getInput().getType()) &&
              !isMemRefType(op.getResult().getType());
@@ -1064,7 +1021,6 @@ struct VPTOPtrNormalizePass
     populateCallOpTypeConversionPattern(patterns, typeConverter);
     populateReturnOpTypeConversionPattern(patterns, typeConverter);
     patterns.add<ConvertTileBufAddrToPtrPattern,
-                 ConvertPointerCastToCastPtrPattern,
                  ConvertIntToPtrToCastPtrPattern,
                  ConvertPtrToIntToCastPtrPattern, ConvertCastPtrPattern,
                  ConvertSubviewToAddPtrPattern, ConvertVldsSubviewOperandPattern,

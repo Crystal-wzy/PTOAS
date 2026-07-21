@@ -135,7 +135,7 @@ llvm::SmallVector<Value> IRTranslator::tracebackMemVals(Value val) {
     Operation *defOp = result.getDefiningOp();
     // `pto.multi_tile_get` stops traversal so getMemInfo can extract the
     // slot-narrowed physical addresses.
-    if (isa<pto::PointerCastOp, pto::AllocTileOp, pto::AllocMultiTileOp,
+    if (isa<pto::AllocTileOp, pto::AllocMultiTileOp,
             tensor::EmptyOp, memref::AllocOp, pto::MultiTileGetOp>(defOp)) {
       leaves.insert(result);
       continue;

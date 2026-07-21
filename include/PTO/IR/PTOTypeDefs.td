@@ -280,7 +280,7 @@ def EventIdArrayType : TypeDef<PTO_Dialect, "EventIdArray"> {
 // Statically-shaped C++ stack-local array. Lowers to a plain `T a[D1][D2]...;`
 // declaration in the emitted C++. Element type is restricted to scalars
 // (integer / float). This type does NOT participate in PTO memory planning
-// or pto.pointer_cast lowering — the underlying address is decided by the
+// lowering; the underlying address is decided by the
 // host C++ compiler, not by PTOAS.
 def LocalArrayType : TypeDef<PTO_Dialect, "LocalArray"> {
   let mnemonic = "local_array";

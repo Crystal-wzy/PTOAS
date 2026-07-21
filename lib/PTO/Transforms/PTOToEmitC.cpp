@@ -197,8 +197,6 @@ static Location getIndexedNameHintLoc(Location fallbackLoc, unsigned index) {
                       fallbackLoc);
 }
 
-static constexpr llvm::StringLiteral kForceDynamicValidShapeAttrName =
-    "__pto.force_dynamic_valid_shape";
 static constexpr llvm::StringLiteral kGlobalTensorStridesAttrName =
     "__pto.globaltensor_strides";
 static constexpr llvm::StringLiteral kPipePeerOwnerFuncAttrName =
@@ -594,27 +592,19 @@ getSpecialScaleGlobalTensorTypeSpecForTileValue(Value dstValue,
                                                 Type elemTy) {
   dstValue = peelUnrealized(dstValue);
 
-  auto dstMrTy = dyn_cast<MemRefType>(dstValue.getType());
-  if (!dstMrTy)
+  auto dstTileTy = dyn_cast<pto::TileBufType>(dstValue.getType());
+  if (!dstTileTy)
     return std::nullopt;
 
-  auto dstSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(dstMrTy.getMemorySpace());
+  auto dstSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(
+      dstTileTy.getMemorySpace());
   if (!dstSpace || dstSpace.getAddressSpace() != pto::AddressSpace::MAT)
     return std::nullopt;
 
-  std::optional<pto::TileBufConfigAttr> configAttr;
-  if (auto cast = dstValue.getDefiningOp<pto::PointerCastOp>()) {
-    if (auto config = cast.getConfig())
-      configAttr = config;
-  }
-  if (!configAttr)
-    return std::nullopt;
-
-  ArrayRef<int64_t> effectiveShape = shape;
-  if (dstMrTy.getRank() == 2 && dstMrTy.hasStaticShape())
-    effectiveShape = dstMrTy.getShape();
-
-  auto config = *configAttr;
+  ArrayRef<int64_t> effectiveShape = dstTileTy.getShape();
+  if (effectiveShape.empty())
+    effectiveShape = shape;
+  auto config = dstTileTy.getConfigAttr();
   if (!isF8E8M0ElemType(elemTy))
     return std::nullopt;
   if (effectiveShape.size() != 2)
@@ -4627,11 +4617,6 @@ static FailureOr<Value> buildAsyncScratchTileValue(
 
   auto *ctx = rewriter.getContext();
   pto::TileBufConfigAttr configAttr = pto::TileBufConfigAttr::getDefault(ctx);
-  if (auto cast = originalScratch.getDefiningOp<pto::PointerCastOp>()) {
-    if (auto config = cast.getConfig())
-      configAttr = *config;
-  }
-
   int32_t fractal = 512;
   if (auto frAttr = dyn_cast<IntegerAttr>(configAttr.getSFractalSize()))
     fractal = static_cast<int32_t>(getIntegerAttrSignedValue(frAttr));
@@ -4696,11 +4681,6 @@ static FailureOr<Value> buildSyncAllWorkspaceTileValue(
 
   auto *ctx = rewriter.getContext();
   pto::TileBufConfigAttr configAttr = pto::TileBufConfigAttr::getDefault(ctx);
-  if (auto cast = originalWorkspace.getDefiningOp<pto::PointerCastOp>()) {
-    if (auto config = cast.getConfig())
-      configAttr = *config;
-  }
-
   Attribute memorySpace = memTy.getMemorySpace();
   if (!memorySpace)
     return failure();
@@ -4740,7 +4720,7 @@ static FailureOr<Value> buildSyncAllWorkspaceTileValue(
 }
 
 //===----------------------------------------------------------------------===//
-// pto.pointer_cast lowering
+// PTO pointer lowering
 //===----------------------------------------------------------------------===
 
 struct CastPtrConversion : public OpConversionPattern<pto::CastPtrOp> {
@@ -4854,355 +4834,6 @@ struct PTOAddPtrToEmitC : public OpConversionPattern<pto::AddPtrOp> {
     return success();
   }
 };
-
-struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
-  static bool getIndexConst(Value v, int64_t &out) {
-    if (auto cst = v.getDefiningOp<arith::ConstantOp>()) {
-      if (auto ia = dyn_cast<IntegerAttr>(cst.getValue())) {
-        out = getIntegerAttrSignedValue(ia);
-        return true;
-      }
-    }
-    return false;
-  }
-
-  using OpConversionPattern<pto::PointerCastOp>::OpConversionPattern;
-
-  enum class TileRole { Vec, Mat, Left, Right, Acc, Bias, Scaling };
-
-  static void collectUserOpsThroughCasts(Value v, SmallVectorImpl<Operation *> &out) {
-    for (Operation *u : v.getUsers()) {
-      if (auto castOp = dyn_cast<UnrealizedConversionCastOp>(u)) {
-        for (Value r : castOp.getResults())
-          collectUserOpsThroughCasts(r, out);
-        continue;
-      }
-      out.push_back(u);
-    }
-  }
-
-  static Value peelUnrealized(Value v) {
-    while (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>()) {
-      v = castOp.getOperand(0);
-    }
-    return v;
-  }
-
-  static TileRole inferRole(pto::PointerCastOp op) {
-    // 1. 优先检查 AddressSpace
-    if (auto memRefTy = dyn_cast<MemRefType>(op.getType())) {
-      Attribute memorySpace = memRefTy.getMemorySpace();
-      if (auto ptoAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(memorySpace)) {
-        switch (ptoAttr.getAddressSpace()) {
-          case pto::AddressSpace::LEFT:  return TileRole::Left;
-          case pto::AddressSpace::RIGHT: return TileRole::Right;
-          case pto::AddressSpace::ACC:   return TileRole::Acc;
-          case pto::AddressSpace::BIAS:  return TileRole::Bias; 
-          case pto::AddressSpace::MAT:   return TileRole::Mat;
-          case pto::AddressSpace::SCALING: return TileRole::Scaling;
-          default: break; 
-        }
-      }
-    }
-
-    // 2. 通过 Usage 推导 (Fallback)
-    SmallVector<Operation *, 8> users;
-    collectUserOpsThroughCasts(op.getResult(), users);
-
-    for (Operation *user : users) {
-      if (auto mm = dyn_cast<pto::TMatmulOp>(user)) {
-        if (mm.getDst() && peelUnrealized(mm.getDst()) == op.getResult()) return TileRole::Acc;
-        if (peelUnrealized(mm.getLhs()) == op.getResult()) return TileRole::Left;
-        if (peelUnrealized(mm.getRhs()) == op.getResult()) return TileRole::Right;
-      }
-      if (auto mmacc = dyn_cast<pto::TMatmulAccOp>(user)) {
-        if (mmacc.getDst() && peelUnrealized(mmacc.getDst()) == op.getResult()) return TileRole::Acc;
-        if (peelUnrealized(mmacc.getAccIn()) == op.getResult()) return TileRole::Acc;
-        if (peelUnrealized(mmacc.getLhs()) == op.getResult()) return TileRole::Left;
-        if (peelUnrealized(mmacc.getRhs()) == op.getResult()) return TileRole::Right;
-      }
-      if (auto tgemv = dyn_cast<pto::TGemvMxOp>(user)) {
-        if (peelUnrealized(tgemv.getAScale()) == op.getResult()) return TileRole::Left;
-        if (peelUnrealized(tgemv.getBScale()) == op.getResult()) return TileRole::Right;
-      }
-      if (auto tgemvAcc = dyn_cast<pto::TGemvMxAccOp>(user)) {
-        if (peelUnrealized(tgemvAcc.getAScale()) == op.getResult()) return TileRole::Left;
-        if (peelUnrealized(tgemvAcc.getBScale()) == op.getResult()) return TileRole::Right;
-      }
-      if (auto tgemvBias = dyn_cast<pto::TGemvMxBiasOp>(user)) {
-        if (peelUnrealized(tgemvBias.getAScale()) == op.getResult()) return TileRole::Left;
-        if (peelUnrealized(tgemvBias.getBScale()) == op.getResult()) return TileRole::Right;
-      }
-      if (auto tmatmulMx = dyn_cast<pto::TMatmulMxOp>(user)) {
-        if (peelUnrealized(tmatmulMx.getAScale()) == op.getResult()) return TileRole::Left;
-        if (peelUnrealized(tmatmulMx.getBScale()) == op.getResult()) return TileRole::Right;
-      }
-      if (auto tmatmulMxAcc = dyn_cast<pto::TMatmulMxAccOp>(user)) {
-        if (peelUnrealized(tmatmulMxAcc.getAScale()) == op.getResult()) return TileRole::Left;
-        if (peelUnrealized(tmatmulMxAcc.getBScale()) == op.getResult()) return TileRole::Right;
-      }
-      if (auto tmatmulMxBias = dyn_cast<pto::TMatmulMxBiasOp>(user)) {
-        if (peelUnrealized(tmatmulMxBias.getAScale()) == op.getResult()) return TileRole::Left;
-        if (peelUnrealized(tmatmulMxBias.getBScale()) == op.getResult()) return TileRole::Right;
-      }
-    }
-
-    return TileRole::Vec;
-  }
-
-  // [新增] 辅助函数：判断 Value 是否源自 arith.constant
-  static bool isConstant(Value v, int64_t &outVal) {
-    if (!v) return false;
-    if (auto cst = v.getDefiningOp<arith::ConstantOp>()) {
-       if (auto attr = dyn_cast<IntegerAttr>(cst.getValue())) {
-           outVal = getIntegerAttrSignedValue(attr);
-           return true;
-       }
-    }
-    return false;
-  }
-
-  LogicalResult matchAndRewrite(pto::PointerCastOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto *ctx = rewriter.getContext();
-    auto selfType = mlir::cast<MemRefType>(op.getType());
-    ArrayRef<int64_t> shape = selfType.getShape();
-    Type elemType = selfType.getElementType();
-    
-    // 1. 推导 Tile Role
-    TileRole role = inferRole(op);
-
-    // 2. 类型字符串生成 (elemTypeStr, dimStr)
-    std::string elemTypeStr = getEmitCScalarTypeToken(elemType);
-
-    std::string dimStr;
-    pto::BLayout blayout = pto::BLayout::RowMajor;
-    auto dimToString = [&](int64_t dim, const char *symbol,
-                           int dimIdx) -> std::string {
-        if (dim == ShapedType::kDynamic)
-          return std::string(symbol);
-        return std::to_string(renderTileTemplateDim(dim, elemType, blayout,
-                                                    dimIdx));
-    };
-
-    // 3. Role Token
-    const char *roleTok = "TileType::Vec";
-    switch (role) {
-      case TileRole::Left:  roleTok = "TileType::Left"; break;
-      case TileRole::Right: roleTok = "TileType::Right"; break;
-      case TileRole::Acc:   roleTok = "TileType::Acc"; break;
-      case TileRole::Bias:  roleTok = "TileType::Bias"; break;
-      case TileRole::Mat:   roleTok = "TileType::Mat"; break;
-      case TileRole::Vec:   roleTok = "TileType::Vec"; break;
-      case TileRole::Scaling:
-        if (auto configOpt = op.getConfig())
-          roleTok = scalingRoleToken(elemType, *configOpt);
-        else
-          roleTok = "TileType::Scaling";
-        break;
-    }
-
-    // 4. Config & Layout (support BLayoutAttr/SLayoutAttr/PadValueAttr after namespace change)
-    std::string layoutParams = "BLayout::RowMajor";
-    std::string extraParams = "";
-    if (auto configOpt = op.getConfig()) {
-        auto config = *configOpt;
-        int32_t blVal = 0;
-        if (auto attr = dyn_cast<BLayoutAttr>(config.getBLayout()))
-            blVal = static_cast<int32_t>(attr.getValue());
- 
-        if (blVal == 1) layoutParams = "BLayout::ColMajor";
-        blayout = blVal == 1 ? pto::BLayout::ColMajor : pto::BLayout::RowMajor;
-
-        int32_t slVal = 0;
-        if (auto attr = dyn_cast<SLayoutAttr>(config.getSLayout()))
-            slVal = static_cast<int32_t>(attr.getValue());
-
-        std::string slStr = (slVal == 1) ? "SLayout::RowMajor" : (slVal == 2) ? "SLayout::ColMajor" : "SLayout::NoneBox";
-
-        int32_t frVal = 0;
-        if (auto attr = dyn_cast<IntegerAttr>(config.getSFractalSize()))
-            frVal = static_cast<int32_t>(getIntegerAttrSignedValue(attr));
-
-        int32_t padVal = 0;
-        if (auto attr = dyn_cast<PadValueAttr>(config.getPad()))
-            padVal = static_cast<int32_t>(attr.getValue());
-
-        std::string padStr = "PadValue::Null";
-        switch (padVal) {
-            case 1: padStr = "PadValue::Zero"; break;
-            case 2: padStr = "PadValue::Max";  break;
-            case 3: padStr = "PadValue::Min";  break;
-        }
-
-        int32_t compactVal = 0;
-        if (auto attr = dyn_cast<CompactModeAttr>(config.getCompactMode()))
-            compactVal = static_cast<int32_t>(attr.getValue());
-
-        std::string compactStr = "CompactMode::Null";
-        switch (compactVal) {
-            case 1: compactStr = "CompactMode::Normal"; break;
-            case 2: compactStr = "CompactMode::RowPlusOne"; break;
-        }
-
-        if (!slStr.empty()) {
-            extraParams += ", " + slStr + ", " + std::to_string(frVal) + ", " +
-                           padStr + ", " + compactStr;
-        }
-    } else {
-        extraParams = ", SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null";
-    }
-
-    if (role == TileRole::Left)
-      dimStr = dimToString(shape[0], "M", 0) + ", " +
-               dimToString(shape[1], "K", 1);
-    else if (role == TileRole::Right)
-      dimStr = dimToString(shape[0], "K", 0) + ", " +
-               dimToString(shape[1], "N", 1);
-    else if (role == TileRole::Bias)
-      dimStr = "1, " + dimToString(shape[1], "N", 1);
-    else
-      dimStr = dimToString(shape[0], "M", 0) + ", " +
-               dimToString(shape[1], "N", 1);
-
-    // [核心修改] Valid Dims 处理逻辑 (支持混合静态/动态)
-    std::string vrowTok, vcolTok;
-    bool useConstructor = false;
-
-    bool rowIsDynamic = false;
-    bool colIsDynamic = false;
-
-    SmallVector<Value> constructorArgs;
-
-    Value vRow = op.getValidRow();
-    Value vCol = op.getValidCol();
-    Value vRowEmitC = adaptor.getValidRow();
-    Value vColEmitC = adaptor.getValidCol();
-    bool forceDynamicValid = op->hasAttr(kForceDynamicValidShapeAttrName);
-
-    int64_t cRow = 0, cCol = 0;
-    bool rowIsConst = vRow && isConstant(vRow, cRow);
-    bool colIsConst = vCol && isConstant(vCol, cCol);
-
-    auto makeCtorDimValue = [&](Value emitted, int64_t fallback) -> Value {
-      if (emitted)
-        return emitted;
-      return makeEmitCIntConstant(
-          rewriter, loc, emitc::OpaqueType::get(ctx, "int32_t"), fallback);
-    };
-    auto maybeScaleDynamicValid = [&](Value emitted, int dimIdx) -> Value {
-      if (!emitted || !pto::isPTOFloat4PackedType(elemType))
-        return emitted;
-      int packedDim = blayout == pto::BLayout::ColMajor ? 0 : 1;
-      if (dimIdx != packedDim)
-        return emitted;
-      auto i32Ty = emitc::OpaqueType::get(ctx, "int32_t");
-      Value two = makeEmitCIntConstant(rewriter, loc, i32Ty, 2);
-      return rewriter.create<emitc::MulOp>(loc, i32Ty, emitted, two).getResult();
-    };
-
-    if (forceDynamicValid) {
-      vrowTok = "-1";
-      vcolTok = "-1";
-      useConstructor = true;
-      constructorArgs.push_back(
-          makeCtorDimValue(maybeScaleDynamicValid(vRowEmitC, 0),
-                           renderTileTemplateDim(rowIsConst ? cRow : shape[0],
-                                                 elemType, blayout, 0)));
-      constructorArgs.push_back(
-          makeCtorDimValue(maybeScaleDynamicValid(vColEmitC, 1),
-                           renderTileTemplateDim(colIsConst ? cCol : shape[1],
-                                                 elemType, blayout, 1)));
-    } else {
-      if (rowIsConst) {
-        vrowTok = std::to_string(
-            renderTileTemplateDim(cRow, elemType, blayout, 0));
-      } else if (vRow) {
-        vrowTok = "-1";
-        rowIsDynamic = true;
-        useConstructor = true;
-      } else {
-        vrowTok = std::to_string(
-            renderTileTemplateDim(shape[0], elemType, blayout, 0));
-      }
-
-      if (colIsConst) {
-        vcolTok = std::to_string(
-            renderTileTemplateDim(cCol, elemType, blayout, 1));
-      } else if (vCol) {
-        vcolTok = "-1";
-        colIsDynamic = true;
-        useConstructor = true;
-      } else {
-        vcolTok = std::to_string(
-            renderTileTemplateDim(shape[1], elemType, blayout, 1));
-      }
-
-      if (useConstructor) {
-        if (rowIsDynamic && vRowEmitC)
-          constructorArgs.push_back(maybeScaleDynamicValid(vRowEmitC, 0));
-        if (colIsDynamic && vColEmitC)
-          constructorArgs.push_back(maybeScaleDynamicValid(vColEmitC, 1));
-      }
-    }
-
-    // 5. 生成 Tile 类型字符串
-    std::string tileTypeStr =
-      std::string("Tile<") + roleTok + ", " + elemTypeStr + ", " + dimStr + ", " +
-      layoutParams + ", " + vrowTok + ", " + vcolTok + extraParams + ">";
-
-    auto tileType = emitc::OpaqueType::get(ctx, tileTypeStr);
-    Value resultValue;
-
-    if (useConstructor) {
-        // 使用 CallOpaqueOp 生成构造函数调用 (Tile v = Tile(...))
-        auto ctorOp = rewriter.create<emitc::CallOpaqueOp>(
-            loc, 
-            tileType,        // Result Type
-            tileTypeStr,     // Callee Name (类名)
-            ArrayAttr{},     // args
-            ArrayAttr{},     // template_args
-            ValueRange(constructorArgs) // operands
-        );
-        resultValue = ctorOp.getResult(0);
-    } else {
-        // 静态情况 (Tile v;)
-        auto varOp = rewriter.create<emitc::VariableOp>(
-            loc, 
-            getEmitCVariableResultType(tileType),
-            emitc::OpaqueAttr::get(ctx, "")
-        );
-        resultValue = loadEmitCVariableIfNeeded(rewriter, loc, varOp.getResult());
-    }
-
-    // TASSIGN: pto-isa expects an integral address.
-    Value addr = adaptor.getAddrs()[0];
-    if (isa<emitc::PointerType>(addr.getType()) ||
-        (isa<emitc::OpaqueType>(addr.getType()) &&
-         cast<emitc::OpaqueType>(addr.getType()).getValue().ends_with("*"))) {
-      auto u64Ty = emitc::OpaqueType::get(ctx, "uint64_t");
-      auto rcU64 = rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "uint64_t")});
-      addr = rewriter.create<emitc::CallOpaqueOp>(
-                 loc, u64Ty, "reinterpret_cast",
-                 /*args=*/ArrayAttr{}, /*templateArgs=*/rcU64,
-                 /*operands=*/ValueRange{addr})
-                 .getResult(0);
-    }
-
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TASSIGN",
-        ArrayAttr{}, ArrayAttr{},
-        ValueRange{resultValue, addr});
-
-    rewriter.replaceOp(op, resultValue);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// pto.load_dps / pto.store_dps lowering (FIX: keep optional result)
-//===----------------------------------------------------------------------===
 
 struct PTOTLoadToTLOAD : public OpConversionPattern<pto::TLoadOp> {
   using OpConversionPattern<pto::TLoadOp>::OpConversionPattern;
@@ -8751,7 +8382,7 @@ struct PTOTPushToEmitC : public OpConversionPattern<mlir::pto::TPushOp> {
     if (failed(pipeTok))
       return rewriter.notifyMatchFailure(op, "failed to resolve pipe token");
     // Read the tile type token from the already-converted OpaqueType, which
-    // preserves the exact layout produced by PointerCastOp EmitC.
+    // preserves the exact tile layout produced during EmitC conversion.
     Value convertedTile = peelUnrealized(adaptor.getTile());
     auto tileTok = getPipeDataTypeToken(convertedTile);
     if (failed(tileTok))
@@ -13847,8 +13478,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOMrgSortToEmitC>(typeConverter, ctx);
   patterns.add<PTORandomToEmitC>(typeConverter, ctx);
   patterns.add<SubviewToEmitCPattern>(typeConverter, ctx);
-  patterns.add<CastPtrConversion, PTOAddPtrToEmitC, PointerCastConversion>(
-      typeConverter, ctx);
+  patterns.add<CastPtrConversion, PTOAddPtrToEmitC>(typeConverter, ctx);
   patterns.add<PTOSetValToSETVAL, PTOGetValToGETVAL, PTOSetValidShapeToEmitC,
                PTOGetValidShapeToEmitC, PTOTAssignToEmitC,
                PTOPtrToIntToEmitC, PTOIntToPtrToEmitC, PTOLoadScalarToEmitC,

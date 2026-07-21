@@ -106,14 +106,9 @@ static Value GetRealRoot(Value v) {
   return v;
 }
 
-// Extract the base UB address carried by `rootBuffer` when it is the i64
-// address SSA operand of a `pto.pointer_cast` (single-address path). In that
-// model `rootBuffer` is an `arith.constant` i64 whose value is the absolute UB
-// offset, and `BaseMemInfo::baseAddresses` holds {0} (relative deltas). For
-// the multi-address path `rootBuffer` is the `PointerCastOp` result itself
-// (not an i64 constant), so this returns 0 and `baseAddresses` already holds
-// the absolute slot offsets — making `rootBase + baseAddresses[i]` resolve to
-// the absolute address in both models.
+// Extract an absolute base address when a root is represented by an integer
+// constant. Tile roots otherwise carry their planned addresses in
+// `BaseMemInfo::baseAddresses`.
 static uint64_t getRootBaseAddress(Value rootBuffer) {
   if (!rootBuffer)
     return 0;
@@ -145,18 +140,13 @@ static bool hasKnownLocalAbsoluteAddress(const BaseMemInfo *info) {
   if (isIntegerConstant(root))
     return true;
 
-  // Multi-address pointer_cast records absolute slot offsets in baseAddresses
-  // and uses the pointer_cast result as rootBuffer.
-  if (auto ptrCast = root.getDefiningOp<pto::PointerCastOp>())
-    return ptrCast.getAddrs().size() > 1;
-
   return false;
 }
 
 // Cross-root byte-range overlap check for local memory (UB/L1).
 //
 // `MemAlias` historically only checked byte-range overlap when the two
-// `rootBuffer` SSA values were identical (same `alloc_tile`/`pointer_cast`).
+// `rootBuffer` SSA values were identical (same `alloc_tile`).
 // When PlanMemory reuses the same physical UB region for two *different*
 // allocations, their `rootBuffer` values differ even though their byte ranges
 // overlap — so `MemAlias` returned false and InsertSync silently dropped the

@@ -268,11 +268,6 @@ static std::optional<TileHandleInfo> resolveTileHandle(Value tileBuf,
   return std::nullopt;
 }
 
-static MemRefType getCanonicalMemRefTypeForTileBuf(pto::TileBufType tileTy) {
-  return MemRefType::get(tileTy.getShape(), tileTy.getElementType(),
-                         AffineMap(), tileTy.getMemorySpace());
-}
-
 struct ViewChain {
   UnrealizedConversionCastOp cast;
   memref::SubViewOp subview;
@@ -740,25 +735,8 @@ struct FoldTileBufIntrinsicsPass
           return signalPassFailure();
         }
 
-        if (auto resultMemrefType =
-                dyn_cast<MemRefType>(addrOp.getDst().getType())) {
-          if (!handleInfo->addr) {
-            addrOp.emitError("FoldTileBufIntrinsics: pto.alloc_tile used by "
-                             "tile_buf_addr must carry an addr operand on the "
-                             "VPTO path");
-            return signalPassFailure();
-          }
-
-          builder.setInsertionPoint(addrOp);
-          Value replacement = builder.create<pto::PointerCastOp>(
-              addrOp.getLoc(), resultMemrefType, ValueRange{handleInfo->addr},
-              handleInfo->validRow ? handleInfo->validRow : Value(),
-              handleInfo->validCol ? handleInfo->validCol : Value(),
-              handleInfo->config);
-          addrOp.getDst().replaceAllUsesWith(replacement);
-          addrOp.erase();
+        if (isa<MemRefType>(addrOp.getDst().getType()))
           continue;
-        }
 
         auto resultPtrType = dyn_cast<pto::PtrType>(addrOp.getDst().getType());
         if (!resultPtrType) {
@@ -775,17 +753,8 @@ struct FoldTileBufIntrinsicsPass
         }
 
         builder.setInsertionPoint(addrOp);
-        auto canonicalMemrefType = getCanonicalMemRefTypeForTileBuf(tileTy);
-        Value memrefValue = builder.create<pto::PointerCastOp>(
-            addrOp.getLoc(), canonicalMemrefType, ValueRange{handleInfo->addr},
-            handleInfo->validRow ? handleInfo->validRow : Value(),
-            handleInfo->validCol ? handleInfo->validCol : Value(),
-            handleInfo->config);
-
-        builder.setInsertionPoint(addrOp);
-        Value replacement =
-            builder.create<pto::CastPtrOp>(addrOp.getLoc(), resultPtrType,
-                                           memrefValue);
+        Value replacement = builder.create<pto::CastPtrOp>(
+            addrOp.getLoc(), resultPtrType, handleInfo->addr);
         addrOp.getDst().replaceAllUsesWith(replacement);
         addrOp.erase();
       }

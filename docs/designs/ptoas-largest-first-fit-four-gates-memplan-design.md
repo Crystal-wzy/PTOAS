@@ -20,7 +20,7 @@ pto.alloc_tile(no addr)
   -> 后续 pto.t* tile op 继续使用 !pto.tile_buf 形态
 ```
 
-用户显式写 `pto.alloc_tile addr` 时，level 语义仍由 memplan 校验：level1/level2 禁止显式 addr，level3 要求显式 local addr。也就是说，`pto.alloc_tile` 不再通过 `memref.alloc -> pto.pointer_cast -> pto.bind_tile` 这条中间链路表达地址；只有非 `alloc_tile` 的 memref/address root 仍可在 materialize 阶段使用 `pto.pointer_cast + pto.bind_tile` 表达规划后的地址与 tile metadata。
+用户显式写 `pto.alloc_tile addr` 时，level 语义仍由 memplan 校验：level1/level2 禁止显式 addr，level3 要求显式 local addr。也就是说，`pto.alloc_tile` 不再通过 `memref.alloc -> pto.bind_tile` 这类中间链路表达地址；普通 local tile allocation 由 memplan 直接把常量地址回写到 `pto.alloc_tile addr`。历史 `pto.pointer_cast` bridge 已删除，不再作为 memplan materialize 结果。
 
 ## 目标
 
