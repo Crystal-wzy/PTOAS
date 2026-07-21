@@ -9,14 +9,14 @@
 // RUN: not pto-test-opt %s -vmi-mask-granularity-assignment -vmi-layout-assignment 2>&1 | FileCheck %s
 
 module {
-  func.func @vmi_scatter_indices_invalid(
+  func.func @vmi_scatter_indices_8bit_invalid(
       %value: !pto.vmi.vreg<64xf32>,
       %dst: !pto.ptr<f32, ub>,
-      %indices: !pto.vmi.vreg<64xf32>,
+      %indices: !pto.vmi.vreg<64xi8>,
       %mask: !pto.vmi.mask<64xpred>) {
     pto.vmi.vscatter %value, %dst, %indices, %mask
         : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>,
-          !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred>
+          !pto.vmi.vreg<64xi8>, !pto.vmi.mask<64xpred>
     return
   }
 }

@@ -2058,18 +2058,18 @@ checkSupportedScatterShape(VMIScatterOp op, std::string *reason) {
   auto indexElementType = dyn_cast<IntegerType>(indicesType.getElementType());
   if (!indexElementType || indexElementType.isSigned())
     return fail("requires signless or unsigned integer indices");
-  bool isB8Scatter = valueBits == 8 && indexElementType.isUnsigned() &&
+  bool isB8Scatter = valueBits == 8 &&
                      indexElementType.getWidth() == 16 &&
                      maskType.getGranularity() == "b16";
-  bool isB16Scatter = valueBits == 16 && indexElementType.isUnsigned() &&
+  bool isB16Scatter = valueBits == 16 &&
                       indexElementType.getWidth() == 16 &&
                       maskType.getGranularity() == "b16";
   bool isB32Scatter = valueBits == 32 && indexElementType.getWidth() == 32 &&
                       maskType.getGranularity() == "b32";
   if (!isB8Scatter && !isB16Scatter && !isB32Scatter)
     return fail("requires either 32-bit values with 32-bit indices and b32 "
-                "mask, 16-bit values with unsigned 16-bit indices and b16 "
-                "mask, or 8-bit values with unsigned 16-bit indices and b16 "
+                "mask, 16-bit values with 16-bit indices and b16 "
+                "mask, or 8-bit values with 16-bit indices and b16 "
                 "mask");
 
   FailureOr<int64_t> valueArity = getVMIPhysicalArity(valueType);

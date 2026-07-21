@@ -109,6 +109,7 @@ _TEMPLATE_MODULES = {
     ("a5", "pto.trowmin"): ".a5.trowmin",
     ("a5", "pto.trowprod"): ".a5.trowprod",
     ("a5", "pto.trowsum"): ".a5.trowsum",
+    ("a5", "pto.tscatter"): ".a5.tscatter",
     ("a5", "pto.tsel"): ".a5.tsel",
     ("a5", "pto.tsels"): ".a5.tsels",
     ("a5", "pto.tshl"): ".a5.tshl",

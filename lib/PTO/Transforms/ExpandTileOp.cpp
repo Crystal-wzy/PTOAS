@@ -517,6 +517,16 @@ static void appendOpContextAttrs(
   if (auto tci = dyn_cast<pto::TCIOp>(op)) {
     attrs.emplace_back("descending", tci.getDescending() ? "true" : "false");
   }
+  if (auto tscatter = dyn_cast<pto::TScatterOp>(op)) {
+    if (auto maskPatternAttr = tscatter.getMaskPatternAttr()) {
+      attrs.emplace_back(
+          "mask_pattern",
+          stringifyMaskPattern(maskPatternAttr.getValue()).str());
+    }
+    if (auto axisAttr = tscatter.getAxisAttr()) {
+      attrs.emplace_back("axis_value", axisAttr.getValue().str());
+    }
+  }
   (void)(tryAppendPrecisionType<pto::TExpOp>(
              op, attrs, pto::ExpPrecision::HighPrecision) ||
          tryAppendPrecisionType<pto::TLogOp>(
