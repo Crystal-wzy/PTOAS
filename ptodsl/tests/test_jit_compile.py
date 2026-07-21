@@ -971,6 +971,32 @@ def alloc_buffer_outside_simt_probe():
     _ = pto.alloc_buffer((32,), pto.f32)
 
 
+@pto.simd
+def alloc_buffer_simd_helper():
+    _ = pto.alloc_buffer((32,), pto.f32)
+
+
+@pto.jit(target="a5", mode="explicit", kernel_kind="vector")
+def alloc_buffer_simd_helper_probe():
+    alloc_buffer_simd_helper()
+
+
+@pto.cube
+def alloc_buffer_cube_helper():
+    _ = pto.alloc_buffer((32,), pto.f32)
+
+
+@pto.jit(target="a5", mode="explicit", kernel_kind="cube")
+def alloc_buffer_cube_helper_probe():
+    alloc_buffer_cube_helper()
+
+
+@pto.jit(target="a5", mode="explicit")
+def alloc_buffer_inline_simt_probe():
+    with pto.simt(32, 1, 1):
+        _ = pto.alloc_buffer((32,), pto.f32)
+
+
 @pto.simt
 def rmsnorm_alloc_buffer_frag_helper(
     w_ub: pto.ptr(pto.f32, pto.MemorySpace.UB),
@@ -4631,6 +4657,24 @@ def main() -> None:
     expect(
         "llvm.alloca" in alloc_buffer_top_level_text and "pto.persistent" in alloc_buffer_top_level_text,
         "alloc_buffer outside a SIMT helper should be marked as a persistent fragment candidate",
+    )
+    alloc_buffer_simd_helper_text = alloc_buffer_simd_helper_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(alloc_buffer_simd_helper_text, "alloc_buffer simd helper specialization")
+    expect(
+        "llvm.alloca" in alloc_buffer_simd_helper_text and "pto.persistent" not in alloc_buffer_simd_helper_text,
+        "alloc_buffer inside a SIMD helper should remain local",
+    )
+    alloc_buffer_cube_helper_text = alloc_buffer_cube_helper_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(alloc_buffer_cube_helper_text, "alloc_buffer cube helper specialization")
+    expect(
+        "llvm.alloca" in alloc_buffer_cube_helper_text and "pto.persistent" not in alloc_buffer_cube_helper_text,
+        "alloc_buffer inside a Cube helper should remain local",
+    )
+    alloc_buffer_inline_simt_text = alloc_buffer_inline_simt_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(alloc_buffer_inline_simt_text, "alloc_buffer inline simt specialization")
+    expect(
+        "llvm.alloca" in alloc_buffer_inline_simt_text and "pto.persistent" not in alloc_buffer_inline_simt_text,
+        "alloc_buffer inside an inline SIMT section should remain local",
     )
     rmsnorm_alloc_buffer_text = rmsnorm_alloc_buffer_layout_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(rmsnorm_alloc_buffer_text, "RMSNorm hand-authored UB layout specialization")

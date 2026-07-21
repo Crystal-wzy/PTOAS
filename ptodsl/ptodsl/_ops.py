@@ -2698,7 +2698,7 @@ def _alloc_local_buffer(shape, dtype, element_type, element_count, byte_size):
     attributes = {
         "elem_type": TypeAttr.get(element_type),
     }
-    if _is_outside_simt_subkernel():
+    if _is_persistent_alloc_buffer_candidate():
         attributes["pto.persistent"] = UnitAttr.get()
     alloca = Operation.create(
         "llvm.alloca",
@@ -2716,14 +2716,19 @@ def _alloc_local_buffer(shape, dtype, element_type, element_count, byte_size):
     )
 
 
-def _is_outside_simt_subkernel() -> bool:
+def _is_persistent_alloc_buffer_candidate() -> bool:
     try:
         from ._tracing.active import current_session
         session = current_session()
     except Exception:
         session = None
-    frame = session.current_subkernel if session is not None else None
-    return frame is None or frame.role != "simt"
+    if session is None:
+        return False
+    if getattr(session.module_spec, "entry", False) is not True:
+        return False
+    if session.current_function is not session.entry_function:
+        return False
+    return session.current_subkernel is None
 
 
 def _normalize_alloc_buffer_shape_metadata(shape):
