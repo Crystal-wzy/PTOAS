@@ -4701,8 +4701,13 @@ LogicalResult VgatherbOp::verify() {
     return emitOpError("offset vector must use integer element type");
   if (offsetsElemType.getWidth() != 32)
     return emitOpError("currently requires 32-bit offset vector elements");
-  if (offsetsType.getElementCount() != resultType.getElementCount())
-    return emitOpError("offset and result vectors must have the same element count");
+  // vgatherb is a 32-byte block gather: each offset addresses one 32-byte block.
+  // The offset vector holds VL/32 block addresses (always ui32), while the
+  // result vector holds VL/sizeof(T) elements of the data type.  These counts
+  // only coincide when sizeof(T)==4 (e.g. f32/i32/ui32).  For smaller types
+  // the result has more elements than the offset, which is correct because the
+  // hardware interprets the low VL/32 bytes of the offset register as block
+  // addresses and gathers VL bytes of data per invocation.
   return success();
 }
 

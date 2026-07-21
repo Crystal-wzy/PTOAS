@@ -248,8 +248,38 @@ pto.tile.gather(tmp_sort_tile, top_scores, mask_pattern="P0101")
 pto.tile.gather(tmp_sort_tile, top_indices, mask_pattern="P1010")
 ```
 
-The low-level aliases `pto.tsort32`, `pto.tmrgsort`, and `pto.tgather` are also
-available when a kernel needs to bypass the `pto.tile` namespace.
+#### `pto.tile.gatherb(src: Tile, offsets: Tile, dst: Tile) -> None`
+
+**Description**: Gathers elements from a source tile into a destination tile
+using byte offsets. Each element of `offsets` is a byte address into the flat
+byte representation of `src`; the element (or block of elements starting at that
+byte position) is written into the corresponding position of `dst`.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `Tile` | Source tile containing the data to gather from |
+| `offsets` | `Tile` | Byte offset tile (`ui32` dtype) specifying byte positions in `src` |
+| `dst` | `Tile` | Destination tile (must use row-major layout; element size 1, 2, or 4 bytes) |
+
+**Returns**: None
+
+**Constraints**:
+
+- `offsets` must have `ui32` dtype.
+- `dst` must use row-major layout.
+- `dst` element size must be 1, 2, or 4 bytes.
+
+**Example**:
+
+```python
+pto.tile.gatherb(src_tile, offset_tile, dst_tile)
+```
+
+The low-level aliases `pto.tsort32`, `pto.tmrgsort`, `pto.tgather`, and
+`pto.tgatherb` are also available when a kernel needs to bypass the `pto.tile`
+namespace.
 
 ---
 

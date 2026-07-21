@@ -3739,12 +3739,8 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TGatherBOp>(
-            op,
-            TypeRange{},
-            src,
-            offsets,
-            dst);
+        replaceOpWithClonedAttrs<pto::TGatherBOp>(
+            rewriter, op, TypeRange{}, src, offsets, dst);
       }
 
       DefaultInlineVector<mlir::pto::TLogOp> logops;

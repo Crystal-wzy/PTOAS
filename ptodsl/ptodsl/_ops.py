@@ -3605,6 +3605,15 @@ def tgather(
     )
 
 
+def tgatherb(src, offsets, dst):
+    """``pto.tgatherb`` – tile gather using byte offsets (DPS)."""
+    _pto.tgatherb(
+        unwrap_surface_value(src),
+        unwrap_surface_value(offsets),
+        unwrap_surface_value(dst),
+    )
+
+
 def tsel(mask, src0, src1, dst, *, tmp=None):
     """``pto.tsel ins(mask, src0, src1, tmp) outs(dst)`` with synthesized scratch when omitted."""
     resolved_tmp = tmp if tmp is not None else _resolve_selection_tmp(dst, tmp, context="tsel")
