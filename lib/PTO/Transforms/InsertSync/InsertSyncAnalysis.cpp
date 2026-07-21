@@ -16,7 +16,6 @@
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/InsertSync/SyncCommon.h"
 #include "PTO/Transforms/SlotAffineAnalysis.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
@@ -63,15 +62,6 @@ static std::optional<RepeatAccessShape> getKnownRepeatAccessShapeFromType(Type t
         tileTy.getElementType()};
   }
 
-  if (auto memRefTy = dyn_cast<MemRefType>(ty)) {
-    if (!memRefTy.hasStaticShape() || memRefTy.getRank() != 2)
-      return std::nullopt;
-    auto shape = memRefTy.getShape();
-    return RepeatAccessShape{SmallVector<int64_t, 2>{shape[0], shape[1]},
-                             SmallVector<int64_t, 2>{shape[0], shape[1]},
-                             memRefTy.getElementType()};
-  }
-
   return std::nullopt;
 }
 
@@ -90,19 +80,6 @@ static std::optional<BLayout> getKnownBLayout(Type ty) {
       return BLayout::RowMajor;
     if (layout == static_cast<int32_t>(BLayout::ColMajor))
       return BLayout::ColMajor;
-  }
-
-  if (auto memRefTy = dyn_cast<MemRefType>(ty)) {
-    SmallVector<int64_t> strides;
-    int64_t offset = 0;
-    if (failed(mlir::pto::getPTOMemRefStridesAndOffset(memRefTy, strides,
-                                                       offset)) ||
-        strides.size() != 2) {
-      return std::nullopt;
-    }
-    ArrayRef<int64_t> shape = memRefTy.getShape();
-    if (strides[1] == 1 && strides[0] == shape[1]) return BLayout::RowMajor;
-    if (strides[0] == 1 && strides[1] == shape[0]) return BLayout::ColMajor;
   }
 
   return std::nullopt;
@@ -618,8 +595,7 @@ void InsertSyncAnalysis::InsertSyncOperation(
         if (!producerSlot || !consumerSlot) {
           // No slot SSA threaded through -- fall back to single event id.
           // This keeps non-multi-buffer codepaths untouched even if their
-          // baseAddresses happen to have multiple entries for some other
-          // reason (e.g. memref subview).
+          // baseAddresses happen to have multiple entries for another reason.
           eventIdNum = 1;
         } else {
           setOp->slotSSAExpr = producerSlot;
@@ -765,10 +741,6 @@ void InsertSyncAnalysis::InsertLastPipeAll() {
 // ==============================================================================
 // 7. Helpers
 // ==============================================================================
-
-bool InsertSyncAnalysis::IsMemAllocOp(Operation *op) const {
-  return isa<memref::AllocOp>(op);
-}
 
 SmallVector<Value> InsertSyncAnalysis::GetMemInfoBuffers(
     const DepBaseMemInfoPairVec &depBaseMemInfosVec) {

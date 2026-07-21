@@ -13,8 +13,6 @@
 
 #include "PTO/Transforms/InsertSync/MemoryDependentAnalyzer.h"
 #include "PTO/Transforms/InsertSync/InsertSyncDebug.h"
-#include "mlir/Interfaces/ViewLikeInterface.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "llvm/Support/Debug.h"
  
@@ -62,39 +60,6 @@ static Value GetRealRoot(Value v) {
         if (trace)
           llvm::errs() << "    -> Reached BlockArgument. Stop.\n";
         break; 
-    }
- 
-    if (auto op = dyn_cast<memref::CollapseShapeOp>(defOp)) {
-        if (trace)
-          llvm::errs() << "    -> Hit CollapseShapeOp. Peel off.\n";
-        v = op.getSrc();
-        continue;
-    }
-    if (auto op = dyn_cast<memref::ExpandShapeOp>(defOp)) {
-        if (trace)
-          llvm::errs() << "    -> Hit ExpandShapeOp. Peel off.\n";
-        v = op.getSrc();
-        continue;
-    }
-    if (auto op = dyn_cast<memref::ViewOp>(defOp)) {
-        if (trace)
-          llvm::errs() << "    -> Hit ViewOp. Peel off.\n";
-        v = op.getSource();
-        continue;
-    }
-    if (auto view = dyn_cast<ViewLikeOpInterface>(defOp)) {
-        if (trace)
-          llvm::errs() << "    -> Hit ViewLikeInterface. Peel off.\n";
-        v = view.getViewSource();
-        continue;
-    }
-    if (auto cast = dyn_cast<memref::CastOp>(defOp)) {
-        v = cast.getSource();
-        continue;
-    }
-    if (auto reCast = dyn_cast<memref::ReinterpretCastOp>(defOp)) {
-        v = reCast.getSource();
-        continue;
     }
  
     if (trace) {
@@ -237,9 +202,9 @@ bool MemoryDependentAnalyzer::MemAlias(const BaseMemInfo *a,
   }
  
   // 2. Local Memory (UB/L1)
-  // PTOPlanMemory turns each allocation into a distinct pointer_cast. Once an
+  // PTOPlanMemory writes physical addresses back to allocation roots. Once an
   // async MTE3 store has consumed the source SSA, a later allocation can reuse
-  // the same physical range with a different pointer_cast root. Compare those
+  // the same physical range with a different alloc_tile root. Compare those
   // ranges directly when both sides carry known physical local addresses.
   if (a->hasKnownPhysicalAddresses && b->hasKnownPhysicalAddresses) {
     if (isTraceEnabled())
@@ -282,9 +247,9 @@ bool MemoryDependentAnalyzer::MemAlias(const BaseMemInfo *a,
 
   // 2.3 Cross-root absolute-address overlap check.
   //
-  // Roots genuinely differ (different alloc_tile / different pointer_cast
-  // address SSA). Historically MemAlias returned false here, but PlanMemory
-  // can reuse the same physical UB region for distinct allocations whose
+  // Roots genuinely differ (different alloc_tile/address SSA). Historically
+  // MemAlias returned false here, but PlanMemory can reuse the same physical
+  // UB region for distinct allocations whose
   // byte ranges overlap. Re-derive the absolute address and check overlap so
   // a cross-pipe hazard (e.g. MTE3 tstore vs a V-pipe write into an
   // overlapping region) is not silently dropped (issue #934).

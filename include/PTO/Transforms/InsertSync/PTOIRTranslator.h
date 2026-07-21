@@ -73,12 +73,10 @@ private:
   LogicalResult UpdateAllocMultiTileOpMemInfo(pto::AllocMultiTileOp op);
   LogicalResult UpdateDeclareTileOpMemInfo(pto::DeclareTileOp op);
   LogicalResult UpdateDeclareGlobalOpMemInfo(pto::DeclareGlobalOp op);
-  LogicalResult UpdateMemrefAllocOpMemInfo(memref::AllocOp op);
   
   // 处理 View/Alias (MakeTensorView, Subview, Mov)
   void UpdateAliasBufferInfo(Value result, Value source);
   void UpdateConservativeAliasBufferInfo(Value result, Value source);
-  void UpdateMemrefSubViewAliasBufferInfo(memref::SubViewOp op);
   void UpdateTileSubViewAliasBufferInfo(pto::SubViewOp op);
   LogicalResult UpdateIntToPtrOpMemInfo(pto::IntToPtrOp op);
   void UpdateMultiTileGetAliasBufferInfo(pto::MultiTileGetOp op);
@@ -98,7 +96,7 @@ private:
   void UpdateMacroOpInfo(Operation *op);
   void MakeMacroCompound(Operation *op, PipelineType pipe, ValueRange defValues,
                          ValueRange useValues, int macroPhaseId);
-  void UpdateTileOpCallInfo(func::CallOp callOp);
+  void UpdatePTODSLSubkernelCallInfo(func::CallOp callOp);
  
   // --- 辅助函数 ---
   

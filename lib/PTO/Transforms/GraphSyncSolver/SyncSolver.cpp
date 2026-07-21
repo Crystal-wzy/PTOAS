@@ -500,7 +500,7 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
 
   // Capture the slot SSA of the conflicting multi-buffer per side, so dyn
   // event-id codegen keys the event lane off the *hazard* buffer rather than
-  // the op's first slot_marker memref. `slotOpN` is the slot as accessed by
+  // the op's first slot-bearing value. `slotOpN` is the slot as accessed by
   // rwOpN; ambiguity (more than one distinct slot participating in this
   // pair's conflicts) collapses to null, making codegen fall back to the
   // safe N-static fanout.
@@ -2387,7 +2387,7 @@ SyncBeforeAfterMap Solver::getBeforeAfterSyncMaps() {
       // codegen can lower into `pto.set_flag_dyn` / `pto.wait_flag_dyn`.
       // The slots were captured in `getMultiBufferEventIdInfo` from the
       // actual conflicting MemInfo pair, so the dyn event lane is indexed by
-      // the *hazard* buffer's slot -- not the op's first slot_marker memref.
+      // the *hazard* buffer's slot -- not the op's first slot-bearing value.
       // `slotExprOp1/Op2` are keyed to op1(==rwOp1)/op2(==rwOp2); the set
       // side may land on either op depending on the program order resolved
       // by `getSetWaitOcc`, so map by op identity. A null slot (absent or
