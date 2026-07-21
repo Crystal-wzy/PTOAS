@@ -972,11 +972,14 @@ public:
     // !pto.struct<...> -> !emitc.opaque<"PtoStruct_...">. The matching C++
     // `struct PtoStruct_... { ... };` definition is emitted at file scope by
     // the pass (see runOnOperation), keyed on the same content-derived name.
-    // A struct stays an lvalue: emitc.member requires an lvalue operand, so
-    // carrying the value form would force a copy out of the variable on every
-    // declare and leave field writes updating the copy instead of the struct.
+    // A struct is carried as a pointer to its storage. It cannot be carried by
+    // value (emitc.member needs an lvalue, so every field write would land in a
+    // copy), and it cannot be carried as an lvalue either: emitc.func rejects
+    // an lvalue argument outright, and the C++ emitter refuses one on func.func
+    // too, which would make a struct impossible to pass to a helper function.
+    // A pointer is legal in a signature and still names the caller's storage.
     addConversion([Ctx](pto::StructType type) -> Type {
-      return emitc::LValueType::get(
+      return emitc::PointerType::get(
           emitc::OpaqueType::get(Ctx, getStructTypeName(type)));
     });
 
@@ -8053,23 +8056,35 @@ struct PTODeclareStructToEmitC
     if (!structTy)
       return rewriter.notifyMatchFailure(op, "failed to map !pto.struct type");
 
-    // structTy is already an !emitc.lvalue, so this is the variable itself and
-    // needs no load: field access has to name the variable, not a copy.
-    rewriter.replaceOpWithNewOp<emitc::VariableOp>(
-        op, getEmitCVariableResultType(structTy),
-        emitc::OpaqueAttr::get(rewriter.getContext(), ""));
+    // The struct converts to a pointer, so declare the storage as a local
+    // variable and hand out its address. buildStructMemberChain recognises the
+    // address-of and walks that variable directly, so a struct that never
+    // leaves the function still prints as `s.f0` rather than `p->f0`.
+    auto ptrTy = dyn_cast<emitc::PointerType>(structTy);
+    if (!ptrTy)
+      return rewriter.notifyMatchFailure(op,
+                                         "!pto.struct did not map to a pointer");
+
+    Value storage = rewriter
+                        .create<emitc::VariableOp>(
+                            op.getLoc(),
+                            emitc::LValueType::get(ptrTy.getPointee()),
+                            emitc::OpaqueAttr::get(rewriter.getContext(), ""))
+                        .getResult();
+    rewriter.replaceOpWithNewOp<emitc::ApplyOp>(op, ptrTy, "&", storage);
     return success();
   }
 };
 
-// The EmitC *value* type of a struct field, i.e. never an lvalue. A nested
-// struct converts to an lvalue (see the type converter), which has to be peeled
-// here so the member result below wraps it exactly once.
+// The EmitC *value* type of a struct field, i.e. the type an lvalue to that
+// field wraps. A nested struct is spelled directly here rather than going
+// through the converter, which would hand back the pointer form used for
+// passing whole structs around — a field lives inside its parent's storage and
+// is reached with `.`, not through another pointer.
 static Type getStructFieldValueType(const TypeConverter *tc, Type fieldPtoTy) {
-  Type converted = tc->convertType(fieldPtoTy);
-  if (auto lvalueTy = dyn_cast_or_null<emitc::LValueType>(converted))
-    return lvalueTy.getValueType();
-  return converted;
+  if (auto st = dyn_cast<pto::StructType>(fieldPtoTy))
+    return emitc::OpaqueType::get(st.getContext(), getStructTypeName(st));
+  return tc->convertType(fieldPtoTy);
 }
 
 // Build the `s.fA.fB...` member-access chain for a constant struct path and
@@ -8079,10 +8094,36 @@ static Type getStructFieldValueType(const TypeConverter *tc, Type fieldPtoTy) {
 // Every step is an `emitc.member`, which requires an lvalue operand and yields
 // an lvalue result, so the chain stays in lvalue form throughout — that is what
 // makes a write land in the struct rather than in a copy of it.
+//
+// `root` is the converted struct, i.e. a pointer. Two shapes reach here:
+//   - a local declared by pto.declare_struct, whose pointer is an address-of;
+//     that is unwrapped back to the variable so the access prints as `s.f0`.
+//   - any other pointer, notably a function argument. `emitc.member_of_ptr`
+//     needs an lvalue *holding* the pointer rather than the raw pointer, so it
+//     is parked in a variable first and the access prints as `p->f0`.
 static FailureOr<Value> buildStructMemberChain(
     ConversionPatternRewriter &rewriter, Location loc, const TypeConverter *tc,
     Value root, mlir::pto::StructType rootPtoTy, llvm::ArrayRef<int64_t> path) {
-  Value cur = peelUnrealized(root);
+  Value ptr = peelUnrealized(root);
+
+  // lvalue of the struct itself when we can name it; otherwise an lvalue
+  // holding the pointer, consumed by the first member_of_ptr step.
+  Value structLValue;
+  Value ptrSlot;
+  auto applyOp = ptr.getDefiningOp<emitc::ApplyOp>();
+  if (applyOp && applyOp.getApplicableOperator() == "&") {
+    structLValue = applyOp.getOperand();
+  } else {
+    if (!isa<emitc::PointerType>(ptr.getType()))
+      return failure();
+    ptrSlot = rewriter
+                  .create<emitc::VariableOp>(
+                      loc, emitc::LValueType::get(ptr.getType()),
+                      emitc::OpaqueAttr::get(rewriter.getContext(), ""))
+                  .getResult();
+    rewriter.create<emitc::AssignOp>(loc, ptrSlot, ptr);
+  }
+
   Type curPtoTy = rootPtoTy;
   for (int64_t idx : path) {
     auto st = cast<mlir::pto::StructType>(curPtoTy);
@@ -8090,14 +8131,20 @@ static FailureOr<Value> buildStructMemberChain(
     Type fieldTy = getStructFieldValueType(tc, fieldPtoTy);
     if (!fieldTy)
       return failure();
-    cur = rewriter
-              .create<emitc::MemberOp>(
-                  loc, emitc::LValueType::get(fieldTy),
-                  rewriter.getStringAttr("f" + std::to_string(idx)), cur)
-              .getResult();
+    Type resultTy = emitc::LValueType::get(fieldTy);
+    auto name = rewriter.getStringAttr("f" + std::to_string(idx));
+    // Only the first step off a bare pointer uses `->`; from there on the
+    // chain is walking storage we can name, so it is all `.`.
+    structLValue =
+        structLValue
+            ? rewriter.create<emitc::MemberOp>(loc, resultTy, name, structLValue)
+                  .getResult()
+            : rewriter
+                  .create<emitc::MemberOfPtrOp>(loc, resultTy, name, ptrSlot)
+                  .getResult();
     curPtoTy = fieldPtoTy;
   }
-  return cur;
+  return structLValue;
 }
 
 // pto.struct_get %s[i, j, ...] -> `s.fi.fj...`. The verifier guarantees the path

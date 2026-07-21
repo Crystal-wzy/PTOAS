@@ -306,6 +306,22 @@ the scalar struct world separate from the fractal/layout world, exactly like
   // { PtoStruct_f32_i8 f0; int16_t f1; };
 ```
 
+**Passing a struct to a function.** A `!pto.struct` value lowers to a **pointer**
+to its storage, so it can be passed to a helper `func.func` and mutated there:
+
+```mlir
+func.func private @helper(%s : !pto.struct<f32, i8>, %v : f32) {
+  pto.struct_set %s[0], %v : !pto.struct<f32, i8>, f32   // emits `p->f0 = v;`
+  return
+}
+```
+
+The callee reaches fields through `->`; the caller declares real storage, passes
+its address, and still uses `.` on its own copy. Carrying the struct by value
+would make the callee's writes land in a copy, and an `!emitc.lvalue` is
+rejected outright as a function argument type by both `emitc.func` and the C++
+emitter — the pointer is what makes helper functions expressible at all.
+
 **Generated type name.** The C++ name is derived from the MLIR type spelling of
 the fields (`!pto.struct<f16, i8>` → `PtoStruct_f16_i8`), not from their C++
 spellings. That mapping is injective, so two distinct `!pto.struct` types never
