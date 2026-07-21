@@ -216,11 +216,11 @@ selection):
   regular `tile_buf` that flows through every existing DMA / compute / view
   op unchanged
 
-The N-way physical fan-out lives on the `pto.multi_buffer = N : i32`
-attribute that PTOViewToMemref writes onto the lowered `memref.alloc`;
-downstream passes (PlanMemory / InsertSync / GraphSyncSolver) consume that
-attribute. The per-use slot index threaded through `pto.multi_tile_get` is
-forwarded to the memref layer via the internal `pto.slot_marker` view op.
+The slot count is part of `!pto.multi_tile_buf`. In level1/level2,
+`PTOPlanMemory` plans all slots and records their physical addresses in the
+internal `pto.multi_buffer_addrs` attribute. `PTOResolveBufferSelect`,
+InsertSync, and GraphSyncSolver consume the tile-native allocation and slot
+selection directly; no memref allocation is introduced.
 
 See `docs/designs/ptoas-multi-buffer-explicit-design.md` for the full
 design.
@@ -244,9 +244,8 @@ compiler, not by PTO memory planning.
 - `T` is a scalar integer or float
 
 **Disjoint from tile-buf world.** Values of `!pto.local_array<...>` never
-participate in `pto.pointer_cast`, `pto-plan-memory`, or
-`AllocToPointerCast` rewrites — these passes match on `memref` / tile-buf
-types and simply do not see this type.
+participate in `pto-plan-memory`; the planner only collects tile allocation
+roots and does not see this type.
 
 **Syntax:**
 ```mlir
@@ -867,7 +866,7 @@ result = alloc_tile(base_addr, valid_row, valid_col)   // operands are optional
 
 ##### `pto.alloc_multi_tile` - Allocate N-Slot Multi-Buffer Tile
 
-**Summary:** Declares the lifetime of an N-slot multi-buffer tile. Each slot has the same `tile_buf` shape; only the underlying physical address differs. In the default pipeline (`--pto-level=level1|level2`) the N physical slots are reserved by `PTOPlanMemory` from the `pto.multi_buffer = N` attribute written onto the lowered `memref.alloc`. Under `--pto-level=level3` the caller owns local memory and PlanMemory does not run, so an explicit base `addr` operand is required (mirroring `pto.alloc_tile`); the lowering then fans the base out into the multi-address `pto.pointer_cast` PlanMemory would otherwise produce.
+**Summary:** Declares the lifetime of an N-slot multi-buffer tile. Each slot has the same `tile_buf` shape; only the underlying physical address differs. In the default pipeline (`--pto-level=level1|level2`), `PTOPlanMemory` plans the tile-native allocation directly and records all slot addresses in `pto.multi_buffer_addrs`. Under `--pto-level=level3`, the caller owns local memory and must provide an explicit base `addr`; `PTOResolveBufferSelect` derives each selected slot address from that base.
 
 **Semantics:**
 
@@ -1239,15 +1238,15 @@ op is modeled as writing the prefetched data into `dst`.
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src` | `pto.partition_tensor_view` or lowered GM memref | Source global view |
-| `dst` | `pto.tile_buf` or lowered local memref | Destination local tile |
+| `src` | `pto.partition_tensor_view` | Source global view |
+| `dst` | `pto.tile_buf` | Destination local tile |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
 **Constraints & Verification:**
 
-- `src` must be a partition view before lowering, or the corresponding lowered ranked memref form after `PTOViewToMemref`.
-- `dst` must be a tile buffer before lowering, or the corresponding lowered ranked memref form after `PTOViewToMemref`.
+- `src` must be a partition tensor view.
+- `dst` must be a tile buffer.
 - `dst` must use `loc=vec` or `loc=mat`.
 - Static source extents must be positive when known; static destination valid extents must be non-negative when known.
 - `src` and `dst` element types must have the same element size in bytes.

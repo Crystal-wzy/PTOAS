@@ -12,22 +12,51 @@
 
 module attributes {"pto.target_arch" = "a3"} {
   func.func @five_gates_lifetime_overlap(
-      %gm0 : memref<16x16xf16, #pto.address_space<gm>>,
-      %gm1 : memref<16x16xf16, #pto.address_space<gm>>,
-      %out0 : memref<16x16xf16, #pto.address_space<gm>>,
-      %out1 : memref<16x16xf16, #pto.address_space<gm>>) {
-    %buf0 = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
-    %buf1 = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
+      %gm0 : !pto.ptr<f16>, %gm1 : !pto.ptr<f16>,
+      %out0 : !pto.ptr<f16>, %out1 : !pto.ptr<f16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %gm0_view = pto.make_tensor_view %gm0,
+      shape = [%c1, %c1, %c1, %c16, %c16],
+      strides = [%c16, %c16, %c16, %c16, %c1]
+      : !pto.tensor_view<1x1x1x16x16xf16>
+    %gm1_view = pto.make_tensor_view %gm1,
+      shape = [%c1, %c1, %c1, %c16, %c16],
+      strides = [%c16, %c16, %c16, %c16, %c1]
+      : !pto.tensor_view<1x1x1x16x16xf16>
+    %out0_view = pto.make_tensor_view %out0,
+      shape = [%c1, %c1, %c1, %c16, %c16],
+      strides = [%c16, %c16, %c16, %c16, %c1]
+      : !pto.tensor_view<1x1x1x16x16xf16>
+    %out1_view = pto.make_tensor_view %out1,
+      shape = [%c1, %c1, %c1, %c16, %c16],
+      strides = [%c16, %c16, %c16, %c16, %c1]
+      : !pto.tensor_view<1x1x1x16x16xf16>
+    %gm0_part = pto.partition_view %gm0_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0], sizes = [%c1, %c1, %c1, %c16, %c16]
+      : !pto.tensor_view<1x1x1x16x16xf16> -> !pto.partition_tensor_view<1x1x1x16x16xf16>
+    %gm1_part = pto.partition_view %gm1_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0], sizes = [%c1, %c1, %c1, %c16, %c16]
+      : !pto.tensor_view<1x1x1x16x16xf16> -> !pto.partition_tensor_view<1x1x1x16x16xf16>
+    %out0_part = pto.partition_view %out0_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0], sizes = [%c1, %c1, %c1, %c16, %c16]
+      : !pto.tensor_view<1x1x1x16x16xf16> -> !pto.partition_tensor_view<1x1x1x16x16xf16>
+    %out1_part = pto.partition_view %out1_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0], sizes = [%c1, %c1, %c1, %c16, %c16]
+      : !pto.tensor_view<1x1x1x16x16xf16> -> !pto.partition_tensor_view<1x1x1x16x16xf16>
+    %buf0 = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf16>
+    %buf1 = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf16>
 
-    pto.tload ins(%gm0 : memref<16x16xf16, #pto.address_space<gm>>)
-              outs(%buf0 : memref<16x16xf16, #pto.address_space<vec>>) {layout = #pto.layout<nd>}
-    pto.tload ins(%gm1 : memref<16x16xf16, #pto.address_space<gm>>)
-              outs(%buf1 : memref<16x16xf16, #pto.address_space<vec>>) {layout = #pto.layout<nd>}
+    pto.tload ins(%gm0_part : !pto.partition_tensor_view<1x1x1x16x16xf16>)
+              outs(%buf0 : !pto.tile_buf<vec, 16x16xf16>) {layout = #pto.layout<nd>}
+    pto.tload ins(%gm1_part : !pto.partition_tensor_view<1x1x1x16x16xf16>)
+              outs(%buf1 : !pto.tile_buf<vec, 16x16xf16>) {layout = #pto.layout<nd>}
 
-    pto.tstore ins(%buf0 : memref<16x16xf16, #pto.address_space<vec>>)
-               outs(%out0 : memref<16x16xf16, #pto.address_space<gm>>) {layout = #pto.layout<nd>}
-    pto.tstore ins(%buf1 : memref<16x16xf16, #pto.address_space<vec>>)
-               outs(%out1 : memref<16x16xf16, #pto.address_space<gm>>) {layout = #pto.layout<nd>}
+    pto.tstore ins(%buf0 : !pto.tile_buf<vec, 16x16xf16>)
+               outs(%out0_part : !pto.partition_tensor_view<1x1x1x16x16xf16>) {layout = #pto.layout<nd>}
+    pto.tstore ins(%buf1 : !pto.tile_buf<vec, 16x16xf16>)
+               outs(%out1_part : !pto.partition_tensor_view<1x1x1x16x16xf16>) {layout = #pto.layout<nd>}
     return
   }
 }
@@ -35,6 +64,7 @@ module attributes {"pto.target_arch" = "a3"} {
 // CHECK-LABEL: func.func @five_gates_lifetime_overlap
 // CHECK-DAG: %[[ADDR0:.*]] = arith.constant 0 : i64
 // CHECK-DAG: %[[ADDR1:.*]] = arith.constant 512 : i64
-// CHECK: pto.pointer_cast(%[[ADDR0]])
-// CHECK: pto.pointer_cast(%[[ADDR1]])
+// CHECK: pto.alloc_tile addr = %[[ADDR0]]
+// CHECK: pto.alloc_tile addr = %[[ADDR1]]
+// CHECK-NOT: pto.pointer_cast
 // CHECK-NOT: memref.alloc

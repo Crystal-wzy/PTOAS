@@ -20,7 +20,6 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "AllocToPointerCast.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/Support/Debug.h"
@@ -547,33 +546,6 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       buffer2MultiNum[allocMultiOp.getResult()] = count;
       UpdateOpBufferInfo(op, op->getResults());
       return WalkResult::advance();
-    } else if (isLocalMemPlan() && dyn_cast<memref::AllocOp>(op)) {
-      auto allocOp = cast<memref::AllocOp>(op);
-      if (failed(CheckLocalBufferAllocOp(op))) {
-        return WalkResult::interrupt();
-      }
-      // Pick up the multi-buffer slot count when present. Range checking
-      // mirrors the type-level verifier so a malformed memref alloc (e.g.
-      // from a hand-written test) still gets a clear diagnostic. The
-      // sibling expansion in `ExpandMultiBufferStorageEntry` supports any
-      // N in the legal range.
-      if (auto attr = allocOp->getAttrOfType<IntegerAttr>(
-              mlir::pto::kPtoMultiBufferAttrName)) {
-        uint64_t n = attr.getValue().getZExtValue();
-        if (n < mlir::pto::kPtoMultiBufferMinNum ||
-            n > mlir::pto::kPtoMultiBufferMaxNum) {
-          allocOp.emitError()
-              << "pto.multi_buffer must be in ["
-              << mlir::pto::kPtoMultiBufferMinNum << ", "
-              << mlir::pto::kPtoMultiBufferMaxNum << "] (got " << n << ")";
-          return WalkResult::interrupt();
-        }
-        buffer2MultiNum[allocOp.getResult()] = static_cast<uint32_t>(n);
-      }
-      UpdateOpBufferInfo(op, op->getResults());
-      return WalkResult::advance();
-    } else if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
-      OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto tprintOp = dyn_cast<pto::TPrintOp>(op)) {
       // TPrintOp only reads from buffer, similar to LoadOp
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
@@ -595,11 +567,8 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       // buffer for liveness, but the scalar row/col results are not buffers.
       UpdateOpGenInfo(curOpInfo, ValueRange{op->getOperand(0)});
       OpKillHandle(curOpInfo, live, op->getBlock());
-    } else if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
-      UpdateStoreOpInfo(curOpInfo, storeOp.getMemRef(), live);
     } else if (auto ptoDpsOp = dyn_cast<pto::PTO_DpsInitOpInterface>(op)) {
-      // PTO ops with destination (tile_buf, partition_view, etc.); no
-      // tensor/memref-only verification.
+      // PTO ops with destination (tile_buf, partition_view, etc.).
       SmallVector<Value> genBuffers = llvm::to_vector(op->getOperands());
       auto scratchBuffers = getScratchBuffersFromEffects(
           op, ptoDpsOp.getDpsInits(), stableValueOrder);
@@ -612,10 +581,7 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       }
       OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto dstStyleOp = dyn_cast<DestinationStyleOpInterface>(op)) {
-      // Process the operation of pto instructions as follows:
-      // pto.hir.copy ins(%0 : memref<16xf16, #pto.address_space<gm>>)
-      //              outs(%1 : memref<16xxf16, #pto.address_space<ub>>)
-      // need to handle kill buffer.
+      // Preserve generic destination-style aliasing for non-tile tensors.
       UpdateInitAndResAlias(dstStyleOp);
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(dstStyleOp.getDpsInits()));
       OpKillHandle(curOpInfo, live, op->getBlock());
@@ -716,14 +682,7 @@ void MemLivenessAnalysis::UpdateForOpBufferAlias(scf::ForOp forOp) {
 }
 
 void MemLivenessAnalysis::RecursiveForOp(scf::ForOp forOp, Liveness live) {
-  // Process the operation of ForOp as follows:
-  // alloca %allocA
-  // %0 = scf.for %arg4 = %c0 to %c1024 step %c128 iter_args(%arg5 = %4)->
-  //      (memref<16x16x16xf16, #pto.address_space<ub>>):
-  //          def(allocA)
-  //          ...
-  //          scf.yield %alloc0 : memref<16xf16,#pto.address_space<ub>>
-  // need to handle kill buffer.
+  // Model loop-carried tile handles as aliases of the yielded roots.
   auto forBeginSeq = UpdateLinearOperation(forOp.getOperation());
   UpdateOpGenInfo(forBeginSeq, GetLiveBuffersInLoop(forOp, live));
   UpdateForOpInitArgsAlias(forOp);
@@ -759,11 +718,7 @@ void MemLivenessAnalysis::UpdateIfOpBufferAlias(scf::IfOp ifOp,
 }
 
 void MemLivenessAnalysis::RecursiveIfOp(scf::IfOp ifOp, Liveness live) {
-  // Process the operation of IfOp as follows:
-  // %0 = scf.if %cond -> (memref<16xf16, #pto.address_space<ub>>)
-  //        scf.yield %alloc0: memref<16xf16, #pto.address_space<ub>>
-  //      else:
-  //        scf.yield %alloc1 : memref<16xf16, #pto.address_space<ub>>
+  // Join the tile roots yielded by each branch into the if result.
   UpdateLinearOperation(ifOp.getOperation());
   RecursionIR(&ifOp.getThenRegion(), live);
   auto curIfElse = UpdateLinearOperation(ifOp.getOperation());
@@ -833,24 +788,11 @@ SmallVector<Value> MemLivenessAnalysis::GetLiveBuffersInLoop(scf::ForOp forOp,
   return allocBeforeLoopBuffers;
 }
 
-LogicalResult
-MemLivenessAnalysis::CheckLocalBufferAllocOp(Operation *op) const {
-  auto allocOp = dyn_cast<memref::AllocOp>(op);
-  if (!allocOp)
-    return op->emitError("must be alloc op"), failure();
-  auto memorySpaceAttr = GetBufferSpaceAttr(allocOp.getResult());
-  if (isLocalBuffer(memorySpaceAttr)) {
-    return success();
-  }
-  allocOp.getOperation()->emitError("Alloc buffer not at UB space! ");
-  return failure();
-}
-
 bool MemLivenessAnalysis::isSkippableOp(Operation *op) const {
   // Call-like ops are still modeled explicitly. Only pure terminators and
   // dim queries are skipped here.
   //
-  return isa<func::ReturnOp, scf::YieldOp, pto::YieldOp, memref::DimOp>(op);
+  return isa<func::ReturnOp, scf::YieldOp, pto::YieldOp>(op);
 }
 
 LogicalResult
@@ -886,8 +828,7 @@ void MemLivenessAnalysis::UpdateBufferAlias(Value buffer, Value aliasBuffer,
     buffer2AliasVec[buf] = clonedAliasSet;
   }
 
-  // mark the alias buffer as ignoring Inplace if it is not generated by
-  // memref.alloc.
+  // Mark aliases that must not participate in inplace merging.
   auto it = bufferInfos.find(aliasBuffer);
   if (isIgnoreInplace && it != bufferInfos.end()) {
     it->second.ignoreInplace = true;
@@ -911,17 +852,6 @@ SetVector<Value> MemLivenessAnalysis::GetAliasBuffers(Value aliasBuffer) {
     return trueVar->second;
   }
   return {};
-}
-
-void MemLivenessAnalysis::UpdateStoreOpInfo(OpInfo *opInfo,
-                                            const Value storeValue,
-                                            Liveness live) {
-  // The src of memref store may also serve as a gen buffer.
-  SmallVector<Value, 1> storeValues;
-  storeValues.push_back(storeValue);
-  UpdateOpGenInfo(opInfo, storeValues);
-  // Collect kill buffers corresponding to operation.
-  OpKillHandle(opInfo, live, opInfo->operation->getBlock());
 }
 
 void MemLivenessAnalysis::UpdateOpBufferInfo(Operation *op,
@@ -1056,10 +986,7 @@ BufferInfo MemLivenessAnalysis::GetBufferInfo(Operation *op, Value operand,
     shape = multiType.getSlotType().getShape();
     elementType = multiType.getSlotType().getElementType();
   } else {
-    Value traceValue = tracebackMemRef(operand);
-    auto memRefType = cast<MemRefType>(traceValue.getType());
-    shape = memRefType.getShape();
-    elementType = memRefType.getElementType();
+    llvm_unreachable("local memory planner expects tile buffer roots");
   }
   bufferInfo.bufferType = elementType;
   std::optional<int64_t> totalStaticSize =
@@ -1733,13 +1660,8 @@ void MemPlan::ReportMemLifeDebugInfo(StorageEntry *rootStorageEntry) {
 }
 
 void MemPlan::MemLifeDebugInfo(StorageEntry *storageEntry) {
-  for (auto &buffer : storageEntry->inplaceBuffers) {
-    if (buffer.getDefiningOp()) {
-      if (auto allocOp = dyn_cast<memref::AllocOp>(buffer.getDefiningOp())) {
-        LDBG("Buffer : " << allocOp.getResult() << "\n");
-      }
-    }
-  }
+  for (auto &buffer : storageEntry->inplaceBuffers)
+    LDBG("Buffer : " << buffer << "\n");
   for (auto &bufferLife : storageEntry->bufferLifeVec) {
     (void)bufferLife;
     LDBG("bufferLife : "
@@ -1750,14 +1672,8 @@ void MemPlan::MemLifeDebugInfo(StorageEntry *storageEntry) {
 }
 
 void MemPlan::ReportCurEntryDebugInfo(const StorageEntry *curEntry) {
-  for (auto &buffer : curEntry->inplaceBuffers) {
-    if (buffer.getDefiningOp()) {
-      if (auto allocOp = dyn_cast<memref::AllocOp>(buffer.getDefiningOp())) {
-        LDBG("buffer : ");
-        LDBG(allocOp.getResult());
-      }
-    }
-  }
+  for (auto &buffer : curEntry->inplaceBuffers)
+    LDBG("buffer : " << buffer);
 }
 
 StorageEntry *
@@ -2677,8 +2593,6 @@ private:
       RewritePatternSet &patterns, MemPlanMode mode,
       DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets) {
     if (mode == MemPlanMode::LOCAL_MEM_PLAN) {
-      patterns.add<MemrefAllocaOpToPointerCastOpPattern>(patterns.getContext(),
-                                                         buffer2Offsets);
       patterns.add<LegacyAllocTileOpAddPlannedAddressPattern>(
           patterns.getContext(), buffer2Offsets);
       patterns.add<LegacyAllocMultiTileOpAddPlannedAddressesPattern>(

@@ -8,7 +8,7 @@
 
 // RUN: ptoas --mlir-print-ir-after=pto-resolve-reserved-buffers %s 2>&1 1>/dev/null | FileCheck %s
 // RUN: ptoas --mlir-print-ir-after=pto-resolve-buffer-select %s 2>&1 1>/dev/null | FileCheck %s --check-prefix=SELECT
-// RUN: ptoas --pto-arch=a3 --mlir-print-ir-after=pto-materialize-tile-handles %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=MAT
+// RUN: ptoas --pto-arch=a3 --mlir-print-ir-before=pto-inline-backend-helpers %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=MAT
 // RUN: ptoas --pto-arch=a3 %s -o - 2>&1 | FileCheck %s --check-prefix=EMITC
 
 // Mixed slot-select example: loop-external preload uses a constant slot id,
@@ -16,10 +16,21 @@
 
 module {
   func.func @const_preload_dyn_loop_select(
-      %gm : memref<16x16xf16, #pto.address_space<gm>>, %n : index) {
+      %gm : !pto.ptr<f16>, %n : index) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
+    %c16 = arith.constant 16 : index
+
+    %gm_view = pto.make_tensor_view %gm,
+      shape = [%c1, %c1, %c1, %c16, %c16],
+      strides = [%c16, %c16, %c16, %c16, %c1]
+      : !pto.tensor_view<1x1x1x16x16xf16>
+    %gm_part = pto.partition_view %gm_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c16, %c16]
+      : !pto.tensor_view<1x1x1x16x16xf16>
+     -> !pto.partition_tensor_view<1x1x1x16x16xf16>
 
     %mb = pto.alloc_multi_tile
         : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
@@ -28,7 +39,7 @@ module {
     %pre = pto.multi_tile_get %mb[%c0]
         : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
        -> !pto.tile_buf<vec, 16x16xf16>
-    pto.tload ins(%gm : memref<16x16xf16, #pto.address_space<gm>>)
+    pto.tload ins(%gm_part : !pto.partition_tensor_view<1x1x1x16x16xf16>)
               outs(%pre : !pto.tile_buf<vec, 16x16xf16>)
 
     scf.for %i = %c0 to %n step %c1 {
@@ -36,7 +47,7 @@ module {
       %slot = pto.multi_tile_get %mb[%idx]
           : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
          -> !pto.tile_buf<vec, 16x16xf16>
-      pto.tload ins(%gm : memref<16x16xf16, #pto.address_space<gm>>)
+      pto.tload ins(%gm_part : !pto.partition_tensor_view<1x1x1x16x16xf16>)
                 outs(%slot : !pto.tile_buf<vec, 16x16xf16>)
     }
     return
@@ -63,18 +74,16 @@ module {
 // SELECT: arith.select
 // SELECT: pto.alloc_tile addr = %{{.*}}
 
-// MaterializeTileHandles must carry the dynamic selected buffer address into
-// alloc_tile, otherwise EmitC creates a tile without TASSIGN in the loop.
-// MAT: IR Dump After PTOMaterializeTileHandles
+// ResolveBufferSelect carries the dynamic selected buffer address directly in
+// alloc_tile, so EmitC can emit TASSIGN in the loop without a memref bridge.
+// MAT: IR Dump Before PTOInlineBackendHelpers
 // MAT-LABEL: func.func @const_preload_dyn_loop_select
-// MAT-DAG: %[[ADDR0:[A-Za-z0-9_]+]] = arith.constant 0 : i64
-// MAT-DAG: %[[ADDR1:[A-Za-z0-9_]+]] = arith.constant 512 : i64
+// MAT: %[[ADDR0:[A-Za-z0-9_]+]] = arith.constant 0 : i64
 // MAT: pto.alloc_tile addr = %[[ADDR0]]
 // MAT: scf.for
-// MAT-DAG: %[[LOOP_ADDR0:[A-Za-z0-9_]+]] = arith.constant 0 : i64
-// MAT-DAG: %[[LOOP_ADDR1:[A-Za-z0-9_]+]] = arith.constant 512 : i64
+// MAT: %[[ADDR1:[A-Za-z0-9_]+]] = arith.constant 512 : i64
 // MAT: %[[COND:[A-Za-z0-9_]+]] = arith.cmpi eq
-// MAT: %[[DYN_ADDR:[A-Za-z0-9_]+]] = arith.select %[[COND]], %[[LOOP_ADDR1]], %[[LOOP_ADDR0]] : i64
+// MAT: %[[DYN_ADDR:[A-Za-z0-9_]+]] = arith.select %[[COND]], %[[ADDR1]], %[[ADDR0]] : i64
 // MAT: pto.alloc_tile addr = %[[DYN_ADDR]]
 
 // EMITC: AICORE void const_preload_dyn_loop_select

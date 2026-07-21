@@ -8,12 +8,10 @@
 
 //===- PTOPlanMemoryModern.cpp - modern static local memory planner -------===//
 
-#include "AllocToPointerCast.h"
 #include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -93,11 +91,6 @@ static std::optional<AddressSpace> getBufferAddressSpace(Type type) {
   if (auto multiType = dyn_cast<MultiTileBufType>(type))
     return getBufferAddressSpace(multiType.getSlotType());
 
-  if (auto memRefType = dyn_cast<BaseMemRefType>(type)) {
-    if (auto attr =
-            dyn_cast_or_null<AddressSpaceAttr>(memRefType.getMemorySpace()))
-      return attr.getAddressSpace();
-  }
   return std::nullopt;
 }
 
@@ -192,9 +185,6 @@ static FailureOr<uint64_t> computeStaticBufferBytes(Value value) {
   } else if (auto multiType = dyn_cast<MultiTileBufType>(value.getType())) {
     shape = multiType.getSlotType().getShape();
     elementType = multiType.getSlotType().getElementType();
-  } else if (auto memRefType = dyn_cast<BaseMemRefType>(value.getType())) {
-    shape = memRefType.getShape();
-    elementType = memRefType.getElementType();
   } else {
     return failure();
   }
@@ -672,15 +662,6 @@ struct PlannerAnalysis {
               roots[found->second].freeIndex = index;
             }
           }
-        } else if (auto alloc = dyn_cast<memref::AllocOp>(op)) {
-          addRoot(alloc.getResult(), op);
-          if (failed)
-            return;
-          auto found = rootIndexByValue.find(alloc.getResult());
-          if (found != rootIndexByValue.end()) {
-            roots[found->second].allocIndex = index;
-            roots[found->second].freeIndex = index;
-          }
         }
 
         if (auto multiGet = dyn_cast<pto::MultiTileGetOp>(op)) {
@@ -694,14 +675,6 @@ struct PlannerAnalysis {
           propagateSplitTpopDerived(select.getResult(),
                                     ValueRange{select.getTrueValue(),
                                                select.getFalseValue()});
-        } else if (auto castOp = dyn_cast<memref::CastOp>(op)) {
-          setRoots(castOp.getResult(), getRoots(castOp.getSource()));
-          propagateSplitTpopDerived(castOp.getResult(),
-                                    ValueRange{castOp.getSource()});
-        } else if (auto subview = dyn_cast<memref::SubViewOp>(op)) {
-          setRoots(subview.getResult(), getRoots(subview.getSource()));
-          propagateSplitTpopDerived(subview.getResult(),
-                                    ValueRange{subview.getSource()});
         } else if (auto subview = dyn_cast<pto::SubViewOp>(op)) {
           setRoots(subview.getResult(), getRoots(subview.getSource()));
           propagateSplitTpopDerived(subview.getResult(),
@@ -714,10 +687,6 @@ struct PlannerAnalysis {
           setRoots(reshape.getResult(), getRoots(reshape.getSrc()));
           propagateSplitTpopDerived(reshape.getResult(),
                                     ValueRange{reshape.getSrc()});
-        } else if (auto reinterpret = dyn_cast<memref::ReinterpretCastOp>(op)) {
-          setRoots(reinterpret.getResult(), getRoots(reinterpret.getSource()));
-          propagateSplitTpopDerived(reinterpret.getResult(),
-                                    ValueRange{reinterpret.getSource()});
         } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
           seedForIterArgAliases(forOp);
         }
@@ -1026,8 +995,6 @@ private:
 static LogicalResult materializePlannedOffsets(
     func::FuncOp func, DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets) {
   RewritePatternSet patterns(func.getContext());
-  patterns.add<MemrefAllocaOpToPointerCastOpPattern>(patterns.getContext(),
-                                                     buffer2Offsets);
   patterns.add<AllocTileOpAddPlannedAddressPattern>(patterns.getContext(),
                                                     buffer2Offsets);
   patterns.add<AllocMultiTileOpAddPlannedAddressesPattern>(
@@ -1197,7 +1164,6 @@ struct PlanMemoryModernPass
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<mlir::pto::PTODialect>();
-    registry.insert<mlir::memref::MemRefDialect>();
     registry.insert<mlir::arith::ArithDialect>();
     registry.insert<mlir::func::FuncDialect>();
     registry.insert<mlir::scf::SCFDialect>();

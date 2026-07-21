@@ -10,7 +10,7 @@
 // expands pto.tmul via the default TileLang Python DSL template
 // lib/TileOps/tmul_template.py.
 //
-// Pipeline: PTOMaterializeTileHandles -> ExpandTileOp -> InlineLibCall -> FoldTileBufIntrinsics
+// Pipeline: ExpandTileOp -> InlineLibCall -> FoldTileBufIntrinsics
 //
 // RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --enable-tile-op-expand %s -o - 2>/dev/null | FileCheck %s
 

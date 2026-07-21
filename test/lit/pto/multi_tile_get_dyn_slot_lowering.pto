@@ -15,7 +15,7 @@
 
 module {
   func.func @dyn_slot_prefetch(
-      %gm : memref<16x16xf16, #pto.address_space<gm>>, %n : index) {
+      %gm : !pto.partition_tensor_view<16x16xf16>, %n : index) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -31,13 +31,13 @@ module {
       %s_next = pto.multi_tile_get %mb[%next_idx]
           : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
          -> !pto.tile_buf<vec, 16x16xf16>
-      pto.tload ins(%gm : memref<16x16xf16, #pto.address_space<gm>>)
+      pto.tload ins(%gm : !pto.partition_tensor_view<16x16xf16>)
                 outs(%s_next : !pto.tile_buf<vec, 16x16xf16>)
 
       %s_cur = pto.multi_tile_get %mb[%cur_idx]
           : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
          -> !pto.tile_buf<vec, 16x16xf16>
-      pto.tload ins(%gm : memref<16x16xf16, #pto.address_space<gm>>)
+      pto.tload ins(%gm : !pto.partition_tensor_view<16x16xf16>)
                 outs(%s_cur : !pto.tile_buf<vec, 16x16xf16>)
     }
     return

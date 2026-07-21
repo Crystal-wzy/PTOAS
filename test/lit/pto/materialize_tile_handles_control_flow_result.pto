@@ -1,5 +1,5 @@
 // RUN: ptoas --pto-arch=a3 --mlir-print-ir-after=pto-resolve-reserved-buffers %s -o /dev/null 2>&1 | FileCheck %s --check-prefixes=NATIVE,COMMON
-// RUN: ptoas --pto-arch=a3 --mlir-print-ir-after=pto-materialize-tile-handles %s -o /dev/null 2>&1 | FileCheck %s --check-prefixes=MATERIALIZED,COMMON
+// RUN: ptoas --pto-arch=a3 --mlir-print-ir-before=pto-inline-backend-helpers %s -o /dev/null 2>&1 | FileCheck %s --check-prefixes=MATERIALIZED,COMMON
 // RUN: ptoas --pto-arch=a3 %s -o - 2>&1 | FileCheck %s --check-prefix=EMITC
 // RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o - 2>&1 | FileCheck %s --check-prefix=VPTO
 
@@ -51,7 +51,7 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 }
 
 // NATIVE: IR Dump After PTOResolveReservedBuffers
-// MATERIALIZED: IR Dump After PTOMaterializeTileHandles
+// MATERIALIZED: IR Dump Before PTOInlineBackendHelpers
 // COMMON: %[[SEL:.*]] = scf.if {{.*}} -> (!pto.tile_buf<vec, 16x16xf16>) {
 // COMMON:   pto.tadd
 // COMMON:   scf.yield %{{.*}} : !pto.tile_buf<vec, 16x16xf16>

@@ -70,7 +70,6 @@ add_mlir_dialect_library(PTOTransforms
   CppPostprocess.cpp
   Utils.cpp
   OptMemPlanForPipeline.cpp
-  AllocToPointerCast.cpp
   InferPTOMemScope.cpp
   PTOPlanMemory.cpp
   PTOPlanMemoryModern.cpp
@@ -79,7 +78,6 @@ add_mlir_dialect_library(PTOTransforms
   PTOA5NormalizeTMovPass.cpp
   PTORemoveIdentityTMov.cpp
   PTOCanonicalizeIR.cpp
-  PTOMaterializeTileHandles.cpp
   BufferizableOpInterfaceImpl.cpp
   ConvertToPTOOp.cpp
   PTOAssignDefaultFrontendPipeIdPass.cpp

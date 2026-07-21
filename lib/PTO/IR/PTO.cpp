@@ -511,16 +511,6 @@ static std::optional<StringRef> getVerifierArchName(Operation *op) {
   return std::nullopt;
 }
 
-static bool shouldBypassDecodedMemrefVerifier(Operation *op) {
-  if (!op)
-    return false;
-  for (Value operand : op->getOperands()) {
-    if (isa<MemRefType>(operand.getType()))
-      return true;
-  }
-  return false;
-}
-
 static SmallVector<int64_t, 4> canonicalizeTileBufValidShape(ArrayRef<int64_t> validShape) {
   SmallVector<int64_t, 4> canonical;
   canonical.reserve(validShape.size());
@@ -532,8 +522,6 @@ static SmallVector<int64_t, 4> canonicalizeTileBufValidShape(ArrayRef<int64_t> v
 template <typename FnA2A3, typename FnA5>
 static LogicalResult dispatchVerifierByArch(Operation *op, FnA2A3 &&verifyA2A3,
                                             FnA5 &&verifyA5) {
-  if (shouldBypassDecodedMemrefVerifier(op))
-    return success();
   switch (getVerifierTargetArch(op)) {
   case VerifierTargetArch::A2A3:
     return verifyA2A3();
@@ -3956,8 +3944,6 @@ LogicalResult TStoreOp::verify() {
 }
 
 LogicalResult pto::TAbsOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   if (failed(verifyVecTileCommon(*this, srcTy, "src")) ||
@@ -4631,14 +4617,8 @@ static LogicalResult verifyTileBufCommon(Operation *op, Type ty, StringRef name,
     if (!allowLowPrecision && isPTOLowPrecisionType(elemTy))
       return op->emitOpError() << name << ": dtype " << elemTy
                                << " is not supported by this op yet";
-  } else if (auto mr = dyn_cast<MemRefType>(ty)) {
-    if (mr.getRank() != 2)
-      return op->emitOpError() << "expects " << name << " to be a rank-2 memref";
-    if (!allowLowPrecision && isPTOLowPrecisionType(mr.getElementType()))
-      return op->emitOpError() << name << ": dtype " << mr.getElementType()
-                               << " is not supported by this op yet";
   } else {
-    return op->emitOpError() << "expects " << name << " to be a !pto.tile_buf or rank-2 memref";
+    return op->emitOpError() << "expects " << name << " to be a !pto.tile_buf";
   }
 
   auto validShape = getValidShapeVec(ty);
@@ -5565,8 +5545,6 @@ LogicalResult pto::TAddReluOp::verify() {
 }
 
 LogicalResult pto::TAddCOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type t0 = getSrc0().getType();
   Type t1 = getSrc1().getType();
   Type t2 = getSrc2().getType();
@@ -5651,8 +5629,6 @@ LogicalResult pto::TAxpyOp::verify() {
 }
 
 LogicalResult pto::TAddSCOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type ts0 = getSrc0().getType();
   Type ts1 = getSrc1().getType();
   Type td = getDst().getType();
@@ -6012,8 +5988,6 @@ void mlir::pto::TCIOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult pto::TCIOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type dstTy = getDst().getType();
   if (failed(verifyTileBufCommon(*this, dstTy, "dst")))
     return failure();
@@ -6044,8 +6018,6 @@ LogicalResult pto::TCIOp::verify() {
 }
 
 LogicalResult pto::TTriOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
 
   Type dstTy = getDst().getType();
   if (failed(verifyVecTileCommon(*this, dstTy, "dst")))
@@ -6206,8 +6178,6 @@ LogicalResult pto::TCmpSOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 LogicalResult pto::TColExpandOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   if (failed(verifyNDStyleVecTile(*this, srcTy, "src")) ||
@@ -6553,8 +6523,6 @@ LogicalResult pto::TColProdOp::verify() {
 }
 
 llvm::LogicalResult mlir::pto::TCvtOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   if (failed(verifyTileBufCommon(*this, srcTy, "src", /*allowLowPrecision=*/true)) ||
@@ -6597,8 +6565,6 @@ llvm::LogicalResult mlir::pto::TRandomOp::verify() {
     return emitOpError("trandom is only supported for A5 targets");
   };
   auto verifyA5 = [&]() -> LogicalResult {
-    if (shouldBypassDecodedMemrefVerifier(getOperation()))
-      return success();
 
     Type dstTy = getDst().getType();
     if (failed(verifyTileBufCommon(*this, dstTy, "dst")))
@@ -7960,8 +7926,6 @@ mlir::LogicalResult mlir::pto::TGatherBOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TLogOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   if (failed(verifyVecTileUnaryOp(*this, srcTy, dstTy, "src", "dst",
@@ -9118,8 +9082,6 @@ LogicalResult TMatmulMxBiasOp::verify() {
 }
 // ---- TSetValOp ----
 LogicalResult TSetValOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   // dst can be tile/tensor/tilebuf (PTODpsType). Keep checks minimal.
   if (auto shaped = dyn_cast<ShapedType>(getDst().getType())) {
     if (shaped.getElementType() != getVal().getType())
@@ -9129,8 +9091,6 @@ LogicalResult TSetValOp::verify() {
 }
 // ---- TGetValOp ----
 LogicalResult TGetValOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type srcTy = getSrc().getType();
   if (!mlir::isa<pto::TileBufType, MemRefType>(srcTy))
     return emitOpError("expects src to be tile_buf or memref type");
@@ -9384,8 +9344,6 @@ void mlir::pto::MScatterOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult MScatterOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
 
   Type srcTy = getSrc().getType();
   Type idxTy = getIdx().getType();
@@ -9626,8 +9584,6 @@ void mlir::pto::MGatherOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult MGatherOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
 
   Type memTy = getMem().getType();
   Type idxTy = getIdx().getType();
@@ -9844,8 +9800,6 @@ ParseResult mlir::pto::TMrgSortOp::parse(OpAsmParser &parser, OperationState &re
 }
 
 mlir::LogicalResult mlir::pto::TMrgSortOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (isFormat1()) {
     Type srcTy = getSrc().getType();
     Type dstTy = getDst().getType();
@@ -9941,8 +9895,6 @@ mlir::LogicalResult mlir::pto::TMulSOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TShlSOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
@@ -10430,8 +10382,6 @@ mlir::LogicalResult mlir::pto::TPartMulOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TPReluOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   auto verifyCommon = [&]() -> FailureOr<std::tuple<Type, Type, Type, Type>> {
     Type t0 = getSrc0().getType();
     Type t1 = getSrc1().getType();
@@ -10720,9 +10670,6 @@ mlir::LogicalResult mlir::pto::TQuantOp::verify() {
   if (failed(verifyStructural()))
     return failure();
 
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
-
   auto verifyInt8Common = [&]() -> LogicalResult {
     Type srcTy = getSrc().getType();
     Type fpTy = getFp().getType();
@@ -10812,8 +10759,6 @@ mlir::LogicalResult mlir::pto::TQuantMxOp::verify() {
   };
 
   auto verifyA5 = [&]() -> LogicalResult {
-    if (shouldBypassDecodedMemrefVerifier(getOperation()))
-      return success();
 
     Type srcTy = getSrc().getType();
     Type dstTy = getDst().getType();
@@ -10954,9 +10899,6 @@ mlir::LogicalResult mlir::pto::TDequantOp::verify() {
   if (failed(verifyStructural()))
     return failure();
 
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
-
   auto verifyCommon = [&]() -> LogicalResult {
     if (failed(verifyTileBufCommon(*this, getSrc().getType(), "src")) ||
         failed(verifyTileBufCommon(*this, getScale().getType(), "scale")) ||
@@ -10982,8 +10924,6 @@ mlir::LogicalResult mlir::pto::TDequantOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TRecipOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type ts = getSrc().getType();
   Type td = getDst().getType();
   if (failed(verifyVecTileUnaryOp(*this, ts, td, "src", "dst",
@@ -11026,8 +10966,6 @@ mlir::LogicalResult mlir::pto::TReluOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TRemOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
 
   Type src0Ty = getSrc0().getType();
   Type src1Ty = getSrc1().getType();
@@ -11085,8 +11023,6 @@ mlir::LogicalResult mlir::pto::TFModOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TRemSOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type ts = getSrc().getType();
   Type tt = getTmp().getType();
   Type td = getDst().getType();
@@ -11132,8 +11068,6 @@ mlir::LogicalResult mlir::pto::TRemSOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TFModSOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
 
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
@@ -11173,8 +11107,6 @@ static LogicalResult verifyTPowTmpShape(Operation *op, Type tmpTy, Type dstTy) {
 }
 
 mlir::LogicalResult mlir::pto::TPowOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
 
   Type baseTy = getBase().getType();
   Type expTy = getExp().getType();
@@ -11239,8 +11171,6 @@ mlir::LogicalResult mlir::pto::TPowOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TPowSOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
 
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
@@ -11431,8 +11361,6 @@ mlir::LogicalResult mlir::pto::GetValidShapeOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TReshapeOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type ts = getSrc().getType();
   Type tr = getResult().getType();
   auto srcTb = dyn_cast<pto::TileBufType>(ts);
@@ -11474,8 +11402,6 @@ mlir::LogicalResult mlir::pto::TReshapeOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::BitcastOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   auto srcTy = llvm::dyn_cast<TileBufType>(getSrc().getType());
   auto dstTy = llvm::dyn_cast<TileBufType>(getResult().getType());
   if (!srcTy || !dstTy)
@@ -12353,8 +12279,6 @@ mlir::LogicalResult mlir::pto::TRowProdOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TRsqrtOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type ts = getSrc().getType();
   Type td = getDst().getType();
   if (failed(verifyVecTileUnaryOp(*this, ts, td, "src", "dst",
@@ -12702,8 +12626,6 @@ mlir::LogicalResult mlir::pto::TShrOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TSort32Op::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   Type idxTy = getIdx().getType();
@@ -12731,8 +12653,6 @@ mlir::LogicalResult mlir::pto::TSort32Op::verify() {
 
 
 mlir::LogicalResult mlir::pto::TSqrtOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   if (failed(verifyVecTileUnaryOp(*this, srcTy, dstTy, "src", "dst",
@@ -12869,8 +12789,6 @@ mlir::LogicalResult mlir::pto::TSubOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TSubCOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type src0Ty = getSrc0().getType();
   Type src1Ty = getSrc1().getType();
   Type src2Ty = getSrc2().getType();
@@ -12897,8 +12815,6 @@ mlir::LogicalResult mlir::pto::TSubSOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TSubSCOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   Type src0Ty = getSrc0().getType();
   Type src1Ty = getSrc1().getType();
   Type dstTy = getDst().getType();
@@ -13135,9 +13051,6 @@ mlir::LogicalResult mlir::pto::TPrintOp::verify() {
       dyn_cast_or_null<pto::PrintFormatAttr>(getProperties().printFormat);
   if (printFormatAttr && !tmp)
     return emitOpError() << "expects printFormat only when tmp is present";
-
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (auto tb = mlir::dyn_cast<mlir::pto::TileBufType>(srcType)) {
     auto elem = tb.getElementType();
     if (!(elem.isF16() || elem.isF32() ||
@@ -13286,8 +13199,6 @@ LogicalResult mlir::pto::TGemvOp::verify() {
 }
 
 LogicalResult mlir::pto::TMatmulAccOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   auto verifyA2A3 = [&]() -> LogicalResult {
     if (failed(verifyAccTileCommon(*this, getAccIn().getType(), "acc_in")) ||
         failed(verifyMatTileOperands(*this, getLhs().getType(), getRhs().getType(),
@@ -13311,8 +13222,6 @@ LogicalResult mlir::pto::TMatmulAccOp::verify() {
 }
 
 LogicalResult mlir::pto::TGemvAccOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (failed(verifyAccTileCommon(*this, getAccIn().getType(), "acc_in")) ||
       failed(verifyGemvTileOperands(*this, getLhs().getType(), getRhs().getType(),
                                     getDst().getType())))
@@ -14234,8 +14143,6 @@ mlir::LogicalResult mlir::pto::SimdTileToMemrefOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::SubViewOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   auto srcTy = llvm::dyn_cast<TileBufType>(getSource().getType());
   auto dstTy = llvm::dyn_cast<TileBufType>(getResult().getType());
   if (!srcTy || !dstTy)
@@ -16854,8 +16761,6 @@ LogicalResult TGetAsyncOp::verify() {
 }
 
 LogicalResult TPutOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (failed(verifyCommGlobalLike(*this, getDst(), "dst")) ||
       failed(verifyCommGlobalLike(*this, getSrc(), "src")) ||
       failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
@@ -16872,8 +16777,6 @@ LogicalResult TPutOp::verify() {
 }
 
 LogicalResult TGetOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (failed(verifyCommGlobalLike(*this, getDst(), "dst")) ||
       failed(verifyCommGlobalLike(*this, getSrc(), "src")) ||
       failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
@@ -16890,8 +16793,6 @@ LogicalResult TGetOp::verify() {
 }
 
 LogicalResult TNotifyOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (failed(verifyCommSignalLike(*this, getSignal(), "signal")))
     return failure();
   auto valueTy = dyn_cast<IntegerType>(getValue().getType());
@@ -16901,8 +16802,6 @@ LogicalResult TNotifyOp::verify() {
 }
 
 LogicalResult TWaitOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (failed(verifyCommSignalLike(*this, getSignal(), "signal")))
     return failure();
   auto cmpTy = dyn_cast<IntegerType>(getCmpValue().getType());
@@ -16912,8 +16811,6 @@ LogicalResult TWaitOp::verify() {
 }
 
 LogicalResult TTestOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (failed(verifyCommSignalLike(*this, getSignal(), "signal")))
     return failure();
   auto cmpTy = dyn_cast<IntegerType>(getCmpValue().getType());
@@ -17048,8 +16945,6 @@ LogicalResult SyncAllOp::verify() {
 }
 
 LogicalResult TBroadcastOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (failed(verifyCommGlobalLike(*this, getSrc(), "src")) ||
       failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
       failed(verifyCommPingPongSameType(*this, getPing(), getPong(), "ping",
@@ -17066,8 +16961,6 @@ LogicalResult TBroadcastOp::verify() {
 }
 
 LogicalResult CommTGatherOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (failed(verifyCommGlobalLike(*this, getDst(), "dst")) ||
       failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
       failed(verifyCommPingPongSameType(*this, getPing(), getPong(), "ping",
@@ -17084,8 +16977,6 @@ LogicalResult CommTGatherOp::verify() {
 }
 
 LogicalResult CommTScatterOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (failed(verifyCommGlobalLike(*this, getSrc(), "src")) ||
       failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
       failed(verifyCommPingPongSameType(*this, getPing(), getPong(), "ping",
@@ -17102,8 +16993,6 @@ LogicalResult CommTScatterOp::verify() {
 }
 
 LogicalResult TReduceOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   if (failed(verifyCommGlobalLike(*this, getDst(), "dst")) ||
       failed(verifyCommStagingTileLike(*this, getAcc(), "acc")) ||
       failed(verifyCommStagingTileLike(*this, getRecvPing(), "recv_ping")) ||

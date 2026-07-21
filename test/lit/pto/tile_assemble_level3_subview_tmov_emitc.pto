@@ -2,9 +2,9 @@
 
 module attributes {"pto.target_arch" = "a5"} {
   func.func @tile_assemble_level3_subview_tmov_emitc(
-      %x: memref<32x32xf32, #pto.address_space<gm>>,
-      %src: memref<32x16xf32, #pto.address_space<gm>>,
-      %out: memref<32x32xf32, #pto.address_space<gm>>) {
+      %x: !pto.partition_tensor_view<32x32xf32>,
+      %src: !pto.partition_tensor_view<32x16xf32>,
+      %out: !pto.partition_tensor_view<32x32xf32>) {
     %c0 = arith.constant 0 : index
     %c16 = arith.constant 16 : index
     %c32 = arith.constant 32 : index
@@ -16,9 +16,9 @@ module attributes {"pto.target_arch" = "a5"} {
     %tile_src = pto.alloc_tile addr = %addr1 :
       !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=16, v_row=32, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
-    pto.tload ins(%x : memref<32x32xf32, #pto.address_space<gm>>)
+    pto.tload ins(%x : !pto.partition_tensor_view<32x32xf32>)
               outs(%tile_x : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%src : memref<32x16xf32, #pto.address_space<gm>>)
+    pto.tload ins(%src : !pto.partition_tensor_view<32x16xf32>)
               outs(%tile_src : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=16, v_row=32, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     %view = pto.subview %tile_x[%c0, %c16] sizes [32, 16] valid [%c32, %c16] :
       !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0> ->
@@ -28,7 +28,7 @@ module attributes {"pto.target_arch" = "a5"} {
       outs(%view : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=16, v_row=32, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tstore ins(%tile_x :
         !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-      outs(%out : memref<32x32xf32, #pto.address_space<gm>>)
+      outs(%out : !pto.partition_tensor_view<32x32xf32>)
     return
   }
 }

@@ -12,29 +12,29 @@
 
 module attributes {"pto.target_arch" = "a3"} {
   func.func @inplace_forbid_alias_ttrans() {
-    %src = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
-    %tmp = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
-    %dst = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf16>
+    %tmp = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf16>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf16>
 
-    pto.ttrans ins(%src, %tmp : memref<16x16xf16, #pto.address_space<vec>>,
-                               memref<16x16xf16, #pto.address_space<vec>>)
-               outs(%dst : memref<16x16xf16, #pto.address_space<vec>>)
+    pto.ttrans ins(%src, %tmp : !pto.tile_buf<vec, 16x16xf16>,
+                               !pto.tile_buf<vec, 16x16xf16>)
+               outs(%dst : !pto.tile_buf<vec, 16x16xf16>)
     return
   }
 
   func.func @inplace_forbid_alias_tsel() {
-    %mask = memref.alloc() : memref<16x16xi16, #pto.address_space<vec>>
-    %src0 = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
-    %src1 = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
-    %tmp = memref.alloc() : memref<16x16xui8, #pto.address_space<vec>>
-    %dst = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
+    %mask = pto.alloc_tile : !pto.tile_buf<vec, 16x32xi8>
+    %src0 = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf16>
+    %src1 = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf16>
+    %tmp = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf16>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf16>
 
     pto.tsel ins(%mask, %src0, %src1, %tmp
-                 : memref<16x16xi16, #pto.address_space<vec>>,
-                   memref<16x16xf16, #pto.address_space<vec>>,
-                   memref<16x16xf16, #pto.address_space<vec>>,
-                   memref<16x16xui8, #pto.address_space<vec>>)
-             outs(%dst : memref<16x16xf16, #pto.address_space<vec>>)
+                 : !pto.tile_buf<vec, 16x32xi8>,
+                   !pto.tile_buf<vec, 16x16xf16>,
+                   !pto.tile_buf<vec, 16x16xf16>,
+                   !pto.tile_buf<vec, 16x16xf16>)
+             outs(%dst : !pto.tile_buf<vec, 16x16xf16>)
     return
   }
 }
@@ -43,18 +43,19 @@ module attributes {"pto.target_arch" = "a3"} {
 // CHECK-DAG: %[[A0:.*]] = arith.constant 0 : i64
 // CHECK-DAG: %[[A512:.*]] = arith.constant 512 : i64
 // CHECK-DAG: %[[A1024:.*]] = arith.constant 1024 : i64
-// CHECK: pto.pointer_cast(%[[A0]])
-// CHECK: pto.pointer_cast(%[[A512]])
-// CHECK: pto.pointer_cast(%[[A1024]])
+// CHECK: pto.alloc_tile addr = %[[A0]]
+// CHECK: pto.alloc_tile addr = %[[A512]]
+// CHECK: pto.alloc_tile addr = %[[A1024]]
 // CHECK-LABEL: func.func @inplace_forbid_alias_tsel
 // CHECK-DAG: %[[B0:.*]] = arith.constant 0 : i64
 // CHECK-DAG: %[[B512:.*]] = arith.constant 512 : i64
 // CHECK-DAG: %[[B1024:.*]] = arith.constant 1024 : i64
 // CHECK-DAG: %[[B1536:.*]] = arith.constant 1536 : i64
 // CHECK-DAG: %[[B2048:.*]] = arith.constant 2048 : i64
-// CHECK: pto.pointer_cast(%[[B0]])
-// CHECK: pto.pointer_cast(%[[B512]])
-// CHECK: pto.pointer_cast(%[[B1024]])
-// CHECK: pto.pointer_cast(%[[B2048]])
-// CHECK: pto.pointer_cast(%[[B1536]])
+// CHECK: pto.alloc_tile addr = %[[B0]]
+// CHECK: pto.alloc_tile addr = %[[B512]]
+// CHECK: pto.alloc_tile addr = %[[B1024]]
+// CHECK: pto.alloc_tile addr = %[[B2048]]
+// CHECK: pto.alloc_tile addr = %[[B1536]]
+// CHECK-NOT: pto.pointer_cast
 // CHECK-NOT: memref.alloc

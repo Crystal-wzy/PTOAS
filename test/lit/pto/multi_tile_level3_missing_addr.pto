@@ -14,7 +14,7 @@
 
 module {
   func.func @l3_missing_addr(
-      %gm0 : memref<16x16xf16, #pto.address_space<gm>>) attributes {pto.entry} {
+      %gm0 : !pto.partition_tensor_view<16x16xf16>) attributes {pto.entry} {
     %c0 = arith.constant 0 : index
 
     %mb = pto.alloc_multi_tile
@@ -24,7 +24,7 @@ module {
         : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
        -> !pto.tile_buf<vec, 16x16xf16>
 
-    pto.tload ins(%gm0 : memref<16x16xf16, #pto.address_space<gm>>)
+    pto.tload ins(%gm0 : !pto.partition_tensor_view<16x16xf16>)
               outs(%s0  : !pto.tile_buf<vec, 16x16xf16>)
     return
   }

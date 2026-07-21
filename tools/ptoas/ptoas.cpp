@@ -3410,13 +3410,8 @@ int mlir::pto::compilePTOASModule(
     return 0;
   }
 
-  // Reintroduce tile-native handles once on the shared mainline so both
-  // backends consume the same post-planning seam IR.
-  pm.addPass(pto::createPTOMaterializeTileHandlesPass());
   pm.addPass(createCSEPass());
-  // Inline PTODSL backend helpers only after the shared mainline has
-  // materialized tile-native handles, so helper arguments are restored to the
-  // tile_buf ABI before qk.as_ptr()-style bridges are cloned into callers.
+  // PTODSL backend helpers already use the tile-native ABI.
   pm.addPass(pto::createPTOInlineBackendHelpersPass());
   if (effectiveBackend == PTOBackend::EmitC)
     pm.addPass(createNarrowUnusedMultiResultProvenancePass());

@@ -770,24 +770,6 @@ def PTOValidateIntToPtrUses : Pass<"pto-validate-inttoptr-uses", "func::FuncOp">
   ];
 }
 
-def PTOMaterializeTileHandles : Pass<"pto-materialize-tile-handles", "ModuleOp"> {
-  let summary = "Restore tile_buf handles for remaining legacy memref values";
-  let description = [{
-    Re-wraps any remaining local memref values used by tile operations as
-    addressed `pto.alloc_tile` handles before backend lowering. Tile-native
-    operations already bypass this compatibility path.
-  }];
-
-  let constructor = "mlir::pto::createPTOMaterializeTileHandlesPass()";
-
-  let dependentDialects = [
-    "mlir::pto::PTODialect",
-    "mlir::memref::MemRefDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::func::FuncDialect"
-  ];
-}
-
 def PTOResolveBufferSelect : Pass<"pto-resolve-buffer-select", "ModuleOp"> {
   let summary = "Resolve multi-buffer slot selections to addressed tile handles";
   let description = [{

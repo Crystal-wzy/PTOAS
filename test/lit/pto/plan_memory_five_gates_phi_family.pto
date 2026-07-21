@@ -12,24 +12,43 @@
 
 module attributes {"pto.target_arch" = "a3"} {
   func.func @five_gates_phi_family(
-      %gm0 : memref<16x16xf16, #pto.address_space<gm>>,
-      %gm1 : memref<16x16xf16, #pto.address_space<gm>>,
-      %out : memref<16x16xf16, #pto.address_space<gm>>) {
+      %gm0 : !pto.ptr<f16>, %gm1 : !pto.ptr<f16>, %out : !pto.ptr<f16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %gm0_view = pto.make_tensor_view %gm0,
+      shape = [%c1, %c1, %c1, %c16, %c16], strides = [%c16, %c16, %c16, %c16, %c1]
+      : !pto.tensor_view<1x1x1x16x16xf16>
+    %gm1_view = pto.make_tensor_view %gm1,
+      shape = [%c1, %c1, %c1, %c16, %c16], strides = [%c16, %c16, %c16, %c16, %c1]
+      : !pto.tensor_view<1x1x1x16x16xf16>
+    %out_view = pto.make_tensor_view %out,
+      shape = [%c1, %c1, %c1, %c16, %c16], strides = [%c16, %c16, %c16, %c16, %c1]
+      : !pto.tensor_view<1x1x1x16x16xf16>
+    %gm0_part = pto.partition_view %gm0_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0], sizes = [%c1, %c1, %c1, %c16, %c16]
+      : !pto.tensor_view<1x1x1x16x16xf16> -> !pto.partition_tensor_view<1x1x1x16x16xf16>
+    %gm1_part = pto.partition_view %gm1_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0], sizes = [%c1, %c1, %c1, %c16, %c16]
+      : !pto.tensor_view<1x1x1x16x16xf16> -> !pto.partition_tensor_view<1x1x1x16x16xf16>
+    %out_part = pto.partition_view %out_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0], sizes = [%c1, %c1, %c1, %c16, %c16]
+      : !pto.tensor_view<1x1x1x16x16xf16> -> !pto.partition_tensor_view<1x1x1x16x16xf16>
     %cond = arith.constant true
-    %merged = scf.if %cond -> (memref<16x16xf16, #pto.address_space<vec>>) {
-      %then = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
-      pto.tload ins(%gm0 : memref<16x16xf16, #pto.address_space<gm>>)
-                outs(%then : memref<16x16xf16, #pto.address_space<vec>>) {layout = #pto.layout<nd>}
-      scf.yield %then : memref<16x16xf16, #pto.address_space<vec>>
+    %merged = scf.if %cond -> (!pto.tile_buf<vec, 16x16xf16>) {
+      %then = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf16>
+      pto.tload ins(%gm0_part : !pto.partition_tensor_view<1x1x1x16x16xf16>)
+                outs(%then : !pto.tile_buf<vec, 16x16xf16>) {layout = #pto.layout<nd>}
+      scf.yield %then : !pto.tile_buf<vec, 16x16xf16>
     } else {
-      %else = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
-      pto.tload ins(%gm1 : memref<16x16xf16, #pto.address_space<gm>>)
-                outs(%else : memref<16x16xf16, #pto.address_space<vec>>) {layout = #pto.layout<nd>}
-      scf.yield %else : memref<16x16xf16, #pto.address_space<vec>>
+      %else = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf16>
+      pto.tload ins(%gm1_part : !pto.partition_tensor_view<1x1x1x16x16xf16>)
+                outs(%else : !pto.tile_buf<vec, 16x16xf16>) {layout = #pto.layout<nd>}
+      scf.yield %else : !pto.tile_buf<vec, 16x16xf16>
     }
 
-    pto.tstore ins(%merged : memref<16x16xf16, #pto.address_space<vec>>)
-               outs(%out : memref<16x16xf16, #pto.address_space<gm>>) {layout = #pto.layout<nd>}
+    pto.tstore ins(%merged : !pto.tile_buf<vec, 16x16xf16>)
+               outs(%out_part : !pto.partition_tensor_view<1x1x1x16x16xf16>) {layout = #pto.layout<nd>}
     return
   }
 }
@@ -37,7 +56,8 @@ module attributes {"pto.target_arch" = "a3"} {
 // CHECK-LABEL: func.func @five_gates_phi_family
 // CHECK: %[[ADDR0:.*]] = arith.constant 0 : i64
 // CHECK: scf.if
-// CHECK: pto.pointer_cast(%[[ADDR0]])
+// CHECK: pto.alloc_tile addr = %[[ADDR0]]
 // CHECK: } else {
-// CHECK: pto.pointer_cast(%[[ADDR0]])
+// CHECK: pto.alloc_tile addr = %[[ADDR0]]
+// CHECK-NOT: pto.pointer_cast
 // CHECK-NOT: memref.alloc
