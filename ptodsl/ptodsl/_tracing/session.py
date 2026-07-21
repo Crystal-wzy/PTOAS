@@ -248,9 +248,14 @@ class TraceSession:
             return _pto.SectionCubeOp()
         return None
 
-    def _create_inline_subkernel_wrapper(self, role: str):
+    def _create_inline_subkernel_wrapper(
+        self,
+        role: str,
+        *,
+        simt_launch_dims: tuple | None = None,
+    ):
         if role == "simt":
-            dim_x, dim_y, dim_z = _coerce_default_simt_section_dims()
+            dim_x, dim_y, dim_z = _coerce_simt_section_dims(simt_launch_dims)
             wrapper_op = _pto.SectionSimtOp(dim_x, dim_y, dim_z)
             body_block = wrapper_op.body.blocks.append()
             return wrapper_op, body_block
@@ -348,7 +353,10 @@ class TraceSession:
             symbol_name=symbol_name,
             target=target,
         )
-        wrapper_op, body_block = self._create_inline_subkernel_wrapper(role)
+        wrapper_op, body_block = self._create_inline_subkernel_wrapper(
+            role,
+            simt_launch_dims=simt_launch_dims,
+        )
         outline_frame = InlineSubkernelOutlineFrame(
             trace_frame=frame,
             helper_symbol_name=self._next_inline_subkernel_symbol(symbol_name),
@@ -923,10 +931,14 @@ def _coerce_simt_launch_dims(dims):
     )
 
 
-def _coerce_default_simt_section_dims():
+def _coerce_simt_section_dims(dims):
+    if dims is None:
+        dims = (1, 1, 1)
+    if not isinstance(dims, (tuple, list)) or len(dims) != 3:
+        raise TypeError("pto.simt(...) expects exactly three launch dimensions: dim_x, dim_y, dim_z")
     return tuple(
         _coerce_i32_dim(dim, context=f"pto.simt(..., dim[{index}])")
-        for index, dim in enumerate((1, 1, 1))
+        for index, dim in enumerate(dims)
     )
 
 

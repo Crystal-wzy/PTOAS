@@ -1120,6 +1120,12 @@ with pto.simt():
     scalar.store(o_next, o_next_tile[row, col])
 ```
 
+```python
+with pto.simt(128, 1, 1):
+    tid = pto.get_tid_x()
+    scalar.store(tid, scratch_ub, scalar.index_cast(tid))
+```
+
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"kernel_entry.inline_cube_scope","symbol":"kernel_entry_inline_cube_scope_probe","compile":{"BLOCK_M":16,"BLOCK_K":16,"BLOCK_N":16}} -->
 ```python
 with pto.tileop():

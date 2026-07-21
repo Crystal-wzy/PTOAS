@@ -4544,17 +4544,21 @@ def main() -> None:
     inline_simt_launch_text = inline_simt_launch_dims_probe.compile(TRACE_TOKEN=1).mlir_text()
     expect_parse_roundtrip_and_verify(inline_simt_launch_text, "inline simt launch-dims specialization")
     expect(
-        inline_simt_launch_text.count("pto.section.simt") == 1
-        and re.search(r"pto\.section\.simt\s*<<<", inline_simt_launch_text) is not None,
-        "with pto.simt(dim_x, dim_y, dim_z) should keep one inline pto.section.simt region",
+        re.search(r"pto\.section\.simt\s*<<<", inline_simt_launch_text) is not None
+        and "arith.constant 32 : i32" in inline_simt_launch_text
+        and "arith.constant 2 : i32" in inline_simt_launch_text,
+        "with pto.simt(dim_x, dim_y, dim_z) should emit inline pto.section.simt with launch dims",
     )
     expect(
-        "pto.simt_launch" not in inline_simt_launch_text,
-        "with pto.simt(dim_x, dim_y, dim_z) should not emit a separate pto.simt_launch",
+        "pto.simt_launch" not in inline_simt_launch_text
+        and "pto.store_vfsimt_info" not in inline_simt_launch_text,
+        "with pto.simt(dim_x, dim_y, dim_z) should not emit caller-side SIMT launch metadata",
     )
     expect(
-        "pto.store_vfsimt_info" not in inline_simt_launch_text,
-        "with pto.simt(dim_x, dim_y, dim_z) should not materialize caller-side launch metadata",
+        re.search(r"func\.func @inline_simt_[0-9]+__ptodsl_[0-9a-f]+", inline_simt_launch_text)
+        is None
+        and "pto.simt_entry" not in inline_simt_launch_text,
+        "inline SIMT launch-dims body should remain in the enclosing kernel during DSL tracing",
     )
     expect_raises(
         TypeError,
