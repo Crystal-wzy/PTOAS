@@ -38,22 +38,22 @@ def TensorOrMemref :
   AnyTypeOf<[AnyMemRef, AnyRankedTensor], "Tensor or Memref">;
 
 def PTODpsType :
-  AnyTypeOf<[AnyRankedTensor, AnyMemRef, PartitionTensorViewType, TileBufType]>;
+  AnyTypeOf<[AnyRankedTensor, PartitionTensorViewType, TileBufType]>;
 
 def PTOPipeEntryType :
-  AnyTypeOf<[AnyRankedTensor, AnyMemRef, TensorViewType, TileBufType],
-            "TensorView, TileBuf, Tensor, or MemRef">;
+  AnyTypeOf<[AnyRankedTensor, TensorViewType, TileBufType],
+            "TensorView, TileBuf, or Tensor">;
 
+def PTOCommType :
+  AnyTypeOf<[AnyRankedTensor, TensorViewType, PartitionTensorViewType,
+             TileBufType], "TensorView, PartitionTensorView, TileBuf, or Tensor">;
+
+// VPTO address extraction may still materialize a low-level memref result.
 def PtrOrMemRef :
   AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
 
 def TileBufOrMemRef :
   AnyTypeOf<[TileBufType, AnyMemRef], "TileBuf or MemRef">;
-
-def ScalarPtrOrMemRef :
-  TypeConstraint<
-    CPred<"::mlir::pto::isScalarPtrOrMemRef($_self)">,
-    "Ptr or GM MemRef">;
 
 def ScalarType :
   AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
@@ -118,7 +118,7 @@ def PtrToIntOp : PTO_Op<"ptrtoint", [Pure]> {
   }];
 
   let arguments = (ins
-    PtrOrMemRef:$ptr
+    PtrType:$ptr
   );
 
   let results = (outs
@@ -147,7 +147,7 @@ def IntToPtrOp : PTO_Op<"inttoptr", [Pure]> {
   );
 
   let results = (outs
-    PtrOrMemRef:$result
+    PtrType:$result
   );
 
   let hasVerifier = 1;
@@ -166,7 +166,6 @@ def CastPtrOp : PTO_Op<"castptr", [Pure]> {
     - integer -> !pto.ptr<elem, space>
     - !pto.ptr<elem, space> -> integer
     - !pto.ptr<srcElem, space> -> !pto.ptr<dstElem, space>
-    - memref<..., space> -> !pto.ptr<elem, space> (extract the aligned base ptr)
 
     Pointer-to-pointer casts must stay within the same PTO memory space. Cross
     space casts such as gm <-> ub are rejected by the verifier.
@@ -192,7 +191,7 @@ def LoadScalarOp : PTO_Op<"load_scalar", [
   let summary = "Load a single scalar element from a pointer at offset.";
 
   let arguments = (ins
-    ScalarPtrOrMemRef:$ptr,
+    PtrType:$ptr,
     Index:$offset
   );
 
@@ -211,7 +210,7 @@ def StoreScalarOp : PTO_Op<"store_scalar", [
   let summary = "Store a single scalar element to a pointer at offset.";
 
   let arguments = (ins
-    ScalarPtrOrMemRef:$ptr,
+    PtrType:$ptr,
     Index:$offset,
     AnyType:$value
   );
@@ -230,7 +229,7 @@ def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments,
   let summary = "Wrap a pointer as a tensor_view descriptor (no allocation, no copy).";
 
   let arguments = (ins
-    AnyType:$ptr,
+    PtrType:$ptr,
     Variadic<Index>:$shape,
     Variadic<Index>:$strides,
     OptionalAttr<PTO_LayoutAttr>:$layout
@@ -269,27 +268,24 @@ def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments,
   let hasCustomAssemblyFormat = 1;
 }
 
-// Helper: tensor_view or memref (after lowering tensor_view to memref).
-def TensorViewLikeOrMemRef :
-  AnyTypeOf<[TensorViewType, PartitionTensorViewType, AnyMemRef],
-            "TensorView, PartitionTensorView, or MemRef">;
+// Helper for either whole-tensor or partitioned GM views.
+def TensorViewLike :
+  AnyTypeOf<[TensorViewType, PartitionTensorViewType],
+            "TensorView or PartitionTensorView">;
 
-// Get the size of a dimension of a tensor_view or its lowered memref view.
+// Get the size of a dimension of a tensor_view.
 // Result type: Index (use arith.index_cast if i32 is needed).
 def GetTensorViewDimOp : PTO_Op<"get_tensor_view_dim", [Pure]> {
   let summary = "Get the size of a dimension of a tensor_view.";
   let description = [{
     Returns the size of the given dimension of a logical tensor view.
-    This op accepts either !pto.tensor_view or the memref it is lowered to.
-    IR (tensor_view form):
+    This op accepts !pto.tensor_view or !pto.partition_tensor_view.
+    IR:
       %dim_size = pto.get_tensor_view_dim %tv, %dim_index
         : !pto.tensor_view, index -> index
-    IR (memref form, after lowering):
-      %dim_size = pto.get_tensor_view_dim %mr, %dim_index
-        : memref<...>, index -> index
   }];
   let arguments = (ins
-    TensorViewLikeOrMemRef:$tensor_view,
+    TensorViewLike:$tensor_view,
     Index:$dim_index
   );
   let results = (outs Index:$result);
@@ -305,11 +301,11 @@ def GetTensorViewStrideOp : PTO_Op<"get_tensor_view_stride", [Pure]> {
   let summary = "Get the stride of a dimension of a tensor_view.";
   let description = [{
     Returns the stride, measured in elements, of the given dimension of a
-    logical tensor view. This op accepts either !pto.tensor_view or the memref
-    it is lowered to.
+    logical tensor view. This op accepts !pto.tensor_view or
+    !pto.partition_tensor_view.
   }];
   let arguments = (ins
-    TensorViewLikeOrMemRef:$tensor_view,
+    TensorViewLike:$tensor_view,
     Index:$dim_index
   );
   let results = (outs Index:$result);
@@ -730,7 +726,7 @@ def MakePrefetchAsyncContextOp : PTO_Op<"make_prefetch_async_context"> {
   }];
 
   let arguments = (ins
-    ScalarPtrOrMemRef:$workspace
+    PtrType:$workspace
   );
 
   let results = (outs
@@ -2011,8 +2007,8 @@ def BuildAsyncSessionOp : PTO_Op<"comm.build_async_session", [
   let summary = "Build an async DMA session handle for TPUT_ASYNC/TGET_ASYNC";
 
   let arguments = (ins
-      TileBufOrMemRef:$scratch,
-      ScalarPtrOrMemRef:$workspace,
+      TileBufType:$scratch,
+      PtrType:$workspace,
       OptionalAttr<I32Attr>:$sync_id,
       OptionalAttr<I64Attr>:$block_bytes,
       OptionalAttr<I64Attr>:$comm_block_offset,
@@ -2024,7 +2020,7 @@ def BuildAsyncSessionOp : PTO_Op<"comm.build_async_session", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `(` $scratch `,` $workspace `:` qualified(type($scratch)) `,` type($workspace) `)`
+    `(` $scratch `,` $workspace `:` qualified(type($scratch)) `,` qualified(type($workspace)) `)`
     attr-dict `->` qualified(type($session))
   }];
 }
@@ -2035,8 +2031,8 @@ def TPutAsyncOp : PTO_Op<"comm.tput_async", [
   let summary = "Asynchronous remote write from local GM to remote GM";
 
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$src,
+      PTOCommType:$dst,
+      PTOCommType:$src,
       AsyncSessionType:$session
   );
 
@@ -2056,8 +2052,8 @@ def TGetAsyncOp : PTO_Op<"comm.tget_async", [
   let summary = "Asynchronous remote read from remote GM to local GM";
 
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$src,
+      PTOCommType:$dst,
+      PTOCommType:$src,
       AsyncSessionType:$session
   );
 
@@ -2114,10 +2110,10 @@ def TPutOp : PTO_Op<"comm.tput", [
 ]> {
   let summary = "Synchronous remote write from local GM to remote GM";
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$src,
-      PTODpsType:$ping,
-      Optional<PTODpsType>:$pong,
+      PTOCommType:$dst,
+      PTOCommType:$src,
+      PTOCommType:$ping,
+      Optional<PTOCommType>:$pong,
       DefaultValuedAttr<PTO_AtomicTypeAttr, "::mlir::pto::AtomicType::AtomicNone">:$atomicType
   );
   let results = (outs);
@@ -2134,10 +2130,10 @@ def TGetOp : PTO_Op<"comm.tget", [
 ]> {
   let summary = "Synchronous remote read from remote GM to local GM";
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$src,
-      PTODpsType:$ping,
-      Optional<PTODpsType>:$pong
+      PTOCommType:$dst,
+      PTOCommType:$src,
+      PTOCommType:$ping,
+      Optional<PTOCommType>:$pong
   );
   let results = (outs);
   let hasVerifier = 1;
@@ -2153,7 +2149,7 @@ def TNotifyOp : PTO_Op<"comm.tnotify", [
 ]> {
   let summary = "Send a signal notification to remote GM";
   let arguments = (ins
-      PTODpsType:$signal,
+      PTOCommType:$signal,
       AnySignlessInteger:$value,
       PTO_NotifyOpAttr:$notifyOp
   );
@@ -2170,7 +2166,7 @@ def TWaitOp : PTO_Op<"comm.twait", [
 ]> {
   let summary = "Block until signal(s) satisfy a comparison";
   let arguments = (ins
-      PTODpsType:$signal,
+      PTOCommType:$signal,
       AnySignlessInteger:$cmpValue,
       PTO_WaitCmpAttr:$cmp
   );
@@ -2187,7 +2183,7 @@ def TTestOp : PTO_Op<"comm.ttest", [
 ]> {
   let summary = "Non-blocking signal comparison test";
   let arguments = (ins
-      PTODpsType:$signal,
+      PTOCommType:$signal,
       AnySignlessInteger:$cmpValue,
       PTO_WaitCmpAttr:$cmp
   );
@@ -2205,10 +2201,10 @@ def TBroadcastOp : PTO_Op<"comm.tbroadcast", [
 ]> {
   let summary = "Broadcast local GM data to all group members";
   let arguments = (ins
-      PTODpsType:$src,
-      PTODpsType:$ping,
-      Optional<PTODpsType>:$pong,
-      Variadic<PTODpsType>:$group,
+      PTOCommType:$src,
+      PTOCommType:$ping,
+      Optional<PTOCommType>:$pong,
+      Variadic<PTOCommType>:$group,
       I32Attr:$root
   );
   let results = (outs);
@@ -2222,10 +2218,10 @@ def CommTGatherOp : PTO_Op<"comm.tgather", [
 ]> {
   let summary = "Gather remote GM data from a communication group";
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$ping,
-      Optional<PTODpsType>:$pong,
-      Variadic<PTODpsType>:$group,
+      PTOCommType:$dst,
+      PTOCommType:$ping,
+      Optional<PTOCommType>:$pong,
+      Variadic<PTOCommType>:$group,
       I32Attr:$root
   );
   let results = (outs);
@@ -2239,10 +2235,10 @@ def CommTScatterOp : PTO_Op<"comm.tscatter", [
 ]> {
   let summary = "Scatter local GM data to a communication group";
   let arguments = (ins
-      PTODpsType:$src,
-      PTODpsType:$ping,
-      Optional<PTODpsType>:$pong,
-      Variadic<PTODpsType>:$group,
+      PTOCommType:$src,
+      PTOCommType:$ping,
+      Optional<PTOCommType>:$pong,
+      Variadic<PTOCommType>:$group,
       I32Attr:$root
   );
   let results = (outs);
@@ -2256,11 +2252,11 @@ def TReduceOp : PTO_Op<"comm.treduce", [
 ]> {
   let summary = "Reduce remote GM data from a communication group";
   let arguments = (ins
-      PTODpsType:$dst,
-      PTODpsType:$acc,
-      PTODpsType:$recvPing,
-      Optional<PTODpsType>:$recvPong,
-      Variadic<PTODpsType>:$group,
+      PTOCommType:$dst,
+      PTOCommType:$acc,
+      PTOCommType:$recvPing,
+      Optional<PTOCommType>:$recvPong,
+      Variadic<PTOCommType>:$group,
       PTO_ReduceOpAttr:$reduceOp,
       I32Attr:$root
   );
@@ -3215,23 +3211,14 @@ def MGatherOp : PTO_TOp<"mgather", [
       // MTE2 pipe on every arch, mirroring pto.tload. The GM -> UB (VEC) path
       // below keeps its A5 SIMT (PIPE_V) / A2A3 MTE2 selection.
       //
-      // Resolve the dst address space from both tile_buf and legacy imported
-      // memref forms. InsertSync / GraphSyncSolver consume getPipe() through the
-      // OpPipeInterface. A tile-only check would fall through to PIPE_V on A5.
+      // Resolve the destination address space for InsertSync and
+      // GraphSyncSolver through the OpPipeInterface.
       auto getAddressSpace =
           [](::mlir::Type ty) -> std::optional<::mlir::pto::AddressSpace> {
         if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(ty)) {
           if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as =
-                    ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;

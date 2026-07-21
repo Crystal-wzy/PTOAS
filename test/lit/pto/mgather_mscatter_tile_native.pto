@@ -14,10 +14,10 @@
 
 module {
   func.func private @mgather_arg(
-      %mem: memref<1x1x1x8x16xf16, #pto.address_space<gm>>,
+      %mem: !pto.partition_tensor_view<1x1x1x8x16xf16>,
       %idx: !pto.tile_buf<vec, 8x16xi32>,
       %dst: !pto.tile_buf<vec, 8x16xf16>) {
-    pto.mgather ins(%mem, %idx : memref<1x1x1x8x16xf16, #pto.address_space<gm>>, !pto.tile_buf<vec, 8x16xi32>)
+    pto.mgather ins(%mem, %idx : !pto.partition_tensor_view<1x1x1x8x16xf16>, !pto.tile_buf<vec, 8x16xi32>)
                 outs(%dst : !pto.tile_buf<vec, 8x16xf16>)
                 {coalesce = #pto<coalesce elem>, gatherOob = #pto<gather_oob zero>}
     return
@@ -26,23 +26,23 @@ module {
   func.func private @mscatter_arg(
       %src: !pto.tile_buf<vec, 8x16xf16>,
       %idx: !pto.tile_buf<vec, 8x16xi32>,
-      %mem: memref<1x1x1x8x16xf16, #pto.address_space<gm>>) {
+      %mem: !pto.partition_tensor_view<1x1x1x8x16xf16>) {
     pto.mscatter ins(%src, %idx : !pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xi32>)
-                 outs(%mem : memref<1x1x1x8x16xf16, #pto.address_space<gm>>)
+                 outs(%mem : !pto.partition_tensor_view<1x1x1x8x16xf16>)
                  {coalesce = #pto<coalesce elem>, scatterOob = #pto<scatter_oob skip>}
     return
   }
 }
 
 // NATIVE-LABEL: func.func private @mgather_arg
-// NATIVE-SAME: memref<1x1x1x8x16xf16, #pto.address_space<gm>>
+// NATIVE-SAME: !pto.partition_tensor_view<1x1x1x8x16xf16>
 // NATIVE-SAME: !pto.tile_buf<vec, 8x16xi32>
 // NATIVE-SAME: !pto.tile_buf<vec, 8x16xf16>
 // NATIVE: pto.mgather
 // NATIVE-LABEL: func.func private @mscatter_arg
 // NATIVE-SAME: !pto.tile_buf<vec, 8x16xf16>
 // NATIVE-SAME: !pto.tile_buf<vec, 8x16xi32>
-// NATIVE-SAME: memref<1x1x1x8x16xf16, #pto.address_space<gm>>
+// NATIVE-SAME: !pto.partition_tensor_view<1x1x1x8x16xf16>
 // NATIVE: pto.mscatter
 
 // EMITC-LABEL: mgather_arg(

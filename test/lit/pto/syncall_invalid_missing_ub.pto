@@ -1,8 +1,8 @@
 // RUN: not ptoas %s 2>&1 | FileCheck %s
 
 module {
-  func.func @bad_syncall(%gm: memref<64xi32, #pto.address_space<gm>>) {
-    pto.syncall(%gm : memref<64xi32, #pto.address_space<gm>>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
+  func.func @bad_syncall(%gm: !pto.partition_tensor_view<64xi32>) {
+    pto.syncall(%gm : !pto.partition_tensor_view<64xi32>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
     return
   }
 }

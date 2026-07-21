@@ -3426,8 +3426,7 @@ struct PTOMGatherToMGATHER : public OpConversionPattern<pto::MGatherOp> {
     Value idx = adaptor.getIdx();
     Value dst = adaptor.getDst();
 
-    Value memArg = maybeWrapGlobalMemrefAsGlobalTensor(
-        rewriter, op.getLoc(), mem, op.getMem().getType(), op.getOperation());
+    Value memArg = mem;
     auto coalescePropAttr =
         dyn_cast_or_null<pto::CoalesceAttr>(op.getProperties().coalesce);
     auto gatherOobAttr =
@@ -3435,12 +3434,8 @@ struct PTOMGatherToMGATHER : public OpConversionPattern<pto::MGatherOp> {
     pto::GatherOOB gatherOob =
         gatherOobAttr ? gatherOobAttr.getValue() : pto::GatherOOB::Undefined;
 
-    // GM -> L1 (loc=mat dst) gather supplies the index as a GM tensor; wrap it
-    // as a GlobalTensor just like mem. For the GM -> UB path idx is a UB tile
-    // and this is a no-op.
-    Value idxArg = maybeWrapGlobalMemrefAsGlobalTensor(
-        rewriter, op.getLoc(), idx, op.getIdx().getType(), op.getOperation(),
-        /*tag=*/"idx");
+    // GM -> L1 uses a partition view; GM -> UB uses a tile.
+    Value idxArg = idx;
 
     auto gatherOobTok = [&](pto::GatherOOB mode) -> StringRef {
       switch (mode) {
@@ -3484,10 +3479,7 @@ struct PTOMGatherToMGATHER : public OpConversionPattern<pto::MGatherOp> {
     // as the 4th MGATHER argument; Row and the GM -> UB path have no scratch.
     SmallVector<Value, 4> callArgs{dst, memArg, idxArg};
     if (Value scratch = adaptor.getScratch()) {
-      Value scratchArg = maybeWrapGlobalMemrefAsGlobalTensor(
-          rewriter, op.getLoc(), peelUnrealized(scratch),
-          op.getScratch().getType(), op.getOperation(), /*tag=*/"scratch");
-      callArgs.push_back(scratchArg);
+      callArgs.push_back(peelUnrealized(scratch));
     }
 
     rewriter.create<emitc::CallOpaqueOp>(
@@ -5222,24 +5214,10 @@ struct PTOTLoadToTLOAD : public OpConversionPattern<pto::TLoadOp> {
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
-    Value srcArg = src;
-    if (auto srcMrTy = dyn_cast<MemRefType>(op.getSrc().getType())) {
-      bool isGlobal = true;
-      if (auto asAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(srcMrTy.getMemorySpace())) {
-        auto as = asAttr.getAddressSpace();
-        isGlobal = (as == pto::AddressSpace::GM || as == pto::AddressSpace::Zero);
-      }
-      if (isGlobal) {
-        if (Value gt = buildGlobalTensorFromMemref(rewriter, op.getLoc(), src, srcMrTy,
-                                                  op.getOperation()))
-          srcArg = gt;
-      }
-    }
 
-    rewriter.create<emitc::CallOpaqueOp>(
-        op.getLoc(), TypeRange{}, "TLOAD",
-        ArrayAttr{}, ArrayAttr{},
-        ValueRange{dst, srcArg});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "TLOAD",
+                                         ArrayAttr{}, ArrayAttr{},
+                                         ValueRange{dst, src});
 
     if (op->getNumResults() == 1) {
       rewriter.replaceOp(op, dst);
@@ -5260,23 +5238,10 @@ struct PTOTPrefetchToTPREFETCH : public OpConversionPattern<pto::TPrefetchOp> {
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
-    Value srcArg = src;
-    if (auto srcMrTy = dyn_cast<MemRefType>(op.getSrc().getType())) {
-      bool isGlobal = true;
-      if (auto asAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(srcMrTy.getMemorySpace())) {
-        auto as = asAttr.getAddressSpace();
-        isGlobal = (as == pto::AddressSpace::GM || as == pto::AddressSpace::Zero);
-      }
-      if (isGlobal) {
-        if (Value gt = buildGlobalTensorFromMemref(rewriter, op.getLoc(), src, srcMrTy,
-                                                  op.getOperation()))
-          srcArg = gt;
-      }
-    }
 
-    rewriter.create<emitc::CallOpaqueOp>(
-        op.getLoc(), TypeRange{}, "TPREFETCH",
-        ArrayAttr{}, ArrayAttr{}, ValueRange{dst, srcArg});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "TPREFETCH",
+                                         ArrayAttr{}, ArrayAttr{},
+                                         ValueRange{dst, src});
     rewriter.eraseOp(op);
     return success();
   }
@@ -5289,20 +5254,8 @@ struct PTOTPrefetchAsyncToEmitC
   LogicalResult matchAndRewrite(pto::TPrefetchAsyncOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     Value src = peelUnrealized(adaptor.getSrc());
-    Value srcArg = src;
-    if (!isEmitCGlobalTensorLikeType(srcArg.getType())) {
-      auto srcMrTy = dyn_cast<MemRefType>(op.getSrc().getType());
-      if (!srcMrTy)
-        return rewriter.notifyMatchFailure(
-            op, "expected src to lower to GlobalTensor or memref");
-      srcArg = buildGlobalTensorFromMemref(rewriter, op.getLoc(), src, srcMrTy,
-                                           op.getSrc().getDefiningOp()
-                                               ? op.getSrc().getDefiningOp()
-                                               : op.getOperation());
-    }
-    if (!srcArg)
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to build GlobalTensor src");
+    if (!isEmitCGlobalTensorLikeType(src.getType()))
+      return rewriter.notifyMatchFailure(op, "expected GlobalTensor-like src");
 
     Value prefetchCtx = peelUnrealized(adaptor.getCtx());
 
@@ -5311,12 +5264,12 @@ struct PTOTPrefetchAsyncToEmitC
       return rewriter.notifyMatchFailure(
           op, "failed to convert tprefetch_async result type");
 
-    Value event = rewriter
-                      .create<emitc::CallOpaqueOp>(
-                          op.getLoc(), TypeRange{eventTy}, "TPREFETCH_ASYNC",
-                          ArrayAttr{}, ArrayAttr{},
-                          ValueRange{srcArg, prefetchCtx})
-                      .getResult(0);
+    Value event =
+        rewriter
+            .create<emitc::CallOpaqueOp>(
+                op.getLoc(), TypeRange{eventTy}, "TPREFETCH_ASYNC", ArrayAttr{},
+                ArrayAttr{}, ValueRange{src, prefetchCtx})
+            .getResult(0);
 
     rewriter.replaceOp(op, ValueRange{event});
     return success();
@@ -5418,18 +5371,6 @@ struct PTOTStoreToTSTORE : public OpConversionPattern<pto::TStoreOp> {
     if (op.getPreQuantScalar())
       preQuantScalar = peelUnrealized(adaptor.getPreQuantScalar());
     Value dstArg = dst;
-    if (auto dstMrTy = dyn_cast<MemRefType>(op.getDst().getType())) {
-      bool isGlobal = true;
-      if (auto asAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(dstMrTy.getMemorySpace())) {
-        auto as = asAttr.getAddressSpace();
-        isGlobal = (as == pto::AddressSpace::GM || as == pto::AddressSpace::Zero);
-      }
-      if (isGlobal) {
-        if (Value gt = buildGlobalTensorFromMemref(rewriter, op.getLoc(), dst, dstMrTy,
-                                                  op.getOperation()))
-          dstArg = gt;
-      }
-    }
 
     const auto phase = op.getStPhase();
     const auto atomicType = op.getAtomicType();
@@ -6228,18 +6169,7 @@ struct PTOSyncAllToEmitC : public OpConversionPattern<mlir::pto::SyncAllOp> {
       Value gm = peelUnrealized(adaptor.getGmWorkspace());
       if (isEmitCGlobalTensorLikeType(gm.getType()))
         return gm;
-
-      auto memTy = dyn_cast<MemRefType>(op.getGmWorkspace().getType());
-      if (!memTy)
-        return failure();
-
-      Value gt = buildGlobalTensorFromMemref(rewriter, op.getLoc(), gm, memTy,
-                                            op.getGmWorkspace().getDefiningOp()
-                                                ? op.getGmWorkspace().getDefiningOp()
-                                                : op.getOperation());
-      if (!gt)
-        return failure();
-      return gt;
+      return failure();
     };
 
     if (mode == pto::SyncAllMode::Hard) {
@@ -6722,8 +6652,7 @@ struct PTOMScatterToMSCATTER : public OpConversionPattern<pto::MScatterOp> {
         scatterOobAttr ? scatterOobAttr.getValue()
                        : pto::ScatterOOB::Undefined;
 
-    Value memArg = maybeWrapGlobalMemrefAsGlobalTensor(
-        rewriter, op.getLoc(), mem, op.getMem().getType(), op.getOperation());
+    Value memArg = mem;
 
     auto scatterAtomicTok = [&](pto::ScatterAtomicOp atomic) -> StringRef {
       switch (atomic) {
@@ -7522,28 +7451,10 @@ struct PTOAsyncTransferToEmitC : public OpConversionPattern<AsyncOp> {
                                 ConversionPatternRewriter &rewriter) const override {
     Value dst = peelUnrealized(adaptor.getDst());
     Value src = peelUnrealized(adaptor.getSrc());
-    Value dstGT = dst;
-    Value srcGT = src;
-    if (!isEmitCGlobalTensorLikeType(dstGT.getType())) {
-      auto dstMrTy = dyn_cast<MemRefType>(op.getDst().getType());
-      if (!dstMrTy)
-        return rewriter.notifyMatchFailure(op, "expected dst to lower to GlobalTensor or memref");
-      dstGT = buildGlobalTensorFromMemref(rewriter, op.getLoc(), dst, dstMrTy,
-                                          op.getDst().getDefiningOp()
-                                              ? op.getDst().getDefiningOp()
-                                              : op.getOperation());
-    }
-    if (!isEmitCGlobalTensorLikeType(srcGT.getType())) {
-      auto srcMrTy = dyn_cast<MemRefType>(op.getSrc().getType());
-      if (!srcMrTy)
-        return rewriter.notifyMatchFailure(op, "expected src to lower to GlobalTensor or memref");
-      srcGT = buildGlobalTensorFromMemref(rewriter, op.getLoc(), src, srcMrTy,
-                                          op.getSrc().getDefiningOp()
-                                              ? op.getSrc().getDefiningOp()
-                                              : op.getOperation());
-    }
-    if (!dstGT || !srcGT)
-      return rewriter.notifyMatchFailure(op, "failed to build GlobalTensor operands");
+    if (!isEmitCGlobalTensorLikeType(dst.getType()) ||
+        !isEmitCGlobalTensorLikeType(src.getType()))
+      return rewriter.notifyMatchFailure(
+          op, "expected GlobalTensor-like src and dst");
 
     Type eventTy = this->getTypeConverter()->convertType(op.getEvent().getType());
     if (!eventTy)
@@ -7551,7 +7462,7 @@ struct PTOAsyncTransferToEmitC : public OpConversionPattern<AsyncOp> {
 
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, TypeRange{eventTy}, callee, ArrayAttr{}, ArrayAttr{},
-        ValueRange{dstGT, srcGT, peelUnrealized(adaptor.getSession())});
+        ValueRange{dst, src, peelUnrealized(adaptor.getSession())});
     return success();
   }
 
@@ -7589,15 +7500,7 @@ static FailureOr<Value> buildCommGlobalTensorValue(
   Value value = peelUnrealized(emittedValue);
   if (isEmitCGlobalTensorLikeType(value.getType()))
     return value;
-
-  auto memTy = dyn_cast<MemRefType>(originalValue.getType());
-  if (!memTy)
-    return failure();
-
-  Value gt = buildGlobalTensorFromMemref(rewriter, loc, value, memTy, anchor);
-  if (!gt)
-    return failure();
-  return gt;
+  return failure();
 }
 
 static FailureOr<Value> buildCommTileValue(ConversionPatternRewriter &rewriter,

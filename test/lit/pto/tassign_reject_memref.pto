@@ -14,7 +14,8 @@ module {
       -> memref<16x16xf16, #pto.address_space<vec>> {
     %addr = arith.constant 0 : i64
     %tile = memref.alloc() : memref<16x16xf16, #pto.address_space<vec>>
-    // CHECK: error: 'pto.tassign' op expects tile operand and result to be !pto.tile_buf
+    // CHECK: error: 'pto.tassign' op operand #0 must be
+    // CHECK-SAME: but got 'memref<16x16xf16, #pto.address_space<vec>>'
     %rebound = pto.tassign %tile, %addr
       : memref<16x16xf16, #pto.address_space<vec>>
         -> memref<16x16xf16, #pto.address_space<vec>>

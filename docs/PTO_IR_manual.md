@@ -1286,7 +1286,7 @@ Lowering maps `%ctx` to `pto::PrefetchAsyncContext`, emits
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Source GM region to prefetch |
+| `src` | `pto.tensor_view` / `pto.partition_tensor_view` | Source GM region to prefetch |
 | `ctx` | `!pto.prefetch_async_context` | Explicit PTO prefetch async context |
 
 **Results:**
@@ -1308,7 +1308,7 @@ Lowering maps `%ctx` to `pto::PrefetchAsyncContext`, emits
     -> !pto.prefetch_async_context
 %event = pto.tprefetch_async(
     %src, %ctx
-    : memref<128xf32, #pto.address_space<gm>>,
+    : !pto.partition_tensor_view<128xf32>,
       !pto.prefetch_async_context)
     -> !pto.async_event
 %session = pto.get_prefetch_async_session %ctx
@@ -7729,7 +7729,7 @@ elem mode: dst[i, j] = mem[idx[i, j]]
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| `mem` | `!pto.partition_tensor_view<...>` / GM memref | `NA` | Global source table |
+| `mem` | `!pto.partition_tensor_view<...>` | `NA` | Global source table |
 | `idx` | `pto.tile_buf` | `NA` | Index tile |
 | `dst` | `pto.tile_buf` | `NA` | Destination VEC tile |
 | `coalesce` | `#pto<coalesce ...>` | required | Explicit coalesce mode (`row` / `elem`) |
@@ -7753,7 +7753,6 @@ elem mode: dst[i, j] = mem[idx[i, j]]
   - Element mode: `idx valid_shape == dst valid_shape`.
   - Row mode: `idx valid_shape` may be `[1, dst.valid_row]` or `[dst.valid_row, 1]`.
   - The `[1, R]` row-mode variant uses `row_major`; the `[R, 1]` row-mode variant uses `col_major`.
-  - If `mem` is a rank-5 static GM memref, it must satisfy `<1, 1, 1, Rows, RowWidth>`.
 
 - **Out-of-bounds mode**
   - Default `gatherOob = undefined` lowers to the default `MGATHER(dst, mem, idx)` overload.
@@ -7771,15 +7770,15 @@ elem mode: dst[i, j] = mem[idx[i, j]]
 **Basic Example:**
 
 ```mlir
-pto.mgather ins(%mem, %idx : memref<...>, !pto.tile_buf<...>)
+pto.mgather ins(%mem, %idx : !pto.partition_tensor_view<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
            {coalesce = #pto<coalesce row>}
 
-pto.mgather ins(%mem, %idx : memref<...>, !pto.tile_buf<...>)
+pto.mgather ins(%mem, %idx : !pto.partition_tensor_view<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
            {coalesce = #pto<coalesce elem>}
 
-pto.mgather ins(%mem, %idx : memref<...>, !pto.tile_buf<...>)
+pto.mgather ins(%mem, %idx : !pto.partition_tensor_view<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
            {coalesce = #pto<coalesce row>, gatherOob = #pto<gather_oob zero>}
 ```
@@ -7794,7 +7793,7 @@ when `dst` is a `loc=mat` tile.
 - **`dst`** — `loc=mat`, `blayout=col_major`, `slayout=row_major`, `fractal=512`
   (NZ). Padded `cols` must be a multiple of `C0 = 32 / sizeof(elem)` and padded
   `rows` a multiple of `16` (`FRACTAL_NZ_ROW`).
-- **`idx`** — supplied as a **GM tensor** (`memref` / `partition_tensor_view`)
+- **`idx`** — supplied as a GM `partition_tensor_view`
   of `i32`, **not** a UB tile: on A5 the cube core that issues the L1 transfer
   cannot read AIV's UB.
 - **`coalesce`** — must be **explicit** (`row` or `elem`); there is no UB index
@@ -7809,8 +7808,8 @@ when `dst` is a `loc=mat` tile.
 
 ```mlir
 // Row: no scratch, idx is a GM [1, R] tensor.
-pto.mgather ins(%mem, %idx : memref<1x1x1x64x32xf16, #pto.address_space<gm>>,
-                             memref<1x1x1x1x32xi32, #pto.address_space<gm>>)
+pto.mgather ins(%mem, %idx : !pto.partition_tensor_view<1x1x1x64x32xf16>,
+                             !pto.partition_tensor_view<1x1x1x1x32xi32>)
            outs(%dst : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32,
                                      v_col=32, blayout=col_major, slayout=row_major,
                                      fractal=512, pad=0>)
@@ -7818,9 +7817,9 @@ pto.mgather ins(%mem, %idx : memref<1x1x1x64x32xf16, #pto.address_space<gm>>,
 
 // Elem: GM scratch workspace staged in NZ layout before the bulk copy.
 pto.mgather ins(%mem, %idx, %scratch
-                : memref<1x1x1x64x32xf16, #pto.address_space<gm>>,
-                  memref<1x1x1x32x32xi32, #pto.address_space<gm>>,
-                  memref<1x1x1x32x32xf16, #pto.address_space<gm>>)
+                : !pto.partition_tensor_view<1x1x1x64x32xf16>,
+                  !pto.partition_tensor_view<1x1x1x32x32xi32>,
+                  !pto.partition_tensor_view<1x1x1x32x32xf16>)
            outs(%dst : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32,
                                      v_col=32, blayout=col_major, slayout=row_major,
                                      fractal=512, pad=0>)
@@ -7846,7 +7845,7 @@ elem mode:          mem[idx[i, j]] = src[i, j]
 |------|------|---------|-------------|
 | `src` | `pto.tile_buf` | `NA` | Source VEC tile |
 | `idx` | `pto.tile_buf` | `NA` | Index tile |
-| `mem` | `!pto.partition_tensor_view<...>` / GM memref | `NA` | Global destination table |
+| `mem` | `!pto.partition_tensor_view<...>` | `NA` | Global destination table |
 | `coalesce` | `#pto<coalesce ...>` | inferred | Explicit coalesce mode (`row` / `elem`) |
 | `scatterAtomicOp` | `#pto<scatter_atomic_op ...>` | `none` | Atomic mode (`none/add/max/min`) |
 | `scatterOob` | `#pto<scatter_oob ...>` | `undefined` | Out-of-bounds mode (`undefined/skip/clamp/wrap`) |
@@ -7870,7 +7869,6 @@ elem mode:          mem[idx[i, j]] = src[i, j]
   - Element mode: `idx valid_shape == src valid_shape`.
   - Row mode: `idx valid_shape` may be `[1, src.valid_row]` or `[src.valid_row, 1]`.
   - The `[1, R]` row-mode variant uses `row_major`; the `[R, 1]` row-mode variant uses `col_major`.
-  - If `mem` is a rank-5 static GM memref, it must satisfy `<1, 1, 1, Rows, RowWidth>`.
 
 - **Atomic modes**  
   - Default `scatterAtomicOp = none` lowers to the default `MSCATTER(mem, src, idx)` overload.
@@ -7894,19 +7892,19 @@ elem mode:          mem[idx[i, j]] = src[i, j]
 
 ```mlir
 pto.mscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-            outs(%mem : memref<...>)
+            outs(%mem : !pto.partition_tensor_view<...>)
 
 pto.mscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-            outs(%mem : memref<...>)
+            outs(%mem : !pto.partition_tensor_view<...>)
             {scatterAtomicOp = #pto<scatter_atomic_op add>}
 
 pto.mscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-            outs(%mem : memref<...>)
+            outs(%mem : !pto.partition_tensor_view<...>)
             {scatterAtomicOp = #pto<scatter_atomic_op add>,
              scatterOob = #pto<scatter_oob skip>}
 
 pto.mscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-            outs(%mem : memref<...>)
+            outs(%mem : !pto.partition_tensor_view<...>)
             {coalesce = #pto<coalesce elem>,
              scatterConflict = #pto<scatter_conflict last>}
 ```
@@ -8938,9 +8936,9 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
 
 | Name | Type | Description |
 |------|------|-------------|
-| `gm_workspace` | optional GM memref of `i32` | Global shared workspace used by soft mode |
-| `ub_workspace` | optional VEC tile/memref of `i32` | Vector-core local workspace for soft mode |
-| `l1_workspace` | optional MAT tile/memref of `i32` | Cube-core local workspace for soft mode |
+| `gm_workspace` | optional GM tensor/partition view of `i32` | Global shared workspace used by soft mode |
+| `ub_workspace` | optional VEC tile of `i32` | Vector-core local workspace for soft mode |
+| `l1_workspace` | optional MAT tile of `i32` | Cube-core local workspace for soft mode |
 | `used_cores` | optional `i32` | Explicit participant count for soft mode |
 | `mode` | `#pto.sync_all_mode<...>` | `hard` or `soft` |
 | `core_type` | `#pto.sync_core_type<...>` | `aiv_only`, `aic_only`, or `mix` |
@@ -8954,8 +8952,8 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
 - Soft `aiv_only` requires `ub_workspace` and forbids `l1_workspace`.
 - Soft `aic_only` requires `l1_workspace` and forbids `ub_workspace`.
 - Soft `mix` requires both `ub_workspace` and `l1_workspace`.
-- `gm_workspace` must be a ranked GM memref of `i32`.
-- `ub_workspace` / `l1_workspace` must be rank-1 or rank-2 `i32` tile/memref values in `vec` / `mat` address space respectively.
+- `gm_workspace` must be a `tensor_view` or `partition_tensor_view` of `i32`.
+- `ub_workspace` / `l1_workspace` must be rank-1 or rank-2 `i32` tiles in `vec` / `mat` address space respectively.
 - These constraints intentionally mirror the corresponding PTO-ISA API parameter checks in `verify()`.
 
 **Basic Example:**
@@ -8965,8 +8963,8 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
   operandSegmentSizes = array<i32: 1, 1, 0, 1>,
   mode = #pto.sync_all_mode<soft>,
   core_type = #pto.sync_core_type<aiv_only>
-} : (memref<64xi32, #pto.address_space<gm>>,
-     memref<64xi32, #pto.address_space<vec>>,
+} : (!pto.partition_tensor_view<64xi32>,
+     !pto.tile_buf<vec, 1x64xi32>,
      i32) -> ()
 
 "pto.syncall"() {
@@ -10096,8 +10094,8 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 | Name | Type | Description |
 |------|------|-------------|
-| `scratch` | `pto.tile_buf` / local memref | Local scratch/staging buffer used by the async runtime |
-| `workspace` | `!pto.ptr<...>` / GM memref | Global workspace backing the async session |
+| `scratch` | `pto.tile_buf` | Local scratch/staging buffer used by the async runtime |
+| `workspace` | `!pto.ptr<...>` | Global workspace backing the async session |
 | `sync_id` | optional `i32` attr | Session synchronization ID |
 | `block_bytes` | optional `i64` attr | Communication block size in bytes |
 | `comm_block_offset` | optional `i64` attr | Per-block GM offset in bytes |
@@ -10108,8 +10106,8 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 **Constraints & Verification:**
 
-- `scratch` must be tile-like local storage.
-- `workspace` must be a GM pointer/memref.
+- `scratch` must be a local tile buffer.
+- `workspace` must be a GM pointer.
 - Optional attrs are forwarded as session configuration and must use the declared integer types.
 
 **Basic Example:**
@@ -10128,8 +10126,8 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 | Name | Type | Description |
 |------|------|-------------|
-| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote destination buffer |
-| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local source buffer |
+| `dst` | `pto.tensor_view` / `pto.partition_tensor_view` | Remote destination buffer |
+| `src` | `pto.tensor_view` / `pto.partition_tensor_view` | Local source buffer |
 | `session` | `!pto.async_session` | Async DMA session |
 
 **Results:** `!pto.async_event`
@@ -10156,8 +10154,8 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 | Name | Type | Description |
 |------|------|-------------|
-| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local destination buffer |
-| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote source buffer |
+| `dst` | `pto.tensor_view` / `pto.partition_tensor_view` | Local destination buffer |
+| `src` | `pto.tensor_view` / `pto.partition_tensor_view` | Remote source buffer |
 | `session` | `!pto.async_session` | Async DMA session |
 
 **Results:** `!pto.async_event`
@@ -10209,8 +10207,8 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 | Name | Type | Description |
 |------|------|-------------|
-| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote destination buffer |
-| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local source buffer |
+| `dst` | `pto.tensor_view` / `pto.partition_tensor_view` | Remote destination buffer |
+| `src` | `pto.tensor_view` / `pto.partition_tensor_view` | Local source buffer |
 | `buf` | `buf(%ping)` or `buf(%ping, %pong)` | Staging bundle: one or two local VEC tiles |
 | `atomicType` | `#pto<atomic_type ...>` | Atomic mode, e.g. `atomic_none` or `atomic_add` |
 
@@ -10240,10 +10238,10 @@ pto.comm.tput(%dst, %src, buf(%ping, %pong) : !pto.partition_tensor_view<128xf32
 
 | Name | Type | Description |
 |------|------|-------------|
-| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local destination buffer |
-| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote source buffer |
-| `ping` | `pto.tile_buf` / local VEC memref | Required staging tile (wrapped in `buf(%ping)`) |
-| `pong` | `pto.tile_buf` / local VEC memref | Optional second staging tile (`buf(%ping, %pong)`) |
+| `dst` | `pto.tensor_view` / `pto.partition_tensor_view` | Local destination buffer |
+| `src` | `pto.tensor_view` / `pto.partition_tensor_view` | Remote source buffer |
+| `ping` | `pto.tile_buf` | Required staging tile (wrapped in `buf(%ping)`) |
+| `pong` | `pto.tile_buf` | Optional second staging tile (`buf(%ping, %pong)`) |
 
 **Constraints & Verification:**
 
