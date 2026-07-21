@@ -5026,42 +5026,20 @@ LogicalResult TensorViewAddrOp::verify() {
   Type dstType = getDst().getType();
 
   Type elementType;
-  int64_t expectedRank = -1;
   auto gmSpace = pto::AddressSpaceAttr::get(getContext(), pto::AddressSpace::GM);
 
   if (auto tvType = dyn_cast<pto::TensorViewType>(srcType)) {
     elementType = tvType.getElementType();
-    expectedRank = tvType.getRank();
   } else if (auto partType = dyn_cast<pto::PartitionTensorViewType>(srcType)) {
     elementType = partType.getElementType();
-    expectedRank = partType.getRank();
-  } else if (auto memrefType = dyn_cast<BaseMemRefType>(srcType)) {
-    elementType = memrefType.getElementType();
-    expectedRank = memrefType.getRank();
-    auto srcSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(memrefType.getMemorySpace());
-    if (srcSpace && srcSpace != gmSpace)
-      return emitOpError("memref source must stay in gm memory space");
   } else {
     return emitOpError(
-        "source must be a tensor_view, partition_tensor_view, or memref");
-  }
-
-  if (auto dstMemRefType = dyn_cast<BaseMemRefType>(dstType)) {
-    if (dstMemRefType.getElementType() != elementType)
-      return emitOpError(
-          "memref result element type must match source element type");
-    if (dstMemRefType.getRank() != expectedRank)
-      return emitOpError("memref result rank must match source rank");
-    auto dstSpace =
-        dyn_cast_or_null<pto::AddressSpaceAttr>(dstMemRefType.getMemorySpace());
-    if (dstSpace && dstSpace != gmSpace)
-      return emitOpError("memref result must stay in gm memory space");
-    return success();
+        "source must be a tensor_view or partition_tensor_view");
   }
 
   auto dstPtrType = dyn_cast<pto::PtrType>(dstType);
   if (!dstPtrType)
-    return emitOpError("result must be a memref or !pto.ptr<...>");
+    return emitOpError("result must be !pto.ptr<...>");
   if (dstPtrType.getElementType() != elementType)
     return emitOpError(
         "pointer result element type must match source element type");
@@ -5074,40 +5052,19 @@ LogicalResult TileBufAddrOp::verify() {
   Type dstType = getDst().getType();
   Type elementType;
   Attribute srcMemorySpace;
-  int64_t srcRank = 0;
 
   if (auto srcTileType = dyn_cast<pto::TileBufType>(getSrc().getType())) {
     elementType = srcTileType.getElementType();
     srcMemorySpace = srcTileType.getMemorySpace();
-    srcRank = static_cast<int64_t>(srcTileType.getShape().size());
-  } else if (auto srcMemRefType = dyn_cast<BaseMemRefType>(getSrc().getType())) {
-    // Hand-written legacy IR may use tile_buf_addr directly on an addressed
-    // memref before the shared materialization bridge restores tile handles.
-    elementType = srcMemRefType.getElementType();
-    srcMemorySpace = srcMemRefType.getMemorySpace();
-    srcRank = srcMemRefType.getRank();
   } else {
-    return emitOpError("source must be a !pto.tile_buf<...> or memref");
+    return emitOpError("source must be a !pto.tile_buf<...>");
   }
 
   auto srcSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(srcMemorySpace);
 
-  if (auto dstMemRefType = dyn_cast<BaseMemRefType>(dstType)) {
-    if (dstMemRefType.getElementType() != elementType)
-      return emitOpError(
-          "memref result element type must match tile element type");
-    if (dstMemRefType.getRank() != srcRank)
-      return emitOpError("memref result rank must match tile rank");
-    auto dstSpace =
-        dyn_cast_or_null<pto::AddressSpaceAttr>(dstMemRefType.getMemorySpace());
-    if (srcSpace && dstSpace && srcSpace != dstSpace)
-      return emitOpError("memref result must stay within the tile memory space");
-    return success();
-  }
-
   auto dstPtrType = dyn_cast<pto::PtrType>(dstType);
   if (!dstPtrType)
-    return emitOpError("result must be a memref or !pto.ptr<...>");
+    return emitOpError("result must be !pto.ptr<...>");
   if (dstPtrType.getElementType() != elementType)
     return emitOpError(
         "pointer result element type must match tile element type");

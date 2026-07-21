@@ -257,7 +257,7 @@ static ParseResult parseI32LiteralAttr(OpAsmParser &parser, IntegerAttr &attr);
 }
 
 static int64_t getPTOTypeRank(Type type) {
-  // 1. 处理标准的 MLIR 类型 (MemRef, Tensor, Vector)
+  // 1. 处理标准的 MLIR 类型 (Tensor, Vector)
   if (auto shapedTy = dyn_cast<ShapedType>(type)) {
     if (shapedTy.hasRank())
       return shapedTy.getRank();
@@ -326,16 +326,6 @@ func::FuncOp mlir::pto::lookupPeerFuncAcrossContainer(Operation *op,
   if (fallbackMatches.size() == 1)
     return fallbackMatches.front();
   return {};
-}
-
-static bool isGmAddressSpaceAttr(Attribute memorySpace) {
-  if (!memorySpace)
-    return true;
-  if (auto addr = mlir::dyn_cast<pto::AddressSpaceAttr>(memorySpace))
-    return addr.getAddressSpace() == pto::AddressSpace::GM;
-  if (auto intAttr = mlir::dyn_cast<IntegerAttr>(memorySpace))
-    return intAttr.getInt() == 0;
-  return false;
 }
 
 static bool isA5DeviceSpec(StringRef spec) {
@@ -1937,8 +1927,6 @@ static LogicalResult verifyRowReductionSrcLayout(Operation *op, Type ty,
     if (tb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor))
       return op->emitOpError() << "expects " << name << " to use the row_major blayout";
   }
-  if (auto mr = dyn_cast<MemRefType>(ty))
-    (void)mr;
   if (auto tb = dyn_cast<pto::TileBufType>(ty)) {
     if (tb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::NoneBox))
       return op->emitOpError() << "expects " << name
@@ -1971,8 +1959,6 @@ static LogicalResult verifyRowReductionDstLayout(Operation *op, Type ty,
       return op->emitOpError() << "expects " << name
                                << " to use the row_major or col_major blayout";
   }
-  if (auto mr = dyn_cast<MemRefType>(ty))
-    (void)mr;
   if (auto tb = dyn_cast<pto::TileBufType>(ty)) {
     auto layout = getTileBufLogicalLayout(tb);
     if (layout && *layout == pto::Layout::DN) {
@@ -2766,29 +2752,16 @@ LogicalResult mlir::pto::CastPtrOp::verify() {
 
   auto inputPtrType = dyn_cast<mlir::pto::PtrType>(inputType);
   auto resultPtrType = dyn_cast<mlir::pto::PtrType>(resultType);
-  auto inputMemRefType = dyn_cast<BaseMemRefType>(inputType);
   bool inputIsInteger = isa<IntegerType>(inputType);
   bool resultIsInteger = isa<IntegerType>(resultType);
 
-  if (!inputPtrType && !inputMemRefType && !inputIsInteger)
-    return emitOpError("input must be an integer, memref, or !pto.ptr<...>");
+  if (!inputPtrType && !inputIsInteger)
+    return emitOpError("input must be an integer or !pto.ptr<...>");
   if (!resultPtrType && !resultIsInteger)
     return emitOpError("result must be an integer or !pto.ptr<...>");
 
   if (inputIsInteger && resultIsInteger)
     return emitOpError("integer-to-integer cast is not a ptr cast");
-
-  if (inputMemRefType && resultIsInteger)
-    return emitOpError("memref-to-integer cast is unsupported");
-
-  if (inputMemRefType && resultPtrType) {
-    auto memrefSpace = dyn_cast_or_null<mlir::pto::AddressSpaceAttr>(
-        inputMemRefType.getMemorySpace());
-    auto resultSpace = resultPtrType.getMemorySpace();
-    if (memrefSpace && memrefSpace != resultSpace)
-      return emitOpError(
-          "memref-to-ptr cast must stay within the same PTO memory space");
-  }
 
   if (inputPtrType && resultPtrType &&
       inputPtrType.getMemorySpace() != resultPtrType.getMemorySpace()) {
@@ -2824,13 +2797,7 @@ void PTODialect::initialize() {
 AddressSpaceAttr mlir::pto::getPTOAddressSpaceAttr(Type type) {
   if (auto ptrType = dyn_cast<PtrType>(type))
     return ptrType.getMemorySpace();
-  auto memRefType = dyn_cast<BaseMemRefType>(type);
-  if (!memRefType)
-    return {};
-  auto scopeAttr = dyn_cast<AddressSpaceAttr>(memRefType.getMemorySpace());
-  if (!scopeAttr)
-    return {};
-  return scopeAttr;
+  return {};
 }
 
 bool mlir::pto::hasExplicitPTOEntryAttr(func::FuncOp func) {
@@ -2966,68 +2933,7 @@ void mlir::pto::annotatePTOEntryFunctions(ModuleOp module) {
 
 //===----------------------------------------------------------------------===//
 // PTO Load/Store/Addf (non-DPS polymorphic) verification + inference.
-//  - If operands are memref/tensor: verify strictly.
-//  - Otherwise (tile_view/tile etc): accept (so old IR can still parse).
 //===----------------------------------------------------------------------===//
-
-[[maybe_unused]] static LogicalResult verifyMemrefToTensorLoad(Operation *op, Value src, Value res) {
-  auto mr = dyn_cast<MemRefType>(src.getType());
-  auto rt = dyn_cast<RankedTensorType>(res.getType());
-  if (!mr)
-    return success(); // non-memref case: don't block old IR
-  if (!rt)
-    return op->emitOpError("when src is memref, result must be ranked tensor");
-
-  if (mr.getElementType() != rt.getElementType())
-    return op->emitOpError() << "memref/tensor element type mismatch: memref="
-                             << mr.getElementType() << " tensor=" << rt.getElementType();
-
-  if (mr.getRank() != rt.getRank())
-    return op->emitOpError() << "rank mismatch: memref rank=" << mr.getRank()
-                             << " tensor rank=" << rt.getRank();
-
-  if (mr.hasStaticShape()) {
-    if (!rt.hasStaticShape())
-      return op->emitOpError("memref has static shape but result tensor is not static");
-    if (mr.getShape() != rt.getShape())
-      return op->emitOpError() << "shape mismatch: memref=" << mr << " tensor=" << rt;
-  } else {
-    // For dynamic memref dims: if tensor dim is static, allow it; if it's dynamic too, also fine.
-    // We only reject when a memref static dim conflicts with tensor static dim.
-    for (int64_t i = 0; i < mr.getRank(); ++i) {
-      int64_t md = mr.getDimSize(i);
-      int64_t td = rt.getDimSize(i);
-      if (md != ShapedType::kDynamic && td != ShapedType::kDynamic && md != td)
-        return op->emitOpError() << "dim mismatch at " << i << ": memref=" << md << " tensor=" << td;
-    }
-  }
-  return success();
-}
-
-[[maybe_unused]] static LogicalResult verifyMemrefTensorStore(Operation *op, Value dst, Value src) {
-  auto mr = dyn_cast<MemRefType>(dst.getType());
-  if (!mr)
-    return success(); // non-memref case: old tile IR allowed
-  auto rt = dyn_cast<RankedTensorType>(src.getType());
-  if (!rt)
-    return op->emitOpError("when dst is memref, src must be ranked tensor");
-
-  if (mr.getElementType() != rt.getElementType())
-    return op->emitOpError() << "memref/tensor element type mismatch: memref="
-                             << mr.getElementType() << " tensor=" << rt.getElementType();
-
-  if (mr.getRank() != rt.getRank())
-    return op->emitOpError() << "rank mismatch: memref rank=" << mr.getRank()
-                             << " tensor rank=" << rt.getRank();
-
-  for (int64_t i = 0; i < mr.getRank(); ++i) {
-    int64_t md = mr.getDimSize(i);
-    int64_t td = rt.getDimSize(i);
-    if (md != ShapedType::kDynamic && td != ShapedType::kDynamic && md != td)
-      return op->emitOpError() << "dim mismatch at " << i << ": memref=" << md << " tensor=" << td;
-  }
-  return success();
-}
 
 static std::optional<uint64_t>
 getLocalAddressAlignmentBytes(Attribute memorySpace) {
@@ -3461,11 +3367,12 @@ LogicalResult TPrefetchAsyncOp::verify() {
 }
 
 LogicalResult mlir::pto::SetFFTsOp::verify() {
-  auto mr = llvm::dyn_cast<mlir::MemRefType>(getFfts().getType());
-  if (!mr)
-    return emitOpError("expects a memref operand");
+  auto ptrTy = llvm::dyn_cast<mlir::pto::PtrType>(getFfts().getType());
+  if (!ptrTy)
+    return emitOpError("expects a !pto.ptr operand");
 
-  if (!mr.getElementType().isInteger(64) && !mr.getElementType().isInteger(8))
+  if (!ptrTy.getElementType().isInteger(64) &&
+      !ptrTy.getElementType().isInteger(8))
     return emitOpError("expects element type i64 (or i8)");
 
   return mlir::success();
@@ -3880,8 +3787,6 @@ LogicalResult pto::TAbsOp::verify() {
   Type elemTy;
   if (auto tb = dyn_cast<pto::TileBufType>(srcTy))
     elemTy = tb.getElementType();
-  else if (auto mr = dyn_cast<MemRefType>(srcTy))
-    elemTy = mr.getElementType();
   if (!(elemTy.isF16() || elemTy.isF32()))
     return emitOpError() << "expects element type to be f16 or f32";
 
@@ -3890,17 +3795,15 @@ LogicalResult pto::TAbsOp::verify() {
 // PTO.cpp
 
 static bool isPTOShapedLike(Type ty) {
-  return mlir::isa<MemRefType, RankedTensorType,
-                pto::TensorViewType, pto::TileBufType,
+  return mlir::isa<RankedTensorType, pto::TensorViewType, pto::TileBufType,
                 pto::PartitionTensorViewType>(ty);
 }
 
 static bool isTileLikeType(Type ty) {
-  return isa<pto::TileBufType, MemRefType>(ty);
+  return isa<pto::TileBufType>(ty);
 }
 
 static Type getElemTy(Type ty) {
-  if (auto mr = mlir::dyn_cast<MemRefType>(ty)) return mr.getElementType();
   if (auto tt = mlir::dyn_cast<RankedTensorType>(ty)) return tt.getElementType();
   if (auto tv = mlir::dyn_cast<pto::TensorViewType>(ty)) return tv.getElementType();
   if (auto tb = mlir::dyn_cast<pto::TileBufType>(ty)) return tb.getElementType();
@@ -3910,8 +3813,6 @@ static Type getElemTy(Type ty) {
 
 static SmallVector<int64_t, 4> getShapeVec(Type ty) {
   SmallVector<int64_t, 4> s;
-  if (auto mr = mlir::dyn_cast<MemRefType>(ty))
-    return SmallVector<int64_t,4>(mr.getShape().begin(), mr.getShape().end());
   if (auto tt = mlir::dyn_cast<RankedTensorType>(ty))
     return SmallVector<int64_t,4>(tt.getShape().begin(), tt.getShape().end());
   if (auto tv = mlir::dyn_cast<pto::TensorViewType>(ty))
@@ -4123,12 +4024,6 @@ static std::optional<pto::AddressSpace> getPTOMemorySpaceEnum(Type ty) {
     if (auto as = dyn_cast_or_null<pto::AddressSpaceAttr>(tb.getMemorySpace()))
       return as.getAddressSpace();
     return std::nullopt;
-  }
-  if (auto mr = dyn_cast<MemRefType>(ty)) {
-    if (auto as = dyn_cast_or_null<pto::AddressSpaceAttr>(mr.getMemorySpace()))
-      return as.getAddressSpace();
-    if (!mr.getMemorySpace())
-      return pto::AddressSpace::GM;
   }
   return std::nullopt;
 }
@@ -4479,7 +4374,7 @@ static LogicalResult verifyTileBufSameElemType(Operation *op, Type lhs, Type rhs
                                                StringRef rhsName) {
   if (!isTileLikeType(lhs) || !isTileLikeType(rhs))
     return op->emitOpError() << "expects " << lhsName << " and " << rhsName
-                             << " to be !pto.tile_buf or memref";
+                             << " to be !pto.tile_buf";
   if (getElemTy(lhs) != getElemTy(rhs))
     return op->emitOpError() << "expects " << lhsName << " and " << rhsName
                              << " to have the same element type";
@@ -5392,7 +5287,7 @@ LogicalResult pto::TAddCOp::verify() {
 
   if (!isPTOShapedLike(t0) || !isPTOShapedLike(t1) ||
       !isPTOShapedLike(t2) || !isPTOShapedLike(td))
-    return emitOpError("expects src0/src1/src2/dst to be memref/tile_buf types");
+    return emitOpError("expects src0/src1/src2/dst to be PTO shaped-like types");
 
   auto s0 = getShapeVec(t0);
   auto s1 = getShapeVec(t1);
@@ -6467,7 +6362,7 @@ LogicalResult mlir::pto::TDivOp::verify() {
 
 mlir::LogicalResult mlir::pto::TDivSOp::verify() {
   auto isTileLike = [](Type ty) -> bool {
-    return isa<mlir::pto::TileBufType, MemRefType, RankedTensorType,
+    return isa<mlir::pto::TileBufType, RankedTensorType,
                mlir::pto::PartitionTensorViewType>(ty);
   };
   auto isScalarLike = [](Type ty) -> bool {
@@ -7482,12 +7377,11 @@ mlir::LogicalResult mlir::pto::TFillPadOp::verify() {
     auto dstSpace = getPTOMemorySpaceEnum(getDst().getType());
     if (!dstSpace || *dstSpace != pto::AddressSpace::MAT)
       return emitOpError("expects padValue attribute only for loc=mat tfillpad");
-    if (auto dstTileTy = dyn_cast<pto::TileBufType>(getDst().getType())) {
-      if (dstTileTy.getPadValueI32() != static_cast<int32_t>(padValueAttr.getValue()))
-        return emitOpError("expects padValue attribute to match dst tile pad configuration");
-    } else if (!isa<MemRefType>(getDst().getType())) {
-      return emitOpError("expects dst to be tile_buf or memref when padValue is specified");
-    }
+    auto dstTileTy = dyn_cast<pto::TileBufType>(getDst().getType());
+    if (!dstTileTy)
+      return emitOpError("expects dst to be tile_buf when padValue is specified");
+    if (dstTileTy.getPadValueI32() != static_cast<int32_t>(padValueAttr.getValue()))
+      return emitOpError("expects padValue attribute to match dst tile pad configuration");
   }
 
   return success();
@@ -8039,20 +7933,20 @@ mlir::LogicalResult mlir::pto::TMovFPOp::verify() {
 }
 // 辅助函数：获取 Rank，支持 ShapedType 和 PTO TileTypes
 static int64_t getRankHelper(Type t) {
-  if (auto s = dyn_cast<ShapedType>(t)) return s.getRank();
+  if (auto s = dyn_cast<RankedTensorType>(t)) return s.getRank();
   if (auto tile = dyn_cast<pto::TileBufType>(t)) return tile.getRank();
   if (auto view = dyn_cast<pto::PartitionTensorViewType>(t)) return view.getRank();
   return -1;
 }
 
 static LogicalResult verifyMatmulLike(Operation *op, Type aTy, Type bTy, Type dstTy, bool checkRank = true) {
-  // 1. 检查类型 (ShapedType 或 Tile 类型)
-  bool aValid = isa<ShapedType, pto::TileBufType, pto::PartitionTensorViewType>(aTy);
-  bool bValid = isa<ShapedType, pto::TileBufType, pto::PartitionTensorViewType>(bTy);
-  bool dValid = isa<ShapedType, pto::TileBufType, pto::PartitionTensorViewType>(dstTy);
+  // 1. 检查类型 (Tensor 或 Tile 类型)
+  bool aValid = isa<RankedTensorType, pto::TileBufType, pto::PartitionTensorViewType>(aTy);
+  bool bValid = isa<RankedTensorType, pto::TileBufType, pto::PartitionTensorViewType>(bTy);
+  bool dValid = isa<RankedTensorType, pto::TileBufType, pto::PartitionTensorViewType>(dstTy);
 
   if (!aValid || !bValid || !dValid)
-    return op->emitOpError("expects inputs/outputs to be shaped types or PTO tile types");
+    return op->emitOpError("expects inputs/outputs to be tensors or PTO tile types");
 
   if (checkRank) {
     int64_t aRank = getRankHelper(aTy);
@@ -8075,12 +7969,8 @@ LogicalResult LoadScalarOp::verify() {
   Type elemTy;
   if (auto pty = dyn_cast<mlir::pto::PtrType>(ptrTy)) {
     elemTy = pty.getElementType();
-  } else if (auto memTy = dyn_cast<MemRefType>(ptrTy)) {
-    elemTy = memTy.getElementType();
-    if (!isGmAddressSpaceAttr(memTy.getMemorySpace()))
-      return emitOpError() << "scalar load only supports GM address space pointers";
   } else {
-    return emitOpError("expects ptr to be !pto.ptr or memref type");
+    return emitOpError("expects ptr to be !pto.ptr type");
   }
 
   if (getValue().getType() != elemTy)
@@ -8094,12 +7984,8 @@ LogicalResult StoreScalarOp::verify() {
   Type elemTy;
   if (auto pty = dyn_cast<mlir::pto::PtrType>(ptrTy)) {
     elemTy = pty.getElementType();
-  } else if (auto memTy = dyn_cast<MemRefType>(ptrTy)) {
-    elemTy = memTy.getElementType();
-    if (!isGmAddressSpaceAttr(memTy.getMemorySpace()))
-      return emitOpError() << "scalar store only supports GM address space pointers";
   } else {
-    return emitOpError("expects ptr to be !pto.ptr or memref type");
+    return emitOpError("expects ptr to be !pto.ptr type");
   }
 
   if (getValue().getType() != elemTy)
@@ -8116,10 +8002,6 @@ static bool isGmOrDefaultAddressSpace(pto::AddressSpace space) {
 static bool isGmOrDefaultCmoAddressType(Type type) {
   if (auto ptrTy = dyn_cast<mlir::pto::PtrType>(type))
     return isGmOrDefaultAddressSpace(ptrTy.getMemorySpace().getAddressSpace());
-  if (auto memTy = dyn_cast<MemRefType>(type)) {
-    auto spaceAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(memTy.getMemorySpace());
-    return !spaceAttr || isGmOrDefaultAddressSpace(spaceAttr.getAddressSpace());
-  }
   if (isa<mlir::pto::TensorViewType, mlir::pto::PartitionTensorViewType>(type))
     return true;
   return false;
@@ -8173,7 +8055,7 @@ LogicalResult CmoCacheInvalidOp::verify() {
 
   if (Value addr = getAddr()) {
     if (!isGmOrDefaultCmoAddressType(addr.getType()))
-      return emitOpError("single_cache_line address expects a GM pointer, GM memref, or GM tensor view");
+      return emitOpError("single_cache_line address expects a GM pointer or GM tensor view");
   }
 
   return success();
@@ -8932,14 +8814,11 @@ LogicalResult TSetValOp::verify() {
 // ---- TGetValOp ----
 LogicalResult TGetValOp::verify() {
   Type srcTy = getSrc().getType();
-  if (!mlir::isa<pto::TileBufType, MemRefType>(srcTy))
-    return emitOpError("expects src to be tile_buf or memref type");
+  if (!mlir::isa<pto::TileBufType>(srcTy))
+    return emitOpError("expects src to be tile_buf type");
 
   // Memory space must be vec (Ascend does not support getval from MAT etc.).
-  Attribute memSpace =
-      isa<pto::TileBufType>(srcTy)
-          ? cast<pto::TileBufType>(srcTy).getMemorySpace()
-          : cast<MemRefType>(srcTy).getMemorySpace();
+  Attribute memSpace = cast<pto::TileBufType>(srcTy).getMemorySpace();
   auto addrSpaceAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(memSpace);
   if (!addrSpaceAttr ||
       addrSpaceAttr.getAddressSpace() != pto::AddressSpace::VEC) {
@@ -9946,7 +9825,7 @@ static FailureOr<Type> verifyPTOShapedBinarySameElemAndShape(Operation *op,
   if (!isPTOShapedLike(src0Ty) || !isPTOShapedLike(src1Ty) ||
       !isPTOShapedLike(dstTy))
     return op->emitOpError(
-               "expects src0/src1/dst to be memref/tensor/tile_buf/tile_view types"),
+               "expects src0/src1/dst to be tensor/tile_buf/tile_view types"),
            failure();
   Type e0 = getElemTy(src0Ty), e1 = getElemTy(src1Ty), ed = getElemTy(dstTy);
   if (!e0 || !e1 || !ed)
@@ -11092,10 +10971,6 @@ static std::optional<int64_t> getElemBytes(Type elemTy) {
     return std::max<int64_t>(1, bits / 8);
   }
   return std::nullopt;
-}
-
-[[maybe_unused]] static bool isTileBufOrMemref(Type ty) {
-  return mlir::isa<MemRefType, pto::TileBufType>(ty);
 }
 
 static bool isLocallyBoundTileSource(Value value) {
@@ -12888,10 +12763,9 @@ mlir::LogicalResult mlir::pto::TPrintOp::verify() {
   }
   if (tmp)
     return emitOpError() << "expects tmp only when src is a tile_buf";
-  if (mlir::dyn_cast<MemRefType>(srcType) ||
-      mlir::dyn_cast<mlir::pto::PartitionTensorViewType>(srcType))
+  if (mlir::dyn_cast<mlir::pto::PartitionTensorViewType>(srcType))
     return mlir::success();
-  return emitOpError() << "expects tile_buf, memref, or partition_tensor_view for src";
+  return emitOpError() << "expects tile_buf or partition_tensor_view for src";
 }
 
 
@@ -12899,11 +12773,11 @@ mlir::LogicalResult mlir::pto::TPrintOp::verify() {
 [[maybe_unused]] static LogicalResult verifyMatmulCommon(Operation *op, Value lhs, Value rhs,
                                        Value biasOpt, Type maybeDstElemTy,
                                        Type maybeResultElemTy) {
-  // ---- case A: tensor/memref (ShapedType) ----
-  if (auto lhsTy = dyn_cast<ShapedType>(lhs.getType())) {
-    auto rhsTy = dyn_cast<ShapedType>(rhs.getType());
-    if (!rhsTy || !lhsTy.hasRank() || !rhsTy.hasRank())
-      return op->emitOpError("expects lhs and rhs to be ranked tensors or memrefs");
+  // ---- case A: tensor ----
+  if (auto lhsTy = dyn_cast<RankedTensorType>(lhs.getType())) {
+    auto rhsTy = dyn_cast<RankedTensorType>(rhs.getType());
+    if (!rhsTy)
+      return op->emitOpError("expects lhs and rhs to be ranked tensors");
 
     if (lhsTy.getElementType() != rhsTy.getElementType())
       return op->emitOpError()
@@ -12911,9 +12785,9 @@ mlir::LogicalResult mlir::pto::TPrintOp::verify() {
              << lhsTy.getElementType() << " rhs=" << rhsTy.getElementType();
 
     if (biasOpt) {
-      auto biasTy = dyn_cast<ShapedType>(biasOpt.getType());
-      if (!biasTy || !biasTy.hasRank())
-        return op->emitOpError("expects bias to be a ranked tensor or memref");
+      auto biasTy = dyn_cast<RankedTensorType>(biasOpt.getType());
+      if (!biasTy)
+        return op->emitOpError("expects bias to be a ranked tensor");
       if (biasTy.getElementType() != lhsTy.getElementType())
         return op->emitOpError()
                << "expects bias to have the same element type as lhs and rhs, but got bias="
@@ -12937,7 +12811,7 @@ mlir::LogicalResult mlir::pto::TPrintOp::verify() {
   auto lhsTile = dyn_cast<mlir::pto::TileType>(lhs.getType());
   auto rhsTile = dyn_cast<mlir::pto::TileType>(rhs.getType());
   if (!lhsTile || !rhsTile)
-    return op->emitOpError("expects lhs and rhs to be ranked tensors, memrefs, or !pto.tile");
+    return op->emitOpError("expects lhs and rhs to be ranked tensors or !pto.tile");
 
   if (lhsTile.getElementType() != rhsTile.getElementType())
     return op->emitOpError() << "expects lhs and rhs tiles to have the same element type, but got lhs="
@@ -13077,9 +12951,9 @@ LogicalResult mlir::pto::TGemvAccOp::verify() {
   if (operands.size() < 2)
     return RankedTensorType();
 
-  auto lhsTy = dyn_cast<ShapedType>(operands[0].getType());
-  auto rhsTy = dyn_cast<ShapedType>(operands[1].getType());
-  if (!lhsTy || !rhsTy || !lhsTy.hasRank() || !rhsTy.hasRank())
+  auto lhsTy = dyn_cast<RankedTensorType>(operands[0].getType());
+  auto rhsTy = dyn_cast<RankedTensorType>(operands[1].getType());
+  if (!lhsTy || !rhsTy)
     return RankedTensorType();
 
   Type elemTy = lhsTy.getElementType();
@@ -13087,10 +12961,6 @@ LogicalResult mlir::pto::TGemvAccOp::verify() {
   if (operands.size() >= 3) {
     if (auto biasRT = dyn_cast<RankedTensorType>(operands[2].getType()))
       return RankedTensorType::get(biasRT.getShape(), elemTy);
-    if (auto biasMR = dyn_cast<MemRefType>(operands[2].getType())) {
-      if (biasMR.hasStaticShape())
-        return RankedTensorType::get(biasMR.getShape(), elemTy);
-    }
   }
 
   if (lhsTy.getRank() >= 2 && rhsTy.getRank() >= 2) {
@@ -13809,151 +13679,6 @@ static LogicalResult computeInnerShape(TileBufConfigAttr cfg, Type elemTy,
   return failure();
 }
 
-static LogicalResult
-computeExpectedTileBufMemrefStrides(TileBufType tileTy,
-                                    SmallVectorImpl<int64_t> &expectedStrides) {
-  if (tileTy.getRank() != 2)
-    return failure();
-
-  ArrayRef<int64_t> shape = tileTy.getShape();
-  if (shape.size() != 2)
-    return failure();
-  if (shape[0] == ShapedType::kDynamic || shape[1] == ShapedType::kDynamic)
-    return failure();
-
-  auto cfg = tileTy.getConfigAttr();
-  if (!cfg)
-    cfg = TileBufConfigAttr::getDefault(tileTy.getContext());
-
-  int64_t innerRows = 1, innerCols = 1;
-  bool boxed = false;
-  int32_t bl = 0, sl = 0;
-  if (failed(computeInnerShape(cfg, tileTy.getElementType(), innerRows, innerCols,
-                               boxed, bl, sl)))
-    return failure();
-
-  expectedStrides.clear();
-  if (!boxed) {
-    if (bl == 1) {
-      expectedStrides.push_back(1);
-      expectedStrides.push_back(shape[0]);
-    } else {
-      expectedStrides.push_back(shape[1]);
-      expectedStrides.push_back(1);
-    }
-    return success();
-  }
-
-  if (bl == 1) {
-    if (sl != 1)
-      return failure();
-    expectedStrides.push_back(innerCols);
-    expectedStrides.push_back(shape[0]);
-    return success();
-  }
-
-  expectedStrides.push_back(shape[1]);
-  expectedStrides.push_back(innerRows);
-  return success();
-}
-
-mlir::LogicalResult mlir::pto::SimdTileToMemrefOp::verify() {
-  auto memTy = dyn_cast<MemRefType>(getDst().getType());
-  if (!memTy)
-    return emitOpError("expects result to be memref");
-
-  Type srcTy = getSrc().getType();
-  if (auto tileTy = dyn_cast<TileBufType>(srcTy)) {
-    if (memTy.getElementType() != tileTy.getElementType())
-      return emitOpError(
-          "expects memref element type to match tile_buf element type");
-
-    if (memTy.getMemorySpace() != tileTy.getMemorySpace())
-      return emitOpError(
-          "expects memref memory space to match tile_buf memory space");
-
-    if (memTy.getRank() != tileTy.getRank())
-      return emitOpError("expects memref rank to match tile_buf rank");
-
-    ArrayRef<int64_t> tileShape = tileTy.getShape();
-    ArrayRef<int64_t> validShape = tileTy.getValidShape();
-    ArrayRef<int64_t> memShape = memTy.getShape();
-    if (tileShape.size() != memShape.size())
-      return emitOpError(
-          "expects memref shape rank to match tile_buf shape rank");
-
-    if (validShape.size() != memShape.size())
-      return emitOpError(
-          "expects tile_buf valid shape rank to match memref shape rank");
-
-    for (unsigned i = 0; i < validShape.size(); ++i) {
-      int64_t expect = validShape[i];
-      if (expect < 0) {
-        if (memShape[i] >= 0 && memShape[i] != tileShape[i]) {
-          return emitOpError()
-                 << "expects memref dim " << i
-                 << " to be dynamic or match physical tile dim " << tileShape[i]
-                 << " because tile_buf valid dim is ?";
-        }
-        continue;
-      }
-
-      if (memShape[i] != expect) {
-        return emitOpError() << "expects memref dim " << i
-                             << " to match tile_buf valid dim; got "
-                             << memShape[i] << ", expected " << expect;
-      }
-    }
-
-    SmallVector<int64_t, 4> expectedStrides;
-    if (failed(computeExpectedTileBufMemrefStrides(tileTy, expectedStrides)))
-      return emitOpError("cannot infer expected strides from tile_buf layout");
-
-    SmallVector<int64_t, 4> memStrides;
-    int64_t memOffset = ShapedType::kDynamic;
-    if (failed(getPTOMemRefStridesAndOffset(memTy, memStrides, memOffset)))
-      return emitOpError("expects memref to use strided layout");
-    if (memOffset != 0)
-      return emitOpError("expects memref offset to be 0");
-    if (memStrides.size() != expectedStrides.size())
-      return emitOpError("expects memref stride rank to match tile_buf rank");
-    for (unsigned i = 0; i < expectedStrides.size(); ++i) {
-      if (memStrides[i] != expectedStrides[i]) {
-        return emitOpError()
-               << "expects memref strides to match tile_buf layout; got "
-               << memStrides[i] << " at dim " << i << ", expected "
-               << expectedStrides[i];
-      }
-    }
-    return success();
-  }
-
-  auto srcMemTy = dyn_cast<MemRefType>(srcTy);
-  if (!srcMemTy)
-    return emitOpError("expects src to be !pto.tile_buf or memref");
-
-  if (srcMemTy.getElementType() != memTy.getElementType())
-    return emitOpError("expects src/result memref element types to match");
-
-  if (srcMemTy.getMemorySpace() != memTy.getMemorySpace())
-    return emitOpError("expects src/result memref memory spaces to match");
-
-  if (srcMemTy.getRank() != memTy.getRank())
-    return emitOpError("expects src/result memref ranks to match");
-
-  ArrayRef<int64_t> srcShape = srcMemTy.getShape();
-  ArrayRef<int64_t> dstShape = memTy.getShape();
-  for (unsigned i = 0; i < srcShape.size(); ++i) {
-    if (srcShape[i] >= 0 && dstShape[i] >= 0 && srcShape[i] != dstShape[i]) {
-      return emitOpError()
-             << "expects compatible src/result memref shapes; dim " << i
-             << " mismatches (" << srcShape[i] << " vs " << dstShape[i] << ")";
-    }
-  }
-
-  return success();
-}
-
 mlir::LogicalResult mlir::pto::SubViewOp::verify() {
   auto srcTy = llvm::dyn_cast<TileBufType>(getSource().getType());
   auto dstTy = llvm::dyn_cast<TileBufType>(getResult().getType());
@@ -14099,17 +13824,6 @@ using namespace mlir::pto;
 // =============================================================================
 // Helper Functions
 // =============================================================================
- 
-[[maybe_unused]] static AddressSpace getAddressSpace(Value val) {
-  auto type = llvm::dyn_cast<MemRefType>(val.getType());
-  if (!type) return AddressSpace::Zero; // Default
- 
-  // 假设你的 AddressSpaceAttr 存储在 MemRef 的 memorySpace 中
-  // 需要根据你的 getPTOAddressSpaceAttr 实现来调整
-  auto attr = llvm::dyn_cast_or_null<AddressSpaceAttr>(type.getMemorySpace());
-  if (attr) return attr.getAddressSpace();
-  return AddressSpace::Zero;
-}
  
 // =============================================================================
 // Side Effects Implementation
@@ -16393,11 +16107,6 @@ static bool getTensorLikeElementAndShape(Type ty, Type &elementType,
     shape = tvTy.getShape();
     return true;
   }
-  if (auto memrefTy = dyn_cast<MemRefType>(ty)) {
-    elementType = memrefTy.getElementType();
-    shape = memrefTy.getShape();
-    return true;
-  }
   return false;
 }
 
@@ -16426,7 +16135,7 @@ static LogicalResult verifyTensorEntryMatchesInternalPipeInit(Operation *op,
 slotElementType, slotShape)) {
     return op->emitOpError()
            << "expects !pto.tensor_view pipe entry to use "
-              "pto.initialize_l2g2l_pipe gm_addr with tensor/memref slot type";
+              "pto.initialize_l2g2l_pipe gm_addr with tensor_view slot type";
   }
 
   if (slotElementType != entryViewTy.getElementType()) {
@@ -17469,15 +17178,12 @@ LogicalResult SetQuantVectorOp::verify() {
 
   Operation *initOp = *initOr;
   pto::AccPushEpilogueAttr accPushEpilogue;
-  bool isLoweredProducerPipe = false;
   if (auto aicInit = dyn_cast<AicInitializePipeOp>(initOp)) {
     accPushEpilogue = aicInit.getAccPushEpilogueAttr();
   } else if (auto l2lInit = dyn_cast<InitializeL2LPipeOp>(initOp)) {
     accPushEpilogue = l2lInit.getAccPushEpilogueAttr();
-    isLoweredProducerPipe = true;
   } else if (auto l2g2lInit = dyn_cast<InitializeL2G2LPipeOp>(initOp)) {
     accPushEpilogue = l2g2lInit.getAccPushEpilogueAttr();
-    isLoweredProducerPipe = true;
   } else {
     return emitOpError()
            << "expects 'id' = " << getId()
@@ -17501,10 +17207,7 @@ LogicalResult SetQuantVectorOp::verify() {
   }
 
   Type scalingTy = getScalingTile().getType();
-  if (!isa<pto::TileBufType, BaseMemRefType>(scalingTy)) {
-    return emitOpError("expects 'scaling_tile' to be a tile type");
-  }
-  if (!isa<pto::TileBufType>(scalingTy) && !isLoweredProducerPipe) {
+  if (!isa<pto::TileBufType>(scalingTy)) {
     return emitOpError("expects 'scaling_tile' to be a tile type");
   }
   auto scalingSpace = getPTOMemorySpaceEnum(scalingTy);

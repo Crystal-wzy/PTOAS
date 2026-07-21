@@ -261,7 +261,6 @@ for _op in (
     SPECIAL_VALID_SHAPES[(_op, "src1")] = (1, 64)
 SHARED_RENDERED_OPS = (
     "pto.tile_buf_addr",
-    "memref.subview",
     "scf.for",
     "pto.vsts",
     "pto.tilelang.instance",
@@ -273,12 +272,6 @@ OPS_WITHOUT_TILE_LOAD = OPS_WITHOUT_TILE_LOAD | CUBE_OPS
 OPS_WITHOUT_VECTOR_STORE = {"pto.tcmp", "pto.tcmps", "pto.tsort32"}
 OPS_WITHOUT_VECTOR_STORE = OPS_WITHOUT_VECTOR_STORE | {"pto.tload", "pto.tstore", "pto.tstore_fp", "pto.textract_fp"}
 OPS_WITHOUT_VECTOR_STORE = OPS_WITHOUT_VECTOR_STORE | CUBE_OPS
-OPS_WITHOUT_MEMREF_SUBVIEW = {"pto.tcmps", "pto.tsort32"}
-OPS_WITHOUT_MEMREF_SUBVIEW = OPS_WITHOUT_MEMREF_SUBVIEW | {"pto.texpands", "pto.tdivs", "pto.tfillpad_inplace"}
-OPS_WITHOUT_MEMREF_SUBVIEW = OPS_WITHOUT_MEMREF_SUBVIEW | {"pto.tload", "pto.tstore", "pto.tstore_fp", "pto.textract_fp"}
-OPS_WITHOUT_MEMREF_SUBVIEW = OPS_WITHOUT_MEMREF_SUBVIEW | ROW_REDUCTIONS
-OPS_WITHOUT_MEMREF_SUBVIEW = OPS_WITHOUT_MEMREF_SUBVIEW | ARG_COLUMN_REDUCTIONS
-OPS_WITHOUT_MEMREF_SUBVIEW = OPS_WITHOUT_MEMREF_SUBVIEW | CUBE_OPS
 OPS_WITHOUT_LOOP = {"pto.tmrgsort"}
 OPS_WITHOUT_LOOP = OPS_WITHOUT_LOOP | {"pto.tstore_fp", "pto.textract_fp"}
 OPS_WITHOUT_LOOP = OPS_WITHOUT_LOOP | CUBE_OPS
@@ -491,11 +484,6 @@ class TileLibCatalogTest(unittest.TestCase):
                     shared_ops = tuple(
                         shared_op for shared_op in shared_ops
                         if shared_op != "pto.vsts"
-                    )
-                if op in OPS_WITHOUT_MEMREF_SUBVIEW:
-                    shared_ops = tuple(
-                        shared_op for shared_op in shared_ops
-                        if shared_op != "memref.subview"
                     )
                 if op in OPS_WITHOUT_LOOP:
                     shared_ops = tuple(

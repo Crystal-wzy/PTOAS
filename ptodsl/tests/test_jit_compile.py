@@ -6001,21 +6001,20 @@ def main() -> None:
 
     tile_slice_text = tile_slice_surface_probe.compile(BLOCK=128).mlir_text()
     expect_parse_roundtrip_and_verify(tile_slice_text, "tile slice surface specialization")
-    expect("memref.subview" in tile_slice_text, "tile[row, col:] should lower through memref.subview")
-    expect("memref.collapse_shape" not in tile_slice_text, "2D tile[row, col:] should lower directly to a rank-reduced memref view")
-    expect("pto.tile_buf_addr" in tile_slice_text, "tile[row, col:] should materialize a memref tile address view")
+    expect("memref.subview" not in tile_slice_text, "tile[row, col:] should no longer lower through memref.subview")
+    expect("pto.tile_buf_addr" in tile_slice_text, "tile[row, col:] should materialize a tile address pointer")
     expect(
-        "pto.vlds" in tile_slice_text and "memref<128xf32, strided<[1], offset: ?>, #pto.address_space<vec>>" in tile_slice_text,
-        "vlds(tile[row, col:]) should lower against the memref slice view",
+        "pto.vlds" in tile_slice_text and "!pto.ptr<f32, ub>" in tile_slice_text,
+        "vlds(tile[row, col:]) should lower against the pointer slice view",
     )
     expect(
-        "pto.vsts" in tile_slice_text and "memref<128xf32, strided<[1], offset: ?>, #pto.address_space<vec>>" in tile_slice_text,
-        "vsts(vec, tile[row, col:], mask) should lower against the memref slice view",
+        "pto.vsts" in tile_slice_text and "!pto.ptr<f32, ub>" in tile_slice_text,
+        "vsts(vec, tile[row, col:], mask) should lower against the pointer slice view",
     )
 
     tile_slice_1d_text = tile_slice_1d_surface_probe.compile(BLOCK=128).mlir_text()
     expect_parse_roundtrip_and_verify(tile_slice_1d_text, "1D tile slice surface specialization")
-    expect("memref.subview" in tile_slice_1d_text, "tile[start:] should lower through memref.subview")
+    expect("memref.subview" not in tile_slice_1d_text, "tile[start:] should lower without memref.subview")
     expect("pto.vldas" in tile_slice_1d_text, "vldas(tile[start:]) should lower against the 1D slice view")
     expect("pto.vldus" in tile_slice_1d_text, "vldus(tile[start:], align) should lower against the 1D slice view")
     expect("pto.vsts" in tile_slice_1d_text, "vsts(vec, tile[start:], mask) should lower against the 1D slice view")

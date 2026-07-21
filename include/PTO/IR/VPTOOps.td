@@ -262,19 +262,15 @@ def TensorViewAddrOp : PTO_Op<"tensor_view_addr", [Pure]> {
   let summary = "Extract address from a tensor view.";
   let description = [{
     Returns the address view carried by a `tensor_view` or
-    `partition_tensor_view` value. The result may be either a memref view or a
-    typed PTO pointer, depending on the requested destination type.
+    `partition_tensor_view` value as a typed PTO pointer.
 
     In authoring-form IR this op preserves the descriptor-style surface;
     tile-native inputs remain unchanged through memory planning and sync.
-
-    This op may also accept a legacy memref operand, in which case it behaves
-    as an identity marker and is removed by compatibility lowering.
   }];
 
-  let arguments = (ins AnyTypeOf<[TensorViewType, PartitionTensorViewType, AnyMemRef],
-                                "TensorViewLike or MemRef">:$src);
-  let results = (outs PtrOrMemRef:$dst);
+  let arguments = (ins AnyTypeOf<[TensorViewType, PartitionTensorViewType],
+                                "TensorViewLike">:$src);
+  let results = (outs PtrType:$dst);
 
   let hasVerifier = 1;
 
@@ -287,19 +283,15 @@ def TileBufAddrOp : PTO_Op<"tile_buf_addr", [Pure]> {
   let summary = "Extract address from a tile_buf.";
   let description = [{
     Returns the address view of the data region of a `tile_buf` value.
-    The result may be either a memref view or a typed PTO pointer, depending
-    on the requested destination type. Memref results use the tile's static
-    shape and address space.
+    The result is a typed PTO pointer.
 
     This op is emitted by TileLang DSL templates and resolved by the
     FoldTileBufIntrinsics pass after inlining. Tile-native uses remain in PTO
-    IR through memory planning and sync. Hand-written legacy `.pto` may also
-    use it directly on an addressed memref.
+    IR through memory planning and sync.
   }];
 
-  let arguments = (ins AnyTypeOf<[TileBufType, AnyMemRef],
-                                 "tile_buf or tile-bound memref">:$src);
-  let results = (outs PtrOrMemRef:$dst);
+  let arguments = (ins TileBufType:$src);
+  let results = (outs PtrType:$dst);
 
   let hasVerifier = 1;
 

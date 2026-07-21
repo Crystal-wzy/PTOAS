@@ -26,33 +26,31 @@
 // SHAPE: pto.vsts
 
 // After the later addr-only FoldTileBufIntrinsics:
-// - tile_buf_addr should still carry the planned tile address
-// - VPTO pointer normalization will rewrite the memref bridge to pto.ptr later
+// - tile_buf_addr should still carry the planned tile address as pto.ptr
 // ADDR-LABEL: func.func @TADD
-// ADDR: pto.tile_buf_addr {{.*}} -> memref<16x64xf32, #pto.address_space<vec>>
+// ADDR: pto.tile_buf_addr {{.*}} -> {{.*<f32, ub>}}
 // ADDR: pto.vlds
-// ADDR: pto.tile_buf_addr {{.*}} -> memref<16x64xf32, #pto.address_space<vec>>
+// ADDR: pto.tile_buf_addr {{.*}} -> {{.*<f32, ub>}}
 // ADDR: pto.vlds
 // ADDR: pto.vadd
-// ADDR: pto.tile_buf_addr {{.*}} -> memref<16x64xf32, #pto.address_space<vec>>
+// ADDR: pto.tile_buf_addr {{.*}} -> {{.*<f32, ub>}}
 // ADDR-NOT: pto.pointer_cast
 // ADDR-NOT: pto.tile_valid_rows
 // ADDR-NOT: pto.tile_valid_cols
 // ADDR: pto.vsts
 
 // After VPTO pointer normalization:
-// - tile_buf_addr returns !pto.ptr directly
-// - memref.subview has been converted to pto.addptr
+// - tile_buf_addr has been folded to concrete pto.castptr addresses
+// - tile-slice addressing is carried by the vlds/vsts offset operand
 // NORMALIZED-LABEL: func.func @TADD
-// NORMALIZED: pto.tile_buf_addr {{.*}} -> !pto.ptr<f32, ub>
-// NORMALIZED: pto.addptr
+// NORMALIZED: pto.castptr
+// NORMALIZED: arith.muli
 // NORMALIZED: pto.vlds
-// NORMALIZED: pto.tile_buf_addr {{.*}} -> !pto.ptr<f32, ub>
-// NORMALIZED: pto.addptr
+// NORMALIZED: pto.castptr
 // NORMALIZED: pto.vlds
 // NORMALIZED: pto.vadd
-// NORMALIZED: pto.tile_buf_addr {{.*}} -> !pto.ptr<f32, ub>
-// NORMALIZED: pto.addptr
+// NORMALIZED: pto.castptr
+// NORMALIZED-NOT: pto.tile_buf_addr
 // NORMALIZED-NOT: pto.pointer_cast
 // NORMALIZED: pto.vsts
 

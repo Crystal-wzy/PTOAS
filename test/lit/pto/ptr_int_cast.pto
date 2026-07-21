@@ -27,8 +27,8 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 // IR-LABEL: func.func @ptr_int_cast_kernel
 // IR-SAME: %[[SRC:[^,]+]]: !pto.ptr<ui64, gm>
 // IR: %[[OFF:.*]] = pto.addptr %[[SRC]], %{{.*}} : <ui64, gm> -> <ui64, gm>
-// IR: %[[ADDR:.*]] = pto.ptrtoint %[[OFF]] : !pto.ptr<ui64, gm> -> i64
-// IR: %[[PTR:.*]] = pto.inttoptr %[[ADDR]] : i64 -> !pto.ptr<ui32, gm>
+// IR: %[[ADDR:.*]] = pto.ptrtoint %[[OFF]] : <ui64, gm> -> i64
+// IR: %[[PTR:.*]] = pto.inttoptr %[[ADDR]] : i64 -> <ui32, gm>
 // IR-NOT: memref<
 
 // CPP-LABEL: AICORE void ptr_int_cast_kernel
@@ -41,8 +41,8 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 // IR-LABEL: func.func @ptrtoint_addptr_multi_consumer
 // IR-SAME: %[[SRC64:[^,]+]]: !pto.ptr<ui64, gm>
 // IR: %[[OFF2:.*]] = pto.addptr %[[SRC64]], %{{.*}} : <ui64, gm> -> <ui64, gm>
-// IR: pto.load_scalar %[[OFF2]]{{.*}} : !pto.ptr<ui64, gm> -> ui64
-// IR: pto.ptrtoint %[[OFF2]] : !pto.ptr<ui64, gm> -> i64
+// IR: pto.load_scalar %[[OFF2]]{{.*}} : <ui64, gm> -> ui64
+// IR: pto.ptrtoint %[[OFF2]] : <ui64, gm> -> i64
 // IR-NOT: memref<
 
 // CPP-LABEL: AICORE void ptrtoint_addptr_multi_consumer

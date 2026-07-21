@@ -34,9 +34,6 @@ include "mlir/Interfaces/ViewLikeInterface.td"
 // Types
 //===----------------------------------------------------------------------===//
 
-def TensorOrMemref :
-  AnyTypeOf<[AnyMemRef, AnyRankedTensor], "Tensor or Memref">;
-
 def PTODpsType :
   AnyTypeOf<[AnyRankedTensor, PartitionTensorViewType, TileBufType]>;
 
@@ -47,13 +44,6 @@ def PTOPipeEntryType :
 def PTOCommType :
   AnyTypeOf<[AnyRankedTensor, TensorViewType, PartitionTensorViewType,
              TileBufType], "TensorView, PartitionTensorView, TileBuf, or Tensor">;
-
-// VPTO address extraction may still materialize a low-level memref result.
-def PtrOrMemRef :
-  AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
-
-def TileBufOrMemRef :
-  AnyTypeOf<[TileBufType, AnyMemRef], "TileBuf or MemRef">;
 
 def ScalarType :
   AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
@@ -832,13 +822,6 @@ def TStoreOp: PTO_TOp<"tstore", [
             return as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC;
           return false;
         }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC;
-          }
-          return false;
-        }
         return false;
       };
       if (isAcc(getSrc().getType()))
@@ -886,21 +869,6 @@ def TTransOp : PTO_TOp<"ttrans", [
     }
   }];
 }
-//===----------------------------------------------------------------------===//
-// TMATMUL_BIAS / TMATMUL_MX family
-//   - DPS: AnyMemRef
-//   - TOp: PTODpsType
-//   - All in ins/outs form
-//===----------------------------------------------------------------------===//
-
-// -------------------------
-// DPS versions (AnyMemRef)
-// -------------------------
-
-// -------------------------
-// Tile-world TOp versions (PTODpsType)
-// -------------------------
-
 def TMatmulBiasOp : PTO_TOp<"tmatmul.bias", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
@@ -1369,21 +1337,10 @@ def TMovOp  : PTO_TOp<"tmov", [
       // while UB->UB copies are vector-pipe operations.
       auto getASFromType = [](Type ty)
           -> std::optional<::mlir::pto::AddressSpace> {
-        // Pre-lowering: tile_buf carries the address space in its memorySpace.
         if (auto tb = llvm::dyn_cast<::mlir::pto::TileBufType>(ty)) {
           if (auto as = llvm::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        // Legacy imported IR may carry memref values with the address space in
-        // the memref memorySpace attribute.
-        if (auto mr = llvm::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as =
-                    llvm::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;
@@ -1418,8 +1375,6 @@ def TMovOp  : PTO_TOp<"tmov", [
         Type dstElemTy;
         if (auto tb = llvm::dyn_cast<::mlir::pto::TileBufType>(getDst().getType()))
           dstElemTy = tb.getElementType();
-        else if (auto mr = llvm::dyn_cast<::mlir::MemRefType>(getDst().getType()))
-          dstElemTy = mr.getElementType();
         if (dstElemTy && llvm::isa<::mlir::pto::F8E8M0Type>(dstElemTy))
           return ::mlir::pto::PIPE::PIPE_MTE1;
         return ::mlir::pto::PIPE::PIPE_FIX;
@@ -2321,13 +2276,6 @@ def TPushOp : PTO_TOp<"tpush", [
             return as.getAddressSpace();
           return std::nullopt;
         }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
-          return std::nullopt;
-        }
         return std::nullopt;
       };
 
@@ -2654,13 +2602,6 @@ def TPopOp : PTO_TOp<"tpop", [
           if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;
@@ -3016,32 +2957,6 @@ def SyncAllOp : PTO_Op<"syncall", [AttrSizedOperandSegments]> {
   let hasCustomAssemblyFormat = 1;
 }
 
-//===----------------------------------------------------------------------===//
-// SIMD Bridge Ops
-//===----------------------------------------------------------------------===//
-
-def SimdTileToMemrefOp : PTO_Op<"simd.tile_to_memref", [Pure]> {
-  let summary = "Bridge cast from tile_buf to memref in OP-Lib bodies.";
-  let description = [{
-    This op is the canonical bridge marker for OP-Lib templates to expose a
-    memref view from tile-like values while keeping external ABI as
-    !pto.tile_buf.
-    In tile_buf world, src is !pto.tile_buf and dst is the corresponding
-    memref bridge type.
-    After memref-world lowering, src may already be memref and this op remains
-    as a marker for backend lowering (EmitC) to materialize tile data access.
-  }];
-
-  let arguments = (ins TileBufOrMemRef:$src);
-  let results = (outs AnyMemRef:$dst);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $src attr-dict `:` qualified(type($src)) `to` type($dst)
-  }];
-}
-
 // ---------------------------------------------------------------------------
 // TileBuf intrinsics — used in TileLang DSL-generated template functions.
 // These ops extract memref address and valid shape from tile_buf parameters.
@@ -3088,7 +3003,7 @@ def TileValidColsOp : PTO_Op<"tile_valid_cols", [Pure]> {
 
 def SetFFTsOp : PTO_Op<"set_ffts", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Set FFTS/flags pointer for runtime (side-effecting).";
-  let arguments = (ins AnyMemRef:$ffts);
+  let arguments = (ins PtrType:$ffts);
   let results = (outs);
 
   let assemblyFormat = "$ffts attr-dict `:` type($ffts)";
@@ -4626,14 +4541,6 @@ def TExtractOp : PTO_TOp<"textract", [
             return as.getAddressSpace();
           return std::nullopt;
         }
-        if (auto mr = llvm::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as =
-                    llvm::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
-          return std::nullopt;
-        }
         return std::nullopt;
       };
 
@@ -4772,13 +4679,6 @@ def TInsertOp : PTO_TOp<"tinsert", [
             return as.getAddressSpace();
           return std::nullopt;
         }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
-          return std::nullopt;
-        }
         return std::nullopt;
       };
 
@@ -4864,13 +4764,6 @@ def TFillPadOp : PTO_TOp<"tfillpad", [
           if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;

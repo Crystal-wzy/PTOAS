@@ -25,7 +25,7 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 // NATIVE: IR Dump After PTOResolveReservedBuffers
 // NATIVE-LABEL: func.func @tile_buf_addr_tile_native_arg(
 // NATIVE-SAME: %[[TILE:.*]]: !pto.tile_buf<vec, 1x16xf32>
-// NATIVE: %[[PTR:.*]] = pto.tile_buf_addr %[[TILE]] : !pto.tile_buf<vec, 1x16xf32> -> !pto.ptr<f32, ub>
+// NATIVE: %[[PTR:.*]] = pto.tile_buf_addr %[[TILE]] : !pto.tile_buf<vec, 1x16xf32> -> {{.*<f32, ub>}}
 // NATIVE: call @consume(%[[PTR]]) : (!pto.ptr<f32, ub>) -> ()
 // NATIVE-NOT: memref.reinterpret_cast
 
@@ -35,4 +35,4 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 
 // VPTO-LABEL: func.func @tile_buf_addr_tile_native_arg(
 // VPTO-SAME: !pto.tile_buf<vec, 1x16xf32>
-// VPTO: pto.tile_buf_addr %{{.*}} : !pto.tile_buf<vec, 1x16xf32> -> !pto.ptr<f32, ub>
+// VPTO: pto.tile_buf_addr %{{.*}} : !pto.tile_buf<vec, 1x16xf32> -> {{.*<f32, ub>}}
