@@ -79,6 +79,38 @@ static bool isDirectlyInForBody(Operation *op, scf::ForOp forOp) {
 }
 
 //===----------------------------------------------------------------------===//
+// Accumulator Analysis
+//===----------------------------------------------------------------------===//
+
+// Check if `v` is an iter_arg of `forOp` whose yield is `v + increment`.
+// Returns the increment value if so, nullopt otherwise.
+// Handles arith.addi for integer/index types and pto.addptr for pointer types.
+static std::optional<Value> getIterArgIncrement(Value v, scf::ForOp forOp) {
+  auto blockArg = dyn_cast<BlockArgument>(v);
+  if (!blockArg || blockArg.getOwner() != forOp.getBody() ||
+      blockArg.getArgNumber() == 0)
+    return std::nullopt;
+
+  unsigned idx = blockArg.getArgNumber() - 1;
+  auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+  Value yieldVal = yieldOp.getOperand(idx);
+
+  if (auto addOp = yieldVal.getDefiningOp<arith::AddIOp>()) {
+    if (addOp.getLhs() == blockArg)
+      return addOp.getRhs();
+    if (addOp.getRhs() == blockArg)
+      return addOp.getLhs();
+  }
+
+  if (auto addPtrOp = yieldVal.getDefiningOp<pto::AddPtrOp>()) {
+    if (addPtrOp.getPtr() == blockArg)
+      return addPtrOp.getOffset();
+  }
+
+  return std::nullopt;
+}
+
+//===----------------------------------------------------------------------===//
 // Delta Analysis
 //===----------------------------------------------------------------------===//
 
@@ -223,13 +255,17 @@ static Value materializeAtLoopEntry(Value v, scf::ForOp forOp,
   return cloned->getResult(0);
 }
 
-// Compute the initial pointer: base + weight * strideOperand_at_iter0.
+// Compute the initial pointer: base_at_iter0 + weight * strideOperand_at_iter0.
 // weight=1 for vlds/vsts (offset in elements), weight=32 for vsstb/vsldb.
 static Value computeInitialPtr(Value base, Value strideOperand,
                                int64_t weight, scf::ForOp forOp,
                                OpBuilder &builder) {
+  Value baseAtEntry = materializeAtLoopEntry(base, forOp, builder);
+  if (!baseAtEntry)
+    return nullptr;
+
   if (!strideOperand)
-    return base;
+    return baseAtEntry;
 
   Value soAtEntry = materializeAtLoopEntry(strideOperand, forOp, builder);
   if (!soAtEntry)
@@ -237,7 +273,7 @@ static Value computeInitialPtr(Value base, Value strideOperand,
 
   if (auto constVal = getConstantIntValue(soAtEntry);
       constVal && *constVal == 0)
-    return base;
+    return baseAtEntry;
 
   builder.setInsertionPoint(forOp);
   Value scaledOffset = soAtEntry;
@@ -251,16 +287,99 @@ static Value computeInitialPtr(Value base, Value strideOperand,
     scaledOffset =
         builder.create<arith::MulIOp>(forOp.getLoc(), soIndex, weightVal);
   }
-  return builder.create<pto::AddPtrOp>(forOp.getLoc(), base, scaledOffset);
+  return builder.create<pto::AddPtrOp>(forOp.getLoc(), baseAtEntry,
+                                       scaledOffset);
 }
 
 // Information about a post-update transformation to apply.
 struct PostUpdateRewrite {
   Operation *op;
   Value base;
-  Value stride;  // loop-invariant stride value (stride_new for block-stride ops)
+  Value stride;  // stride value (stride_new for block-stride ops)
   Value initPtr; // base + weight * strideOperand_at_iter0
 };
+
+//===----------------------------------------------------------------------===//
+// Accumulator Analysis
+//===----------------------------------------------------------------------===//
+
+// Try accumulator-based analysis for a candidate op inside a scf.for.
+// Returns a PostUpdateRewrite if base or strideOperand is an iter_arg whose
+// yield is arg + increment. Unlike delta analysis, stride_new need not be
+// loop-invariant — it can depend on the IV or other loop-varying values.
+static std::optional<PostUpdateRewrite>
+tryAccumulatorAnalysis(Operation *op, Value base, Value strideOperand,
+                       const PostUpdateOpInfo &info, scf::ForOp forOp,
+                       OpBuilder &builder) {
+  auto baseIncr = getIterArgIncrement(base, forOp);
+  auto soIncr = getIterArgIncrement(strideOperand, forOp);
+  if (!baseIncr && !soIncr)
+    return std::nullopt;
+
+  int64_t weight = info.weight;
+  Value strideNew;
+
+  if (weight == 1) {
+    // stride_new = (baseIncr or 0) + (soIncr or 0)
+    if (baseIncr && soIncr) {
+      auto cb = getConstantIntValue(*baseIncr);
+      auto co = getConstantIntValue(*soIncr);
+      if (cb && *cb == 0)
+        strideNew = *soIncr;
+      else if (co && *co == 0)
+        strideNew = *baseIncr;
+      else {
+        builder.setInsertionPoint(op);
+        strideNew =
+            builder.create<arith::AddIOp>(op->getLoc(), *baseIncr, *soIncr);
+      }
+    } else if (baseIncr) {
+      strideNew = *baseIncr;
+    } else {
+      strideNew = *soIncr;
+    }
+  } else {
+    // weight > 1 (e.g. 32 for vsstb).
+    // total_delta = (baseIncr or 0) + weight * (soIncr or 0)
+    // stride_new = total_delta / weight
+    if (baseIncr && soIncr) {
+      auto cb = getConstantIntValue(*baseIncr);
+      if (!cb || *cb % weight != 0)
+        return std::nullopt;
+      int64_t baseContrib = *cb / weight;
+      if (baseContrib == 0) {
+        strideNew = *soIncr;
+      } else {
+        unsigned bitWidth = strideOperand.getType().getIntOrFloatBitWidth();
+        builder.setInsertionPoint(op);
+        Value constContrib = builder.create<arith::ConstantIntOp>(
+            op->getLoc(), baseContrib, bitWidth);
+        strideNew =
+            builder.create<arith::AddIOp>(op->getLoc(), *soIncr, constContrib);
+      }
+    } else if (baseIncr) {
+      auto cb = getConstantIntValue(*baseIncr);
+      if (!cb || *cb % weight != 0)
+        return std::nullopt;
+      unsigned bitWidth = strideOperand.getType().getIntOrFloatBitWidth();
+      builder.setInsertionPoint(forOp);
+      strideNew = builder.create<arith::ConstantIntOp>(forOp.getLoc(),
+                                                        *cb / weight, bitWidth);
+    } else {
+      strideNew = *soIncr;
+    }
+  }
+
+  if (auto cs = getConstantIntValue(strideNew); cs && *cs == 0)
+    return std::nullopt;
+
+  Value initPtr =
+      computeInitialPtr(base, strideOperand, weight, forOp, builder);
+  if (!initPtr)
+    return std::nullopt;
+
+  return PostUpdateRewrite{op, base, strideNew, initPtr};
+}
 
 // A unique key for grouping rewrites that can share an iter_arg.
 // Same base + same stride (by Value identity) = same group.
@@ -444,7 +563,16 @@ private:
       Value base, strideOperand;
       extractBaseAndStrideOperand(&op, *info, base, strideOperand);
 
-      // Delta analysis.
+      // Accumulator analysis (priority): check iter_arg with explicit increment.
+      if (auto rw =
+              tryAccumulatorAnalysis(&op, base, strideOperand, *info, forOp,
+                                    builder)) {
+        rewrites.push_back(*rw);
+        continue;
+      }
+
+      // Delta analysis (fallback): compute per-iteration delta recursively.
+      int64_t weight = info->weight;
       Value deltaBase = computeDelta(base, forOp, builder);
       Value deltaOffset = computeDelta(strideOperand, forOp, builder);
 
@@ -454,7 +582,6 @@ private:
       // Compute stride = delta(base) + weight * delta(strideOperand).
       // For vlds/vsts (weight=1): stride = delta(base) + delta(offset).
       // For vsstb (weight=32): stride = delta(dest) + 32*delta(rs).
-      int64_t weight = info->weight;
 
       // Scale deltaOffset by weight if needed.
       Value weightedDeltaOffset = deltaOffset;

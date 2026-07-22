@@ -344,13 +344,13 @@ def VPTOSoftPostUpdate : Pass<"vpto-soft-postupdate", "ModuleOp"> {
 5. ~~支持 `pto.vlds`、`pto.vsts`、`pto.vsstb`。~~
 6. ~~添加 delta 路径的 lit 测试和反向测试。~~
 
-### Step 2：循环累加器分析
+### ~~Step 2：循环累加器分析~~（已完成）
 
-7. 实现 `getIterArgIncrement` helper。
-8. 实现累加器分析（4.2.1）：base/offset 统一检测与 stride 合并。
-9. 实现累加器路径的改写（4.2.4）。
-10. 在遍历逻辑中将累加器分析置于 delta 分析之前。
-11. 添加累加器路径的 lit 测试（含非常量 stride、base 和 offset 都是 iter_arg 等场景）。
+7. ~~实现 `getIterArgIncrement` helper。~~
+8. ~~实现累加器分析（4.2.1）：base/offset 统一检测与 stride 合并。~~
+9. ~~实现累加器路径的改写（4.2.4）。~~
+10. ~~在遍历逻辑中将累加器分析置于 delta 分析之前。~~
+11. ~~添加累加器路径的 lit 测试（含非常量 stride、base 和 offset 都是 iter_arg 等场景）。~~
 
 ### Step 3：顺序路径
 
