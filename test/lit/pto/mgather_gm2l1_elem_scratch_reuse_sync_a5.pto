@@ -46,4 +46,8 @@ module {
 }
 
 // CHECK:      MGATHER<pto::Coalesce::Elem>
-// CHECK-NEXT: MGATHER<pto::Coalesce::Elem>
+// CHECK-NEXT: set_flag(PIPE_S, PIPE_MTE2
+// CHECK-NEXT: set_flag(PIPE_MTE2, PIPE_S
+// CHECK-NEXT: wait_flag(PIPE_MTE2, PIPE_S
+// CHECK-NEXT: wait_flag(PIPE_S, PIPE_MTE2
+// CHECK:      MGATHER<pto::Coalesce::Elem>
