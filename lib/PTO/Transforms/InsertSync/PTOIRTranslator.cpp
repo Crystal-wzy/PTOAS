@@ -35,10 +35,31 @@ namespace {
 
 constexpr size_t kTileRank2D = 2;
 constexpr unsigned kMemoryEffectInlineCapacity = 4;
+constexpr llvm::StringLiteral kTileOpEffectsAttr = "pto.tileop.effects";
 
 using MemoryEffectVector =
     SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>,
                 kMemoryEffectInlineCapacity>;
+
+static uint64_t getStaticBufferSizeInBytes(ArrayRef<int64_t> shape,
+                                           Type elementType) {
+  uint64_t size = pto::getPTOStorageElemByteSize(elementType);
+  if (size == 0)
+    return 0;
+  for (int64_t dim : shape) {
+    if (dim == ShapedType::kDynamic)
+      return 0;
+    size *= static_cast<uint64_t>(dim);
+  }
+  return size;
+}
+
+static pto::AddressSpace getTileAddressSpace(pto::TileBufType type) {
+  if (auto attr =
+          dyn_cast_or_null<pto::AddressSpaceAttr>(type.getMemorySpace()))
+    return attr.getAddressSpace();
+  return pto::AddressSpace::MAT;
+}
 
 } // namespace
 
@@ -161,39 +182,45 @@ getPtoSubViewBaseAddresses(pto::SubViewOp op, pto::TileBufType sourceType,
 
 namespace {
 
-static func::FuncOp lookupPTODSLSubkernelHelper(func::CallOp callOp) {
+static func::FuncOp lookupSyncHelper(func::CallOp callOp) {
   auto module = callOp->getParentOfType<ModuleOp>();
   if (!module || callOp.getCallee().empty())
     return {};
   auto callee = module.lookupSymbol<func::FuncOp>(callOp.getCallee());
   if (!callee)
     return {};
-  if (!callee->hasAttr("pto.ptodsl.subkernel_helper"))
+  if (!callee->hasAttr("pto.tileop.helper") &&
+      !callee->hasAttr("pto.ptodsl.subkernel_helper"))
     return {};
   return callee;
 }
 
-static std::optional<pto::PipelineType>
-getPTODSLSubkernelHelperPipe(func::FuncOp callee) {
-  auto roleAttr =
-      callee->getAttrOfType<mlir::StringAttr>("pto.ptodsl.subkernel_helper");
-  if (!roleAttr)
-    return std::nullopt;
+static std::optional<pto::PipelineType> getSyncHelperPipe(func::FuncOp callee) {
+  if (auto roleAttr = callee->getAttrOfType<mlir::StringAttr>(
+          "pto.ptodsl.subkernel_helper")) {
+    return llvm::StringSwitch<std::optional<pto::PipelineType>>(
+               roleAttr.getValue())
+        .Case("cube", pto::PipelineType::PIPE_M)
+        .Case("simd", pto::PipelineType::PIPE_V)
+        .Default(std::nullopt);
+  }
 
+  auto kindAttr = callee->getAttrOfType<mlir::StringAttr>("pto.tileop.kind");
+  if (!kindAttr)
+    return std::nullopt;
   return llvm::StringSwitch<std::optional<pto::PipelineType>>(
-             roleAttr.getValue())
+             kindAttr.getValue())
       .Case("cube", pto::PipelineType::PIPE_M)
-      .Case("simd", pto::PipelineType::PIPE_V)
+      .Case("vector", pto::PipelineType::PIPE_V)
       .Default(std::nullopt);
 }
 
-static bool isPTODSLSubkernelMemoryOperand(Type type) {
+static bool isSyncHelperMemoryOperand(Type type) {
   return isa<pto::PtrType, pto::TileBufType, pto::TensorViewType,
              pto::PartitionTensorViewType>(type);
 }
 
-static pto::TCoreType getPTODSLSubkernelHelperCoreType(
-    pto::PipelineType pipe) {
+static pto::TCoreType getSyncHelperCoreType(pto::PipelineType pipe) {
   return pipe == pto::PipelineType::PIPE_M ? pto::TCoreType::CUBE
                                            : pto::TCoreType::VECTOR;
 }
@@ -210,37 +237,44 @@ void PTOIRTranslator::Build() {
 }
 
 // ============================================================================
-// 2. 更新 Kernel 参数内存信息 (GM Global Memory)
+// 2. 更新 Kernel 参数内存信息
 // ============================================================================
 void PTOIRTranslator::UpdateKernelArgMemInfo() {
-  auto funcParamSize = func_.getNumArguments();
-  for (size_t i = 0; i < funcParamSize; i++) {
-    Value funcArg = func_.getArgument(i);
+  for (Value funcArg : func_.getArguments()) {
     Type argType = funcArg.getType();
+    pto::AddressSpace space = pto::AddressSpace::Zero;
+    uint64_t sizeInBytes = 0;
+    SmallVector<uint64_t> baseAddresses{0};
 
-    if (!isa<pto::PtrType>(argType)) {
+    if (auto ptrType = dyn_cast<pto::PtrType>(argType)) {
+      space = ptrType.getMemorySpace().getAddressSpace();
+    } else if (auto tileType = dyn_cast<pto::TileBufType>(argType)) {
+      space = getTileAddressSpace(tileType);
+      sizeInBytes = getStaticBufferSizeInBytes(tileType.getShape(),
+                                               tileType.getElementType());
+    } else if (auto multiType = dyn_cast<pto::MultiTileBufType>(argType)) {
+      pto::TileBufType slotType = multiType.getSlotType();
+      space = getTileAddressSpace(slotType);
+      sizeInBytes = getStaticBufferSizeInBytes(slotType.getShape(),
+                                               slotType.getElementType());
+      baseAddresses.clear();
+      for (uint32_t slot = 0; slot < multiType.getCount(); ++slot)
+        baseAddresses.push_back(sizeInBytes == 0 ? 0 : slot * sizeInBytes);
+    } else if (auto viewType = dyn_cast<pto::TensorViewType>(argType)) {
+      space = pto::AddressSpace::GM;
+      sizeInBytes = getStaticBufferSizeInBytes(viewType.getShape(),
+                                               viewType.getElementType());
+    } else if (auto viewType =
+                   dyn_cast<pto::PartitionTensorViewType>(argType)) {
+      space = pto::AddressSpace::GM;
+      sizeInBytes = getStaticBufferSizeInBytes(viewType.getShape(),
+                                               viewType.getElementType());
+    } else {
       continue;
     }
 
-    pto::AddressSpace space = pto::AddressSpace::GM;
-    if (auto ptrType = dyn_cast<pto::PtrType>(argType)) {
-      space = ptrType.getMemorySpace().getAddressSpace();
-    } else if (auto memRefType = dyn_cast<MemRefType>(argType)) {
-      if (auto attr = memRefType.getMemorySpace()) {
-        if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(attr))
-          space = ptoAttr.getAddressSpace();
-      }
-    }
-
-    std::unique_ptr<BaseMemInfo> newMemInfo = std::make_unique<BaseMemInfo>(
-        funcArg,                  // baseBuffer
-        funcArg,                  // rootBuffer
-        space,                    // Scope
-        SmallVector<uint64_t>{0}, // Base Addresses
-        0                         // Allocate Size
-    );
-
-    buffer2MemInfoMap_[funcArg].emplace_back(newMemInfo->clone());
+    buffer2MemInfoMap_[funcArg].emplace_back(std::make_unique<BaseMemInfo>(
+        funcArg, funcArg, space, std::move(baseAddresses), sizeInBytes));
   }
 }
 
@@ -314,7 +348,7 @@ void PTOIRTranslator::RecursionIR(Region *region) {
     } else if (getSyncMacroModel(op)) {
       UpdateMacroOpInfo(op);
     } else if (auto callOp = dyn_cast<func::CallOp>(op)) {
-      UpdatePTODSLSubkernelCallInfo(callOp);
+      UpdateHelperCallInfo(callOp);
     } else if (isa<pto::LoadScalarOp, pto::StoreScalarOp>(op)) {
       // Scalar GM pointer accesses do not implement OpPipeInterface, but they
       // execute on PIPE_S and can race with async MTE/FIX tile stores touching
@@ -601,27 +635,32 @@ void PTOIRTranslator::UpdateMacroOpInfo(Operation *op) {
   }
 }
 
-void PTOIRTranslator::UpdatePTODSLSubkernelCallInfo(func::CallOp callOp) {
-  func::FuncOp callee = lookupPTODSLSubkernelHelper(callOp);
+void PTOIRTranslator::UpdateHelperCallInfo(func::CallOp callOp) {
+  func::FuncOp callee = lookupSyncHelper(callOp);
   if (!callee)
     return;
 
-  std::optional<pto::PipelineType> pipe = getPTODSLSubkernelHelperPipe(callee);
+  std::optional<pto::PipelineType> pipe = getSyncHelperPipe(callee);
   if (!pipe || *pipe == pto::PipelineType::PIPE_UNASSIGNED)
     return;
 
   SmallVector<const BaseMemInfo *> defVec;
   SmallVector<const BaseMemInfo *> useVec;
-  for (Value operand : callOp.getOperands()) {
-    if (!isPTODSLSubkernelMemoryOperand(operand.getType()))
+  auto effects = callee->getAttrOfType<ArrayAttr>(kTileOpEffectsAttr);
+  bool hasPreciseEffects = effects && effects.size() == callOp.getNumOperands();
+  for (auto [operandIndex, operand] : llvm::enumerate(callOp.getOperands())) {
+    if (!isSyncHelperMemoryOperand(operand.getType()))
       continue;
 
-    // PTODSL subkernel boundaries communicate through caller-visible local
-    // memory objects. Model helper calls conservatively as both reading and
-    // writing those operands so auto-sync can bridge TLOAD/TSTORE hazards
-    // across the call boundary before helper inlining runs later.
-    UpdateDefUseVec({operand}, useVec);
-    UpdateDefUseVec({operand}, defVec);
+    StringRef effect = "readwrite";
+    if (hasPreciseEffects) {
+      if (auto effectAttr = dyn_cast<StringAttr>(effects[operandIndex]))
+        effect = effectAttr.getValue();
+    }
+    if (effect == "read" || effect == "readwrite")
+      UpdateDefUseVec({operand}, useVec);
+    if (effect == "write" || effect == "readwrite")
+      UpdateDefUseVec({operand}, defVec);
   }
 
   if (defVec.empty() && useVec.empty())
@@ -630,8 +669,7 @@ void PTOIRTranslator::UpdatePTODSLSubkernelCallInfo(func::CallOp callOp) {
   auto compoundElement = std::make_unique<CompoundInstanceElement>(
       index, defVec, useVec, *pipe, callOp->getName());
   compoundElement->elementOp = callOp;
-  compoundElement->compoundCoreType =
-      getPTODSLSubkernelHelperCoreType(*pipe);
+  compoundElement->compoundCoreType = getSyncHelperCoreType(*pipe);
   syncIR_.emplace_back(std::move(compoundElement));
   index++;
 }

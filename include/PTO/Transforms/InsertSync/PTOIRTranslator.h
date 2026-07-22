@@ -88,7 +88,7 @@ private:
   void UpdateWhileOpInfo(scf::WhileOp whileOp);
   void UpdateIfOpInfo(scf::IfOp ifOp);
   void UpdateYieldOpInfo(scf::YieldOp yieldOp);
- 
+
   // --- 核心：处理计算/搬运指令 (生成 Compound 节点) ---
   void UpdatePTOOpInfo(Operation *op);
   void UpdatePTOOpInfoWithPipeline(Operation *op, PipelineType pipe,
@@ -96,10 +96,10 @@ private:
   void UpdateMacroOpInfo(Operation *op);
   void MakeMacroCompound(Operation *op, PipelineType pipe, ValueRange defValues,
                          ValueRange useValues, int macroPhaseId);
-  void UpdatePTODSLSubkernelCallInfo(func::CallOp callOp);
- 
+  void UpdateHelperCallInfo(func::CallOp callOp);
+
   // --- 辅助函数 ---
-  
+
   // 获取 PTO Op 对应的硬件流水线类型
   PipelineType getOpPipeline(Operation *op);
  
