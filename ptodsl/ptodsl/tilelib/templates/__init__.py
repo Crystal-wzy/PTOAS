@@ -121,6 +121,8 @@ _TEMPLATE_MODULES = {
     ("a5", "pto.tsqrt"): ".a5.tsqrt",
     ("a5", "pto.txor"): ".a5.txor",
     ("a5", "pto.txors"): ".a5.txors",
+    ("a5", "pto.ttri"): ".a5.ttri",
+    ("a5", "pto.thistogram"): ".a5.thistogram",
 }
 
 

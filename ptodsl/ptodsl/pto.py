@@ -107,6 +107,7 @@ from ._ops import (             # noqa: F401
     vexp, vln, vsqrt, vabs, vneg, vrec, vrsqrt, vrelu, vnot,
     vcgmax, vcgadd, vcgmin, vcpadd,
     vtrc, vprelu, vintlv, vdintlv, vselr,
+    chistv2,
     vci, vaddc, vaddcs, vmull, vbitsort, vmrgsort4,
     copy_ubuf_to_ubuf, load_scalar, store_scalar,
     vadds, vsubs, vmuls, vmaxs, vmins, vlrelu,
