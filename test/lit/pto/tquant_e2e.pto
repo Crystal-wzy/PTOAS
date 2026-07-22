@@ -4,7 +4,7 @@
 // RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=EMITC
 module attributes {"pto.device-spec" = "Ascend910B3"} {
 // IR-LABEL: func.func @tquant_sym_run
-// A3IR: pto.tquant ins({{.*}}) outs(%{{[^,]+}}, %{{[^ ]+}} :
+// A3IR: pto.tquant ins({{.*}}) outs(%{{[^, :]+}} :
 // A3IR-SAME: quant_type = #pto<quant_type INT8_SYM>
 // A5IR: pto.tquant ins({{.*}}) outs(%{{[^, :]+}} :
 // A5IR-SAME: quant_type = #pto<quant_type INT8_SYM>

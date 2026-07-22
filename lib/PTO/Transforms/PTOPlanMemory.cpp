@@ -1660,8 +1660,10 @@ void MemPlan::ReportMemLifeDebugInfo(StorageEntry *rootStorageEntry) {
 }
 
 void MemPlan::MemLifeDebugInfo(StorageEntry *storageEntry) {
-  for (auto &buffer : storageEntry->inplaceBuffers)
+  for (auto &buffer : storageEntry->inplaceBuffers) {
+    (void)buffer;
     LDBG("Buffer : " << buffer << "\n");
+  }
   for (auto &bufferLife : storageEntry->bufferLifeVec) {
     (void)bufferLife;
     LDBG("bufferLife : "
@@ -1672,8 +1674,10 @@ void MemPlan::MemLifeDebugInfo(StorageEntry *storageEntry) {
 }
 
 void MemPlan::ReportCurEntryDebugInfo(const StorageEntry *curEntry) {
-  for (auto &buffer : curEntry->inplaceBuffers)
+  for (auto &buffer : curEntry->inplaceBuffers) {
+    (void)buffer;
     LDBG("buffer : " << buffer);
+  }
 }
 
 StorageEntry *
