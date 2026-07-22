@@ -5261,8 +5261,6 @@ LogicalResult pto::TAddOp::verify() {
 }
 
 LogicalResult pto::TAddReluOp::verify() {
-  if (shouldBypassDecodedMemrefVerifier(getOperation()))
-    return success();
   auto verifyA2A3 = [&]() -> LogicalResult {
     FailureOr<Type> elemOr = verifyMatchingRowMajorBinaryTileOpCommon(
         getOperation(), getSrc0().getType(), getSrc1().getType(), getDst().getType());

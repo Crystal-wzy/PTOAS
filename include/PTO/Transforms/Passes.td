@@ -727,32 +727,6 @@ def PTOVerifyTFree : Pass<"pto-verify-tfree", "func::FuncOp"> {
   ];
 }
 
-def PTOVerifySubkernelPipeContract
-    : Pass<"pto-verify-subkernel-pipe-contract", "func::FuncOp"> {
-  let summary = "Verify PTODSL subkernel helpers stay within one InsertSync pipe contract";
-  let description = [{
-    Verifies PTODSL subkernel helpers marked with `pto.ptodsl.subkernel_helper`
-    and their same-module local call closure stay within one role-consistent PTO
-    compute contract before InsertSync models the call boundary as one compound
-    node.
-
-    Current contract:
-    - `simd` helpers may only contain PTO ops on `PIPE_V`
-    - `cube` helpers may only contain PTO ops on `PIPE_M`
-    - both reject role-mismatched PTO pipe ops (including MTE/FIX/S) and
-      nested PTODSL subkernel calls
-    - local helper `func.call` is allowed only when the transitive callee closure
-      satisfies the same contract
-  }];
-
-  let constructor = "mlir::pto::createPTOVerifySubkernelPipeContractPass()";
-
-  let dependentDialects = [
-    "mlir::func::FuncDialect",
-    "mlir::pto::PTODialect"
-  ];
-}
-
 def PTOValidateIntToPtrUses : Pass<"pto-validate-inttoptr-uses", "func::FuncOp"> {
   let summary = "Validate restricted uses of PTO inttoptr results";
   let description = [{
