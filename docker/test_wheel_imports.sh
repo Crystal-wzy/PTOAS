@@ -89,6 +89,7 @@ echo "Testing ptodsl public imports..."
 "$PYTHON_BIN" -c "from ptodsl import pto, scalar; print('ptodsl public imports imported successfully')"
 
 echo "Testing installed ptoas console entry..."
+"$PYTHON_BIN" -c "from ptoas import _native; print(f'ptoas native extension imported successfully from {_native.__file__}')"
 PTOAS_VERSION_OUTPUT="$(ptoas --version | tr -d '\r')"
 echo "${PTOAS_VERSION_OUTPUT}"
 EXPECTED_PTOAS_CLI_VERSION="${PTOAS_CLI_VERSION:-${PTOAS_VERSION:-}}"
@@ -100,33 +101,6 @@ if [[ -n "${EXPECTED_PTOAS_CLI_VERSION}" ]]; then
   fi
 else
   echo "${PTOAS_VERSION_OUTPUT}" | grep -Eq '^ptoas [0-9]+\.[0-9]+$'
-fi
-
-echo "Testing installed ptoas console entry under polluted Python and LLVM paths..."
-POLLUTED_ENV_DIR="${TEST_TMPDIR}/polluted-env"
-mkdir -p "${POLLUTED_ENV_DIR}/ptoas"
-cat > "${POLLUTED_ENV_DIR}/ptoas/__init__.py" <<'PY'
-raise RuntimeError("shadow ptoas package must not be imported")
-PY
-cat > "${POLLUTED_ENV_DIR}/ptoas/_runtime_entry.py" <<'PY'
-raise RuntimeError("shadow runtime entry must not be imported")
-PY
-POLLUTED_PTOAS_VERSION_OUTPUT="$(
-  env \
-    PYTHONPATH="${POLLUTED_ENV_DIR}" \
-    LD_LIBRARY_PATH="/tmp/polluted-llvm" \
-    DYLD_LIBRARY_PATH="/tmp/polluted-dylib" \
-    "${PTOAS_ENTRYPOINT}" --version | tr -d '\r'
-)"
-echo "${POLLUTED_PTOAS_VERSION_OUTPUT}"
-if [[ -n "${EXPECTED_PTOAS_CLI_VERSION}" ]]; then
-  EXPECTED_VERSION_OUTPUT="ptoas ${EXPECTED_PTOAS_CLI_VERSION}"
-  if [[ "${POLLUTED_PTOAS_VERSION_OUTPUT}" != "${EXPECTED_VERSION_OUTPUT}" ]]; then
-    echo "Error: expected '${EXPECTED_VERSION_OUTPUT}', got '${POLLUTED_PTOAS_VERSION_OUTPUT}'" >&2
-    exit 1
-  fi
-else
-  echo "${POLLUTED_PTOAS_VERSION_OUTPUT}" | grep -Eq '^ptoas [0-9]+\.[0-9]+$'
 fi
 
 echo "Testing installed ptoas console entry in a clean environment..."

@@ -12,22 +12,25 @@
 from __future__ import annotations
 
 import argparse
+import importlib.machinery
 import zipfile
 from pathlib import Path
 
 
 REQUIRED_FILES = {
-    "ptoas_wheel_bootstrap.py",
     "ptoas/__init__.py",
-    "ptoas/_launcher.py",
-    "ptoas/_runtime_entry.py",
-    "ptoas/_runtime/lib/ptoas.so",
+    "ptoas/_cli.py",
+    "ptoas/_runtime/share/ptoas/TileOps/__init__.py",
 }
 FORBIDDEN_FILES = {
     "ptoas/_runtime/bin/ptoas",
 }
-PTOAS_ENTRYPOINT_TARGET = "ptoas_wheel_bootstrap:main"
+PTOAS_ENTRYPOINT_TARGET = "ptoas._cli:main"
 WHEEL_GLOB = "ptoas*.whl"
+NATIVE_MODULE_PATHS = {
+    f"ptoas/_native{suffix}"
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES
+}
 
 
 def _resolve_wheel(candidate: str) -> Path:
@@ -83,6 +86,13 @@ def validate_wheel_payload(wheel: Path) -> None:
         if missing:
             raise SystemExit(f"wheel is missing required payload files: {missing}")
 
+        native_modules = sorted(NATIVE_MODULE_PATHS & names)
+        if len(native_modules) != 1:
+            raise SystemExit(
+                "wheel must contain exactly one importable ptoas._native extension, "
+                f"found {native_modules}"
+            )
+
         present_forbidden = sorted(FORBIDDEN_FILES & names)
         if present_forbidden:
             raise SystemExit(
@@ -107,7 +117,7 @@ def validate_wheel_payload(wheel: Path) -> None:
         if console_scripts.get("ptoas") != PTOAS_ENTRYPOINT_TARGET:
             raise SystemExit(
                 "wheel entry points do not route ptoas through "
-                "ptoas_wheel_bootstrap:main"
+                f"{PTOAS_ENTRYPOINT_TARGET}"
             )
 
 

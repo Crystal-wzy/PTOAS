@@ -191,14 +191,14 @@ jobs:
 
           need_pip_install=0
           python3 -c "import numpy" >/dev/null 2>&1 || need_pip_install=1
-          python3 -c "import setuptools, wheel" >/dev/null 2>&1 || need_pip_install=1
+          python3 -c "import scikit_build_core" >/dev/null 2>&1 || need_pip_install=1
           python3 -m pybind11 --cmakedir >/dev/null 2>&1 || need_pip_install=1
           python3 -m nanobind --cmake_dir >/dev/null 2>&1 || need_pip_install=1
           python3 -c "import ml_dtypes" >/dev/null 2>&1 || need_pip_install=1
 
           if [[ "${need_pip_install}" -eq 1 ]]; then
             python3 -m pip install --upgrade pip
-            python3 -m pip install setuptools wheel 'pybind11<3' nanobind numpy ml-dtypes
+            python3 -m pip install 'scikit-build-core>=0.12.2,<2' 'pybind11<3' nanobind numpy ml-dtypes
           fi
 
       - name: Resolve LLVM directories
@@ -323,11 +323,10 @@ jobs:
           # Pin system compilers for the same reason as LLVM above.
           export CC=gcc
           export CXX=g++
-          # LLVM_BUILD_DIR / PTO_INSTALL_DIR are read by the build backend
-          # while producing the wheel payload and staging native runtime bits.
           LLVM_BUILD_DIR="${LLVM_DIR}" \
-            PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
+            SKBUILD_BUILD_DIR="${GITHUB_WORKSPACE}/build" \
             python3 -m pip wheel . --no-build-isolation --no-deps --wheel-dir "${PTO_WHEELHOUSE}"
+          cmake --install "${GITHUB_WORKSPACE}/build" --prefix "${PTO_INSTALL_DIR}"
 
       - name: Create PTOAS simulator venv
         shell: bash
@@ -609,6 +608,7 @@ jobs:
           deps = [
               ("setuptools", "setuptools"),
               ("wheel", "wheel"),
+              ("scikit_build_core", "scikit-build-core>=0.12.2,<2"),
               ("nanobind", "nanobind"),
               ("numpy", "numpy"),
               ("ml_dtypes", "ml-dtypes"),
@@ -795,9 +795,9 @@ jobs:
           export CC=gcc
           export CXX=g++
           LLVM_BUILD_DIR="${PTO_DSL_ST_LLVM_DIR}" \
-            PTO_BUILD_DIR="${PTO_DSL_ST_BUILD_DIR}" \
-            PTO_INSTALL_DIR="${PTO_DSL_ST_INSTALL_DIR}" \
+            SKBUILD_BUILD_DIR="${PTO_DSL_ST_BUILD_DIR}" \
             "${PTO_DSL_ST_PYTHON_BIN}" -m pip wheel . --no-build-isolation --no-deps --wheel-dir "${PTO_DSL_ST_WHEELHOUSE}"
+          cmake --install "${PTO_DSL_ST_BUILD_DIR}" --prefix "${PTO_DSL_ST_INSTALL_DIR}"
 
       - name: Install PTODSL PTOAS wheel
         shell: bash

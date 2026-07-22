@@ -12,122 +12,102 @@
 
 This document records the internal launcher contract for the Python-backed
 `ptoas` command. The user-facing README should describe how to install and run
-PTOAS, but it should not expose this implementation detail.
-
-The wheel launcher intentionally uses a Python wrapper instead of packaging the
-native `ptoas` executable as the console entry. This avoids auditwheel /
-manylinux handling issues for native executables while still letting the wheel
-ship the native compiler implementation as a shared library.
-
-## Goals
-
-- Keep wheel, build-tree, and install-tree startup deterministic.
-- Resolve Python packages and runtime payloads from the current distribution
-  layout only.
-- Avoid falling back to unrelated source checkouts, editable installs, or
-  ambient `PYTHONPATH` entries.
-- Avoid loading duplicated LLVM/MLIR shared libraries inside one Python process.
-- Keep `ptoas._launcher` importable temporarily as a compatibility shim, but do
-  not treat it as a stable public API.
+PTOAS without exposing these implementation details.
 
 ## Entry Model
 
-The launcher has three layers:
+The wheel, build-tree, and install-tree launchers use the standard Python
+console-script and native-extension model:
 
 ```text
-distribution-specific entry
-  -> layout resolver
-  -> ptoas._runtime_entry.launch()
-       -> ctypes loads ptoas.so
-       -> calls ptoas_entrypoint(argc, argv)
+console script or CMake tree wrapper
+  -> ptoas._cli.main()
+       -> import ptoas._native
+       -> ptoas._native.main(argv)
 ```
 
-`ptoas._runtime_entry` is the shared execution layer. It should not guess which
-distribution layout is active; callers pass a resolved `PTOASRuntimeLayout`.
+`ptoas._native` is built with `pybind11_add_module`. CMake and Python therefore
+own the platform and ABI-specific filename. Launcher and packaging code refer to
+the import name and never construct `.so`, `.dylib`, or `.pyd` paths.
+
+The LLVM-based driver implementation is compiled as an object library so it
+can use LLVM's RTTI and exception settings independently from pybind11. Those
+objects are linked into the Python extension; no separate native executable is
+produced. Wheel and standalone-archive entrypoints therefore use the same
+extension and CLI module.
 
 ## Wheel Layout
 
-Wheel console scripts point to the top-level `ptoas_wheel_bootstrap:main`
-module, not to `ptoas._launcher:main`.
+Wheel console scripts point directly to `ptoas._cli:main`. The CLI imports the
+native extension through Python's normal package machinery and resolves TileOps
+package data relative to the installed extension. It does not re-execute itself,
+load modules by file path, rewrite `PYTHONPATH`, or override Python's standard
+package precedence rules.
 
-The bootstrap module lives outside the `ptoas` package so that the console entry
-can identify the installed wheel root before importing `ptoas`. This prevents a
-polluted `PYTHONPATH` from resolving a shadow `ptoas` package from a source
-checkout or another environment.
+Editable installs use scikit-build-core's redirect mode. The backend maps the
+Python sources to the checkout and the CMake-installed native extension to the
+editable build output without package-local path manipulation.
 
-Wheel startup is a two-stage process:
+Auditwheel and delocate discover the native extension through the standard
+wheel binary scan, bundle its dependencies, and rewrite its runtime search
+paths. The launcher does not preload or enumerate those libraries.
 
-1. Stage 1 resolves the wheel-owned package root and runtime root.
-2. Stage 1 `execve`s the same console script with a sanitized environment.
-3. Stage 2 imports the wheel-owned `ptoas._runtime_entry`.
-4. Stage 2 calls the shared `ptoas_entrypoint` from
-   `ptoas/_runtime/lib/ptoas.so`.
+Wheel and editable builds use `scikit-build-core` directly as the PEP 517/660
+backend. Project metadata and the console entry point live in `pyproject.toml`;
+wheel tags, metadata, RECORD generation, CMake configure/build/install, and
+editable redirects are owned by the backend rather than repository scripts.
 
-In stage 2, the environment is isolated:
+The main `pyproject.toml` has the static distribution name `ptoas`.
+`packaging/ptoas-vmi/pyproject.toml` is a second static PEP 621 project for the
+mutually exclusive `ptoas-vmi` distribution. Both projects build the same CMake
+source and install the same `ptoas` import package. This keeps project names
+standards-compliant because PEP 621 does not permit a dynamic `project.name`.
 
-- `PYTHONPATH` is set to the wheel site-packages root.
-- `LD_LIBRARY_PATH` is set to `ptoas/_runtime/lib`.
-- `DYLD_LIBRARY_PATH` is set to `ptoas/_runtime/lib`.
-
-Wheel mode must not preload every shared library under `ptoas/_runtime/lib`
-before loading `ptoas.so`. Auditwheel may rewrite `ptoas.so` dependencies to
-hashed libraries under `<distribution>.libs`. If the launcher preloads the
-unhashed runtime copies first and `ptoas.so` then loads the auditwheel-rewritten
-copies, LLVM/MLIR command-line options can be registered twice in the same
-process.
-
-Therefore wheel mode lets the dynamic loader resolve `ptoas.so` dependencies
-from the already-sanitized process environment and the auditwheel RPATH.
+CMake's `PTOAS_Python` install component contains only the generated/native
+wheel payload. Python source packages are declared through
+`tool.scikit-build.wheel.packages`, which also lets editable installs redirect
+imports to the source tree without namespace-package or custom `.pth` logic.
 
 ## Build-Tree Layout
 
-The build-tree wrapper is generated for one build directory and resolves only
-that tree's staged payload:
+The build-tree wrapper resolves only its own generated outputs:
 
 - wrapper: `<build>/tools/ptoas/ptoas`
 - Python root: `<build>/python`
-- runtime root: `<build>/runtime-staging`
-- shared entry: `<build>/runtime-staging/lib/ptoas.so`
+- native module: importable as `ptoas._native` from the Python root
+- TileOps: `<build>/python/ptoas/_runtime/share/ptoas/TileOps`
 
-If the staged Python package or runtime payload is missing, the wrapper fails
-with a layout error. It must not repair startup by searching unrelated Python
-roots or source checkouts.
-
-Build-tree mode prepends the tree-owned Python and library paths to the current
-environment. Because changing `LD_LIBRARY_PATH` after process startup is not a
-reliable way to affect subsequent `dlopen` resolution on glibc, build-tree mode
-may preload runtime libraries before loading `ptoas.so`.
+Missing Python packages or TileOps resources are hard layout errors. The
+wrapper only adds `<build>/python` to `sys.path`; `ptoas._cli` owns the common
+runtime-resource resolution and native invocation.
 
 ## Install-Tree Layout
 
-The install-tree wrapper resolves only files installed under the same prefix:
+The install-tree wrapper resolves only files under the same prefix:
 
 - wrapper: `<prefix>/bin/ptoas`
-- Python root: the installed PTOAS Python package root under that prefix
-- runtime root: the installed PTOAS runtime payload under that prefix
-- shared entry: `<runtime-root>/lib/ptoas.so`
+- Python root: `<prefix>`
+- native module: importable as `ptoas._native` from the Python root
+- TileOps: `<prefix>/ptoas/_runtime/share/ptoas/TileOps`
 
-As with build-tree mode, missing installed payloads are hard layout errors, not
-signals to search another checkout or wheel.
+The install-tree wrapper only adds `<prefix>` to `sys.path`, then delegates to
+the same `ptoas._cli` module used by wheels.
 
-Install-tree mode follows the same dynamic-library policy as build-tree mode:
-it may preload runtime libraries before loading `ptoas.so` because the process
-was not re-execed with a fully isolated library environment.
+## Standalone Archive Layout
 
-## Compatibility Shim
+Standalone compiler archives contain the installed Python wrapper and package:
 
-`ptoas._launcher` remains importable for a transition period and forwards to the
-new launcher path. New code should invoke the `ptoas` command instead of
-importing `ptoas._launcher` directly.
+```text
+bin/ptoas
+ptoas/_cli.py
+ptoas/_native.<abi>.so
+ptoas/_runtime/share/ptoas/TileOps
+lib/<native dependencies>
+tilelang_dsl/
+```
 
-The shim exists only to keep older internal scripts from breaking immediately.
-It should not grow new layout-resolution logic.
-
-## Non-Goals
-
-- Support installing `ptoas` and `ptoas-vmi` into the same Python environment.
-  Those distributions share the same import package and console script and are
-  intentionally mutually exclusive.
-- Support arbitrary `PTOAS_PYTHON_ROOT` fallback search in normal launcher
-  operation.
-- Replace the wheel Python wrapper with a native executable console entry.
+The archive requires a Python interpreter compatible with the packaged
+extension ABI. `bin/ptoas` adds the archive root to `sys.path`, then uses the
+same `ptoas._cli -> ptoas._native` path as the install tree. Linux archives set
+the extension runtime path to `$ORIGIN/../lib`; macOS archives rewrite the
+extension's install names relative to its package directory.

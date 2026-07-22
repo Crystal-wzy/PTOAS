@@ -76,10 +76,41 @@ function(ptoas_preseed_compilers_from_llvm_cache)
   endif()
 endfunction()
 
+# Standard Python build backends pass environment variables through to CMake
+# but do not synthesize project-specific cache arguments. Accept the existing
+# LLVM_BUILD_DIR convention directly so `pip wheel .` and `pip install .` can
+# use the same configured LLVM tree as developer CMake builds.
+if((NOT DEFINED LLVM_DIR OR LLVM_DIR STREQUAL "")
+   AND DEFINED ENV{LLVM_BUILD_DIR}
+   AND NOT "$ENV{LLVM_BUILD_DIR}" STREQUAL "")
+  set(LLVM_DIR "$ENV{LLVM_BUILD_DIR}/lib/cmake/llvm" CACHE PATH
+      "LLVM package directory derived from LLVM_BUILD_DIR")
+endif()
+if((NOT DEFINED MLIR_DIR OR MLIR_DIR STREQUAL "")
+   AND DEFINED ENV{LLVM_BUILD_DIR}
+   AND NOT "$ENV{LLVM_BUILD_DIR}" STREQUAL "")
+  set(MLIR_DIR "$ENV{LLVM_BUILD_DIR}/lib/cmake/mlir" CACHE PATH
+      "MLIR package directory derived from LLVM_BUILD_DIR")
+endif()
+if((NOT DEFINED MLIR_PYTHON_PACKAGE_DIR
+    OR MLIR_PYTHON_PACKAGE_DIR STREQUAL "")
+   AND DEFINED ENV{LLVM_BUILD_DIR}
+   AND NOT "$ENV{LLVM_BUILD_DIR}" STREQUAL "")
+  set(MLIR_PYTHON_PACKAGE_DIR
+      "$ENV{LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core"
+      CACHE PATH "MLIR Python package derived from LLVM_BUILD_DIR")
+endif()
+
 ptoas_preseed_compilers_from_llvm_cache()
 
 project(ptoas VERSION 0.55)
 set(PTOAS_VMI_VERSION "0.1.4")
+
+# Wheel builds carry the same Linux hardening policy as release CMake builds.
+# Including the cache settings here keeps the policy backend-independent.
+if(SKBUILD AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LinuxHardeningCache.cmake")
+endif()
 
 option(PTOAS_VALIDATE_CMAKE4_FETCHCONTENT_COMPAT
        "Validate CMake 4 compatibility for legacy FetchContent users" OFF)
@@ -244,6 +275,25 @@ if(PTO_ENABLE_PYTHON_BINDING)
   find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
   find_package(pybind11 CONFIG REQUIRED)
 
+  # A wheel must include the base MLIR Python package in addition to PTOAS's
+  # generated dialect modules. Normal CMake installs continue to use the LLVM
+  # installation supplied by the user and therefore do not duplicate it.
+  if(SKBUILD)
+    if(NOT MLIR_PYTHON_PACKAGE_DIR
+       OR NOT EXISTS "${MLIR_PYTHON_PACKAGE_DIR}/mlir")
+      message(FATAL_ERROR
+        "MLIR_PYTHON_PACKAGE_DIR must contain the MLIR Python package when "
+        "building a PTOAS wheel")
+    endif()
+    install(
+      DIRECTORY "${MLIR_PYTHON_PACKAGE_DIR}/mlir"
+      DESTINATION "."
+      COMPONENT PTOAS_Python
+      PATTERN "__pycache__" EXCLUDE
+      PATTERN "*.pyc" EXCLUDE
+    )
+  endif()
+
   # 设置 Python 扩展的输出目录，方便调试
   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/python/pto)
 
@@ -282,6 +332,7 @@ if(BUILD_TESTING)
       "PYTHONPATH=${_pto_python_test_pythonpath}"
       "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib:${_llvm_root}/lib:${CMAKE_INSTALL_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
       "PATH=${CMAKE_BINARY_DIR}/tools/ptoas:${CMAKE_INSTALL_PREFIX}/bin:${_pto_python_bin_dir}:$ENV{PATH}"
+      "PTOAS_BIN=${CMAKE_BINARY_DIR}/tools/ptoas/ptoas"
     )
 
     add_subdirectory(ptodsl/tests)

@@ -11,12 +11,12 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+import importlib.machinery
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = REPO_ROOT / "docker" / "validate_wheel_payload.py"
-CREATE_WHEEL = REPO_ROOT / "docker" / "create_wheel.sh"
 LINUX_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build_wheel.yml"
 MAC_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build_wheel_mac.yml"
 WHEEL_IMPORTS = REPO_ROOT / "docker" / "test_wheel_imports.sh"
@@ -29,23 +29,25 @@ class ValidateWheelPayloadTests(unittest.TestCase):
         self,
         root: Path,
         *,
-        include_runtime_so: bool,
-        include_runtime_entry: bool = True,
-        include_bootstrap: bool = True,
-        entry_points_text: str = "[console_scripts]\nptoas=ptoas_wheel_bootstrap:main\n",
+        include_native_module: bool,
+        include_cli: bool = True,
+        include_tileops: bool = True,
+        entry_points_text: str = "[console_scripts]\nptoas=ptoas._cli:main\n",
         wheel_stem: str = "ptoas",
         dist_info_stem: str = "ptoas",
     ) -> Path:
         wheel = root / f"{wheel_stem}-1.2.3-cp311-cp311-linux_x86_64.whl"
         with zipfile.ZipFile(wheel, "w") as zf:
-            if include_bootstrap:
-                zf.writestr("ptoas_wheel_bootstrap.py", "")
             zf.writestr("ptoas/__init__.py", "")
-            zf.writestr("ptoas/_launcher.py", "")
-            if include_runtime_entry:
-                zf.writestr("ptoas/_runtime_entry.py", "")
-            if include_runtime_so:
-                zf.writestr("ptoas/_runtime/lib/ptoas.so", "fake")
+            if include_cli:
+                zf.writestr("ptoas/_cli.py", "")
+            if include_tileops:
+                zf.writestr(
+                    "ptoas/_runtime/share/ptoas/TileOps/__init__.py", ""
+                )
+            if include_native_module:
+                suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
+                zf.writestr(f"ptoas/_native{suffix}", "fake")
             zf.writestr(
                 f"{dist_info_stem}-1.2.3.dist-info/entry_points.txt",
                 entry_points_text,
@@ -54,7 +56,7 @@ class ValidateWheelPayloadTests(unittest.TestCase):
 
     def test_validator_accepts_current_runtime_payload_layout(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            wheel = self._make_wheel(Path(temp_dir), include_runtime_so=True)
+            wheel = self._make_wheel(Path(temp_dir), include_native_module=True)
             result = subprocess.run(
                 ["python3", str(VALIDATOR), str(wheel)],
                 capture_output=True,
@@ -65,9 +67,9 @@ class ValidateWheelPayloadTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("validated wheel payload and launcher contract", result.stdout)
 
-    def test_validator_rejects_missing_runtime_shared_module(self):
+    def test_validator_rejects_missing_native_module(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            wheel = self._make_wheel(Path(temp_dir), include_runtime_so=False)
+            wheel = self._make_wheel(Path(temp_dir), include_native_module=False)
             result = subprocess.run(
                 ["python3", str(VALIDATOR), str(wheel)],
                 capture_output=True,
@@ -76,31 +78,14 @@ class ValidateWheelPayloadTests(unittest.TestCase):
             )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ptoas/_runtime/lib/ptoas.so", result.stderr)
+        self.assertIn("ptoas._native", result.stderr)
 
-    def test_validator_rejects_missing_runtime_entry_module(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            wheel = self._make_wheel(
-                Path(temp_dir),
-                include_runtime_so=True,
-                include_runtime_entry=False,
-            )
-            result = subprocess.run(
-                ["python3", str(VALIDATOR), str(wheel)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ptoas/_runtime_entry.py", result.stderr)
-
-    def test_validator_rejects_missing_wheel_bootstrap_module(self):
+    def test_validator_rejects_missing_cli_module(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             wheel = self._make_wheel(
                 Path(temp_dir),
-                include_runtime_so=True,
-                include_bootstrap=False,
+                include_native_module=True,
+                include_cli=False,
             )
             result = subprocess.run(
                 ["python3", str(VALIDATOR), str(wheel)],
@@ -110,14 +95,14 @@ class ValidateWheelPayloadTests(unittest.TestCase):
             )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ptoas_wheel_bootstrap.py", result.stderr)
+        self.assertIn("ptoas/_cli.py", result.stderr)
 
-    def test_validator_rejects_legacy_ptoas_launcher_entrypoint(self):
+    def test_validator_rejects_missing_packaged_tileops(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             wheel = self._make_wheel(
                 Path(temp_dir),
-                include_runtime_so=True,
-                entry_points_text="[console_scripts]\nptoas=ptoas._launcher:main\n",
+                include_native_module=True,
+                include_tileops=False,
             )
             result = subprocess.run(
                 ["python3", str(VALIDATOR), str(wheel)],
@@ -127,14 +112,31 @@ class ValidateWheelPayloadTests(unittest.TestCase):
             )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ptoas_wheel_bootstrap:main", result.stderr)
+        self.assertIn("TileOps/__init__.py", result.stderr)
+
+    def test_validator_rejects_legacy_bootstrap_entrypoint(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            wheel = self._make_wheel(
+                Path(temp_dir),
+                include_native_module=True,
+                entry_points_text="[console_scripts]\nptoas=ptoas_wheel_bootstrap:main\n",
+            )
+            result = subprocess.run(
+                ["python3", str(VALIDATOR), str(wheel)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ptoas._cli:main", result.stderr)
 
     def test_validator_accepts_normalized_entrypoint_spacing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             wheel = self._make_wheel(
                 Path(temp_dir),
-                include_runtime_so=True,
-                entry_points_text="[console_scripts]\nptoas = ptoas_wheel_bootstrap:main\n",
+                include_native_module=True,
+                entry_points_text="[console_scripts]\nptoas = ptoas._cli:main\n",
             )
             result = subprocess.run(
                 ["python3", str(VALIDATOR), str(wheel)],
@@ -149,7 +151,7 @@ class ValidateWheelPayloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             wheel = self._make_wheel(
                 Path(temp_dir),
-                include_runtime_so=True,
+                include_native_module=True,
                 wheel_stem="ptoas_vmi",
                 dist_info_stem="ptoas_vmi",
             )
@@ -196,7 +198,8 @@ class ValidateWheelPayloadTests(unittest.TestCase):
         )
         self.assertIn('PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"', linux_workflow)
         self.assertIn('PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_CLI_VERSION}"', linux_workflow)
-        self.assertIn('export PTOAS_PYTHON_PACKAGE_VERSION="${PTOAS_VERSION}"', linux_workflow)
+        self.assertIn('PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/packaging/ptoas-vmi"', linux_workflow)
+        self.assertIn('SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}"', linux_workflow)
 
         self.assertIn("workflow_dispatch:", mac_workflow)
         self.assertIn("release_kind:", mac_workflow)
@@ -212,19 +215,8 @@ class ValidateWheelPayloadTests(unittest.TestCase):
         )
         self.assertIn('PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"', mac_workflow)
         self.assertIn('PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_CLI_VERSION}"', mac_workflow)
-        self.assertIn('export PTOAS_PYTHON_PACKAGE_VERSION="${PTOAS_VERSION}"', mac_workflow)
-
-    def test_create_wheel_script_validates_package_name(self):
-        script = CREATE_WHEEL.read_text(encoding="utf-8")
-
-        self.assertIn(
-            "if [[ ! \"${PTOAS_PYTHON_PACKAGE_NAME}\" =~ ^[A-Za-z0-9]+([-_.][A-Za-z0-9]+)*$ ]]; then",
-            script,
-        )
-        self.assertIn(
-            "Error: invalid PTOAS_PYTHON_PACKAGE_NAME",
-            script,
-        )
+        self.assertIn('PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/packaging/ptoas-vmi"', mac_workflow)
+        self.assertIn('SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}"', mac_workflow)
 
     def test_wheel_imports_script_keeps_clean_env_ptoas_smoke(self):
         script = WHEEL_IMPORTS.read_text(encoding="utf-8")

@@ -71,6 +71,7 @@ endif()
 
 install(TARGETS _pto
   LIBRARY DESTINATION "mlir/_mlir_libs"
+  COMPONENT PTOAS_Python
 )
 
 # ---- 2) Generate ODS Python op bindings: _pto_ops_gen.py ----
@@ -103,6 +104,7 @@ install(FILES
   "${PTO_PY_SRC}"
   "${CMAKE_CURRENT_BINARY_DIR}/_pto_ops_gen.py"
   DESTINATION mlir/dialects
+  COMPONENT PTOAS_Python
 )
 
 # Keep the MLIR build-tree Python package self-consistent as well. When users

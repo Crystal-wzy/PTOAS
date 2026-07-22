@@ -133,7 +133,7 @@ jobs:
         run: |
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x
           # (see pybind11 static_assert on def_property + keep_alive).
-          pip install --no-cache-dir numpy 'pybind11<3' nanobind setuptools wheel delocate
+          pip install --no-cache-dir numpy 'pybind11<3' nanobind 'scikit-build-core>=0.12.2,<2' delocate
 
       - name: Set build directories
         run: |
@@ -209,26 +209,27 @@ jobs:
 
       - name: Build PTOAS
         run: |
-          PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_CLI_VERSION}" \
-          pip install . --no-build-isolation
-
-      - name: Create Python wheel
-        if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        run: |
-          export PTO_WHEEL_DIST_DIR=$PTO_SOURCE_DIR/build/wheel-dist
-          export PTOAS_PYTHON_PACKAGE_NAME="${PTOAS_PYTHON_PACKAGE_NAME}"
-          export PTOAS_PYTHON_PACKAGE_VERSION="${PTOAS_VERSION}"
+          if [ "${PTOAS_PYTHON_PACKAGE_NAME}" = "ptoas-vmi" ]; then
+            PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/packaging/ptoas-vmi"
+          else
+            PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}"
+          fi
           if [ "${{ matrix.arch }}" = "x86_64" ]; then
             TARGET_ARCH="x86_64"
           else
             TARGET_ARCH="arm64"
           fi
-          # setup-python may provide a universal2 interpreter on macOS.
-          # Force a single-arch wheel tag to match the matrix target and delocate checks.
-          export WHEEL_PLAT_NAME=$(python "$PTO_SOURCE_DIR/docker/get_macos_wheel_plat_name.py" "$TARGET_ARCH")
-          bash $PTO_SOURCE_DIR/docker/create_wheel.sh
+          export _PYTHON_HOST_PLATFORM="$(python "$PTO_SOURCE_DIR/docker/get_macos_wheel_plat_name.py" "$TARGET_ARCH")"
+          rm -rf "${PTO_SOURCE_DIR}/build/wheel-dist"
+          mkdir -p "${PTO_SOURCE_DIR}/build/wheel-dist"
+          PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_CLI_VERSION}" \
+          SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}" \
+            python -m pip wheel "${PTOAS_WHEEL_SOURCE_DIR}" \
+              --no-build-isolation --no-deps \
+              --wheel-dir "${PTO_SOURCE_DIR}/build/wheel-dist"
+          cmake --install "${PTO_BUILD_DIR}" --prefix "${PTO_INSTALL_DIR}"
           shopt -s nullglob
-          built_wheels=("$PTO_WHEEL_DIST_DIR"/ptoas*.whl)
+          built_wheels=("$PTO_SOURCE_DIR"/build/wheel-dist/ptoas*.whl)
           if [ "${#built_wheels[@]}" -gt 0 ]; then
             printf 'Built wheel file: %s\n' "$(basename "${built_wheels[0]}")"
           fi
@@ -354,8 +355,8 @@ jobs:
           tar -xzf "$GITHUB_WORKSPACE/ptoas-bin-macos-${{ matrix.arch }}.tar.gz" -C "$TEST_DIR/extracted"
 
           test -x "$TEST_DIR/extracted/bin/ptoas"
-          test -f "$TEST_DIR/extracted/ptoas/_runtime_entry.py"
-          test -f "$TEST_DIR/extracted/ptoas_wheel_bootstrap.py"
+          test -f "$TEST_DIR/extracted/ptoas/_cli.py"
+          compgen -G "$TEST_DIR/extracted/ptoas/_native*.so" >/dev/null
 
           env -u PYTHONPATH -u DYLD_LIBRARY_PATH -u LD_LIBRARY_PATH \
             "$TEST_DIR/extracted/bin/ptoas" --version

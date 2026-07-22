@@ -13,18 +13,14 @@
 #
 # Required environment variables:
 #   LLVM_BUILD_DIR  - Path to LLVM build directory
-#   PTO_BUILD_DIR   - Path to PTO build directory (optional, defaults to PTO_SOURCE_DIR/build)
 #   PTO_INSTALL_DIR - Path to PTO install directory
 #   PTO_SOURCE_DIR  - Path to PTO source directory
 #
 # Output structure:
 #   <output_directory>/
-#     bin/ptoas       - Python wrapper entrypoint
-#     ptoas/          - Launcher package used by the wrapper
-#     ptoas_wheel_bootstrap.py - Compatibility bootstrap module
-#     lib/ptoas.so    - Shared runtime loaded by the launcher
+#     bin/ptoas       - Python console wrapper
+#     ptoas/          - CLI package and native extension
 #     lib/*.dylib     - Required shared library dependencies
-#     share/ptoas/TileOps - TileLang template library
 #     tilelang_dsl/   - TileLang DSL Python package
 #
 # This compiler-oriented binary artifact intentionally does not bundle the
@@ -47,48 +43,35 @@ for var in LLVM_BUILD_DIR PTO_INSTALL_DIR PTO_SOURCE_DIR; do
   fi
 done
 
-PTO_BUILD_DIR="${PTO_BUILD_DIR:-${PTO_SOURCE_DIR}/build}"
-PTOAS_BIN="${PTO_BUILD_DIR}/tools/ptoas/ptoas"
-PTOAS_SHARED_MODULE="${PTO_INSTALL_DIR}/lib/ptoas.so"
+PTOAS_BIN="${PTO_INSTALL_DIR}/bin/ptoas"
+PTOAS_PACKAGE_SRC_DIR="${PTO_INSTALL_DIR}/ptoas"
+PTOAS_PACKAGE_DIST_DIR="${PTOAS_DIST_DIR}/ptoas"
 PTOAS_DEPS_DIR="${PTOAS_DIST_DIR}/lib"
-PTOAS_SHARED_MODULE_DIST_PATH="${PTOAS_DEPS_DIR}/ptoas.so"
-PTOAS_TILEOPS_SRC_DIR="${PTO_INSTALL_DIR}/share/ptoas/TileOps"
-PTOAS_TILEOPS_DIST_DIR="${PTOAS_DIST_DIR}/share/ptoas/TileOps"
 PTOAS_TILELANG_DSL_SRC_DIR="${PTO_INSTALL_DIR}/tilelang_dsl"
 PTOAS_TILELANG_DSL_DIST_DIR="${PTOAS_DIST_DIR}/tilelang_dsl"
-PTOAS_WRAPPER_PKG_SRC_DIR="${PTO_INSTALL_DIR}/ptoas"
-PTOAS_WRAPPER_PKG_DIST_DIR="${PTOAS_DIST_DIR}/ptoas"
-PTOAS_WHEEL_BOOTSTRAP_SRC="${PTO_INSTALL_DIR}/ptoas_wheel_bootstrap.py"
-PTOAS_WHEEL_BOOTSTRAP_DIST_PATH="${PTOAS_DIST_DIR}/ptoas_wheel_bootstrap.py"
 UNRESOLVED_NON_SYSTEM_COUNT=0
 
 if [ ! -f "$PTOAS_BIN" ]; then
-  echo "Error: ptoas wrapper not found at $PTOAS_BIN" >&2
+  echo "Error: installed ptoas wrapper not found at $PTOAS_BIN" >&2
   exit 1
 fi
-if [ ! -f "$PTOAS_SHARED_MODULE" ]; then
-  echo "Error: shared launcher module not found at $PTOAS_SHARED_MODULE" >&2
+if [ ! -d "$PTOAS_PACKAGE_SRC_DIR" ]; then
+  echo "Error: installed ptoas package not found at $PTOAS_PACKAGE_SRC_DIR" >&2
   exit 1
 fi
-if [ ! -d "$PTOAS_WRAPPER_PKG_SRC_DIR" ]; then
-  echo "Error: ptoas Python package not found at $PTOAS_WRAPPER_PKG_SRC_DIR" >&2
-  exit 1
-fi
-if [ ! -f "$PTOAS_WHEEL_BOOTSTRAP_SRC" ]; then
-  echo "Error: ptoas wheel bootstrap module not found at $PTOAS_WHEEL_BOOTSTRAP_SRC" >&2
-  exit 1
-fi
-
 mkdir -p \
   "${PTOAS_DIST_DIR}/bin" \
-  "${PTOAS_DEPS_DIR}" \
-  "$(dirname "${PTOAS_TILEOPS_DIST_DIR}")"
-rm -rf "${PTOAS_WRAPPER_PKG_DIST_DIR}" "${PTOAS_WHEEL_BOOTSTRAP_DIST_PATH}"
-cp -R "${PTOAS_WRAPPER_PKG_SRC_DIR}" "${PTOAS_WRAPPER_PKG_DIST_DIR}"
-cp "${PTOAS_WHEEL_BOOTSTRAP_SRC}" "${PTOAS_WHEEL_BOOTSTRAP_DIST_PATH}"
-cp -fL "$PTOAS_BIN" "${PTOAS_DIST_DIR}/bin/"
+  "${PTOAS_DEPS_DIR}"
+rm -rf "${PTOAS_PACKAGE_DIST_DIR}"
+cp -R "${PTOAS_PACKAGE_SRC_DIR}" "${PTOAS_PACKAGE_DIST_DIR}"
+cp -fL "$PTOAS_BIN" "${PTOAS_DIST_DIR}/bin/ptoas"
 chmod +x "${PTOAS_DIST_DIR}/bin/ptoas"
-cp -fL "$PTOAS_SHARED_MODULE" "${PTOAS_SHARED_MODULE_DIST_PATH}"
+
+PTOAS_NATIVE_MODULE="$(find "${PTOAS_PACKAGE_DIST_DIR}" -maxdepth 1 -type f -name '_native*.so' -print -quit)"
+if [ -z "${PTOAS_NATIVE_MODULE}" ]; then
+  echo "Error: packaged ptoas._native extension not found" >&2
+  exit 1
+fi
 
 # Resolve @rpath / @loader_path / @executable_path / absolute install names.
 resolve_dep_path() {
@@ -189,6 +172,7 @@ from pathlib import Path
 dist_dir = Path(sys.argv[1]).resolve()
 deps_dir = Path(sys.argv[2]).resolve()
 bin_dir = (dist_dir / "bin").resolve()
+package_dir = (dist_dir / "ptoas").resolve()
 allowed_prefixes = (
     "@loader_path/",
     "@rpath/",
@@ -209,13 +193,15 @@ def is_under(path: Path, root: Path) -> bool:
 def packaged_dep_ref(owner: Path, dep_base: str) -> str:
     if is_under(owner, bin_dir):
         return f"@loader_path/../lib/{dep_base}"
+    if is_under(owner, package_dir):
+        return f"@loader_path/../lib/{dep_base}"
     if is_under(owner, deps_dir):
         return f"@loader_path/{dep_base}"
     return f"@loader_path/{dep_base}"
 
 
 def iter_targets():
-    for root in (bin_dir, deps_dir):
+    for root in (package_dir, deps_dir):
         if not root.exists():
             continue
         for base, _, files in os.walk(root):
@@ -272,19 +258,14 @@ PY
 }
 
 echo "Collecting dylib dependencies..."
-collect_dylibs "${PTOAS_SHARED_MODULE_DIST_PATH}"
+collect_dylibs "${PTOAS_NATIVE_MODULE}"
 
 echo "Copying TileLang runtime resources..."
-if [[ ! -d "${PTOAS_TILEOPS_SRC_DIR}" ]]; then
-  echo "Error: TileOps resource directory not found at ${PTOAS_TILEOPS_SRC_DIR}" >&2
-  exit 1
-fi
 if [[ ! -d "${PTOAS_TILELANG_DSL_SRC_DIR}" ]]; then
   echo "Error: tilelang_dsl package directory not found at ${PTOAS_TILELANG_DSL_SRC_DIR}" >&2
   exit 1
 fi
-rm -rf "${PTOAS_TILEOPS_DIST_DIR}" "${PTOAS_TILELANG_DSL_DIST_DIR}"
-cp -R "${PTOAS_TILEOPS_SRC_DIR}" "${PTOAS_TILEOPS_DIST_DIR}"
+rm -rf "${PTOAS_TILELANG_DSL_DIST_DIR}"
 cp -R "${PTOAS_TILELANG_DSL_SRC_DIR}" "${PTOAS_TILELANG_DSL_DIST_DIR}"
 if [[ -e "${PTOAS_DIST_DIR}/ptodsl" ]]; then
   echo "Error: compiler-oriented ptoas dist must not bundle PTODSL" >&2
@@ -350,7 +331,7 @@ fi
 
 echo "Ad-hoc signing packaged binaries and dylibs..."
 shopt -s nullglob
-SIGN_TARGETS=("${PTOAS_DEPS_DIR}"/*.so "${PTOAS_DEPS_DIR}"/*.dylib)
+SIGN_TARGETS=("${PTOAS_NATIVE_MODULE}" "${PTOAS_DEPS_DIR}"/*.so "${PTOAS_DEPS_DIR}"/*.dylib)
 for target in "${SIGN_TARGETS[@]}"; do
   codesign --force --sign - --timestamp=none "$target"
 done
@@ -375,11 +356,9 @@ if [ -n "${EXPECTED_PTOAS_CLI_VERSION}" ]; then
 else
   echo "$VERSION_OUTPUT" | grep -Eq '^ptoas [0-9]+\.[0-9]+$'
 fi
-test -d "${PTOAS_TILEOPS_DIST_DIR}"
+test -f "${PTOAS_PACKAGE_DIST_DIR}/_cli.py"
+test -d "${PTOAS_PACKAGE_DIST_DIR}/_runtime/share/ptoas/TileOps"
 test -f "${PTOAS_TILELANG_DSL_DIST_DIR}/__init__.py"
-test -f "${PTOAS_SHARED_MODULE_DIST_PATH}"
-test -f "${PTOAS_WRAPPER_PKG_DIST_DIR}/_runtime_entry.py"
-test -f "${PTOAS_WHEEL_BOOTSTRAP_DIST_PATH}"
 env -u DYLD_LIBRARY_PATH -u LD_LIBRARY_PATH \
   "${PTOAS_DIST_DIR}/bin/ptoas" \
   "${PTO_SOURCE_DIR}/test/lit/pto/kernel_kind_vector_scf_while_emitc.pto" \
@@ -389,7 +368,7 @@ echo ""
 echo "=== ptoas distribution contents ==="
 ls -la "${PTOAS_DIST_DIR}/"
 ls -la "${PTOAS_DIST_DIR}/bin/"
-ls -la "${PTOAS_DIST_DIR}/share/ptoas/"
+ls -la "${PTOAS_PACKAGE_DIST_DIR}/"
 ls -la "${PTOAS_TILELANG_DSL_DIST_DIR}"
 DYLIB_COUNT=$(find "${PTOAS_DEPS_DIR}" -name "*.dylib" 2>/dev/null | wc -l)
 echo "=== Collected .dylib dependencies (${DYLIB_COUNT} files) ==="

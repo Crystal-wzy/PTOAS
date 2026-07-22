@@ -133,7 +133,7 @@ jobs:
             libedit-dev zlib1g-dev libxml2-dev libzstd-dev
           python3 -m pip install --upgrade pip
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x.
-          python3 -m pip install setuptools wheel 'pybind11<3' nanobind numpy
+          python3 -m pip install 'scikit-build-core>=0.12.2,<2' 'pybind11<3' nanobind numpy
 
       - name: Define payload paths
         shell: bash
@@ -269,7 +269,7 @@ jobs:
           rm -rf "${PTOAS_VENV}"
           python3 -m venv "${PTOAS_VENV}"
           "${PTOAS_VENV}/bin/python" -m pip install --upgrade pip
-          "${PTOAS_VENV}/bin/pip" install setuptools wheel 'pybind11<3' nanobind numpy ml-dtypes
+          "${PTOAS_VENV}/bin/pip" install 'scikit-build-core>=0.12.2,<2' 'pybind11<3' nanobind numpy ml-dtypes
 
       - name: Build PTOAS wheel
         run: |
@@ -278,13 +278,14 @@ jobs:
           rm -rf "${PTO_INSTALL_DIR}"
           rm -rf "${PTO_WHEELHOUSE}"
           mkdir -p "${PTO_WHEELHOUSE}"
-          # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
+          # scikit-build-core reuses this build tree so the following CTest and
+          # lit steps exercise the exact sources used to produce the wheel.
           LLVM_BUILD_DIR="${LLVM_DIR}" \
-          PTO_BUILD_DIR="${PTO_BUILD_DIR}" \
-          CMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
-          CMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
-            PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
+          SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}" \
+          CC="${PTOAS_CMAKE_C_COMPILER}" \
+          CXX="${PTOAS_CMAKE_CXX_COMPILER}" \
             "${PTOAS_VENV}/bin/python" -m pip wheel . --no-build-isolation --no-deps --wheel-dir "${PTO_WHEELHOUSE}"
+          cmake --install "${PTO_BUILD_DIR}" --prefix "${PTO_INSTALL_DIR}"
 
       - name: Install PTOAS wheel into test venv
         shell: bash

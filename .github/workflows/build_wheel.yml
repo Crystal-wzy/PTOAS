@@ -130,12 +130,13 @@ jobs:
           export PATH="${PY_PATH}/bin:$PATH"
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x
           # (see pybind11 static_assert on def_property + keep_alive).
-          pip install --no-cache-dir numpy 'pybind11<3' nanobind setuptools wheel auditwheel
+          pip install --no-cache-dir numpy 'pybind11<3' nanobind 'scikit-build-core>=0.12.2,<2' auditwheel
 
-      - name: Test PEP 517 build backend
+      - name: Validate PEP 517 project metadata
         run: |
           export PATH="${PY_PATH}/bin:$PATH"
-          PYTHONPATH="$GITHUB_WORKSPACE" python test/python/test_ptoas_build_backend.py
+          python -m scikit_build_core.build project-table
+          (cd packaging/ptoas-vmi && python -m scikit_build_core.build project-table)
 
       - name: Set build directories
         run: |
@@ -215,16 +216,19 @@ jobs:
           CMAKE_BUILD_PARALLEL_LEVEL: "2"
         run: |
           export PATH="${PY_PATH}/bin:$PATH"
+          if [ "${PTOAS_PYTHON_PACKAGE_NAME}" = "ptoas-vmi" ]; then
+            PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/packaging/ptoas-vmi"
+          else
+            PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}"
+          fi
+          rm -rf "${PTO_SOURCE_DIR}/build/wheel-dist"
+          mkdir -p "${PTO_SOURCE_DIR}/build/wheel-dist"
           PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_CLI_VERSION}" \
-          pip install . --no-build-isolation
-
-      - name: Create Python wheel
-        if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        run: |
-          export PATH="${PY_PATH}/bin:$PATH"
-          export PTOAS_PYTHON_PACKAGE_NAME="${PTOAS_PYTHON_PACKAGE_NAME}"
-          export PTOAS_PYTHON_PACKAGE_VERSION="${PTOAS_VERSION}"
-          bash $PTO_SOURCE_DIR/docker/create_wheel.sh
+          SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}" \
+            python -m pip wheel "${PTOAS_WHEEL_SOURCE_DIR}" \
+              --no-build-isolation --no-deps \
+              --wheel-dir "${PTO_SOURCE_DIR}/build/wheel-dist"
+          cmake --install "${PTO_BUILD_DIR}" --prefix "${PTO_INSTALL_DIR}"
 
       - name: Validate wheel payload and launcher contract
         if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

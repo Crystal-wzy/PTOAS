@@ -9,7 +9,7 @@
 
 # For quick development, build and install ptoas and its python bindings 
 # on top of Docker image https://github.com/learning-chip/agent_docker_npu/pull/8
-# assume MLIR is already installed to save time, takes <3min to finish the build of pto extension
+# assume MLIR is already installed to save time
 #
 # Optional env:
 #   LLVM_BUILD_DIR   - default: ${LLVM_SOURCE_DIR:-/llvm-workspace/llvm-project}/build-shared
@@ -23,13 +23,10 @@ PTO_INSTALL_DIR="${PTO_INSTALL_DIR:-${PTO_SOURCE_DIR}/install}"
 LLVM_SOURCE_DIR="${LLVM_SOURCE_DIR:-/llvm-workspace/llvm-project}"
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${LLVM_SOURCE_DIR}/build-shared}"
 
-PY_ROOT="$(python -c 'import sys; print(sys.prefix)')"
-
 for d in "$LLVM_BUILD_DIR/lib/cmake/llvm" "$LLVM_BUILD_DIR/lib/cmake/mlir"; do
   test -d "$d" || { echo "error: missing $d (set LLVM_BUILD_DIR?)" >&2; exit 1; }
 done
 
-PYBIND11_DIR="$(python -m pybind11 --cmakedir)"
 MLIR_PY_PKG="${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core"
 test -d "$MLIR_PY_PKG" || { echo "error: MLIR python package dir missing: $MLIR_PY_PKG" >&2; exit 1; }
 
@@ -37,30 +34,20 @@ PTOAS_VERSION="${PTOAS_VERSION:-$(python "${PTO_SOURCE_DIR}/.github/scripts/comp
 
 cd "$PTO_SOURCE_DIR"
 
-cmake -C "${PTO_SOURCE_DIR}/cmake/LinuxHardeningCache.cmake" -G Ninja \
-  -S . \
-  -B build \
-  -DLLVM_DIR="${LLVM_BUILD_DIR}/lib/cmake/llvm" \
-  -DMLIR_DIR="${LLVM_BUILD_DIR}/lib/cmake/mlir" \
-  -DPython3_ROOT_DIR="${PY_ROOT}" \
-  -DPython3_EXECUTABLE=python \
-  -DPython3_FIND_STRATEGY=LOCATION \
-  -Dpybind11_DIR="${PYBIND11_DIR}" \
-  -DMLIR_PYTHON_PACKAGE_DIR="${MLIR_PY_PKG}" \
-  -DPTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_VERSION}" \
-  -DCMAKE_INSTALL_PREFIX="${PTO_INSTALL_DIR}"
+PTO_WHEEL_DIR="${PTO_SOURCE_DIR}/build/wheel-dist"
+rm -rf "${PTO_WHEEL_DIR}"
+mkdir -p "${PTO_WHEEL_DIR}"
+LLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
+PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_VERSION}" \
+SKBUILD_BUILD_DIR="${PTO_SOURCE_DIR}/build" \
+  python -m pip wheel . --no-deps --wheel-dir "${PTO_WHEEL_DIR}"
 
-ninja -C build
-ninja -C build install
-
-export PTO_SOURCE_DIR PTO_INSTALL_DIR LLVM_BUILD_DIR
-export PTOAS_PYTHON_PACKAGE_VERSION="${PTOAS_PYTHON_PACKAGE_VERSION:-${PTOAS_VERSION}}"
-bash "${PTO_SOURCE_DIR}/docker/create_wheel.sh"
+cmake --install "${PTO_SOURCE_DIR}/build" --prefix "${PTO_INSTALL_DIR}"
 
 shopt -s nullglob
-wheels=("${MLIR_PY_PKG}/dist/ptoas-"*.whl)
+wheels=("${PTO_WHEEL_DIR}/ptoas-"*.whl)
 shopt -u nullglob
-((${#wheels[@]} > 0)) || { echo "error: no ptoas-*.whl under ${MLIR_PY_PKG}/dist" >&2; exit 1; }
+((${#wheels[@]} > 0)) || { echo "error: no ptoas-*.whl under ${PTO_WHEEL_DIR}" >&2; exit 1; }
 pip install --force-reinstall "${wheels[0]}"
 
 export PATH="${PTO_SOURCE_DIR}/build/tools/ptoas:${PATH}"
