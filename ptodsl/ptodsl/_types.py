@@ -19,8 +19,6 @@ where the annotation is evaluated at *import* time (no active context), and
 the actual type is materialised later by the ``@pto.jit`` decorator.
 """
 
-from ._bootstrap import make_context  # ensure MLIR is on sys.path
-
 from mlir.dialects import pto as _pto
 from mlir.dialects import arith
 from mlir.dialects.builtin import UnrealizedConversionCastOp

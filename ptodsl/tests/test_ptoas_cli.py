@@ -7,7 +7,6 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,10 +58,7 @@ class PTOASCLITests(unittest.TestCase):
         )
         self.assertEqual(environment["PTOAS_BIN"], str(wrapper.resolve()))
         self.assertEqual(environment["PTOAS_PYTHON_EXE"], _cli.sys.executable)
-        self.assertEqual(
-            environment["PATH"],
-            str(wrapper.parent.resolve()) + os.pathsep + "/usr/bin",
-        )
+        self.assertEqual(environment["PATH"], "/usr/bin")
 
     def test_explicit_resource_options_are_not_overridden(self):
         with tempfile.TemporaryDirectory() as temp_dir:

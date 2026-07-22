@@ -23,7 +23,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[2]
 USER_GUIDE_ROOT = REPO_ROOT / "ptodsl" / "docs" / "user_guide"
 from ptodsl import pto, scalar
-from ptodsl._bootstrap import make_context
+from ptodsl._context import make_context
 from ptodsl._runtime.launch import LaunchHandle, _marshal_launch_args
 from ptodsl._runtime.toolchain import resolve_ptoas_binary
 from mlir.ir import Module

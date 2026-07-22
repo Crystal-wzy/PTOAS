@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -22,10 +21,6 @@ def _resolve_wrapper_path(argv0: str | None = None) -> Path:
     wrapper = Path(candidate)
     if wrapper.exists():
         return wrapper.resolve()
-
-    found = shutil.which(wrapper.name or "ptoas")
-    if found:
-        return Path(found).resolve()
 
     raise SystemExit(f"unable to locate the active ptoas entry point: {candidate}")
 
@@ -61,16 +56,6 @@ def _has_cli_option(arguments: Sequence[str], option: str) -> bool:
     )
 
 
-def _prepend_path(name: str, value: Path) -> None:
-    current = os.environ.get(name, "")
-    parts = [part for part in current.split(os.pathsep) if part]
-    rendered = str(value)
-    if rendered in parts:
-        parts.remove(rendered)
-    parts.insert(0, rendered)
-    os.environ[name] = os.pathsep.join(parts)
-
-
 def launch(user_args: Sequence[str], *, wrapper: Path | None = None) -> int:
     native_module = _load_native_module()
     python_root, tileops_dir = _resolve_runtime_paths(native_module)
@@ -78,8 +63,6 @@ def launch(user_args: Sequence[str], *, wrapper: Path | None = None) -> int:
 
     os.environ["PTOAS_BIN"] = str(wrapper)
     os.environ["PTOAS_PYTHON_EXE"] = sys.executable
-    _prepend_path("PATH", wrapper.parent)
-
     argv = [str(wrapper)]
     if not _has_cli_option(user_args, "--tilelang-path"):
         argv.extend(["--tilelang-path", str(tileops_dir)])

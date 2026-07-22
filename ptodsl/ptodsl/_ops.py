@@ -24,7 +24,6 @@ Design rules:
 
 from functools import wraps
 
-from ._bootstrap import make_context  # noqa: F401 – ensure MLIR on sys.path
 from ._diagnostics import (
     explicit_mode_required_with_context_error,
     make_tensor_view_invalid_layout_error,

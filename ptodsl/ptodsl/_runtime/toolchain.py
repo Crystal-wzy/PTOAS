@@ -27,36 +27,12 @@ def resolve_ptoas_binary() -> Path:
             f"PTOAS_BIN is set but does not resolve to an existing executable: {env_override}"
         )
 
-    for var in ("PTO_BUILD_DIR", "PTO_INSTALL_DIR"):
-        if var in os.environ:
-            cand = Path(os.environ[var]) / "tools" / "ptoas" / "ptoas"
-            if cand.is_file():
-                return cand
-            cand2 = Path(os.environ[var]) / "bin" / "ptoas"
-            if cand2.is_file():
-                return cand2
-
-    repo_root = Path(__file__).resolve().parents[4]
-    candidates = [
-        repo_root / "build" / "tools" / "ptoas" / "ptoas",
-        repo_root / "install" / "bin" / "ptoas",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-
-    for start in [Path.cwd()] + list(Path.cwd().parents):
-        for pattern in [start / "build" / "tools" / "ptoas" / "ptoas",
-                        start / "install" / "bin" / "ptoas"]:
-            if pattern.is_file():
-                return pattern
-
     from_path = shutil.which("ptoas")
     if from_path:
         return Path(from_path)
 
     raise FileNotFoundError(
-        "unable to locate ptoas; build ptoas or add it to PATH after sourcing scripts/ptoas_env.sh"
+        "unable to locate ptoas; install it, add it to PATH, or set PTOAS_BIN"
     )
 
 

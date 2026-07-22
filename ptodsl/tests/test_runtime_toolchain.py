@@ -49,33 +49,41 @@ class RuntimeToolchainTest(unittest.TestCase):
 
 
 class ResolvePtoasBinaryTests(unittest.TestCase):
-    def test_env_override_wins_over_repo_default(self):
+    def test_env_override_wins_over_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
             env_ptoas = temp_root / "env-ptoas"
             env_ptoas.write_text("", encoding="utf-8")
 
-            repo_build_ptoas = temp_root / "build" / "tools" / "ptoas" / "ptoas"
-            repo_build_ptoas.parent.mkdir(parents=True, exist_ok=True)
-            repo_build_ptoas.write_text("", encoding="utf-8")
+            path_ptoas = temp_root / "path-ptoas"
 
-            fake_toolchain_file = (
-                temp_root / "repo" / "ptodsl" / "ptodsl" / "_runtime" / "toolchain.py"
-            )
-            fake_toolchain_file.parent.mkdir(parents=True, exist_ok=True)
-            fake_toolchain_file.write_text("", encoding="utf-8")
-
-            with mock.patch.dict(os.environ, {"PTOAS_BIN": str(env_ptoas)}, clear=False), mock.patch.object(
-                toolchain, "__file__", str(fake_toolchain_file)
-            ):
+            with mock.patch.dict(
+                os.environ, {"PTOAS_BIN": str(env_ptoas)}, clear=True
+            ), mock.patch.object(
+                toolchain.shutil, "which", return_value=str(path_ptoas)
+            ) as which:
                 resolved = toolchain.resolve_ptoas_binary()
 
             self.assertEqual(resolved, env_ptoas)
+            which.assert_not_called()
+
+    def test_path_is_used_without_env_override(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path_ptoas = Path(temp_dir) / "path-ptoas"
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                toolchain.shutil, "which", return_value=str(path_ptoas)
+            ) as which:
+                resolved = toolchain.resolve_ptoas_binary()
+
+            self.assertEqual(resolved, path_ptoas)
+            which.assert_called_once_with("ptoas")
 
     def test_invalid_env_override_raises(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             missing = Path(temp_dir) / "missing-ptoas"
-            with mock.patch.dict(os.environ, {"PTOAS_BIN": str(missing)}, clear=False):
+            with mock.patch.dict(
+                os.environ, {"PTOAS_BIN": str(missing)}, clear=True
+            ), mock.patch.object(toolchain.shutil, "which", return_value=None):
                 with self.assertRaises(FileNotFoundError):
                     toolchain.resolve_ptoas_binary()
 

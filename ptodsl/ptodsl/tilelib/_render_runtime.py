@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 from .metadata import ScalarSpec, TileSpec, VectorSpec, ViewSpec, scalar_descriptor
 from .._ast_rewrite import rewrite_jit_function
-from .._bootstrap import make_context
+from .._context import make_context
 from .._surface_types import Tile
 from .._surface_values import PartitionTensorViewValue, TensorViewValue, TileValue
 from .._tracing import KernelModuleSpec, ModuleStyle, TracingRuntime

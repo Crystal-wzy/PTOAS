@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 
@@ -22,11 +21,7 @@ def _resolve_wrapper_path(argv0: str | None = None) -> Path:
     if wrapper.exists():
         return wrapper.resolve()
 
-    found = shutil.which(wrapper.name or "ptoas")
-    if found:
-        return Path(found).resolve()
-
-    raise SystemExit(f"unable to locate the installed ptoas wrapper: {candidate}")
+    raise SystemExit(f"unable to locate the ptoas tree wrapper: {candidate}")
 
 
 def _is_build_tree_wrapper(wrapper: Path) -> bool:
@@ -43,7 +38,7 @@ def _require_python_root(python_root: Path, *, context: str) -> Path:
     )
 
 
-def _bootstrap_python_path(wrapper: Path) -> Path:
+def _add_tree_python_root(wrapper: Path) -> Path:
     if _is_build_tree_wrapper(wrapper):
         if len(wrapper.parents) < 3:
             raise SystemExit("unable to locate the build-tree root for ptoas")
@@ -65,7 +60,7 @@ def _bootstrap_python_path(wrapper: Path) -> Path:
 
 def main() -> None:
     wrapper = _resolve_wrapper_path()
-    _bootstrap_python_path(wrapper)
+    _add_tree_python_root(wrapper)
     from ptoas import _cli
 
     raise SystemExit(_cli.launch(sys.argv[1:], wrapper=wrapper))

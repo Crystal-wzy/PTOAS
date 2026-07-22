@@ -13,7 +13,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from ._bootstrap import make_context
+from ._context import make_context
 from ._diagnostics import (
     jit_source_abi_error,
     jit_source_entry_error,

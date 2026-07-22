@@ -9,8 +9,6 @@
 
 from enum import Enum
 
-from ._bootstrap import make_context  # noqa: F401
-
 from mlir.dialects import pto as _pto
 
 

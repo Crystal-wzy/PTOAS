@@ -10,7 +10,7 @@
 """Focused tracing coverage for the public ``@pto.tileop`` surface."""
 
 from ptodsl import pto
-from ptodsl._bootstrap import make_context
+from ptodsl._context import make_context
 from mlir.ir import Module
 
 

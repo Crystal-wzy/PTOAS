@@ -20,10 +20,9 @@ The wheel, build-tree, and install-tree launchers use the standard Python
 console-script and native-extension model:
 
 ```text
-console script or CMake tree wrapper
-  -> ptoas._cli.main()
-       -> import ptoas._native
-       -> ptoas._native.main(argv)
+wheel console script -> ptoas._cli.main()
+CMake tree wrapper   -> add its own Python root -> ptoas._cli.launch()
+both                 -> import ptoas._native -> ptoas._native.main(argv)
 ```
 
 `ptoas._native` is built with `pybind11_add_module`. CMake and Python therefore
@@ -93,6 +92,11 @@ The install-tree wrapper resolves only files under the same prefix:
 The install-tree wrapper only adds `<prefix>` to `sys.path`, then delegates to
 the same `ptoas._cli` module used by wheels.
 
+Both tree wrappers are CMake packaging adapters, not general runtime discovery
+helpers. Each wrapper adds exactly the Python root belonging to its own tree;
+it never scans repositories, neighboring build directories, or environment
+variables for another installation.
+
 ## Standalone Archive Layout
 
 Standalone compiler archives contain the installed Python wrapper and package:
@@ -111,3 +115,17 @@ extension ABI. `bin/ptoas` adds the archive root to `sys.path`, then uses the
 same `ptoas._cli -> ptoas._native` path as the install tree. Linux archives set
 the extension runtime path to `$ORIGIN/../lib`; macOS archives rewrite the
 extension's install names relative to its package directory.
+
+## PTODSL and TileLib Runtime
+
+PTODSL imports MLIR and the PTO dialect through normal Python package
+resolution. Wheel and editable installs provide those packages through their
+declared installation layout. CTest and direct developer-tree runs must set an
+explicit matching `PYTHONPATH`; PTODSL does not guess repository, LLVM build,
+or PTOAS install paths at import time.
+
+TileOp expansion remains a lazy, separate daemon process. The PTOAS CLI passes
+the packaged PTODSL root and the active Python executable to the native driver,
+which starts the daemon only when expansion is required. Keeping the daemon out
+of the compiler process also prevents independently packaged MLIR/LLVM Python
+bindings from registering runtime state in the native PTOAS process.
