@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 from ptodsl.tilelib import TileSpec, f32
-from ptodsl.tilelib.templates.a5.tadd import template_tadd
+from TileOps.a5.tadd import template_tadd
 
 FIXTURE = Path(__file__).parent / "fixtures" / "tadd_a5_8x64_f32.golden.mlir"
 

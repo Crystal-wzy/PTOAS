@@ -49,6 +49,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
+#include "llvm/Support/Path.h"
 #include "ptobc/ptobc_decode.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -175,6 +176,8 @@ static std::string resolveEffectiveTargetArch(ModuleOp module,
 
 } // namespace
 
+int main(int argc, char **argv);
+
 void mlir::pto::registerPTOASDialects(DialectRegistry &registry) {
   func::registerInlinerExtension(registry);
   LLVM::registerInlinerInterface(registry);
@@ -225,6 +228,38 @@ void mlir::pto::loadPTOASDialects(MLIRContext &context) {
   context.getOrLoadDialect<memref::MemRefDialect>();
   context.getOrLoadDialect<affine::AffineDialect>();
   context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
+}
+
+static bool pathExists(llvm::StringRef path) {
+  return !path.empty() && llvm::sys::fs::exists(path);
+}
+
+static std::string getParentDir(llvm::StringRef path) {
+  llvm::SmallString<256> parent(path);
+  llvm::sys::path::remove_filename(parent);
+  llvm::sys::path::remove_dots(parent, true);
+  return std::string(parent);
+}
+
+static std::string joinPath(llvm::StringRef lhs, llvm::StringRef rhs) {
+  llvm::SmallString<256> joined(lhs);
+  llvm::sys::path::append(joined, rhs);
+  llvm::sys::path::remove_dots(joined, true);
+  return std::string(joined);
+}
+
+static std::string detectInstalledPythonPkgRoot(const char *argv0,
+                                                llvm::StringRef packageName) {
+  std::string exePath = llvm::sys::fs::getMainExecutable(argv0, (void *)&main);
+  if (exePath.empty())
+    return {};
+
+  const std::string exeDir = getParentDir(exePath);
+  const std::string prefixDir = getParentDir(exeDir);
+  const std::string installedPkg = joinPath(prefixDir, packageName);
+  if (pathExists(installedPkg))
+    return prefixDir;
+  return {};
 }
 
 static bool hasCLIOption(int argc, char **argv, llvm::StringRef option) {
@@ -411,33 +446,24 @@ static llvm::cl::opt<bool> enableTileOpExpand(
         "--pto-backend=vpto."),
     llvm::cl::init(false));
 
-#ifndef PTOAS_DEFAULT_TILELANG_PATH
-#define PTOAS_DEFAULT_TILELANG_PATH ""
-#endif
-#ifndef PTOAS_DEFAULT_TILELANG_PKG_PATH
-#define PTOAS_DEFAULT_TILELANG_PKG_PATH ""
-#endif
 #ifndef PTOAS_DEFAULT_PTODSL_PKG_PATH
 #define PTOAS_DEFAULT_PTODSL_PKG_PATH ""
 #endif
-
-static llvm::cl::opt<std::string> tilelangPath(
-    "tilelang-path",
-    llvm::cl::desc("Path to directory of .py tilelang DSL template files "
-                   "(default: <source>/lib/TileOps, baked in at build time)"),
-    llvm::cl::init(PTOAS_DEFAULT_TILELANG_PATH));
-
-static llvm::cl::opt<std::string> tilelangPkgPath(
-    "tilelang-pkg-path",
-    llvm::cl::desc("PYTHONPATH for tilelang_dsl package "
-                   "(default: <source>/tilelang-dsl/python, baked in at build time)"),
-    llvm::cl::init(PTOAS_DEFAULT_TILELANG_PKG_PATH));
+#ifndef PTOAS_DEFAULT_TILEOPS_PKG_PATH
+#define PTOAS_DEFAULT_TILEOPS_PKG_PATH ""
+#endif
 
 static llvm::cl::opt<std::string> ptodslPkgPath(
     "ptodsl-pkg-path",
     llvm::cl::desc("PYTHONPATH for the ptodsl package "
                    "(default: <source>/ptodsl, baked in at build time)"),
     llvm::cl::init(PTOAS_DEFAULT_PTODSL_PKG_PATH));
+
+static llvm::cl::opt<std::string> tileopsPkgPath(
+    "tileops-pkg-path",
+    llvm::cl::desc("PYTHONPATH for the TileOps PTODSL template package "
+                   "(default: <source>/lib, baked in at build time)"),
+    llvm::cl::init(PTOAS_DEFAULT_TILEOPS_PKG_PATH));
 
 static llvm::cl::opt<std::string> daemonSocketPath(
     "daemon-socket-path",
@@ -446,7 +472,6 @@ static llvm::cl::opt<std::string> daemonSocketPath(
     llvm::cl::init(""));
 
 enum class TileLibBackend {
-  TileLang,
   PTODSL,
 };
 
@@ -454,8 +479,6 @@ static llvm::cl::opt<TileLibBackend> tileLibBackend(
     "tile-lib-backend",
     llvm::cl::desc("TileLib backend used by ExpandTileOp"),
     llvm::cl::values(
-        clEnumValN(TileLibBackend::TileLang, "tilelang",
-                   "Use the legacy TileLang DSL TileLib"),
         clEnumValN(TileLibBackend::PTODSL, "ptodsl",
                    "Use the PTODSL TileLib daemon")),
     llvm::cl::init(TileLibBackend::PTODSL));
@@ -470,66 +493,66 @@ static std::string resolveTileLibPythonExe() {
 static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
                                                            char **argv) {
   pto::ExpandTileOpOptions expandOpts;
-  expandOpts.tilelangPath = tilelangPath;
-  expandOpts.tilelangPkgPath = tilelangPkgPath;
   expandOpts.pythonExe = resolveTileLibPythonExe();
-  const bool usePTODSLTileLib = tileLibBackend == TileLibBackend::PTODSL;
+  expandOpts.tilelangPath.clear();
+  expandOpts.tilelangPkgPath.clear();
   std::string resolvedPtodslPkgPath = ptodslPkgPath;
+  std::string resolvedTileOpsPkgPath = tileopsPkgPath;
 
   if (!hasCLIOption(argc, argv, "--ptodsl-pkg-path")) {
     const char *envPtodslRoot = ::getenv("PTODSL_PYTHON_ROOT");
     if (envPtodslRoot && envPtodslRoot[0] != '\0')
       resolvedPtodslPkgPath = envPtodslRoot;
+    else {
+      std::string installedPtodslPkgPath =
+          detectInstalledPythonPkgRoot(argv[0], "ptodsl");
+      if (!installedPtodslPkgPath.empty())
+        resolvedPtodslPkgPath = installedPtodslPkgPath;
+    }
   }
 
-  if (usePTODSLTileLib) {
-    // The PTODSL backend is package-based and must not depend on legacy
-    // TileLang template or package paths.
-    expandOpts.tilelangPath.clear();
-    expandOpts.tilelangPkgPath.clear();
+  if (!hasCLIOption(argc, argv, "--tileops-pkg-path")) {
+    const char *envTileOpsRoot = ::getenv("PTO_TILEOPS_PYTHON_ROOT");
+    if (envTileOpsRoot && envTileOpsRoot[0] != '\0')
+      resolvedTileOpsPkgPath = envTileOpsRoot;
+    else {
+      std::string installedTileOpsPkgPath =
+          detectInstalledPythonPkgRoot(argv[0], "TileOps");
+      if (!installedTileOpsPkgPath.empty())
+        resolvedTileOpsPkgPath = installedTileOpsPkgPath;
+    }
   }
 
-  expandOpts.tileLibBackend = usePTODSLTileLib ? "ptodsl" : "tilelang";
-  expandOpts.daemonHelperModule =
-      usePTODSLTileLib ? "ptodsl.tilelib.serving.helper"
-                       : "tilelang_dsl.daemon_helper";
-  expandOpts.tileLibPkgPath =
-      usePTODSLTileLib ? resolvedPtodslPkgPath
-                       : std::string(expandOpts.tilelangPkgPath);
+  expandOpts.tileLibBackend = "ptodsl";
+  expandOpts.daemonHelperModule = "ptodsl.tilelib.serving.helper";
+  expandOpts.tileLibPkgPath = resolvedPtodslPkgPath;
+  if (!resolvedTileOpsPkgPath.empty()) {
+    if (!expandOpts.tileLibPkgPath.empty())
+      expandOpts.tileLibPkgPath += ":";
+    expandOpts.tileLibPkgPath += resolvedTileOpsPkgPath;
+  }
 
   // Daemon mode is default (no CLI option needed)
   // Automatically start daemon for instance caching
-  if (usePTODSLTileLib || !expandOpts.tilelangPath.empty()) {
-    std::string socket = daemonSocketPath;
-    if (socket.empty())
-      socket = ptoas::DaemonManager::generateSocketPath();
+  std::string socket = daemonSocketPath;
+  if (socket.empty())
+    socket = ptoas::DaemonManager::generateSocketPath();
 
-    // Register cleanup handler (daemon will be stopped on PTOAS exit)
-    ptoas::registerDaemonCleanup();
+  // Register cleanup handler (daemon will be stopped on PTOAS exit)
+  ptoas::registerDaemonCleanup();
 
-    const std::string daemonModule =
-        usePTODSLTileLib ? "ptodsl.tilelib.serving.daemon"
-                         : "tilelang_dsl.daemon";
-    const std::string templateDir =
-        usePTODSLTileLib ? "" : std::string(expandOpts.tilelangPath);
-
-    // Try to start daemon automatically
-    if (ptoas::DaemonManager::start(socket, daemonModule, expandOpts.pythonExe,
-                                    expandOpts.tileLibPkgPath, templateDir)) {
-      expandOpts.daemonSocketPath = socket;
-      llvm::errs() << "Info: " << expandOpts.tileLibBackend
-                   << " TileLib daemon started successfully\n";
-    } else {
-      expandOpts.daemonSocketPath = "";
-      if (usePTODSLTileLib) {
-        llvm::errs()
-            << "Error: Failed to start the PTODSL TileLib daemon; no TileLang "
-               "fallback will be used\n";
-      } else {
-        llvm::errs() << "Warning: Failed to start daemon, using legacy "
-                        "TileLang subprocess mode\n";
-      }
-    }
+  // Try to start daemon automatically
+  if (ptoas::DaemonManager::start(socket, "ptodsl.tilelib.serving.daemon",
+                                  expandOpts.pythonExe,
+                                  expandOpts.tileLibPkgPath, "")) {
+    expandOpts.daemonSocketPath = socket;
+    llvm::errs() << "Info: " << expandOpts.tileLibBackend
+                 << " TileLib daemon started successfully\n";
+  } else {
+    expandOpts.daemonSocketPath = "";
+    llvm::errs()
+        << "Error: Failed to start the PTODSL TileLib daemon; no TileLang "
+           "fallback will be used\n";
   }
 
   return expandOpts;

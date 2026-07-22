@@ -57,13 +57,13 @@ function(ptoas_configure_runtime_target target_name)
   target_compile_definitions(${target_name} PRIVATE
     PTOAS_RELEASE_VERSION="${PTOAS_CLI_VERSION}"
     # Source-tree defaults for TileLib expansion. These let ptoas run directly
-    # from the build tree without passing --tilelang-path /
-    # --tilelang-pkg-path / --ptodsl-pkg-path. Installed layouts are expected
+    # from the build tree without passing --ptodsl-pkg-path /
+    # --tileops-pkg-path. Installed layouts are expected
     # to launch through the wrapper/launcher flow, which injects explicit
     # runtime paths instead of relying on executable-path probing.
-    PTOAS_DEFAULT_TILELANG_PATH="${CMAKE_SOURCE_DIR}/lib/TileOps"
-    PTOAS_DEFAULT_TILELANG_PKG_PATH="${CMAKE_SOURCE_DIR}/tilelang-dsl/python"
     PTOAS_DEFAULT_PTODSL_PKG_PATH="${CMAKE_SOURCE_DIR}/ptodsl"
+    PTOAS_DEFAULT_TILEOPS_PKG_PATH="${CMAKE_SOURCE_DIR}/lib"
+    ${ARGN}
   )
   target_link_libraries(${target_name} PUBLIC
     PTOIR
