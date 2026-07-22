@@ -58,6 +58,7 @@ struct ConflictFacts {
   DenseSet<Value> tpopConsumerRoots;
   DenseMap<Value, SmallVector<unsigned>> tpopConsumerWriteIndices;
   DenseMap<Value, RootList> branchExclusiveRoots;
+  DenseSet<Value> loopCarriedRoots;
   bool targetHazardEnabled = false;
 };
 
@@ -629,6 +630,42 @@ struct PlannerAnalysis {
     }
   }
 
+  void finalizeForLoopLiveness(scf::ForOp forOp, unsigned loopStartIndex,
+                               unsigned loopEndIndex) {
+    // A root defined outside the loop and touched in the body remains live
+    // across the back-edge, even if its last use appears before a loop-local
+    // allocation in the linear walk.
+    for (RootInfo &info : roots) {
+      if (isRootDefinedInRegion(info.root, forOp.getRegion()))
+        continue;
+      if (info.freeIndex >= loopStartIndex)
+        info.freeIndex = std::max(info.freeIndex, loopEndIndex);
+    }
+
+    auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    for (auto [iterArg, result, initArg, yielded] :
+         llvm::zip(forOp.getRegionIterArgs(), forOp.getResults(),
+                   forOp.getInitArgs(), yieldOp.getResults())) {
+      RootList loopCarriedRoots =
+          unionRoots(getRoots(initArg), getRoots(yielded));
+      setRoots(iterArg, loopCarriedRoots);
+      setRoots(result, loopCarriedRoots);
+
+      // Every possible root of an iter arg may be consumed on a later
+      // iteration. Conservatively keep the family live for the whole loop and
+      // do not apply branch-exclusivity from one iteration across the back-edge.
+      for (Value root : loopCarriedRoots) {
+        auto found = rootIndexByValue.find(root);
+        if (found == rootIndexByValue.end())
+          continue;
+        facts.loopCarriedRoots.insert(root);
+        RootInfo &info = roots[found->second];
+        info.allocIndex = std::min(info.allocIndex, loopStartIndex);
+        info.freeIndex = std::max(info.freeIndex, loopEndIndex);
+      }
+    }
+  }
+
   void walkRegion(Region &region) {
     for (Block &block : region) {
       for (Operation &opRef : block) {
@@ -725,12 +762,15 @@ struct PlannerAnalysis {
             recordIfBranchExclusivity(ifOp);
           }
         } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-          auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
-          for (auto [result, initArg, yielded] :
-               llvm::zip(forOp.getResults(), forOp.getInitArgs(),
-                         yieldOp.getResults())) {
-            setRoots(result, unionRoots(getRoots(initArg), getRoots(yielded)));
-          }
+          unsigned loopEndIndex =
+              linearOps.empty() ? index : linearOps.size() - 1;
+          finalizeForLoopLiveness(forOp, index, loopEndIndex);
+        } else if (auto fusionRegion = dyn_cast<pto::FusionRegionOp>(op)) {
+          auto yieldOp = cast<pto::YieldOp>(
+              fusionRegion.getBody().front().getTerminator());
+          for (auto [result, yielded] :
+               llvm::zip(fusionRegion.getResults(), yieldOp.getOperands()))
+            setRoots(result, getRoots(yielded));
         }
 
         recordSplitTpopDerivedValue(op);
@@ -746,6 +786,9 @@ static bool lifetimesStrictlyOverlap(const RootInfo &lhs, const RootInfo &rhs) {
 }
 
 static bool areBranchExclusive(Value lhs, Value rhs, const ConflictFacts &facts) {
+  if (facts.loopCarriedRoots.contains(lhs) ||
+      facts.loopCarriedRoots.contains(rhs))
+    return false;
   auto it = facts.branchExclusiveRoots.find(lhs);
   if (it == facts.branchExclusiveRoots.end())
     return false;
@@ -1164,7 +1207,25 @@ struct PlanMemoryModernPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
-    for (func::FuncOp funcOp : moduleOp.getOps<func::FuncOp>()) {
+    SmallVector<func::FuncOp> funcs;
+    for (func::FuncOp funcOp : moduleOp.getOps<func::FuncOp>())
+      funcs.push_back(funcOp);
+    moduleOp.walk([&](ModuleOp childModule) {
+      if (childModule == moduleOp)
+        return;
+
+      bool hasTileOpHelper = llvm::any_of(
+          childModule.getOps<func::FuncOp>(), [](func::FuncOp funcOp) {
+            return funcOp->hasAttr("pto.tileop.helper");
+          });
+      if (!hasTileOpHelper)
+        return;
+
+      for (func::FuncOp funcOp : childModule.getOps<func::FuncOp>())
+        funcs.push_back(funcOp);
+    });
+
+    for (func::FuncOp funcOp : funcs) {
       if (failed(
               mlir::pto::runModernPlanMemory(funcOp, memMode, orderBySize))) {
         signalPassFailure();
