@@ -57,7 +57,7 @@ struct ConflictFacts {
   DenseSet<Value> loadDerivedRoots;
   DenseSet<Value> tpopConsumerRoots;
   DenseMap<Value, SmallVector<unsigned>> tpopConsumerWriteIndices;
-  DenseMap<Value, SmallVector<unsigned>> phiFamilyIds;
+  DenseMap<Value, RootList> branchExclusiveRoots;
   bool targetHazardEnabled = false;
 };
 
@@ -318,7 +318,6 @@ struct PlannerAnalysis {
   SmallVector<RootInfo> roots;
   DenseMap<Value, unsigned> rootIndexByValue;
   ConflictFacts facts;
-  unsigned nextPhiFamilyId = 0;
   bool failed = false;
 
   explicit PlannerAnalysis(func::FuncOp func) : func(func) {
@@ -486,15 +485,16 @@ struct PlannerAnalysis {
     return false;
   }
 
-  void addPhiFamily(Value root, unsigned familyId) {
-    if (!rootIndexByValue.count(root))
+  void addBranchExclusivePair(Value lhs, Value rhs) {
+    if (lhs == rhs)
       return;
-    SmallVector<unsigned> &families = facts.phiFamilyIds[root];
-    if (!llvm::is_contained(families, familyId))
-      families.push_back(familyId);
+    if (!rootIndexByValue.count(lhs) || !rootIndexByValue.count(rhs))
+      return;
+    appendUniqueRoot(facts.branchExclusiveRoots[lhs], rhs);
+    appendUniqueRoot(facts.branchExclusiveRoots[rhs], lhs);
   }
 
-  void recordIfPhiFamilies(scf::IfOp ifOp) {
+  void recordIfBranchExclusivity(scf::IfOp ifOp) {
     if (ifOp.getNumResults() == 0)
       return;
 
@@ -502,19 +502,18 @@ struct PlannerAnalysis {
     auto elseYield = cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
     for (auto [thenVal, elseVal] :
          llvm::zip(thenYield.getResults(), elseYield.getResults())) {
-      RootList roots = unionRoots(getRoots(thenVal), getRoots(elseVal));
-      SmallVector<Value> branchLocalRoots;
-      for (Value root : roots) {
-        if (isRootDefinedInRegion(root, ifOp.getThenRegion()) ||
-            isRootDefinedInRegion(root, ifOp.getElseRegion()))
-          branchLocalRoots.push_back(root);
-      }
-      if (branchLocalRoots.size() < 2)
-        continue;
+      RootList thenLocalRoots;
+      RootList elseLocalRoots;
+      for (Value root : getRoots(thenVal))
+        if (isRootDefinedInRegion(root, ifOp.getThenRegion()))
+          appendUniqueRoot(thenLocalRoots, root);
+      for (Value root : getRoots(elseVal))
+        if (isRootDefinedInRegion(root, ifOp.getElseRegion()))
+          appendUniqueRoot(elseLocalRoots, root);
 
-      unsigned familyId = nextPhiFamilyId++;
-      for (Value root : branchLocalRoots)
-        addPhiFamily(root, familyId);
+      for (Value thenRoot : thenLocalRoots)
+        for (Value elseRoot : elseLocalRoots)
+          addBranchExclusivePair(thenRoot, elseRoot);
     }
   }
 
@@ -723,7 +722,7 @@ struct PlannerAnalysis {
               setRoots(result,
                        unionRoots(getRoots(thenVal), getRoots(elseVal)));
             }
-            recordIfPhiFamilies(ifOp);
+            recordIfBranchExclusivity(ifOp);
           }
         } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
           auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
@@ -746,17 +745,11 @@ static bool lifetimesStrictlyOverlap(const RootInfo &lhs, const RootInfo &rhs) {
   return !(lhs.freeIndex <= rhs.allocIndex || rhs.freeIndex <= lhs.allocIndex);
 }
 
-static bool sharePhiFamily(Value lhs, Value rhs, const ConflictFacts &facts) {
-  auto lhsIt = facts.phiFamilyIds.find(lhs);
-  auto rhsIt = facts.phiFamilyIds.find(rhs);
-  if (lhsIt == facts.phiFamilyIds.end() || rhsIt == facts.phiFamilyIds.end())
+static bool areBranchExclusive(Value lhs, Value rhs, const ConflictFacts &facts) {
+  auto it = facts.branchExclusiveRoots.find(lhs);
+  if (it == facts.branchExclusiveRoots.end())
     return false;
-
-  for (unsigned lhsFamily : lhsIt->second) {
-    if (llvm::is_contained(rhsIt->second, lhsFamily))
-      return true;
-  }
-  return false;
+  return llvm::is_contained(it->second, rhs);
 }
 
 static bool gateLifetimeAndPhi(const RootInfo &lhs, const RootInfo &rhs,
@@ -764,10 +757,10 @@ static bool gateLifetimeAndPhi(const RootInfo &lhs, const RootInfo &rhs,
   if (!lifetimesStrictlyOverlap(lhs, rhs))
     return true;
 
-  // Gate 5 is intentionally embedded in Gate 1: branch-local roots yielded by
-  // the same scf.if result are mutually exclusive at runtime, so their
+  // Gate 5 is intentionally embedded in Gate 1: branch-local roots yielded from
+  // opposite scf.if branches are mutually exclusive at runtime, so their
   // post-phi liveness extension does not by itself forbid reuse.
-  return sharePhiFamily(lhs.root, rhs.root, facts);
+  return areBranchExclusive(lhs.root, rhs.root, facts);
 }
 
 static bool hasTargetHazard(const RootInfo &input, const RootInfo &writer,
