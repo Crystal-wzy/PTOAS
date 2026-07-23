@@ -115,6 +115,7 @@ _TEMPLATE_MODULES = {
     ("a5", "pto.tsort32"): ".a5.tsort32",
     ("a5", "pto.tstore"): ".a5.tstore",
     ("a5", "pto.tstore_fp"): ".a5.tstore",
+    ("a5", "pto.ttrans"): ".a5.ttrans",
     ("a5", "pto.tsub"): ".a5.tsub",
     ("a5", "pto.tsubs"): ".a5.tsubs",
     ("a5", "pto.tsqrt"): ".a5.tsqrt",
