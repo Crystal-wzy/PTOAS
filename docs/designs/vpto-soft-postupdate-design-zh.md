@@ -163,12 +163,27 @@ init_ptr    = base_0 + weight * strideOperand_0   // 通过 pto.addptr 创建
 
 #### 4.2.2 累加器分析（优先）
 
-对 base 和 strideOperand 分别检查是否为 `scf.for` 的 block argument（来自 `iter_args`），且对应的 `scf.yield` 值为该 block argument 加一个增量值：
+对 base 和 strideOperand 分别检查是否为 `scf.for` 的 block argument（来自 `iter_args`），且对应的 `scf.yield` 值可分解为 `blockArg + increment`。
+
+分解通过递归线性分解实现：沿 `arith.addi`/`arith.subi`/`arith.muli`/`arith.index_cast`/`pto.addptr` 定义链递归，将 yield 表达式分离为 `blockArg * coeff + increment`。要求 `coeff == 1`（保证等差递推），`increment` 不要求是常量或循环不变量。
 
 ```
+decomposeLinear(Value v, BlockArgument blockArg) -> {coeff, increment}:
+  v == blockArg           → {1, nullptr}
+  v 是循环不变量或其他 block arg → {0, v}
+  v = addi(a, b)         → {ca + cb, ia + ib}
+  v = subi(a, b)         → {ca - cb, ia - ib}
+  v = muli(a, b)（一侧不含 blockArg 且为常量 k）→ {c * k, i * k}
+  v = addptr(ptr, offset) → {c_ptr, i_ptr + offset}
+  v = index_cast(a)       → {ca, cast(ia)}
+  其他                    → unknown（放弃）
+
 getIterArgIncrement(Value v, ForOp forOp) -> std::optional<Value>:
-  若 v 是 forOp 的 block argument，且对应的 yield 操作数形如 arith.addi(v, s)
-  （或等价的指针加法），返回 s；否则返回 nullopt。
+  沿 v 的定义链回溯，穿过 index_cast（记录类型转换）、addi/subi/addptr
+  与循环不变量的组合（跳过偏移），直到找到 iter_arg BlockArgument。
+  对该 iter_arg 的 yield 操作数调用 decomposeLinear，coeff == 1 且
+  increment 非零时，将路径上收集的类型转换应用于 increment 后返回；
+  否则返回 nullopt。
 ```
 
 ```

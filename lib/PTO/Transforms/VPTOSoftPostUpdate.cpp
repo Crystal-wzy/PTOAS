@@ -79,35 +79,210 @@ static bool isDirectlyInForBody(Operation *op, scf::ForOp forOp) {
 }
 
 //===----------------------------------------------------------------------===//
-// Accumulator Analysis
+// Accumulator Analysis: Linear Decomposition
 //===----------------------------------------------------------------------===//
 
-// Check if `v` is an iter_arg of `forOp` whose yield is `v + increment`.
-// Returns the increment value if so, nullopt otherwise.
-// Handles arith.addi for integer/index types and pto.addptr for pointer types.
-static std::optional<Value> getIterArgIncrement(Value v, scf::ForOp forOp) {
-  auto blockArg = dyn_cast<BlockArgument>(v);
-  if (!blockArg || blockArg.getOwner() != forOp.getBody() ||
-      blockArg.getArgNumber() == 0)
-    return std::nullopt;
+// Result of decomposing a value into blockArg * coeff + increment.
+struct LinearDecomp {
+  int64_t coeff;
+  Value increment; // nullptr means 0
+};
 
-  unsigned idx = blockArg.getArgNumber() - 1;
-  auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
-  Value yieldVal = yieldOp.getOperand(idx);
+static Value addIncrements(Value a, Value b, scf::ForOp forOp,
+                           OpBuilder &builder) {
+  if (!a) return b;
+  if (!b) return a;
+  if (auto ca = getConstantIntValue(a); ca && *ca == 0) return b;
+  if (auto cb = getConstantIntValue(b); cb && *cb == 0) return a;
+  builder.setInsertionPoint(forOp.getBody()->getTerminator());
+  return builder.create<arith::AddIOp>(forOp.getLoc(), a, b);
+}
 
-  if (auto addOp = yieldVal.getDefiningOp<arith::AddIOp>()) {
-    if (addOp.getLhs() == blockArg)
-      return addOp.getRhs();
-    if (addOp.getRhs() == blockArg)
-      return addOp.getLhs();
+static Value subIncrements(Value a, Value b, scf::ForOp forOp,
+                           OpBuilder &builder) {
+  if (!b) return a;
+  if (auto cb = getConstantIntValue(b); cb && *cb == 0) return a;
+  builder.setInsertionPoint(forOp.getBody()->getTerminator());
+  if (!a) {
+    if (b.getType().isIndex())
+      a = builder.create<arith::ConstantIndexOp>(forOp.getLoc(), 0);
+    else
+      a = builder.create<arith::ConstantIntOp>(
+          forOp.getLoc(), 0, b.getType().getIntOrFloatBitWidth());
+  }
+  return builder.create<arith::SubIOp>(forOp.getLoc(), a, b);
+}
+
+// Decompose `v` into blockArg * coeff + increment by recursing through
+// addi/subi/muli/index_cast/addptr chains.
+static std::optional<LinearDecomp>
+decomposeLinear(Value v, BlockArgument blockArg, scf::ForOp forOp,
+                OpBuilder &builder) {
+  // v == blockArg → {1, nullptr}
+  if (v == blockArg)
+    return LinearDecomp{1, nullptr};
+
+  // v is other block arg (IV, different iter_arg, func arg) → {0, v}
+  Operation *defOp = v.getDefiningOp();
+  if (!defOp)
+    return LinearDecomp{0, v};
+
+  // v is loop-invariant or constant → {0, v}
+  if (forOp.isDefinedOutsideOfLoop(v) ||
+      defOp->hasTrait<OpTrait::ConstantLike>())
+    return LinearDecomp{0, v};
+
+  // v = addi(a, b) → {ca + cb, ia + ib}
+  // v = subi(a, b) → {ca - cb, ia - ib}
+  if (isa<arith::AddIOp, arith::SubIOp>(defOp)) {
+    auto da = decomposeLinear(defOp->getOperand(0), blockArg, forOp, builder);
+    auto db = decomposeLinear(defOp->getOperand(1), blockArg, forOp, builder);
+    if (!da || !db)
+      return std::nullopt;
+    if (da->coeff == 0 && db->coeff == 0)
+      return LinearDecomp{0, v};
+    bool isSub = isa<arith::SubIOp>(defOp);
+    return LinearDecomp{
+        isSub ? da->coeff - db->coeff : da->coeff + db->coeff,
+        isSub ? subIncrements(da->increment, db->increment, forOp, builder)
+              : addIncrements(da->increment, db->increment, forOp, builder)};
   }
 
-  if (auto addPtrOp = yieldVal.getDefiningOp<pto::AddPtrOp>()) {
-    if (addPtrOp.getPtr() == blockArg)
-      return addPtrOp.getOffset();
+  // v = muli(a, b), one side blockArg-free with constant k → {c * k, i * k}
+  if (auto mulOp = dyn_cast<arith::MulIOp>(defOp)) {
+    auto da = decomposeLinear(mulOp.getLhs(), blockArg, forOp, builder);
+    auto db = decomposeLinear(mulOp.getRhs(), blockArg, forOp, builder);
+    if (!da || !db)
+      return std::nullopt;
+    if (da->coeff == 0 && db->coeff == 0)
+      return LinearDecomp{0, v};
+    if (da->coeff != 0 && db->coeff != 0)
+      return std::nullopt;
+    auto &withBA = (da->coeff != 0) ? *da : *db;
+    Value multiplier = (da->coeff != 0) ? mulOp.getRhs() : mulOp.getLhs();
+    auto constMul = getConstantIntValue(multiplier);
+    if (!constMul)
+      return std::nullopt;
+    Value newInc = nullptr;
+    if (withBA.increment && *constMul != 0) {
+      if (*constMul == 1)
+        newInc = withBA.increment;
+      else {
+        builder.setInsertionPoint(forOp.getBody()->getTerminator());
+        newInc = builder.create<arith::MulIOp>(forOp.getLoc(),
+                                                withBA.increment, multiplier);
+      }
+    }
+    return LinearDecomp{withBA.coeff * *constMul, newInc};
   }
 
+  // v = index_cast(a) → {ca, cast(ia)}
+  if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(defOp)) {
+    auto d = decomposeLinear(defOp->getOperand(0), blockArg, forOp, builder);
+    if (!d)
+      return std::nullopt;
+    if (d->coeff == 0)
+      return LinearDecomp{0, v};
+    if (d->increment) {
+      builder.setInsertionPoint(forOp.getBody()->getTerminator());
+      Operation *cast = builder.clone(*defOp);
+      cast->setOperand(0, d->increment);
+      d->increment = cast->getResult(0);
+    }
+    return *d;
+  }
+
+  // v = addptr(ptr, offset) → {c_ptr, i_ptr + offset}
+  if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(defOp)) {
+    auto dp = decomposeLinear(addPtrOp.getPtr(), blockArg, forOp, builder);
+    if (!dp)
+      return std::nullopt;
+    if (dp->coeff == 0)
+      return LinearDecomp{0, v};
+    return LinearDecomp{
+        dp->coeff,
+        addIncrements(dp->increment, addPtrOp.getOffset(), forOp, builder)};
+  }
+
+  // Unrecognized op → unknown
   return std::nullopt;
+}
+
+// Trace `v` back to an iter_arg BlockArgument of `forOp`, then decompose
+// the yield expression to extract the per-iteration increment. Walks through
+// index_cast (type-changing), addi/subi with loop-invariant offset, and
+// addptr with loop-invariant offset. Type casts along the path are applied
+// to the increment so its type matches v's context.
+static std::optional<Value> getIterArgIncrement(Value v, scf::ForOp forOp,
+                                                OpBuilder &builder) {
+  SmallVector<Operation *> casts;
+  Value current = v;
+
+  while (true) {
+    if (auto blockArg = dyn_cast<BlockArgument>(current)) {
+      if (blockArg.getOwner() != forOp.getBody() ||
+          blockArg.getArgNumber() == 0)
+        return std::nullopt;
+
+      unsigned idx = blockArg.getArgNumber() - 1;
+      auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+      auto decomp =
+          decomposeLinear(yieldOp.getOperand(idx), blockArg, forOp, builder);
+      if (!decomp || decomp->coeff != 1)
+        return Value();
+
+      Value inc = decomp->increment;
+      if (!inc) {
+        builder.setInsertionPoint(forOp);
+        inc = builder.create<arith::ConstantIndexOp>(forOp.getLoc(), 0);
+      }
+      for (Operation *op : llvm::reverse(casts)) {
+        builder.setInsertionPoint(forOp.getBody()->getTerminator());
+        Operation *c = builder.clone(*op);
+        c->setOperand(0, inc);
+        inc = c->getResult(0);
+      }
+      return inc;
+    }
+
+    Operation *defOp = current.getDefiningOp();
+    if (!defOp || forOp.isDefinedOutsideOfLoop(current) ||
+        defOp->hasTrait<OpTrait::ConstantLike>())
+      return std::nullopt;
+
+    if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(defOp)) {
+      casts.push_back(defOp);
+      current = defOp->getOperand(0);
+      continue;
+    }
+
+    if (isa<arith::AddIOp>(defOp)) {
+      if (forOp.isDefinedOutsideOfLoop(defOp->getOperand(1))) {
+        current = defOp->getOperand(0);
+        continue;
+      }
+      if (forOp.isDefinedOutsideOfLoop(defOp->getOperand(0))) {
+        current = defOp->getOperand(1);
+        continue;
+      }
+    }
+
+    if (isa<arith::SubIOp>(defOp)) {
+      if (forOp.isDefinedOutsideOfLoop(defOp->getOperand(1))) {
+        current = defOp->getOperand(0);
+        continue;
+      }
+    }
+
+    if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(defOp)) {
+      if (forOp.isDefinedOutsideOfLoop(addPtrOp.getOffset())) {
+        current = addPtrOp.getPtr();
+        continue;
+      }
+    }
+
+    return std::nullopt;
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -210,6 +385,19 @@ static Value computeDelta(Value v, scf::ForOp forOp, OpBuilder &builder) {
   return nullptr;
 }
 
+// Get the per-iteration stride of `v`: tries accumulator analysis first
+// (for iter_arg-derived values with possibly loop-varying increment),
+// falls back to delta analysis (for IV-derived values, loop-invariant result).
+// getIterArgIncrement returns:
+//   nullopt        → not iter_arg-related, fall through to delta
+//   Some(Value())  → iter_arg found but decomposition failed, give up
+//   Some(non-null) → success
+static Value getStride(Value v, scf::ForOp forOp, OpBuilder &builder) {
+  if (auto result = getIterArgIncrement(v, forOp, builder))
+    return *result;
+  return computeDelta(v, forOp, builder);
+}
+
 //===----------------------------------------------------------------------===//
 // Rewrite: create new ForOp with additional iter_arg
 //===----------------------------------------------------------------------===//
@@ -291,6 +479,69 @@ static Value computeInitialPtr(Value base, Value strideOperand,
                                        scaledOffset);
 }
 
+// Combine per-operand strides into the final stride_new for the post-update op.
+// total = deltaBase + weight * deltaOffset; stride_new = total / weight.
+// Returns nullptr if stride is zero or weight doesn't divide evenly.
+// `strideOperandType` is needed for weight>1 to create the right integer type.
+static Value computeFinalStride(Value deltaBase, Value deltaOffset,
+                              int64_t weight, Type strideOperandType,
+                              Operation *op, scf::ForOp forOp,
+                              OpBuilder &builder) {
+  bool anyLoopVarying = !forOp.isDefinedOutsideOfLoop(deltaBase) ||
+                        !forOp.isDefinedOutsideOfLoop(deltaOffset);
+  auto setCombineIP = [&]() {
+    if (anyLoopVarying)
+      builder.setInsertionPoint(op);
+    else
+      builder.setInsertionPoint(forOp);
+  };
+
+  Value weightedDeltaOffset = deltaOffset;
+  if (weight != 1) {
+    if (auto co = getConstantIntValue(deltaOffset); co && *co != 0) {
+      setCombineIP();
+      weightedDeltaOffset = builder.create<arith::ConstantIndexOp>(
+          forOp.getLoc(), *co * weight);
+    } else if (auto co = getConstantIntValue(deltaOffset); co && *co == 0) {
+      // 0 * weight = 0
+    } else {
+      setCombineIP();
+      Value weightVal =
+          builder.create<arith::ConstantIndexOp>(forOp.getLoc(), weight);
+      weightedDeltaOffset =
+          builder.create<arith::MulIOp>(forOp.getLoc(), deltaOffset, weightVal);
+    }
+  }
+
+  Value stride;
+  auto cb = getConstantIntValue(deltaBase);
+  auto co = getConstantIntValue(weightedDeltaOffset);
+  if (cb && *cb == 0)
+    stride = weightedDeltaOffset;
+  else if (co && *co == 0)
+    stride = deltaBase;
+  else {
+    setCombineIP();
+    stride = builder.create<arith::AddIOp>(forOp.getLoc(), deltaBase,
+                                            weightedDeltaOffset);
+  }
+
+  if (auto constTotal = getConstantIntValue(stride);
+      constTotal && *constTotal == 0)
+    return nullptr;
+
+  if (weight != 1) {
+    auto constTotal = getConstantIntValue(stride);
+    if (!constTotal || *constTotal % weight != 0)
+      return nullptr;
+    setCombineIP();
+    unsigned bitWidth = strideOperandType.getIntOrFloatBitWidth();
+    return builder.create<arith::ConstantIntOp>(forOp.getLoc(),
+                                                *constTotal / weight, bitWidth);
+  }
+  return stride;
+}
+
 // Information about a post-update transformation to apply.
 struct PostUpdateRewrite {
   Operation *op;
@@ -298,88 +549,6 @@ struct PostUpdateRewrite {
   Value stride;  // stride value (stride_new for block-stride ops)
   Value initPtr; // base + weight * strideOperand_at_iter0
 };
-
-//===----------------------------------------------------------------------===//
-// Accumulator Analysis
-//===----------------------------------------------------------------------===//
-
-// Try accumulator-based analysis for a candidate op inside a scf.for.
-// Returns a PostUpdateRewrite if base or strideOperand is an iter_arg whose
-// yield is arg + increment. Unlike delta analysis, stride_new need not be
-// loop-invariant — it can depend on the IV or other loop-varying values.
-static std::optional<PostUpdateRewrite>
-tryAccumulatorAnalysis(Operation *op, Value base, Value strideOperand,
-                       const PostUpdateOpInfo &info, scf::ForOp forOp,
-                       OpBuilder &builder) {
-  auto baseIncr = getIterArgIncrement(base, forOp);
-  auto soIncr = getIterArgIncrement(strideOperand, forOp);
-  if (!baseIncr && !soIncr)
-    return std::nullopt;
-
-  int64_t weight = info.weight;
-  Value strideNew;
-
-  if (weight == 1) {
-    // stride_new = (baseIncr or 0) + (soIncr or 0)
-    if (baseIncr && soIncr) {
-      auto cb = getConstantIntValue(*baseIncr);
-      auto co = getConstantIntValue(*soIncr);
-      if (cb && *cb == 0)
-        strideNew = *soIncr;
-      else if (co && *co == 0)
-        strideNew = *baseIncr;
-      else {
-        builder.setInsertionPoint(op);
-        strideNew =
-            builder.create<arith::AddIOp>(op->getLoc(), *baseIncr, *soIncr);
-      }
-    } else if (baseIncr) {
-      strideNew = *baseIncr;
-    } else {
-      strideNew = *soIncr;
-    }
-  } else {
-    // weight > 1 (e.g. 32 for vsstb).
-    // total_delta = (baseIncr or 0) + weight * (soIncr or 0)
-    // stride_new = total_delta / weight
-    if (baseIncr && soIncr) {
-      auto cb = getConstantIntValue(*baseIncr);
-      if (!cb || *cb % weight != 0)
-        return std::nullopt;
-      int64_t baseContrib = *cb / weight;
-      if (baseContrib == 0) {
-        strideNew = *soIncr;
-      } else {
-        unsigned bitWidth = strideOperand.getType().getIntOrFloatBitWidth();
-        builder.setInsertionPoint(op);
-        Value constContrib = builder.create<arith::ConstantIntOp>(
-            op->getLoc(), baseContrib, bitWidth);
-        strideNew =
-            builder.create<arith::AddIOp>(op->getLoc(), *soIncr, constContrib);
-      }
-    } else if (baseIncr) {
-      auto cb = getConstantIntValue(*baseIncr);
-      if (!cb || *cb % weight != 0)
-        return std::nullopt;
-      unsigned bitWidth = strideOperand.getType().getIntOrFloatBitWidth();
-      builder.setInsertionPoint(forOp);
-      strideNew = builder.create<arith::ConstantIntOp>(forOp.getLoc(),
-                                                        *cb / weight, bitWidth);
-    } else {
-      strideNew = *soIncr;
-    }
-  }
-
-  if (auto cs = getConstantIntValue(strideNew); cs && *cs == 0)
-    return std::nullopt;
-
-  Value initPtr =
-      computeInitialPtr(base, strideOperand, weight, forOp, builder);
-  if (!initPtr)
-    return std::nullopt;
-
-  return PostUpdateRewrite{op, base, strideNew, initPtr};
-}
 
 // A unique key for grouping rewrites that can share an iter_arg.
 // Same base + same stride (by Value identity) = same group.
@@ -562,91 +731,20 @@ private:
 
       Value base, strideOperand;
       extractBaseAndStrideOperand(&op, *info, base, strideOperand);
-
-      // Accumulator analysis (priority): check iter_arg with explicit increment.
-      if (auto rw =
-              tryAccumulatorAnalysis(&op, base, strideOperand, *info, forOp,
-                                    builder)) {
-        rewrites.push_back(*rw);
-        continue;
-      }
-
-      // Delta analysis (fallback): compute per-iteration delta recursively.
       int64_t weight = info->weight;
-      Value deltaBase = computeDelta(base, forOp, builder);
-      Value deltaOffset = computeDelta(strideOperand, forOp, builder);
 
-      if (!deltaBase && !deltaOffset)
+      // Analyze each operand independently: accumulator (iter_arg) first,
+      // delta (IV/affine) fallback. Both return the per-iteration stride.
+      Value deltaBase = getStride(base, forOp, builder);
+      Value deltaOffset = getStride(strideOperand, forOp, builder);
+
+      if (!deltaBase || !deltaOffset)
         continue;
 
-      // Compute stride = delta(base) + weight * delta(strideOperand).
-      // For vlds/vsts (weight=1): stride = delta(base) + delta(offset).
-      // For vsstb (weight=32): stride = delta(dest) + 32*delta(rs).
-
-      // Scale deltaOffset by weight if needed.
-      Value weightedDeltaOffset = deltaOffset;
-      if (deltaOffset && weight != 1) {
-        if (auto co = getConstantIntValue(deltaOffset); co && *co != 0) {
-          builder.setInsertionPoint(forOp);
-          weightedDeltaOffset = builder.create<arith::ConstantIndexOp>(
-              forOp.getLoc(), *co * weight);
-        } else if (auto co = getConstantIntValue(deltaOffset); co && *co == 0) {
-          // 0 * weight = 0, keep as is.
-        } else {
-          builder.setInsertionPoint(forOp);
-          Value weightVal =
-              builder.create<arith::ConstantIndexOp>(forOp.getLoc(), weight);
-          weightedDeltaOffset =
-              builder.create<arith::MulIOp>(forOp.getLoc(), deltaOffset, weightVal);
-        }
-      }
-
-      Value stride;
-      if (deltaBase && weightedDeltaOffset) {
-        auto cb = getConstantIntValue(deltaBase);
-        auto co = getConstantIntValue(weightedDeltaOffset);
-        if (cb && *cb == 0)
-          stride = weightedDeltaOffset;
-        else if (co && *co == 0)
-          stride = deltaBase;
-        else {
-          builder.setInsertionPoint(forOp);
-          stride = builder.create<arith::AddIOp>(forOp.getLoc(),
-                                                  deltaBase, weightedDeltaOffset);
-        }
-      } else if (deltaBase) {
-        stride = deltaBase;
-      } else {
-        stride = weightedDeltaOffset;
-      }
-
-      if (!stride)
-        continue;
-
-      // Skip zero stride.
-      if (auto constTotal = getConstantIntValue(stride);
-          constTotal && *constTotal == 0)
-        continue;
-
-      // stride_new = stride / weight.
-      // weight=1: stride_new = stride (always valid).
-      // weight>1: stride must be a constant divisible by weight.
-      Value strideNew;
-      if (weight != 1) {
-        auto constTotal = getConstantIntValue(stride);
-        if (!constTotal || *constTotal % weight != 0)
-          continue;
-        builder.setInsertionPoint(forOp);
-        unsigned bitWidth =
-            strideOperand.getType().getIntOrFloatBitWidth();
-        strideNew = builder.create<arith::ConstantIntOp>(
-            forOp.getLoc(), *constTotal / weight, bitWidth);
-      } else {
-        strideNew = stride;
-      }
-
-      // Stride must be loop-invariant.
-      if (!forOp.isDefinedOutsideOfLoop(strideNew))
+      Value strideNew = computeFinalStride(deltaBase, deltaOffset, weight,
+                                          strideOperand.getType(), &op,
+                                          forOp, builder);
+      if (!strideNew)
         continue;
 
       Value initPtr =
