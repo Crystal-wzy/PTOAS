@@ -90,6 +90,12 @@ target_link_libraries(ptoas_runtime PRIVATE ptoas_runtime_objects)
 set_target_properties(ptoas_runtime PROPERTIES
   OUTPUT_NAME "_native"
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/python-module"
+  # Keep the external LLVM/MLIR build discoverable for build-tree and
+  # editable Python installs. Release wheels are subsequently repaired by
+  # auditwheel, which replaces this machine-local path with wheel-local
+  # dependencies and a relative RPATH.
+  BUILD_RPATH "${PTO_LLVM_BUILD_LIBRARY_DIR}"
+  INSTALL_RPATH "${PTO_LLVM_BUILD_LIBRARY_DIR}"
 )
 
 set(PTOAS_BUILD_PYTHON_PACKAGE_DIR "${CMAKE_BINARY_DIR}/python/ptoas")

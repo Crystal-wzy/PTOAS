@@ -230,6 +230,18 @@ jobs:
               --wheel-dir "${PTO_SOURCE_DIR}/build/wheel-dist"
           cmake --install "${PTO_BUILD_DIR}" --prefix "${PTO_INSTALL_DIR}"
 
+      - name: Install built wheel for Python sample generation
+        run: |
+          export PATH="${PY_PATH}/bin:$PATH"
+          shopt -s nullglob
+          wheels=("$PTO_SOURCE_DIR"/build/wheel-dist/ptoas*.whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "Expected exactly one wheel in $PTO_SOURCE_DIR/build/wheel-dist, found ${#wheels[@]}" >&2
+            printf '  %s\n' "${wheels[@]}" >&2
+            exit 1
+          fi
+          python -m pip install --no-deps --force-reinstall "${wheels[0]}"
+
       - name: Validate wheel payload and launcher contract
         if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
@@ -256,6 +268,7 @@ jobs:
       - name: Test ptoas CLI
         run: |
           export PATH="${PY_PATH}/bin:$PATH"
+          export PTOAS_BIN="${PTO_BUILD_DIR}/tools/ptoas/ptoas"
           bash $PTO_SOURCE_DIR/docker/test_ptoas_cli.sh
 
       - name: Upload wheel artifact

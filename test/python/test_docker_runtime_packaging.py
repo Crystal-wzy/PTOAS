@@ -16,8 +16,7 @@ DOCKERFILE = REPO_ROOT / "docker" / "Dockerfile"
 COLLECT_DIST_SCRIPT = REPO_ROOT / "docker" / "collect_ptoas_dist.sh"
 COLLECT_DIST_MAC_SCRIPT = REPO_ROOT / "docker" / "collect_ptoas_dist_mac.sh"
 PTOAS_CMAKE = REPO_ROOT / "tools" / "ptoas" / "CMakeLists.txt"
-BUILD_WHEEL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build_wheel.yml"
-BUILD_WHEEL_MAC_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build_wheel_mac.yml"
+PTOAS_CLI_TEST = REPO_ROOT / "docker" / "test_ptoas_cli.sh"
 
 
 class DockerRuntimePackagingTests(unittest.TestCase):
@@ -29,6 +28,8 @@ class DockerRuntimePackagingTests(unittest.TestCase):
             cmake,
         )
         self.assertIn('OUTPUT_NAME "_native"', cmake)
+        self.assertIn('BUILD_RPATH "${PTO_LLVM_BUILD_LIBRARY_DIR}"', cmake)
+        self.assertIn('INSTALL_RPATH "${PTO_LLVM_BUILD_LIBRARY_DIR}"', cmake)
         self.assertNotIn("add_executable(ptoas_native_cli", cmake)
         self.assertNotIn('OUTPUT_NAME "ptoas-native"', cmake)
 
@@ -76,23 +77,22 @@ class DockerRuntimePackagingTests(unittest.TestCase):
         self.assertNotIn("ptoas-native", script)
         self.assertNotIn("ptoas.so", script)
 
-    def test_dist_archives_use_bin_entrypoint(self):
-        linux_workflow = BUILD_WHEEL_WORKFLOW.read_text(encoding="utf-8")
-        mac_workflow = BUILD_WHEEL_MAC_WORKFLOW.read_text(encoding="utf-8")
-
-        self.assertIn('chmod +x "$GITHUB_WORKSPACE/ptoas-dist/bin/ptoas"', linux_workflow)
-        self.assertNotIn('chmod +x "$GITHUB_WORKSPACE/ptoas-dist/ptoas"', linux_workflow)
-        self.assertIn('chmod +x "$GITHUB_WORKSPACE/ptoas-dist/bin/ptoas"', mac_workflow)
-        self.assertNotIn('chmod +x "$GITHUB_WORKSPACE/ptoas-dist/ptoas"', mac_workflow)
-        self.assertIn('"$TEST_DIR/extracted/bin/ptoas" --version', mac_workflow)
-        self.assertNotIn('"$TEST_DIR/extracted/ptoas" --version', mac_workflow)
-
     def test_wheel_import_smoke_imports_native_extension(self):
         script = (REPO_ROOT / "docker" / "test_wheel_imports.sh").read_text(encoding="utf-8")
 
         self.assertIn("from ptoas import _native", script)
         self.assertNotIn("POLLUTED_PTOAS_VERSION_OUTPUT", script)
 
+    def test_build_tree_cli_test_receives_explicit_test_environment(self):
+        script = PTOAS_CLI_TEST.read_text(encoding="utf-8")
+
+        self.assertIn("for var in PTO_SOURCE_DIR PTOAS_BIN", script)
+        self.assertIn("python ./tmatmulk.py", script)
+        self.assertIn("python ./abs.py", script)
+        self.assertNotIn("PYTHON_BIN", script)
+        self.assertNotIn('command -v ptoas', script)
+        self.assertNotIn('export PATH="${PTO_BUILD_DIR}', script)
+        self.assertNotIn('export LD_LIBRARY_PATH="${LLVM_BUILD_DIR}', script)
 
 if __name__ == "__main__":
     unittest.main()

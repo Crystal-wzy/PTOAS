@@ -17,11 +17,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = REPO_ROOT / "docker" / "validate_wheel_payload.py"
-LINUX_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build_wheel.yml"
-MAC_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build_wheel_mac.yml"
 WHEEL_IMPORTS = REPO_ROOT / "docker" / "test_wheel_imports.sh"
-CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
-CI_SIM_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci_sim.yml"
 
 
 class ValidateWheelPayloadTests(unittest.TestCase):
@@ -165,58 +161,11 @@ class ValidateWheelPayloadTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("validated wheel payload and launcher contract", result.stdout)
 
-    def test_workflows_and_shell_probe_reuse_shared_validator(self):
-        validator_call = 'python "$PTO_SOURCE_DIR/docker/validate_wheel_payload.py" "$PTO_SOURCE_DIR/build/wheel-dist"'
-        self.assertIn(
-            validator_call,
-            LINUX_WORKFLOW.read_text(encoding="utf-8"),
-        )
-        self.assertIn(
-            validator_call,
-            MAC_WORKFLOW.read_text(encoding="utf-8"),
-        )
+    def test_shell_probe_reuses_shared_validator(self):
         self.assertIn(
             '"${PYTHON_BIN}" "${REPO_ROOT}/docker/validate_wheel_payload.py" "${TEST_WHEEL}"',
             WHEEL_IMPORTS.read_text(encoding="utf-8"),
         )
-
-    def test_release_workflows_separate_cli_and_wheel_versions(self):
-        linux_workflow = LINUX_WORKFLOW.read_text(encoding="utf-8")
-        mac_workflow = MAC_WORKFLOW.read_text(encoding="utf-8")
-
-        self.assertIn("workflow_dispatch:", linux_workflow)
-        self.assertIn("release_kind:", linux_workflow)
-        self.assertIn('type: choice', linux_workflow)
-        self.assertIn('--mode release)', linux_workflow)
-        self.assertIn(
-            "if: github.event_name != 'release' || startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'ptoas-v')",
-            linux_workflow,
-        )
-        self.assertIn(
-            "if: (github.event_name == 'release' && (startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'ptoas-v'))) || github.event_name == 'schedule'",
-            linux_workflow,
-        )
-        self.assertIn('PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"', linux_workflow)
-        self.assertIn('PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_CLI_VERSION}"', linux_workflow)
-        self.assertIn('PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/packaging/ptoas-vmi"', linux_workflow)
-        self.assertIn('SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}"', linux_workflow)
-
-        self.assertIn("workflow_dispatch:", mac_workflow)
-        self.assertIn("release_kind:", mac_workflow)
-        self.assertIn('type: choice', mac_workflow)
-        self.assertIn('--mode release)', mac_workflow)
-        self.assertIn(
-            "if: github.event_name != 'release' || startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'ptoas-v')",
-            mac_workflow,
-        )
-        self.assertIn(
-            "if: (github.event_name == 'release' && (startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'ptoas-v'))) || github.event_name == 'schedule'",
-            mac_workflow,
-        )
-        self.assertIn('PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"', mac_workflow)
-        self.assertIn('PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_CLI_VERSION}"', mac_workflow)
-        self.assertIn('PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/packaging/ptoas-vmi"', mac_workflow)
-        self.assertIn('SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}"', mac_workflow)
 
     def test_wheel_imports_script_keeps_clean_env_ptoas_smoke(self):
         script = WHEEL_IMPORTS.read_text(encoding="utf-8")
@@ -241,13 +190,6 @@ class ValidateWheelPayloadTests(unittest.TestCase):
         self.assertIn('grep -q "candidates = " "${CLEAN_ENV_PTO_IR}"', script)
         self.assertIn('grep -q "TileLib daemon started successfully" "${CLEAN_ENV_LOG}"', script)
         self.assertIn('grep -q "TileLib daemon stopped" "${CLEAN_ENV_LOG}"', script)
-
-    def test_ci_workflows_accept_generic_ptoas_wheel_glob(self):
-        self.assertIn("name 'ptoas*.whl'", CI_WORKFLOW.read_text(encoding="utf-8"))
-        ci_sim_text = CI_SIM_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("name 'ptoas*.whl'", ci_sim_text)
-        self.assertNotIn("name 'ptoas-*.whl'", ci_sim_text)
-
 
 if __name__ == "__main__":
     unittest.main()

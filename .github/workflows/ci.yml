@@ -262,7 +262,7 @@ jobs:
             -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
             -Werror=dev
 
-      - name: Create PTOAS test venv
+      - name: Create PTOAS developer environment
         shell: bash
         run: |
           set -euo pipefail
@@ -298,7 +298,7 @@ jobs:
             exit 1
           fi
 
-          "${PTOAS_VENV}/bin/pip" install --force-reinstall "${ptoas_wheels[0]}"
+          "${PTOAS_VENV}/bin/pip" install --no-deps --force-reinstall "${ptoas_wheels[0]}"
           PATH="${PTOAS_VENV}/bin:${PATH}" bash docker/test_wheel_imports.sh
 
       - name: Run PTODSL Python tests
