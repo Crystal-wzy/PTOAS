@@ -580,8 +580,10 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             (_ops.wait_flag, ("MTE2", "V"), {"event_id": -1}, "wait_flag(..., event_id=...)"),
             (_ops.set_cross_flag, (pto.Pipe.FIX, 8), {}, "set_cross_flag(..., event_id=...)"),
             (_ops.wait_cross_flag, (pto.Pipe.FIX, -1), {}, "wait_cross_flag(..., event_id=...)"),
-            (_ops.set_intra_flag, (pto.Pipe.MTE3, 9), {}, "set_intra_flag(..., event_id=...)"),
-            (_ops.wait_intra_flag, (pto.Pipe.V, -2), {}, "wait_intra_flag(..., event_id=...)"),
+            (_ops.set_intra_flag, (pto.Pipe.FIX, 32), {}, "set_intra_flag(..., event_id=...)", "[0, 31]"),
+            (_ops.set_intra_flag, (pto.Pipe.MTE3, 32), {}, "set_intra_flag(..., event_id=...)", "[0, 31]"),
+            (_ops.wait_intra_flag, (pto.Pipe.V, -2), {}, "wait_intra_flag(..., event_id=...)", "[0, 31]"),
+            (_ops.wait_intra_flag, (pto.Pipe.FIX, 32), {}, "wait_intra_flag(..., event_id=...)", "[0, 31]"),
         ]
 
         with patch.object(_ops._pto, "set_flag") as set_flag_op, \
@@ -590,13 +592,14 @@ class VectorCubeSurfaceTest(unittest.TestCase):
              patch.object(_ops._pto, "wait_flag_dyn") as wait_flag_dyn_op, \
              patch.object(_ops._pto, "sync_set") as sync_set_op, \
              patch.object(_ops._pto, "sync_wait") as sync_wait_op:
-            for func, args, kwargs, context in cases:
+            for case in cases:
+                func, args, kwargs, context, *expected_range = case
                 with self.subTest(func=func.__name__, event_id=kwargs.get("event_id", args[-1])):
                     with self.assertRaises(ValueError) as exc:
                         func(*args, **kwargs)
                     message = str(exc.exception)
                     self.assertIn(context, message)
-                    self.assertIn("[0, 7]", message)
+                    self.assertIn(expected_range[0] if expected_range else "[0, 7]", message)
 
         set_flag_op.assert_not_called()
         set_flag_dyn_op.assert_not_called()
@@ -609,8 +612,8 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         cases = [
             (_ops.set_cross_flag, (pto.Pipe.V, 0), "set_cross_flag(pipe, event_id)", "<PIPE_FIX>", "<PIPE_V>"),
             (_ops.wait_cross_flag, (pto.Pipe.MTE3, 0), "wait_cross_flag(pipe, event_id)", "<PIPE_FIX>", "<PIPE_MTE3>"),
-            (_ops.set_intra_flag, (pto.Pipe.FIX, 0), "set_intra_flag(pipe, event_id)", "<PIPE_MTE3>", "<PIPE_FIX>"),
-            (_ops.wait_intra_flag, (pto.Pipe.MTE3, 0), "wait_intra_flag(pipe, event_id)", "<PIPE_V>", "<PIPE_MTE3>"),
+            (_ops.set_intra_flag, (pto.Pipe.V, 0), "set_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE3>", "<PIPE_V>"),
+            (_ops.wait_intra_flag, (pto.Pipe.MTE3, 0), "wait_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_V>", "<PIPE_MTE3>"),
         ]
 
         with patch.object(_ops._pto, "sync_set") as sync_set_op, \
@@ -626,6 +629,19 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
         sync_set_op.assert_not_called()
         sync_wait_op.assert_not_called()
+
+    def test_intra_sync_mixed_writeback_event_ranges(self):
+        with patch.object(_ops, "_pipe_attr", side_effect=lambda pipe: f"pipe:{pipe}") as pipe_attr, \
+             patch.object(_ops._pto, "sync_set") as sync_set_op, \
+             patch.object(_ops._pto, "sync_wait") as sync_wait_op:
+            _ops.set_intra_flag(pto.Pipe.FIX, 31)
+            _ops.set_intra_flag(pto.Pipe.MTE3, 31)
+            _ops.wait_intra_flag(pto.Pipe.FIX, 16)
+            _ops.wait_intra_flag(pto.Pipe.V, 31)
+
+        self.assertEqual(pipe_attr.call_count, 4)
+        self.assertEqual(sync_set_op.call_count, 2)
+        self.assertEqual(sync_wait_op.call_count, 2)
 
     def test_pipe_namespace_and_buffer_helpers_are_exposed(self):
         names = [

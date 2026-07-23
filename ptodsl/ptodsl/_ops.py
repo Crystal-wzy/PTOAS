@@ -148,6 +148,13 @@ def _validate_static_buf_id(buf_id, *, context: str):
         raise ValueError(f"{context} expects static buf_id in [0, 31], got {buf_id}")
 
 
+def _validate_static_event_id_range(event_id, *, context: str, lo: int, hi: int, meaning: str = "event_id"):
+    if isinstance(event_id, bool):
+        raise TypeError(f"{context} does not accept bool values")
+    if isinstance(event_id, int) and not lo <= event_id <= hi:
+        raise ValueError(f"{context} expects static {meaning} in [{lo}, {hi}], got {event_id}")
+
+
 def _validate_sync_pipe(pipe, *, context: str, allowed: tuple[str, ...]):
     canonical = _canonical_pipe_token(pipe)
     if canonical is None:
@@ -155,6 +162,7 @@ def _validate_sync_pipe(pipe, *, context: str, allowed: tuple[str, ...]):
     if canonical not in allowed:
         expected = ", ".join(f"<{name}>" for name in allowed)
         raise ValueError(f"{context} expects pipe to be one of {expected}, got <{canonical}>")
+    return canonical
 
 
 def _require_explicit_mode(surface: str):
@@ -5936,6 +5944,11 @@ def _sync_event_id_operand(event_id, *, context: str):
     return event_id if isinstance(event_id, int) else unwrap_surface_value(event_id)
 
 
+def _sync_event_id_operand_in_range(event_id, *, context: str, lo: int, hi: int, meaning: str = "event_id"):
+    _validate_static_event_id_range(event_id, context=context, lo=lo, hi=hi, meaning=meaning)
+    return event_id if isinstance(event_id, int) else unwrap_surface_value(event_id)
+
+
 def _flag_event_id_operand(event_id, *, context: str):
     if isinstance(event_id, int):
         _validate_static_event_id(event_id, context=context)
@@ -5959,15 +5972,35 @@ def wait_cross_flag(pipe, event_id):
 
 def set_intra_flag(pipe, event_id):
     """``pto.set_intra_flag(pipe, event_id)`` – intra-block sync facade for ``pto.sync.set``."""
-    _validate_sync_pipe(pipe, context="set_intra_flag(pipe, event_id)", allowed=("PIPE_MTE3",))
-    event_operand = _sync_event_id_operand(event_id, context="set_intra_flag(..., event_id=...)")
+    _validate_sync_pipe(
+        pipe,
+        context="set_intra_flag(pipe, event_id)",
+        allowed=("PIPE_FIX", "PIPE_MTE3"),
+    )
+    event_operand = _sync_event_id_operand_in_range(
+        event_id,
+        context="set_intra_flag(..., event_id=...)",
+        lo=0,
+        hi=31,
+        meaning="physical event_id",
+    )
     _pto.sync_set(_pipe_attr(pipe), event_operand)
 
 
 def wait_intra_flag(pipe, event_id):
     """``pto.wait_intra_flag(pipe, event_id)`` – intra-block sync facade for ``pto.sync.wait``."""
-    _validate_sync_pipe(pipe, context="wait_intra_flag(pipe, event_id)", allowed=("PIPE_V",))
-    event_operand = _sync_event_id_operand(event_id, context="wait_intra_flag(..., event_id=...)")
+    _validate_sync_pipe(
+        pipe,
+        context="wait_intra_flag(pipe, event_id)",
+        allowed=("PIPE_FIX", "PIPE_V"),
+    )
+    event_operand = _sync_event_id_operand_in_range(
+        event_id,
+        context="wait_intra_flag(..., event_id=...)",
+        lo=0,
+        hi=31,
+        meaning="physical event_id",
+    )
     _pto.sync_wait(_pipe_attr(pipe), event_operand)
 
 
