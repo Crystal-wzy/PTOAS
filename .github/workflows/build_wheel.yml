@@ -227,24 +227,11 @@ jobs:
               --wheel-dir "${PTO_SOURCE_DIR}/build/wheel-dist"
           cmake --install "${PTO_BUILD_DIR}" --prefix "${PTO_INSTALL_DIR}"
 
-      - name: Install built wheel for Python sample generation
-        run: |
-          shopt -s nullglob
-          wheels=("$PTO_SOURCE_DIR"/build/wheel-dist/ptoas*.whl)
-          if [ "${#wheels[@]}" -ne 1 ]; then
-            echo "Expected exactly one wheel in $PTO_SOURCE_DIR/build/wheel-dist, found ${#wheels[@]}" >&2
-            printf '  %s\n' "${wheels[@]}" >&2
-            exit 1
-          fi
-          python -m pip install --no-deps --force-reinstall "${wheels[0]}"
-
       - name: Validate wheel payload and launcher contract
-        if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           python "$PTO_SOURCE_DIR/docker/validate_wheel_payload.py" "$PTO_SOURCE_DIR/build/wheel-dist"
 
       - name: Repair wheel with auditwheel
-        if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           export PTO_WHEEL_DIST_DIR=$PTO_SOURCE_DIR/build/wheel-dist
           export PTO_WHEELHOUSE=$GITHUB_WORKSPACE/wheelhouse
@@ -253,10 +240,9 @@ jobs:
           auditwheel repair --plat manylinux_2_34_${{ matrix.arch }} "$PTO_WHEEL_DIST_DIR"/ptoas*.whl -w "$PTO_WHEELHOUSE"
 
       - name: Test wheel installation
-        if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
-          pip install $GITHUB_WORKSPACE/wheelhouse/ptoas*.whl
-          bash $PTO_SOURCE_DIR/docker/test_wheel_imports.sh
+          PTO_TEST_WHEEL_PATH="$GITHUB_WORKSPACE/wheelhouse/ptoas*.whl" \
+            bash $PTO_SOURCE_DIR/docker/test_wheel_imports.sh
 
       - name: Test ptoas CLI
         run: |
