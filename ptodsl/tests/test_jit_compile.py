@@ -1370,6 +1370,52 @@ def ast_runtime_for_static_slot_carry_probe(cols: pto.i32):
     _ = total
 
 
+_STATIC_SLOT_GLOBAL_INDEX = 2
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_static_slot_global_index_probe(cols: pto.i32):
+    zero = pto.const(0, dtype=pto.index)
+    accs = [zero for _ in pto.static_range(4)]
+
+    for c in range(cols):
+        accs[_STATIC_SLOT_GLOBAL_INDEX] = accs[_STATIC_SLOT_GLOBAL_INDEX] + c
+
+    total = zero
+    for h in pto.static_range(4):
+        total = total + accs[h]
+    _ = total
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_static_slot_binop_index_probe(cols: pto.i32):
+    zero = pto.const(0, dtype=pto.index)
+    accs = [zero for _ in pto.static_range(5)]
+
+    for c in range(cols):
+        for h in pto.static_range(4):
+            accs[h + 1] = accs[h + 1] + c
+
+    total = zero
+    for h in pto.static_range(5):
+        total = total + accs[h]
+    _ = total
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_static_slot_constexpr_index_probe(cols: pto.i32, *, SLOT: pto.const_expr = 2):
+    zero = pto.const(0, dtype=pto.index)
+    accs = [zero for _ in pto.static_range(4)]
+
+    for c in range(cols):
+        accs[SLOT] = accs[SLOT] + c
+
+    total = zero
+    for h in pto.static_range(4):
+        total = total + accs[h]
+    _ = total
+
+
 @pto.jit(target="a5")
 def ast_runtime_for_dynamic_slot_store_error_probe(cols: pto.i32):
     zero = pto.const(0, dtype=pto.index)
@@ -5502,6 +5548,35 @@ def main() -> None:
         "iter_args(" in ast_runtime_for_static_slot_carry_text
         and "scf.yield" in ast_runtime_for_static_slot_carry_text,
         "static subscript slot carry should lower through scf.for iter_args",
+    )
+    ast_runtime_for_static_slot_global_index_text = ast_runtime_for_static_slot_global_index_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_static_slot_global_index_text,
+        "AST-rewritten runtime for global static subscript slot carry specialization",
+    )
+    expect(
+        ast_runtime_for_static_slot_global_index_text.count("scf.for") == 1,
+        "module-global static slot indices should lower through the authored runtime loop",
+    )
+    ast_runtime_for_static_slot_binop_index_text = ast_runtime_for_static_slot_binop_index_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_static_slot_binop_index_text,
+        "AST-rewritten runtime for BinOp static subscript slot carry specialization",
+    )
+    expect(
+        ast_runtime_for_static_slot_binop_index_text.count("scf.for") == 1,
+        "BinOp static slot indices should lower through the authored runtime loop",
+    )
+    ast_runtime_for_static_slot_constexpr_index_text = (
+        ast_runtime_for_static_slot_constexpr_index_probe.compile(SLOT=2).mlir_text()
+    )
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_static_slot_constexpr_index_text,
+        "AST-rewritten runtime for constexpr static subscript slot carry specialization",
+    )
+    expect(
+        ast_runtime_for_static_slot_constexpr_index_text.count("scf.for") == 1,
+        "constexpr static slot indices should lower through the authored runtime loop",
     )
     expect_raises(
         PTODSLAstRewriteError,
