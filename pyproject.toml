@@ -7,8 +7,9 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 # Standard PEP 517 configuration for the `ptoas` distribution. Set
-# LLVM_BUILD_DIR to an existing LLVM/MLIR build. SKBUILD_BUILD_DIR can be used
-# when a persistent CMake build tree is required by tests or development tools.
+# LLVM_BUILD_DIR to an existing LLVM/MLIR build. Pass
+# `--config-settings=build-dir=<path>` when tests or development tools require
+# a persistent CMake build tree.
 
 [build-system]
 requires = ["scikit-build-core>=0.12.2,<2", "pybind11<3"]

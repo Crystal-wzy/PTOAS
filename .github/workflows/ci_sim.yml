@@ -201,6 +201,24 @@ jobs:
             python3 -m pip install 'scikit-build-core>=0.12.2,<2' 'pybind11<3' nanobind numpy ml-dtypes
           fi
 
+      - name: Configure ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ccache >/dev/null 2>&1; then
+            if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y ccache
+            else
+              echo "ccache is unavailable; continuing without a compiler launcher"
+              exit 0
+            fi
+          fi
+
+          ccache --version
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+
       - name: Resolve LLVM directories
         shell: bash
         run: |
@@ -324,8 +342,9 @@ jobs:
           export CC=gcc
           export CXX=g++
           LLVM_BUILD_DIR="${LLVM_DIR}" \
-            SKBUILD_BUILD_DIR="${GITHUB_WORKSPACE}/build" \
-            python3 -m pip wheel . --no-build-isolation --no-deps --wheel-dir "${PTO_WHEELHOUSE}"
+            python3 -m pip wheel . --no-build-isolation --no-deps \
+              --config-settings="build-dir=${GITHUB_WORKSPACE}/build" \
+              --wheel-dir "${PTO_WHEELHOUSE}"
           cmake --install "${GITHUB_WORKSPACE}/build" --prefix "${PTO_INSTALL_DIR}"
 
       - name: Create PTOAS simulator venv
@@ -795,8 +814,9 @@ jobs:
           export CC=gcc
           export CXX=g++
           LLVM_BUILD_DIR="${PTO_DSL_ST_LLVM_DIR}" \
-            SKBUILD_BUILD_DIR="${PTO_DSL_ST_BUILD_DIR}" \
-            "${PTO_DSL_ST_PYTHON_BIN}" -m pip wheel . --no-build-isolation --no-deps --wheel-dir "${PTO_DSL_ST_WHEELHOUSE}"
+            "${PTO_DSL_ST_PYTHON_BIN}" -m pip wheel . --no-build-isolation --no-deps \
+              --config-settings="build-dir=${PTO_DSL_ST_BUILD_DIR}" \
+              --wheel-dir "${PTO_DSL_ST_WHEELHOUSE}"
           cmake --install "${PTO_DSL_ST_BUILD_DIR}" --prefix "${PTO_DSL_ST_INSTALL_DIR}"
 
       - name: Install PTODSL PTOAS wheel
