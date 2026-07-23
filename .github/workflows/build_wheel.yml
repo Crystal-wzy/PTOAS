@@ -67,6 +67,7 @@ jobs:
           esac
           echo "PY_VER=$PY_VER" >> $GITHUB_ENV
           echo "PY_PATH=/opt/python/$PY_VER" >> $GITHUB_ENV
+          echo "/opt/python/$PY_VER/bin" >> $GITHUB_PATH
 
       - name: Compute PTOAS CLI version
         run: |
@@ -127,14 +128,12 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x
           # (see pybind11 static_assert on def_property + keep_alive).
           pip install --no-cache-dir numpy 'pybind11<3' nanobind 'scikit-build-core>=0.12.2,<2' auditwheel
 
       - name: Validate PEP 517 project metadata
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           python -m scikit_build_core.build project-table
           (cd packaging/ptoas-vmi && python -m scikit_build_core.build project-table)
 
@@ -187,7 +186,6 @@ jobs:
       - name: Build LLVM/MLIR
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           cd $LLVM_SOURCE_DIR
           cmake -C "$PTO_SOURCE_DIR/cmake/LinuxHardeningCache.cmake" -G Ninja -S llvm -B $LLVM_BUILD_DIR \
             -DLLVM_ENABLE_PROJECTS="mlir;clang" \
@@ -215,7 +213,6 @@ jobs:
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: "2"
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           if [ "${PTOAS_PYTHON_PACKAGE_NAME}" = "ptoas-vmi" ]; then
             PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/packaging/ptoas-vmi"
           else
@@ -232,7 +229,6 @@ jobs:
 
       - name: Install built wheel for Python sample generation
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           shopt -s nullglob
           wheels=("$PTO_SOURCE_DIR"/build/wheel-dist/ptoas*.whl)
           if [ "${#wheels[@]}" -ne 1 ]; then
@@ -245,13 +241,11 @@ jobs:
       - name: Validate wheel payload and launcher contract
         if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           python "$PTO_SOURCE_DIR/docker/validate_wheel_payload.py" "$PTO_SOURCE_DIR/build/wheel-dist"
 
       - name: Repair wheel with auditwheel
         if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           export PTO_WHEEL_DIST_DIR=$PTO_SOURCE_DIR/build/wheel-dist
           export PTO_WHEELHOUSE=$GITHUB_WORKSPACE/wheelhouse
           export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
@@ -261,13 +255,11 @@ jobs:
       - name: Test wheel installation
         if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           pip install $GITHUB_WORKSPACE/wheelhouse/ptoas*.whl
           bash $PTO_SOURCE_DIR/docker/test_wheel_imports.sh
 
       - name: Test ptoas CLI
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           export PTOAS_BIN="${PTO_BUILD_DIR}/tools/ptoas/ptoas"
           bash $PTO_SOURCE_DIR/docker/test_ptoas_cli.sh
 
@@ -281,7 +273,6 @@ jobs:
       - name: Collect ptoas binary and dependencies
         if: matrix.python == '3.11'
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           bash $PTO_SOURCE_DIR/docker/collect_ptoas_dist.sh $GITHUB_WORKSPACE/ptoas-dist
 
       - name: Archive ptoas binary artifact
