@@ -912,6 +912,23 @@ def VPTOExpandWrapperOps
                            "mlir::pto::PTODialect"];
 }
 
+def VPTOSoftPostUpdate
+    : Pass<"vpto-soft-postupdate", "ModuleOp"> {
+  let summary = "Convert fixed-stride VPTO memory ops to post-update form";
+  let description = [{
+    Identifies VPTO load/store operations (vlds, vsts, vsstb) inside scf.for
+    loops whose effective address advances by a loop-invariant stride per
+    iteration, and rewrites them to use the post-update (updated_base) result.
+    The base pointer is carried through scf.for iter_args, eliminating explicit
+    address arithmetic in the loop body.
+  }];
+  let constructor = "mlir::pto::createVPTOSoftPostUpdatePass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect"];
+}
+
 def PTOVPTOPtrBoundary
     : Pass<"pto-vpto-ptr-boundary", "ModuleOp"> {
   let summary =

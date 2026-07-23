@@ -585,6 +585,11 @@ static llvm::cl::opt<bool> disableInferLayout(
     llvm::cl::desc("Disable PTO layout inference pass (static-only)"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> enableSoftPostUpdate(
+    "enable-vpto-soft-postupdate",
+    llvm::cl::desc("Enable VPTO soft post-update optimization"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> emitAddPtrTrace(
     "emit-addptr-trace",
     llvm::cl::desc("Emit addptr trace comments in generated C++ output"),
@@ -2716,6 +2721,8 @@ static void prepareVPTOForEmission(PassManager &pm) {
   kernelModulePM.addNestedPass<func::FuncOp>(
       createVPTOExpandWrapperOpsPass());
   kernelModulePM.addPass(createCSEPass());
+  if (enableSoftPostUpdate)
+    kernelModulePM.addPass(pto::createVPTOSoftPostUpdatePass());
   kernelModulePM.addNestedPass<func::FuncOp>(
       pto::createPTOInferVPTOVecScopePass());
   kernelModulePM.addPass(createCanonicalizerPass());
