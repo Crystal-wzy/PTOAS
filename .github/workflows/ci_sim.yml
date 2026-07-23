@@ -112,7 +112,6 @@ jobs:
       LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
       LLVM_REF: feature-vpto-llvm21
       PTO_INSTALL_DIR: ${{ github.workspace }}/install
-      PTO_WHEELHOUSE: ${{ github.workspace }}/.work/ptoas-wheelhouse
       PTOAS_VENV: ${{ github.workspace }}/.work/ptoas-sim-venv
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
       TILELANG_DSL_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ci
@@ -233,7 +232,6 @@ jobs:
           set -euo pipefail
           echo "PTO_DSL_ST_BUILD_DIR=${GITHUB_WORKSPACE}/build-ptodsl" >> "${GITHUB_ENV}"
           echo "PTO_DSL_ST_INSTALL_DIR=${GITHUB_WORKSPACE}/install-ptodsl" >> "${GITHUB_ENV}"
-          echo "PTO_DSL_ST_WHEELHOUSE=${GITHUB_WORKSPACE}/.work/ptodsl-wheelhouse" >> "${GITHUB_ENV}"
 
       - name: Resolve LLVM cache key
         id: llvm-cache-key
@@ -267,8 +265,6 @@ jobs:
           rm -rf "${GITHUB_WORKSPACE}/build-ptodsl"
           rm -rf "${PTO_INSTALL_DIR}"
           rm -rf "${PTO_DSL_ST_INSTALL_DIR}"
-          rm -rf "${PTO_DSL_ST_WHEELHOUSE}"
-          rm -rf "${PTO_WHEELHOUSE}"
           rm -rf "${PTOAS_VENV}"
           rm -rf "${VPTO_SIM_WORKSPACE}"
           rm -rf "${TILELANG_DSL_WORKSPACE}"
@@ -331,39 +327,28 @@ jobs:
           path: ${{ env.LLVM_DIR }}
           key: ${{ steps.llvm-cache-key.outputs.key }}
 
-      - name: Build PTOAS wheel
+      - name: Install PTOAS editable in simulator venv
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "${PTO_INSTALL_DIR}"
-          rm -rf "${PTO_WHEELHOUSE}"
-          mkdir -p "${PTO_WHEELHOUSE}"
+          rm -rf "${PTOAS_VENV}"
+          python3 -m venv "${PTOAS_VENV}"
+          "${PTOAS_VENV}/bin/python" -m pip install --upgrade pip
+          "${PTOAS_VENV}/bin/pip" install \
+            'scikit-build-core>=0.12.2,<2' 'pybind11<3' \
+            nanobind numpy ml-dtypes
           # Pin system compilers for the same reason as LLVM above.
           export CC=gcc
           export CXX=g++
           LLVM_BUILD_DIR="${LLVM_DIR}" \
-            python3 -m pip wheel . --no-build-isolation --no-deps \
-              --config-settings="build-dir=${GITHUB_WORKSPACE}/build" \
-              --wheel-dir "${PTO_WHEELHOUSE}"
+            "${PTOAS_VENV}/bin/python" -m pip install --editable . \
+              --no-build-isolation --no-deps \
+              --config-settings="build-dir=${GITHUB_WORKSPACE}/build"
           cmake --install "${GITHUB_WORKSPACE}/build" --prefix "${PTO_INSTALL_DIR}"
-
-      - name: Create PTOAS simulator venv
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf "${PTOAS_VENV}"
-          python3 -m venv "${PTOAS_VENV}"
-          "${PTOAS_VENV}/bin/python" -m pip install --upgrade pip
-
-          readarray -t ptoas_wheels < <(find "${PTO_WHEELHOUSE}" -maxdepth 1 -type f -name 'ptoas*.whl' | sort)
-          if [[ "${#ptoas_wheels[@]}" -ne 1 ]]; then
-            echo "ERROR: expected exactly one PTOAS wheel in ${PTO_WHEELHOUSE}, found ${#ptoas_wheels[@]}" >&2
-            printf '  %s\n' "${ptoas_wheels[@]}" >&2
-            exit 1
-          fi
-
-          "${PTOAS_VENV}/bin/pip" install numpy ml-dtypes "${ptoas_wheels[0]}"
-          PATH="${PTOAS_VENV}/bin:${PATH}" bash docker/test_wheel_imports.sh
+          PATH="${PTOAS_VENV}/bin:${PATH}" \
+          PYTHON="${PTOAS_VENV}/bin/python" \
+            bash docker/test_wheel_imports.sh
 
       - name: Checkout PyPTO
         uses: actions/checkout@v4
@@ -804,33 +789,18 @@ jobs:
           path: ${{ env.PTO_DSL_ST_LLVM_DIR }}
           key: llvm-build-${{ steps.llvm-cache-key.outputs.sha }}-assert-${{ env.PTO_DSL_ST_PYTHON_TAG }}-v2
 
-      - name: Build PTODSL PTOAS wheel
+      - name: Install PTODSL PTOAS editable
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "${PTO_DSL_ST_BUILD_DIR}" "${PTO_DSL_ST_INSTALL_DIR}"
-          rm -rf "${PTO_DSL_ST_WHEELHOUSE}"
-          mkdir -p "${PTO_DSL_ST_WHEELHOUSE}"
           export CC=gcc
           export CXX=g++
           LLVM_BUILD_DIR="${PTO_DSL_ST_LLVM_DIR}" \
-            "${PTO_DSL_ST_PYTHON_BIN}" -m pip wheel . --no-build-isolation --no-deps \
-              --config-settings="build-dir=${PTO_DSL_ST_BUILD_DIR}" \
-              --wheel-dir "${PTO_DSL_ST_WHEELHOUSE}"
+            "${PTO_DSL_ST_PYTHON_BIN}" -m pip install --editable . \
+              --no-build-isolation --no-deps \
+              --config-settings="build-dir=${PTO_DSL_ST_BUILD_DIR}"
           cmake --install "${PTO_DSL_ST_BUILD_DIR}" --prefix "${PTO_DSL_ST_INSTALL_DIR}"
-
-      - name: Install PTODSL PTOAS wheel
-        shell: bash
-        run: |
-          set -euo pipefail
-          readarray -t ptodsl_wheels < <(find "${PTO_DSL_ST_WHEELHOUSE}" -maxdepth 1 -type f -name 'ptoas*.whl' | sort)
-          if [[ "${#ptodsl_wheels[@]}" -ne 1 ]]; then
-            echo "ERROR: expected exactly one PTOAS wheel in ${PTO_DSL_ST_WHEELHOUSE}, found ${#ptodsl_wheels[@]}" >&2
-            printf '  %s\n' "${ptodsl_wheels[@]}" >&2
-            exit 1
-          fi
-
-          "${PTO_DSL_ST_PYTHON_BIN}" -m pip install --force-reinstall "${ptodsl_wheels[0]}"
 
       - name: Probe PTODSL runtime Python
         shell: bash

@@ -103,7 +103,6 @@ jobs:
       LLVM_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
       PTO_BUILD_DIR: ${{ github.workspace }}/build-assert
       PTO_INSTALL_DIR: ${{ github.workspace }}/install-assert
-      PTO_WHEELHOUSE: ${{ github.workspace }}/wheelhouse-assert
       PTOAS_VENV: ${{ github.workspace }}/.venv-ptoas-assert
       MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core
       LLVM_CACHE_FLAVOR: llvm21-assert-shared-mlirpy-hardening-v1
@@ -271,35 +270,28 @@ jobs:
           "${PTOAS_VENV}/bin/python" -m pip install --upgrade pip
           "${PTOAS_VENV}/bin/pip" install 'scikit-build-core>=0.12.2,<2' 'pybind11<3' nanobind numpy ml-dtypes
 
-      - name: Build PTOAS wheel
+      - name: Install PTOAS editable
         run: |
           set -euo pipefail
           rm -rf "${PTO_BUILD_DIR}"
           rm -rf "${PTO_INSTALL_DIR}"
-          rm -rf "${PTO_WHEELHOUSE}"
-          mkdir -p "${PTO_WHEELHOUSE}"
-          # scikit-build-core reuses this build tree so the following CTest and
-          # lit steps exercise the exact sources used to produce the wheel.
+          # Keep a persistent CMake build tree for CTest and lit while exposing
+          # the current sources and Python extension through the developer venv.
           LLVM_BUILD_DIR="${LLVM_DIR}" \
-          SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}" \
           CC="${PTOAS_CMAKE_C_COMPILER}" \
           CXX="${PTOAS_CMAKE_CXX_COMPILER}" \
-            "${PTOAS_VENV}/bin/python" -m pip wheel . --no-build-isolation --no-deps --wheel-dir "${PTO_WHEELHOUSE}"
+            "${PTOAS_VENV}/bin/python" -m pip install --editable . \
+              --no-build-isolation --no-deps \
+              --config-settings="build-dir=${PTO_BUILD_DIR}"
           cmake --install "${PTO_BUILD_DIR}" --prefix "${PTO_INSTALL_DIR}"
 
-      - name: Install PTOAS wheel into test venv
+      - name: Test PTOAS editable install
         shell: bash
         run: |
           set -euo pipefail
-          readarray -t ptoas_wheels < <(find "${PTO_WHEELHOUSE}" -maxdepth 1 -type f -name 'ptoas*.whl' | sort)
-          if [[ "${#ptoas_wheels[@]}" -ne 1 ]]; then
-            echo "ERROR: expected exactly one PTOAS wheel in ${PTO_WHEELHOUSE}, found ${#ptoas_wheels[@]}" >&2
-            printf '  %s\n' "${ptoas_wheels[@]}" >&2
-            exit 1
-          fi
-
-          "${PTOAS_VENV}/bin/pip" install --no-deps --force-reinstall "${ptoas_wheels[0]}"
-          PATH="${PTOAS_VENV}/bin:${PATH}" bash docker/test_wheel_imports.sh
+          PATH="${PTOAS_VENV}/bin:${PATH}" \
+          PYTHON="${PTOAS_VENV}/bin/python" \
+            bash docker/test_wheel_imports.sh
 
       - name: Run PTODSL Python tests
         shell: bash
