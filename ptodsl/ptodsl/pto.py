@@ -111,6 +111,7 @@ from ._ops import (             # noqa: F401
     copy_ubuf_to_ubuf, load_scalar, store_scalar,
     vadds, vsubs, vmuls, vmaxs, vmins, vlrelu,
     vaxpy, vaddrelu, vsubrelu,
+    vmula, vmadd,
     vsel,
     make_tensor_view, partition_view,
     alloc_buffer, alloc_tile,
@@ -158,7 +159,7 @@ from ._allreduce import simt_allreduce_max, simt_allreduce_min, simt_allreduce_s
 
 # ── Decorator ─────────────────────────────────────────────────────────────────
 from ._jit import jit, KernelHandle, merge_jit_modules      # noqa: F401
-from ._subkernels import cube, simd, simt     # noqa: F401
+from ._subkernels import cube, simd, simt, tileop     # noqa: F401
 from ._pipe_namespace import pipe  # noqa: F401
 
 # ── Shorthand dtype aliases ───────────────────────────────────────────────────

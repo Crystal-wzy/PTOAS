@@ -356,6 +356,38 @@ def PTONormalizeUncoveredTileSections
   ];
 }
 
+def PTOMaterializeTileOpSections
+    : Pass<"pto-materialize-tileop-sections", "ModuleOp"> {
+  let summary = "Verify PTODSL tileop helpers and materialize their single compute section";
+  let description = [{
+    Verifies functions marked with `pto.tileop.helper` have Tile/scalar ABI and
+    a pure single-core body. The pass infers one Vector or Cube compute kind,
+    rejects MTE, pipe synchronization, direct SIMT operations, high-level
+    TileOps, and mixed Vector/Cube evidence, then wraps the complete helper
+    body in exactly one `pto.section.vector` or `pto.section.cube`.
+
+    Dynamic `pto.tile_valid_rows` / `pto.tile_valid_cols` metadata reads remain
+    legal structural operations. When either value is dynamic, the pass
+    appends internal index arguments to the helper and its call chain before
+    TileBuf parameters are converted to memrefs. The pass records one
+    read/write effect entry per helper argument for synchronization analysis;
+    internal metadata arguments have no memory effect.
+
+    TileOp helpers are void; their authored Tile/scalar arguments remain
+    implicitly visible inside the original operand-free section container,
+    and results are written through mutable Tile parameters.
+  }];
+
+  let constructor = "mlir::pto::createPTOMaterializeTileOpSectionsPass()";
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect"
+  ];
+}
+
 def VPTOSplitCVModule : Pass<"vpto-split-cv-module", "ModuleOp"> {
   let summary = "Split a VPTO module with cube/vector sections into kernel modules";
   let description = [{
@@ -364,9 +396,11 @@ def VPTOSplitCVModule : Pass<"vpto-split-cv-module", "ModuleOp"> {
     normalized fatobj input form with one child module per kernel kind.
 
     The pass clones the original module for each target kind, removes the
-    opposite section kind, and inlines the target section body. It does not
-    analyze cross-section SSA dependencies; normal MLIR verification catches
-    illegal uses after the non-target section is removed.
+    opposite section kind, and inlines the target section body. Section regions
+    have no results, so MLIR SSA scoping prevents direct scalar values from
+    escaping one section into another; cross-core handoff must use caller-owned
+    Tile, MTE, and synchronization. After section removal, unreferenced
+    `pto.simt_entry` helpers are removed from the clone.
   }];
 
   let constructor = "mlir::pto::createVPTOSplitCVModulePass()";
@@ -618,6 +652,27 @@ def PTOCanonicalizeIR : Pass<"pto-canonicalize-ir", "func::FuncOp"> {
   ];
 }
 
+def LowerPTOToUBufOps : Pass<"pto-lower-to-ubuf-ops", "mlir::func::FuncOp"> {
+  let summary = "Lower eligible pto.tadd/tsub/tmul/tdiv to pto.ub.vadd/vsub/vmul/vdiv on a2a3 targets";
+  let description = [{
+    Converts pto.tadd/tsub/tmul/tdiv on UB tiles to pto.ub.vadd/vsub/vmul/vdiv
+    when targeting a3 (dav-c220-vec).  Computes repeat count and repeat strides
+    from the tile shape metadata and emits tile_buf_addr ops to extract UB
+    pointers.  pto.ub.* binary ops are later lowered to llvm.hivm.VADD/VSUB/VMUL/VDIV.*
+    by the VPTOLLVMEmitter.
+
+    Ops that do not meet the eligibility criteria (wrong arch, non-UB space,
+    dynamic shapes, unaligned repeats) pass through to the existing ExpandTileOp
+    TileLang path unchanged.
+  }];
+  let constructor = "mlir::pto::createLowerPTOToUBufOpsPass()";
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect",
+    "mlir::arith::ArithDialect"
+  ];
+}
+
 def PTOInlineLibCall : Pass<"pto-inline-libcall", "ModuleOp"> {
   let summary = "Materialize OP-Lib instance bodies and inline OP-Lib calls";
   let description = [{
@@ -642,7 +697,7 @@ def PTOInlineBackendHelpers
   let description = [{
     Force-inlines backend helper functions that should not survive to backend-
     specific lowering:
-    - PTODSL subkernel helpers marked with `pto.ptodsl.subkernel_helper`
+    - PTODSL TileOp helpers marked with `pto.tileop.helper`
 
     This pass runs on the shared mainline before backend-specific pipelines so
     both VPTO and EmitC consume the same helper-inlined IR.
@@ -670,32 +725,6 @@ def PTOVerifyTFree : Pass<"pto-verify-tfree", "func::FuncOp"> {
   let constructor = "mlir::pto::createPTOVerifyTFreePass()";
 
   let dependentDialects = [
-    "mlir::pto::PTODialect"
-  ];
-}
-
-def PTOVerifySubkernelPipeContract
-    : Pass<"pto-verify-subkernel-pipe-contract", "func::FuncOp"> {
-  let summary = "Verify PTODSL subkernel helpers stay within one InsertSync pipe contract";
-  let description = [{
-    Verifies PTODSL subkernel helpers marked with `pto.ptodsl.subkernel_helper`
-    and their same-module local call closure stay within one role-consistent PTO
-    compute contract before InsertSync models the call boundary as one compound
-    node.
-
-    Current contract:
-    - `simd` helpers may only contain PTO ops on `PIPE_V`
-    - `cube` helpers may only contain PTO ops on `PIPE_M`
-    - both reject role-mismatched PTO pipe ops (including MTE/FIX/S) and
-      nested PTODSL subkernel calls
-    - local helper `func.call` is allowed only when the transitive callee closure
-      satisfies the same contract
-  }];
-
-  let constructor = "mlir::pto::createPTOVerifySubkernelPipeContractPass()";
-
-  let dependentDialects = [
-    "mlir::func::FuncDialect",
     "mlir::pto::PTODialect"
   ];
 }
@@ -881,6 +910,23 @@ def VPTOExpandWrapperOps
                            "mlir::memref::MemRefDialect",
                            "mlir::LLVM::LLVMDialect",
                            "mlir::pto::PTODialect"];
+}
+
+def VPTOSoftPostUpdate
+    : Pass<"vpto-soft-postupdate", "ModuleOp"> {
+  let summary = "Convert fixed-stride VPTO memory ops to post-update form";
+  let description = [{
+    Identifies VPTO load/store operations (vlds, vsts, vsstb) inside scf.for
+    loops whose effective address advances by a loop-invariant stride per
+    iteration, and rewrites them to use the post-update (updated_base) result.
+    The base pointer is carried through scf.for iter_args, eliminating explicit
+    address arithmetic in the loop body.
+  }];
+  let constructor = "mlir::pto::createVPTOSoftPostUpdatePass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect"];
 }
 
 def PTOVPTOPtrBoundary

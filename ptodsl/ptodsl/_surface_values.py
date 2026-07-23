@@ -47,6 +47,26 @@ def unwrap_surface_value(value):
     return _validate_surface_value_access(value)
 
 
+def is_tile_ir_type(type_obj) -> bool:
+    """Return whether *type_obj* is a TileOp-compatible Tile boundary type."""
+    return _maybe_cast_tile_buf_type(type_obj) is not None
+
+
+def is_runtime_scalar_ir_type(type_obj) -> bool:
+    """Return whether *type_obj* is a TileOp-compatible PTO scalar type."""
+    type_text = str(type_obj)
+    return not (
+        is_tile_ir_type(type_obj)
+        or VectorType.isinstance(type_obj)
+        or type_text.startswith("!pto.ptr<")
+        or type_text.startswith("memref<")
+        or type_text.startswith("!pto.tensor_view<")
+        or type_text.startswith("!pto.partition_tensor_view<")
+        or type_text.startswith("!pto.vreg<")
+        or type_text.startswith("!pto.mask<")
+    )
+
+
 def _is_python_index_literal(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -635,6 +655,8 @@ def wrap_like_surface_value(template, value):
                 for dim in valid_shape
             )
         return TileValue(value, **metadata)
+    if isinstance(template, AllocatedBufferValue):
+        return AllocatedBufferValue(value, **template.surface_metadata)
     if isinstance(template, AddressValue):
         return AddressValue(value)
     return wrap_surface_value(value)

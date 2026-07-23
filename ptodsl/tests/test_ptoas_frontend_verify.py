@@ -243,21 +243,20 @@ def process_row_ptr_kernel_module(
     dst_gm: pto.ptr(pto.f32, "gm"),
     row: pto.i32,
 ):
-    with pto.simd():
-        c0_i64 = pto.const(0, dtype=pto.i64)
-        row_offset = row * 16
-        src_row = pto.addptr(src_gm, row_offset)
-        dst_row = pto.addptr(dst_gm, row_offset)
-        ub_ptr = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
+    c0_i64 = pto.const(0, dtype=pto.i64)
+    row_offset = row * 16
+    src_row = pto.addptr(src_gm, row_offset)
+    dst_row = pto.addptr(dst_gm, row_offset)
+    ub_ptr = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
 
-        pto.get_buf(pto.Pipe.MTE2, 0)
-        pto.mte_gm_ub(src_row, ub_ptr, 0, 64, nburst=(1, 64, 64))
-        pto.rls_buf(pto.Pipe.MTE2, 0)
+    pto.get_buf(pto.Pipe.MTE2, 0)
+    pto.mte_gm_ub(src_row, ub_ptr, 0, 64, nburst=(1, 64, 64))
+    pto.rls_buf(pto.Pipe.MTE2, 0)
 
-        pto.get_buf(pto.Pipe.MTE3, 0)
-        pto.mte_ub_gm(ub_ptr, dst_row, 64, nburst=(1, 64, 64))
-        pto.rls_buf(pto.Pipe.MTE3, 0)
-        pto.pipe_barrier(pto.Pipe.ALL)
+    pto.get_buf(pto.Pipe.MTE3, 0)
+    pto.mte_ub_gm(ub_ptr, dst_row, 64, nburst=(1, 64, 64))
+    pto.rls_buf(pto.Pipe.MTE3, 0)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
 
 @pto.jit(target="a5", backend="emitc")
@@ -495,8 +494,11 @@ def main() -> None:
     expect(
         "func.func public @scale_row_kernel_module__ptodsl_" in example_vpto_child
         and 'pto.visibility = "external"' in example_vpto_child
-        and "pto.section.vector {" in example_vpto_child,
-        "mixed_backend_kernel_module.py VPTO child should expose a public helper definition with explicit vector authoring, matching the vector-helper side of mixed-external-vadd",
+        and "pto.kernel_kind = #pto.kernel_kind<vector>" in example_vpto_child
+        and "pto.section.vector {" not in example_vpto_child
+        and "pto.mte_gm_ub" in example_vpto_child
+        and "pto.vmuls" in example_vpto_child,
+        "mixed_backend_kernel_module.py VPTO child should expose one explicit vector kernel-module definition without a legacy inline section",
     )
 
     example_frontend_texts = run_ptoas_frontend_verify(

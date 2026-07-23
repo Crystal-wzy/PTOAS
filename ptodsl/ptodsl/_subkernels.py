@@ -17,6 +17,7 @@ import inspect
 from ._diagnostics import (
     illegal_inline_subkernel_placement_error,
     illegal_subkernel_placement_error,
+    legacy_subkernel_decorator_error,
     simd_value_escape_error,
     subkernel_argument_type_error,
     subkernel_host_tensor_boundary_error,
@@ -24,16 +25,19 @@ from ._diagnostics import (
     subkernel_illegal_parameter_kind_error,
     subkernel_missing_annotation_error,
     subkernel_signature_boundary_error,
+    tileop_return_annotation_error,
+    tileop_return_value_error,
 )
 from ._ast_rewrite import rewrite_jit_function
 from ._host_tensors import TensorSpec, looks_like_host_tensor
 from ._surface_types import Tile
-from ._surface_values import unwrap_surface_value
+from ._surface_values import is_runtime_scalar_ir_type, unwrap_surface_value
 from ._tracing import current_runtime, current_session
 from ._types import (
     _DType,
     _MaskDescriptor,
     _PtrDescriptor,
+    _VecDescriptor,
     _VRegDescriptor,
     bf16,
     f4e1m2x2,
@@ -58,6 +62,7 @@ from ._types import (
     ui16,
     ui32,
     ui64,
+    _resolve,
 )
 
 
@@ -65,6 +70,7 @@ class KernelRole(str, Enum):
     CUBE = "cube"
     SIMD = "simd"
     SIMT = "simt"
+    TILEOP = "tileop"
 
 
 @dataclass(frozen=True)
@@ -154,6 +160,11 @@ class SubkernelTemplate:
                     _expected_subkernel_annotation_summary(self.spec.role),
                 )
 
+        if self.spec.role == KernelRole.TILEOP:
+            result_annotation = _normalize_subkernel_annotation(self.signature.return_annotation)
+            if result_annotation not in {inspect.Parameter.empty, None}:
+                raise tileop_return_annotation_error(self.signature.return_annotation)
+
     def _normalize_invocation(self, *args, **kwargs):
         session = current_session()
         outer = session.current_subkernel if session is not None else None
@@ -177,9 +188,24 @@ class SubkernelTemplate:
         return tuple(bound.args), dict(bound.kwargs)
 
     def _validate_invocation(self, *args, **kwargs) -> None:
+        self._validate_invocation_placement(False, *args, **kwargs)
+
+    def _validate_simt_launch_invocation(self, *args, **kwargs) -> None:
+        self._validate_invocation_placement(True, *args, **kwargs)
+
+    def _validate_invocation_placement(
+        self,
+        allow_tileop_simt_launch: bool,
+        *args,
+        **kwargs,
+    ) -> None:
         session = current_session()
         outer = session.current_subkernel if session is not None else None
-        _validate_subkernel_placement(self.spec.role, outer)
+        _validate_subkernel_placement(
+            self.spec.role,
+            outer,
+            allow_tileop_simt_launch=allow_tileop_simt_launch,
+        )
 
         bound = self.signature.bind_partial(*args, **kwargs)
         for name, value in bound.arguments.items():
@@ -187,11 +213,16 @@ class SubkernelTemplate:
                 raise subkernel_host_tensor_boundary_error(self.spec.role.value, name)
 
     def _validate_result(self, result) -> None:
-        if self.spec.role != KernelRole.SIMD:
+        if self.spec.role == KernelRole.SIMD:
+            escaped_type = _find_transient_simd_escape(result)
+            if escaped_type is not None:
+                raise simd_value_escape_error(escaped_type)
             return
-        escaped_type = _find_transient_simd_escape(result)
-        if escaped_type is not None:
-            raise simd_value_escape_error(escaped_type)
+
+        if self.spec.role != KernelRole.TILEOP:
+            return
+        if result is not None:
+            raise tileop_return_value_error(result)
 
 
 class _SimtLaunchTemplate:
@@ -235,7 +266,7 @@ def _find_transient_simd_escape(value):
 def _is_supported_runtime_scalar_annotation(annotation) -> bool:
     return (
         isinstance(annotation, _DType)
-        and not isinstance(annotation, (_PtrDescriptor, _VRegDescriptor, _MaskDescriptor))
+        and not isinstance(annotation, (_PtrDescriptor, _VecDescriptor, _VRegDescriptor, _MaskDescriptor))
     )
 
 
@@ -289,6 +320,8 @@ def _normalize_subkernel_annotation(annotation):
     if not isinstance(annotation, str):
         return annotation
     text = annotation.strip()
+    if text == "None":
+        return None
     if text in {"Tile", "pto.Tile"}:
         return Tile
     if text in _POSTPONED_DTYPE_ANNOTATIONS:
@@ -317,6 +350,8 @@ def _expected_subkernel_annotation_summary(role: KernelRole) -> str:
         return "pto.Tile parameters only"
     if role == KernelRole.SIMD:
         return "pto.Tile parameters plus PTO scalar annotations such as pto.i32/pto.f32"
+    if role == KernelRole.TILEOP:
+        return "pto.Tile parameters plus PTO scalar annotations such as pto.i32/pto.f32"
     return "pto.Tile parameters, typed pto.ptr(...) values, and PTO scalar annotations"
 
 
@@ -334,16 +369,7 @@ def _is_runtime_scalar_value(value) -> bool:
     type_obj = getattr(raw_value, "type", None)
     if type_obj is None:
         return False
-    type_text = str(type_obj)
-    return not (
-        type_text.startswith("!pto.tile_buf<")
-        or type_text.startswith("!pto.ptr<")
-        or type_text.startswith("memref<")
-        or type_text.startswith("!pto.tensor_view<")
-        or type_text.startswith("!pto.partition_tensor_view<")
-        or type_text.startswith("!pto.vreg<")
-        or type_text.startswith("!pto.mask<")
-    )
+    return is_runtime_scalar_ir_type(type_obj)
 
 
 def _normalize_subkernel_argument(role: KernelRole, name: str, annotation, value):
@@ -358,6 +384,16 @@ def _normalize_subkernel_argument(role: KernelRole, name: str, annotation, value
 
             return const(value, dtype=annotation)
         if _is_runtime_scalar_value(value):
+            if role == KernelRole.TILEOP:
+                raw_value = unwrap_surface_value(value)
+                expected_type = _resolve(annotation)
+                if raw_value.type != expected_type:
+                    raise subkernel_argument_type_error(
+                        role.value,
+                        name,
+                        f"a PTO scalar of MLIR type {expected_type}",
+                        str(raw_value.type),
+                    )
             return value
         raise subkernel_argument_type_error(
             role.value,
@@ -384,8 +420,21 @@ def _normalize_subkernel_argument(role: KernelRole, name: str, annotation, value
     )
 
 
-def _validate_subkernel_placement(role: KernelRole, outer_frame, *, inline: bool = False) -> None:
+def _validate_subkernel_placement(
+    role: KernelRole,
+    outer_frame,
+    *,
+    inline: bool = False,
+    allow_tileop_simt_launch: bool = False,
+) -> None:
     if outer_frame is None:
+        return
+    if (
+        not inline
+        and allow_tileop_simt_launch
+        and role == KernelRole.SIMT
+        and outer_frame.role == KernelRole.TILEOP.value
+    ):
         return
     if inline:
         raise illegal_inline_subkernel_placement_error(role.value, outer_frame.role)
@@ -416,6 +465,8 @@ class _SubkernelSurface:
     def __call__(self, fn):
         if self._simt_inline_dims is not None:
             raise TypeError("pto.simt(dim_x, dim_y, dim_z) is only supported as an inline context manager")
+        if self._role in {KernelRole.CUBE, KernelRole.SIMD}:
+            raise legacy_subkernel_decorator_error(self._role.value)
         return SubkernelTemplate(
             SubkernelSpec(
                 role=self._role,
@@ -428,6 +479,8 @@ class _SubkernelSurface:
         )
 
     def __enter__(self):
+        if self._role in {KernelRole.CUBE, KernelRole.SIMD}:
+            raise legacy_subkernel_decorator_error(self._role.value)
         if self._role == KernelRole.SIMT and self._simt_max_threads is not None:
             raise TypeError("@pto.simt(max_threads=...) is only supported as a function decorator")
         runtime = current_runtime()
@@ -512,6 +565,16 @@ def simd(fn=None, *, name: str | None = None, target: str = "a5", ast_rewrite: b
     return _decorate_subkernel(KernelRole.SIMD, fn, name=name, target=target, ast_rewrite=ast_rewrite)
 
 
+def tileop(fn=None, *, name: str | None = None, target: str = "a5", ast_rewrite: bool = True):
+    """Define a reusable single-core TileOp helper.
+
+    TileOps accept only ``pto.Tile`` and PTO scalar ABI values. Their compute
+    domain is inferred from the traced body by PTOAS rather than selected by
+    the decorator.
+    """
+    return _decorate_subkernel(KernelRole.TILEOP, fn, name=name, target=target, ast_rewrite=ast_rewrite)
+
+
 def _validate_simt_resource_attr(name: str, value: int | None) -> int | None:
     if value is None:
         return None
@@ -558,5 +621,6 @@ __all__ = [
     "SubkernelTemplate",
     "cube",
     "simd",
+    "tileop",
     "simt",
 ]

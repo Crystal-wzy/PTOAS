@@ -61,6 +61,9 @@ enum class FoldIntrinsicMode {
   AddrOnly,
 };
 
+constexpr llvm::StringLiteral kTileOpValidShapeReadAttr =
+    "__pto.tileop_valid_shape_abi";
+
 static FailureOr<FoldIntrinsicMode> parseFoldIntrinsicMode(StringRef mode) {
   if (mode.empty() || mode == "all")
     return FoldIntrinsicMode::All;
@@ -490,6 +493,8 @@ struct FoldTileBufIntrinsicsPass
       // resolveTileHandle observe the overridden valid shape carried by a
       // treshape + set_validshape pair.
       for (auto gvsOp : getValidShapeOps) {
+        if (gvsOp->hasAttr(kTileOpValidShapeReadAttr))
+          continue;
         if (!isa<pto::TileBufType>(gvsOp.getSource().getType()))
           continue;
 
@@ -825,14 +830,24 @@ struct FoldTileBufIntrinsicsPass
         op->erase();
     }
 
-    // Erase pto.set_validshape ops. Every valid-shape reader
-    // (get_validshape / tile_valid_{rows,cols} / tile_buf_addr) has been
-    // folded above, so the runtime metadata writes have no remaining
-    // observer and have no LLVM lowering.
+    // Erase metadata writes only after every reader has been folded. TileOp
+    // helper ABI reads marked above must remain runtime reads, so their
+    // set_validshape updates are still observable by later lowering.
     SmallVector<pto::SetValidShapeOp, 8> setValidShapeOps;
     func.walk([&](pto::SetValidShapeOp op) { setValidShapeOps.push_back(op); });
-    for (auto op : llvm::reverse(setValidShapeOps))
-      op.erase();
+    for (auto op : llvm::reverse(setValidShapeOps)) {
+      bool hasRuntimeReader = false;
+      func.walk([&](pto::GetValidShapeOp reader) {
+        if (reader.getSource() == op.getSource() &&
+            reader->hasAttr(kTileOpValidShapeReadAttr)) {
+          hasRuntimeReader = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+      if (!hasRuntimeReader)
+        op.erase();
+    }
 
     // DCE tile-handle view / alloc ops left behind after valid-shape
     // folding (treshape / materialize_tile / alloc_tile / bridging casts).

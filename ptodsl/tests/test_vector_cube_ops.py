@@ -263,17 +263,14 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         other = SimpleNamespace(type="vec_ty")
         mask = SimpleNamespace(type="mask_ty")
         reduced = object()
-        scalar = object()
         selected = object()
 
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_ops, "wrap_surface_value", side_effect=_identity), \
-             patch.object(_ops, "_extract_lowest_lane_scalar", return_value=scalar) as extract_scalar, \
              patch.object(_ops._pto, "VcgminOp", return_value=SimpleNamespace(result=reduced)) as vcgmin_op:
             output = _ops.vcgmin(vec, mask)
-        self.assertIs(output, scalar)
+        self.assertIs(output, reduced)
         self.assertEqual(vcgmin_op.call_args.args, ("vec_ty", vec, mask))
-        extract_scalar.assert_called_once_with(reduced, mask)
 
         with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_ops, "wrap_surface_value", side_effect=_identity), \

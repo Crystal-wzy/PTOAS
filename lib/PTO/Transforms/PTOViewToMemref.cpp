@@ -1604,7 +1604,32 @@ struct PTOViewToMemrefPass
     ModuleOp mod = getOperation();
     MLIRContext *ctx = &getContext();
 
-    for (auto func : mod.getOps<func::FuncOp>()) {
+    // PTODSL TileOp input is a container module whose executable functions
+    // live in a kernel-kind child module. Process only child modules that
+    // actually contain a TileOp helper: legacy child modules can retain
+    // frontend pipe ops whose TensorView ABI must not be lowered here.
+    SmallVector<func::FuncOp> funcs;
+    for (func::FuncOp func : mod.getOps<func::FuncOp>())
+      funcs.push_back(func);
+    mod.walk([&](ModuleOp childModule) {
+      if (childModule == mod)
+        return;
+
+      bool hasTileOpHelper = false;
+      for (func::FuncOp func : childModule.getOps<func::FuncOp>()) {
+        if (func->hasAttr("pto.tileop.helper")) {
+          hasTileOpHelper = true;
+          break;
+        }
+      }
+      if (!hasTileOpHelper)
+        return;
+
+      for (func::FuncOp func : childModule.getOps<func::FuncOp>())
+        funcs.push_back(func);
+    });
+
+    for (func::FuncOp func : funcs) {
       // ------------------------------------------------------------------
       // Stage 0: ensure inttoptr values remain scalar-load/store only.
       // ------------------------------------------------------------------
@@ -3714,12 +3739,8 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TGatherBOp>(
-            op,
-            TypeRange{},
-            src,
-            offsets,
-            dst);
+        replaceOpWithClonedAttrs<pto::TGatherBOp>(
+            rewriter, op, TypeRange{}, src, offsets, dst);
       }
 
       DefaultInlineVector<mlir::pto::TLogOp> logops;
@@ -3740,13 +3761,14 @@ struct PTOViewToMemrefPass
           return;
         }
 
+        auto attrs = op->getAttrs();
         auto newOp = rewriter.replaceOpWithNewOp<pto::TLogOp>(
             op,
             TypeRange{},
             src,
             dst,
             op.getPrecisionTypeAttr());
-        newOp->setAttrs(op->getAttrs());
+        newOp->setAttrs(attrs);
       }
 
       DefaultInlineVector<mlir::pto::TLReluOp> lreluops;
@@ -3967,6 +3989,7 @@ struct PTOViewToMemrefPass
       for (auto op : mrgsortops) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
+        auto attrs = op->getAttrs();
 
         if (op.isFormat1()) {
           Value src = op.getSrc();
@@ -3990,7 +4013,7 @@ struct PTOViewToMemrefPass
               Value() /*tmp*/,
               Value() /*excuted*/,
               op.getExhaustedAttr());
-          newOp->setAttrs(op->getAttrs());
+          newOp->setAttrs(attrs);
         } else if (op.isFormat2()) {
           bool allMemRef = true;
           for (Value v : op.getSrcs())
@@ -4029,7 +4052,7 @@ struct PTOViewToMemrefPass
               tmp,
               excuted,
               op.getExhaustedAttr());
-          newOp->setAttrs(op->getAttrs());
+          newOp->setAttrs(attrs);
         } else {
           op.emitError("tmrgsort must be format1 or format2");
           signalPassFailure();

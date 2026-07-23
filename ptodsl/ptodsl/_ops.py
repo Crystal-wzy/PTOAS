@@ -88,6 +88,7 @@ from mlir.ir import (
     Operation,
     Type,
     TypeAttr,
+    UnitAttr,
 )
 
 # Pipe name shorthands → canonical PIPE_* names
@@ -168,6 +169,28 @@ def _require_explicit_mode(surface: str):
     current_mode = getattr(current_module_spec, "mode", None)
     if current_mode != "explicit":
         raise explicit_mode_required_with_context_error(surface, current_module_spec)
+
+
+def _current_target_arch():
+    try:
+        from ._tracing.active import current_session
+        session = current_session()
+    except Exception:
+        return None
+    if session is None:
+        return None
+    current_module_spec = getattr(session, "current_function_module_spec", session.module_spec)
+    return getattr(current_module_spec, "target_arch", None)
+
+
+def _require_target_arch(surface: str, allowed: set[str]):
+    target = _current_target_arch()
+    if target is None:
+        return
+    normalized = str(target).lower()
+    if normalized not in allowed:
+        expected = ", ".join(f"target='{name}'" for name in sorted(allowed))
+        raise ValueError(f"{surface} is only supported for {expected}; got target={target!r}")
 
 
 def _require_simt_subkernel(surface: str):
@@ -2029,36 +2052,39 @@ def vrsqrt(inp, mask):
 
 
 def vcgmax(v, mask):
-    """``pto.vcgmax`` – group maximum reduction, surfaced as the lowest-lane scalar."""
+    """``pto.vcgmax`` – group maximum reduction."""
     _reject_low_precision_vreg_operands(v, context="pto.vcgmax(...)")
-    reduced = _pto.VcgmaxOp(
-        unwrap_surface_value(v).type,
-        unwrap_surface_value(v),
-        unwrap_surface_value(mask),
-    ).result
-    return _extract_lowest_lane_scalar(reduced, mask)
+    return wrap_surface_value(
+        _pto.VcgmaxOp(
+            unwrap_surface_value(v).type,
+            unwrap_surface_value(v),
+            unwrap_surface_value(mask),
+        ).result
+    )
 
 
 def vcgadd(v, mask):
-    """``pto.vcgadd`` – group sum reduction, surfaced as the lowest-lane scalar."""
+    """``pto.vcgadd`` – group sum reduction."""
     _reject_low_precision_vreg_operands(v, context="pto.vcgadd(...)")
-    reduced = _pto.VcgaddOp(
-        unwrap_surface_value(v).type,
-        unwrap_surface_value(v),
-        unwrap_surface_value(mask),
-    ).result
-    return _extract_lowest_lane_scalar(reduced, mask)
+    return wrap_surface_value(
+        _pto.VcgaddOp(
+            unwrap_surface_value(v).type,
+            unwrap_surface_value(v),
+            unwrap_surface_value(mask),
+        ).result
+    )
 
 
 def vcgmin(v, mask):
-    """``pto.vcgmin`` – group minimum reduction, surfaced as the lowest-lane scalar."""
+    """``pto.vcgmin`` – group minimum reduction."""
     _reject_low_precision_vreg_operands(v, context="pto.vcgmin(...)")
-    reduced = _pto.VcgminOp(
-        unwrap_surface_value(v).type,
-        unwrap_surface_value(v),
-        unwrap_surface_value(mask),
-    ).result
-    return _extract_lowest_lane_scalar(reduced, mask)
+    return wrap_surface_value(
+        _pto.VcgminOp(
+            unwrap_surface_value(v).type,
+            unwrap_surface_value(v),
+            unwrap_surface_value(mask),
+        ).result
+    )
 
 
 def vcpadd(v, mask):
@@ -2283,6 +2309,34 @@ def vaxpy(alpha, x, y, mask):
             unwrap_surface_value(x),
             unwrap_surface_value(y),
             unwrap_surface_value(alpha_value),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def vmula(acc, lhs, rhs, mask):
+    """``pto.vmula`` – fused multiply-add: ``acc + lhs * rhs`` (single rounding)."""
+    _reject_low_precision_vreg_operands(acc, lhs, rhs, context="pto.vmula(...)")
+    return wrap_surface_value(
+        _pto.VmulaOp(
+            unwrap_surface_value(acc).type,
+            unwrap_surface_value(acc),
+            unwrap_surface_value(lhs),
+            unwrap_surface_value(rhs),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def vmadd(acc, lhs, rhs, mask):
+    """``pto.vmadd`` – fused multiply-add: ``acc * lhs + rhs`` (single rounding)."""
+    _reject_low_precision_vreg_operands(acc, lhs, rhs, context="pto.vmadd(...)")
+    return wrap_surface_value(
+        _pto.VmaddOp(
+            unwrap_surface_value(acc).type,
+            unwrap_surface_value(acc),
+            unwrap_surface_value(lhs),
+            unwrap_surface_value(rhs),
             unwrap_surface_value(mask),
         ).result
     )
@@ -2584,21 +2638,20 @@ def _tile_transfer_partition(tv, tile, *, offsets=None, sizes=None, context: str
 
 def alloc_buffer(shape, dtype, **kwargs):
     """
-    Allocate SIMT lane-local scratch storage and return an address-like value.
+    Allocate explicit-body scratch storage and return an address-like value.
 
-    The allocation emits an LLVM stack allocation in the surrounding SIMT
-    helper. UB scratch uses explicit ``pto.castptr`` / ``pto.addptr`` pointer
-    authoring and an appropriate host launch wrapper.
+    The allocation emits an LLVM stack allocation in the surrounding explicit
+    kernel or helper body. UB scratch uses explicit ``pto.castptr`` /
+    ``pto.addptr`` pointer authoring and an appropriate host launch wrapper.
     """
     if kwargs:
         unexpected = ", ".join(sorted(kwargs))
         raise TypeError(
             f"pto.alloc_buffer(...) does not accept keyword argument(s): {unexpected}. "
-            "It only allocates SIMT local buffers; author UB scratch explicitly with "
+            "It only allocates explicit-body local buffers; author UB scratch explicitly with "
             "pto.castptr/pto.addptr and pass the dynamic UB byte count at launch."
         )
     _require_explicit_mode("pto.alloc_buffer(...)")
-    _require_simt_subkernel("pto.alloc_buffer(...)")
     element_type = _resolve(dtype)
     element_count = _static_alloc_buffer_element_count(shape)
     elem_bytes = _element_bytewidth(element_type)
@@ -2642,13 +2695,16 @@ def _alloc_local_buffer(shape, dtype, element_type, element_count, byte_size):
     i32 = IntegerType.get_signless(32)
     count = _materialize_integer_literal(i32, element_count)
     llvm_ptr_type = Type.parse("!llvm.ptr")
+    attributes = {
+        "elem_type": TypeAttr.get(element_type),
+    }
+    if _is_persistent_alloc_buffer_candidate():
+        attributes["pto.persistent"] = UnitAttr.get()
     alloca = Operation.create(
         "llvm.alloca",
         results=[llvm_ptr_type],
         operands=[count],
-        attributes={
-            "elem_type": TypeAttr.get(element_type),
-        },
+        attributes=attributes,
     ).results[0]
     return AllocatedBufferValue(
         alloca,
@@ -2658,6 +2714,21 @@ def _alloc_local_buffer(shape, dtype, element_type, element_count, byte_size):
         element_count=element_count,
         byte_size=byte_size,
     )
+
+
+def _is_persistent_alloc_buffer_candidate() -> bool:
+    try:
+        from ._tracing.active import current_session
+        session = current_session()
+    except Exception:
+        session = None
+    if session is None:
+        return False
+    if getattr(session.module_spec, "entry", False) is not True:
+        return False
+    if session.current_function is not session.entry_function:
+        return False
+    return session.current_subkernel is None
 
 
 def _normalize_alloc_buffer_shape_metadata(shape):
@@ -2931,6 +3002,16 @@ def _coerce_tile_scalar_operand(tile, scalar, *, context: str):
 def tadd(src0, src1, dst):
     """``pto.tadd ins(src0, src1) outs(dst)``."""
     _pto.tadd(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def taddrelu(src0, src1, dst):
+    """``pto.taddrelu ins(src0, src1) outs(dst)``."""
+    _require_target_arch("pto.tile.addrelu", {"a2", "a3"})
+    _pto.taddrelu(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
         unwrap_surface_value(dst),
@@ -3542,6 +3623,15 @@ def tgather(
     )
 
 
+def tgatherb(src, offsets, dst):
+    """``pto.tgatherb`` – tile gather using byte offsets (DPS)."""
+    _pto.tgatherb(
+        unwrap_surface_value(src),
+        unwrap_surface_value(offsets),
+        unwrap_surface_value(dst),
+    )
+
+
 def tsel(mask, src0, src1, dst, *, tmp=None):
     """``pto.tsel ins(mask, src0, src1, tmp) outs(dst)`` with synthesized scratch when omitted."""
     resolved_tmp = tmp if tmp is not None else _resolve_selection_tmp(dst, tmp, context="tsel")
@@ -3882,14 +3972,6 @@ def _reject_low_precision_vreg(value, *, context: str) -> None:
 def _reject_low_precision_vreg_operands(*values, context: str) -> None:
     for value in values:
         _reject_low_precision_vreg(value, context=context)
-
-
-def _extract_lowest_lane_scalar(vector_value, mask):
-    lanes, elem_type = _infer_vreg_metadata(vector_value)
-    tmp_tile = alloc_tile(shape=[1, lanes], dtype=elem_type, valid_shape=[1, 1])
-    vsts(vector_value, tmp_tile.as_ptr(), _index_zero(), mask, dist="1PT_B32")
-    from . import scalar as _scalar
-    return _scalar.load(tmp_tile[0, 0])
 
 
 def _element_bytewidth(elem_type):
@@ -5207,7 +5289,7 @@ def simt_launch(body, *args, dims=(1, 1, 1), **kwargs):
     if role_value != "simt":
         raise TypeError("pto.simt_launch(body, ...) expects body to be a @pto.simt-decorated function")
 
-    body._validate_invocation(*args, **kwargs)
+    body._validate_simt_launch_invocation(*args, **kwargs)
 
     from ._tracing.active import require_active_session
     session = require_active_session("pto.simt_launch")
@@ -5988,7 +6070,7 @@ __all__ = [
     "tload", "tstore", "tmov", "tinsert",
     "tmatmul", "tmatmul_acc", "tmatmul_mx", "tmatmul_mx_acc", "tmatmul_mx_bias",
     "tgemv_mx", "tgemv_mx_acc", "tgemv_mx_bias",
-    "tadd", "tsub", "tmul", "tdiv", "tmax", "tmin",
+    "tadd", "taddrelu", "tsub", "tmul", "tdiv", "tmax", "tmin",
     "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
     "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg",
     "trelu", "tlrelu",

@@ -4212,6 +4212,21 @@ StringRef buildRuntimeQueryCallee<pto::GetSubBlockNumOp>(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.GET.SUBBLOCKDIM").getValue();
 }
 
+template <typename QueryOp>
+static StringRef buildSimtBlockQueryCallee(MLIRContext *context);
+
+template <>
+StringRef
+buildSimtBlockQueryCallee<pto::GetBlockIdxOp>(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.tpe.get.BLOCK.IDX").getValue();
+}
+
+template <>
+StringRef
+buildSimtBlockQueryCallee<pto::GetBlockNumOp>(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.tpe.get.BLOCK.NUM").getValue();
+}
+
 static LogicalResult
 materializeDecls(ModuleOp module, ArrayRef<PlannedDecl> plannedDecls,
                  llvm::raw_ostream &diagOS) {
@@ -8991,6 +9006,53 @@ private:
   LoweringState &state;
 };
 
+template <typename QueryOp>
+class LowerBlockRuntimeQueryOpPattern final
+    : public OpConversionPattern<QueryOp> {
+public:
+  explicit LowerBlockRuntimeQueryOpPattern(TypeConverter &typeConverter,
+                                           MLIRContext *context,
+                                           LoweringState &state)
+      : OpConversionPattern<QueryOp>(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(QueryOp op, typename QueryOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    Type resultType =
+        this->getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return rewriter.notifyMatchFailure(
+          op, "failed to convert block runtime-query result type");
+
+    auto funcOp = op->template getParentOfType<func::FuncOp>();
+    bool isSimtEntry =
+        funcOp && funcOp->hasAttr(pto::kPTOSimtEntryAttrName);
+    if (isSimtEntry && !resultType.isInteger(64))
+      return rewriter.notifyMatchFailure(
+          op, "SIMT block runtime-query expects an i64 PTO result");
+
+    StringRef calleeName =
+        isSimtEntry ? buildSimtBlockQueryCallee<QueryOp>(op.getContext())
+                    : buildRuntimeQueryCallee<QueryOp>(op.getContext());
+    Type callResultType = isSimtEntry ? rewriter.getI32Type() : resultType;
+    auto funcType =
+        rewriter.getFunctionType(TypeRange{}, TypeRange{callResultType});
+    auto call = rewriter.create<func::CallOp>(
+        op.getLoc(), calleeName, TypeRange{callResultType}, ValueRange{});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+
+    Value result = call.getResult(0);
+    if (isSimtEntry)
+      result = rewriter.create<arith::ExtUIOp>(op.getLoc(), resultType, result);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 template <typename VoteOp>
 class LowerVoteOpPattern final : public OpConversionPattern<VoteOp> {
 public:
@@ -10350,9 +10412,9 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerBufSyncOpPattern<pto::RlsBufOp>,
                LowerBufDynSyncOpPattern<pto::GetBufDynOp>,
                LowerBufDynSyncOpPattern<pto::RlsBufDynOp>,
-               LowerRuntimeQueryOpPattern<pto::GetBlockIdxOp>,
+               LowerBlockRuntimeQueryOpPattern<pto::GetBlockIdxOp>,
                LowerRuntimeQueryOpPattern<pto::GetSubBlockIdxOp>,
-               LowerRuntimeQueryOpPattern<pto::GetBlockNumOp>,
+               LowerBlockRuntimeQueryOpPattern<pto::GetBlockNumOp>,
                LowerRuntimeQueryOpPattern<pto::GetSubBlockNumOp>,
                LowerVldsOpPattern, LowerVldsx2OpPattern, LowerVsldbOpPattern,
                LowerVldasOpPattern, LowerInitAlignOpPattern,
