@@ -19,7 +19,7 @@ ENV PY_PATH="/opt/python/${PY_VER}"
 ENV PATH="${PY_PATH}/bin:${PATH}"
 
 # dependency
-RUN dnf install -y ninja-build cmake git ccache gcc-c++ lld zip binutils patchelf chrpath && dnf clean all
+RUN dnf install -y ninja-build cmake git gcc-c++ lld zip binutils patchelf chrpath && dnf clean all
 RUN pip install --no-cache-dir numpy 'pybind11<3' nanobind 'scikit-build-core>=0.12.2,<2' auditwheel
 
 COPY cmake/LinuxHardeningCache.cmake /tmp/LinuxHardeningCache.cmake

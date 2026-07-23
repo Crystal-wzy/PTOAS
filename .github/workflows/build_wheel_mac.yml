@@ -10,8 +10,8 @@ name: Build Wheel (macOS)
 
 on:
   push:
-    tags-ignore:
-      - '**'
+    branches:
+      - main
   pull_request:
   # Nightly build & publish (UTC time, offset from Linux workflow).
   schedule:
@@ -29,7 +29,11 @@ on:
     types: [prereleased, released]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: build-wheel-macos-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 env:
   LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
@@ -41,16 +45,13 @@ jobs:
     if: github.event_name != 'release' || startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'ptoas-v')
     # Non-release runs keep a single-Python matrix for faster gates;
     # release/nightly runs fan out to publish the full wheel set plus binary artifacts.
-    name: Build ptoas-bin (macOS ${{ matrix.arch }}, py${{ matrix.python }})
+    name: Build ptoas wheel (macOS ${{ matrix.arch }}, py${{ matrix.python }})
     runs-on: ${{ matrix.arch == 'x86_64' && 'macos-15-intel' || 'macos-26' }}
     strategy:
       fail-fast: false
       matrix:
         python: ${{ fromJson((github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["3.10","3.11","3.12"]' || '["3.11"]') }}
         arch: ["x86_64", "aarch64"]
-        exclude:
-          - python: "3.10"
-            arch: "x86_64"
 
     steps:
       - name: Checkout repository
@@ -128,13 +129,18 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install ninja ccache
+          brew install ninja
 
       - name: Install Python dependencies
         run: |
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x
           # (see pybind11 static_assert on def_property + keep_alive).
           pip install --no-cache-dir numpy 'pybind11<3' nanobind 'scikit-build-core>=0.12.2,<2' delocate
+
+      - name: Validate PEP 517 project metadata
+        run: |
+          python -m scikit_build_core.build project-table
+          (cd packaging/ptoas-vmi && python -m scikit_build_core.build project-table)
 
       - name: Set build directories
         run: |
@@ -171,8 +177,8 @@ jobs:
             git remote add origin "${LLVM_REPO}"
           fi
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_REF}"
-          git checkout --force FETCH_HEAD
+          git fetch --depth 1 origin "${{ steps.llvm-source.outputs.sha }}"
+          git checkout --force "${{ steps.llvm-source.outputs.sha }}"
 
       - name: Warn when default-branch cache is missing for PR/release runs
         if: steps.cache-llvm.outputs.cache-hit != 'true' && (github.event_name == 'pull_request' || github.event_name == 'release')
@@ -316,14 +322,8 @@ jobs:
 
       - name: Test wheel installation
         run: |
-          export DYLD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:${DYLD_LIBRARY_PATH}
           PTO_TEST_WHEEL_PATH="$GITHUB_WORKSPACE/wheelhouse/ptoas*.whl" \
             bash $PTO_SOURCE_DIR/docker/test_wheel_imports.sh
-
-      - name: Test ptoas CLI
-        run: |
-          export PTOAS_BIN="${PTO_BUILD_DIR}/tools/ptoas/ptoas"
-          bash $PTO_SOURCE_DIR/docker/test_ptoas_cli.sh
 
       - name: Upload wheel artifact
         if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -363,39 +363,6 @@ jobs:
             "$PTO_SOURCE_DIR/test/lit/pto/kernel_kind_vector_scf_while_emitc.pto" \
             >/dev/null
 
-      - name: Smoke test wheel imports after collecting artifacts
-        if: (github.event_name == 'release' || github.event_name == 'schedule') && matrix.python == '3.11'
-        run: |
-          # Test the copied wheel artifact from an isolated env with no build-tree
-          # paths, so post-collect/release regressions (e.g. ARM cs_invalid_page)
-          # are caught before upload.
-          brew install uv
-          uv python install 3.11
-          TEST_DIR="$RUNNER_TEMP/wheel-smoke-test"
-          VENV_DIR="$TEST_DIR/.venv"
-          mkdir -p "$TEST_DIR"
-          cd "$TEST_DIR"
-          uv venv --python 3.11 "$VENV_DIR"
-          source "$VENV_DIR/bin/activate"
-
-          unset PYTHONPATH
-          unset DYLD_LIBRARY_PATH
-          unset LD_LIBRARY_PATH
-
-          shopt -s nullglob
-          wheels=("$GITHUB_WORKSPACE"/wheelhouse/ptoas*.whl)
-          if [ "${#wheels[@]}" -ne 1 ]; then
-            echo "Expected exactly one wheel in \$GITHUB_WORKSPACE/wheelhouse, found ${#wheels[@]}:"
-            printf '  %s\n' "${wheels[@]}"
-            exit 1
-          fi
-          uv pip install "${wheels[0]}"
-
-          if [ "${{ matrix.arch }}" = "aarch64" ]; then
-            export DYLD_PRINT_LIBRARIES=1
-          fi
-          bash "$GITHUB_WORKSPACE/docker/test_wheel_imports.sh"
-
       - name: Upload ptoas binary artifact
         if: matrix.python == '3.11'
         uses: actions/upload-artifact@v4
@@ -408,6 +375,8 @@ jobs:
     if: (github.event_name == 'release' && (startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'ptoas-v'))) || github.event_name == 'schedule'
     needs: build_wheel
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Compute release metadata

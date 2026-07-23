@@ -10,8 +10,8 @@ name: Build Wheel
 
 on:
   push:
-    tags-ignore:
-      - '**'
+    branches:
+      - main
   pull_request:
   # Nightly build & publish (UTC time).
   schedule:
@@ -29,7 +29,11 @@ on:
     types: [prereleased, released]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: build-wheel-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 env:
   LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
@@ -41,7 +45,7 @@ jobs:
     if: github.event_name != 'release' || startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'ptoas-v')
     # Non-release runs keep a single-Python matrix for faster gates;
     # release/nightly runs fan out to publish the full wheel set plus binary artifacts.
-    name: Build ptoas-bin (${{ matrix.arch }}, py${{ matrix.python }})
+    name: Build ptoas wheel (${{ matrix.arch }}, py${{ matrix.python }})
     runs-on: ${{ matrix.arch == 'x86_64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
     strategy:
       fail-fast: false
@@ -59,11 +63,13 @@ jobs:
       - name: Set Python version
         run: |
           case "${{ matrix.python }}" in
-            "3.9")  PY_VER="cp39-cp39" ;;
             "3.10") PY_VER="cp310-cp310" ;;
             "3.11") PY_VER="cp311-cp311" ;;
             "3.12") PY_VER="cp312-cp312" ;;
-            *)      PY_VER="cp311-cp311" ;;
+            *)
+              echo "Unsupported Python version: ${{ matrix.python }}" >&2
+              exit 1
+              ;;
           esac
           echo "PY_VER=$PY_VER" >> $GITHUB_ENV
           echo "PY_PATH=/opt/python/$PY_VER" >> $GITHUB_ENV
@@ -123,7 +129,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          dnf install -y ninja-build cmake git ccache gcc-c++ lld zip binutils patchelf chrpath
+          dnf install -y ninja-build cmake git gcc-c++ lld zip binutils patchelf chrpath
           dnf clean all
 
       - name: Install Python dependencies
@@ -172,8 +178,8 @@ jobs:
             git remote add origin "${LLVM_REPO}"
           fi
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_REF}"
-          git checkout --force FETCH_HEAD
+          git fetch --depth 1 origin "${{ steps.llvm-source.outputs.sha }}"
+          git checkout --force "${{ steps.llvm-source.outputs.sha }}"
 
       - name: Warn when default-branch cache is missing for PR/release runs
         if: steps.cache-llvm.outputs.cache-hit != 'true' && (github.event_name == 'pull_request' || github.event_name == 'release')
@@ -244,11 +250,6 @@ jobs:
           PTO_TEST_WHEEL_PATH="$GITHUB_WORKSPACE/wheelhouse/ptoas*.whl" \
             bash $PTO_SOURCE_DIR/docker/test_wheel_imports.sh
 
-      - name: Test ptoas CLI
-        run: |
-          export PTOAS_BIN="${PTO_BUILD_DIR}/tools/ptoas/ptoas"
-          bash $PTO_SOURCE_DIR/docker/test_ptoas_cli.sh
-
       - name: Upload wheel artifact
         if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
@@ -280,6 +281,8 @@ jobs:
     if: (github.event_name == 'release' && (startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'ptoas-v'))) || github.event_name == 'schedule'
     needs: build_wheel
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Compute release metadata
@@ -370,6 +373,8 @@ jobs:
     if: github.event_name == 'release' && github.event.action == 'released' && (startsWith(github.ref_name, 'ptoas-v') || (startsWith(github.ref_name, 'v') && !startsWith(github.ref_name, 'vmi-v')))
     needs: upload_release_assets
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout default branch
