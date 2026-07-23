@@ -6301,7 +6301,6 @@ struct PTOSyncSetToEmitC : public OpConversionPattern<mlir::pto::SyncSetOp> {
     // A5 sync uses physical semaphore IDs. Emit exactly the ID authored in IR;
     // callers that need to notify both AIV subblocks must emit both IDs.
     if (targetArch == PTOArch::A5) {
-      pto::PIPE pipe = op.getPipe().getPipe();
       std::string pipeTok = pipeTokFromPipeAttr(op.getPipe());
       auto emitSet = [&](Value eventOperand, IntegerAttr eventLiteral,
                          bool isDynamic) {
