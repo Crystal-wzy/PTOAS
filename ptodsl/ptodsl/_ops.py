@@ -2882,6 +2882,15 @@ def tmov(src, dst, *, mode=None):
     _pto.TMovOp(None, unwrap_surface_value(src), unwrap_surface_value(dst), **kwargs)
 
 
+def ttrans(src, tmp, dst):
+    """``pto.ttrans ins(src, tmp) outs(dst)`` – tile transpose (DPS)."""
+    _pto.ttrans(
+        unwrap_surface_value(src),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
 def textract(src, dst, index_row, index_col):
     """``pto.textract ins(src, index_row, index_col) outs(dst)``."""
     _pto.TExtractOp(
