@@ -68,10 +68,10 @@ mkdir -p $WORKSPACE_DIR
 * **OS**: Linux (Ubuntu 20.04+ 推荐)
 * **Compiler**: GCC >= 9 或 Clang (支持 C++17)
 * **Build System**: CMake >= 3.20, Ninja
-* **Python**: 3.8+
-* **Python Packages**: `pybind11<3`, `nanobind`, `numpy`
+* **Python**: 3.10+
+* **Python Packages**: `scikit-build-core`, `pybind11<3`, `nanobind`, `numpy`
 ```bash
-python3 -m pip install 'pybind11<3' nanobind numpy
+python3 -m pip install 'scikit-build-core>=0.12.2,<2' 'pybind11<3' nanobind numpy
 
 ```
 
@@ -123,51 +123,20 @@ cd $WORKSPACE_DIR
 git clone https://gitcode.com/cann/pto-as.git PTOAS
 cd $PTO_SOURCE_DIR
 
-# 2. 获取 pybind11 的 CMake 路径
-export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
+# 2. 安装到当前 Python 环境，并保留可增量构建的 build tree
+PYTHON_BIN=python3 \
+LLVM_BUILD_DIR="$LLVM_BUILD_DIR" \
+PTO_BUILD_DIR="$PTO_SOURCE_DIR/build" \
+  ./quick_install.sh
 
-# 3. 配置 CMake
-# 注意：此处直接使用了 3.0 章节中定义的变量，无需手动修改
-cmake -G Ninja \
-    -S . \
-    -B build \
-    -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm \
-    -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir \
-    -DPython3_EXECUTABLE=$(which python3) \
-    -DPython3_FIND_STRATEGY=LOCATION \
-    -Dpybind11_DIR="${PYBIND11_CMAKE_DIR}" \
-    -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-    -DMLIR_PYTHON_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core \
-    -DCMAKE_INSTALL_PREFIX="$PTO_INSTALL_DIR"
-
-# 4. 编译并安装
-ninja -C build-llvm21
-ninja -C build-llvm21 install
-
-# 5. 检查构建产物
-# build 输出（便于本地开发/调试）
-$PTO_SOURCE_DIR/build-llvm21/python/
-├── mlir
-│   ├── _mlir_libs
-│   │   └── _pto.cpython-*.so
-│   └── dialects
-│       ├── pto.py
-│       └── _pto_ops_gen.py
-
-# install 输出（Python 方言文件和原生扩展）
-$PTO_INSTALL_DIR/
-└── mlir
-    ├── dialects
-    │   ├── pto.py
-    │   └── _pto_ops_gen.py
-    └── _mlir_libs
-        └── _pto.cpython-*.so
-
-# CLI 工具
-$PTO_SOURCE_DIR/build-llvm21/tools/ptoas/ptoas
-$PTO_SOURCE_DIR/build-llvm21/tools/ptobc/ptobc
+# 3. 后续可直接复用同一个 build tree
+ninja -C "$PTO_SOURCE_DIR/build" check-pto
 
 ```
+
+`quick_install.sh` 使用 editable install，并关闭 build isolation，避免把临时
+构建环境中的 pybind11 路径写入持久化 `CMakeCache.txt`。`ptoas` 会直接安装到
+`PYTHON_BIN` 对应的当前环境中。
 
 ### 3.4 Python 安装合同 (Python Distribution Contract)
 

@@ -66,11 +66,11 @@ mkdir -p $WORKSPACE_DIR
 * **OS**: Linux (Ubuntu 20.04+ recommended)
 * **Compiler**: GCC >= 9 or Clang (C++17 support required)
 * **Build System**: CMake >= 3.20, Ninja
-* **Python**: 3.8+
-* **Python Packages**: `pybind11<3`, `nanobind`, `numpy`
+* **Python**: 3.10+
+* **Python Packages**: `scikit-build-core`, `pybind11<3`, `nanobind`, `numpy`
 
 ```bash
-python3 -m pip install "pybind11<3" nanobind numpy
+python3 -m pip install "scikit-build-core>=0.12.2,<2" "pybind11<3" nanobind numpy
 ```
 
 > **Note**: The current LLVM/MLIR Python bindings are not compatible with `pybind11` 3.x.
@@ -113,31 +113,21 @@ cd $WORKSPACE_DIR
 git clone https://gitcode.com/cann/pto-as.git PTOAS
 cd $PTO_SOURCE_DIR
 
-# 2. Build and install via pip
-#    The build backend (pyproject.toml) drives CMake + Ninja automatically.
-pip install . --no-build-isolation
+# 2. Install into the current Python environment while keeping a persistent,
+#    incrementally reusable build tree.
+PYTHON_BIN=python3 \
+LLVM_BUILD_DIR="$LLVM_BUILD_DIR" \
+PTO_BUILD_DIR="$PTO_SOURCE_DIR/build" \
+  ./quick_install.sh
+
+# 3. Reuse the same build tree for subsequent test or development builds.
+ninja -C "$PTO_SOURCE_DIR/build" check-pto
 ```
 
-This produces the same artifacts as a manual CMake build:
-
-```text
-# CLI tools
-$PTO_SOURCE_DIR/build/tools/ptoas/ptoas
-$PTO_SOURCE_DIR/build/tools/ptobc/ptobc
-
-# Native extension installed into the MLIR Python package
-$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core/
-└── mlir
-    └── _mlir_libs
-        └── _pto.cpython-*.so
-
-# Python dialect files
-$PTO_INSTALL_DIR/
-└── mlir
-    └── dialects
-        ├── pto.py
-        └── _pto_ops_gen.py
-```
+`quick_install.sh` uses an editable install with build isolation disabled so a
+temporary build environment's pybind11 path is not persisted in
+`CMakeCache.txt`. The `ptoas` command is installed into the environment that
+owns `PYTHON_BIN`.
 
 ### 3.4 Step 3: Supported Python Install Flows
 

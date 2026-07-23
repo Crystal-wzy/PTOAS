@@ -86,6 +86,12 @@ mlir_tablegen(_pto_ops_gen.py
 add_public_tablegen_target(PTOPythonGen)
 add_dependencies(_pto PTOPythonGen)
 
+# Stable aggregate target used by CTest and developer workflows. Keep the
+# dialect binding generation owned by this directory so there is only one
+# _pto_ops_gen.py producer.
+add_custom_target(PTOPythonModules)
+add_dependencies(PTOPythonModules _pto)
+
 # ---- 3) Copy generated python + handwritten pto.py into build/python ----
 set(PTO_PY_SRC "${CMAKE_SOURCE_DIR}/python/pto/dialects/pto.py")
 

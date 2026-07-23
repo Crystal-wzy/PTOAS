@@ -297,7 +297,6 @@ if(PTO_ENABLE_PYTHON_BINDING)
   # 设置 Python 扩展的输出目录，方便调试
   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/python/pto)
 
-  add_subdirectory(python)
   add_subdirectory(ptodsl)
   add_subdirectory(tilelang-dsl)
 endif()

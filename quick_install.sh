@@ -29,8 +29,13 @@ if command -v ccache >/dev/null 2>&1; then
   export CMAKE_CXX_COMPILER_LAUNCHER="${CMAKE_CXX_COMPILER_LAUNCHER:-ccache}"
 fi
 
+"${PYTHON_BIN}" -m pip install \
+  'scikit-build-core>=0.12.2,<2' \
+  'pybind11<3'
+
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
   "${PYTHON_BIN}" -m pip install --editable "${PTO_SOURCE_DIR}" \
+    --no-build-isolation \
     --config-settings="build-dir=${PTO_BUILD_DIR}"
 
 echo "PTOAS editable install complete."

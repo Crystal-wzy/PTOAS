@@ -286,9 +286,9 @@ jobs:
           fi
 
           git remote set-url origin "${LLVM_REPO}"
-          ref="${LLVM_TAG:-${LLVM_REF}}"
-          git fetch --depth 1 origin "${ref}"
-          git checkout --force FETCH_HEAD
+          sha="${{ steps.llvm-cache-key.outputs.sha }}"
+          git fetch --depth 1 origin "${sha}"
+          git checkout --force "${sha}"
 
       - name: Build LLVM/MLIR
         if: steps.llvm-cache.outputs.cache-hit != 'true'
