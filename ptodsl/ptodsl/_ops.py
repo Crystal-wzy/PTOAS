@@ -89,6 +89,7 @@ from mlir.ir import (
     Type,
     TypeAttr,
     UnitAttr,
+    VectorType,
 )
 
 # Pipe name shorthands → canonical PIPE_* names
@@ -5816,13 +5817,23 @@ def ldg(ptr_or_ref, offset=None, *, l1cache="cache", l2cache="nmfv"):
 
 
 def stg(value, ptr_or_ref, offset=None, *, l1cache="cache", l2cache="nmfv"):
-    """``pto.stg`` – scalar GM store with cache controls."""
+    """``pto.stg`` – GM store with cache controls."""
     buffer_value, index_value = resolve_address_access(ptr_or_ref, offset)
     elem_type = _pointer_element_type(buffer_value, context="stg(value, ptr, offset)")
+    raw_value = unwrap_surface_value(value)
+    if raw_value.type == elem_type:
+        stored_value = raw_value
+    elif VectorType.isinstance(elem_type):
+        raise TypeError(
+            f"stg(value, ...) vector value type must match destination element type: "
+            f"got {raw_value.type}, expected {elem_type}"
+        )
+    else:
+        stored_value = coerce_scalar_to_type(value, elem_type, context="stg(value, ...)")
     _pto.PTOStgOp(
         buffer_value,
         index_value,
-        coerce_scalar_to_type(value, elem_type, context="stg(value, ...)"),
+        stored_value,
         l1cache=_l1_cache_attr(l1cache, context="stg(..., l1cache)"),
         l2cache=_st_l2_cache_attr(l2cache, context="stg(..., l2cache)"),
     )
