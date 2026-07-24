@@ -367,13 +367,15 @@ Post-Update 模式下 `repeat_stride` 从地址偏移变为指针前进量，因
 
 ### 5.1 在 Pipeline 中的位置
 
-pass 应运行在 VPTO 后端 pipeline 中，位于 `VPTOExpandWrapperOps` 之后、`PrepareVPTOLLVMLoweringPass` 之前：
+pass 应运行在 VPTO 后端 pipeline 中，位于 `PTOInferVPTOVecScope` 之后、`PrepareVPTOLLVMLoweringPass` 之前：
 
 ```
 VPTOExpandWrapperOps
 CSE
-→ VPTOSoftPostUpdate（新增）        ← 在此处
 PTOInferVPTOVecScope
+→ VPTOSoftPostUpdate（新增）        ← 在此处
+Canonicalizer
+CSE
 ...
 PrepareVPTOLLVMLoweringPass
 LowerVPTOOpsPass
@@ -381,8 +383,10 @@ LowerVPTOOpsPass
 
 该位置确保：
 - Wrapper op 已展开（IR 干净）
-- Vecscope 结构完整
+- **`pto.vecscope` 已存在**。pass 只改写 `pto.vecscope` 内的 op，而多数 kernel 的 vecscope 是由 `PTOInferVPTOVecScope` 创建的——排在它之前会让 pass 对这类输入静默失效。手写 vecscope 的测试用例不会暴露该问题，因此回归测试中必须包含不含手写 vecscope 的输入（`soft_postupdate_inferred-vecscope.pto`）
 - Post-Update 结果对 LLVM lowering 可见，后者根据 `getUpdatedBase()` 选择 `vldsx1` 或 `vldsx1.post`
+
+`PTOInferVPTOVecScope` 以整 op 方式把 `scf.for` 搬入 `pto.vecscope`（`wrapCluster` 用 `splice` 移动整个 op），循环体内部结构不变，因此 4.2.5 检查 2「op 直接位于循环体内」的判定不受影响。
 
 ### 5.2 Pass 注册
 
