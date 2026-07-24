@@ -75,3 +75,12 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // CHECK-DAG: llvm.bitcast {{.*}} : i16 to vector<2xi8>
 // CHECK-DAG: llvm.bitcast {{.*}} : i32 to vector<2xi16>
 // CHECK-DAG: llvm.bitcast {{.*}} : i64 to vector<2xi32>
+// fp8 x4/x8 vector bitcasts lock the extended packed payload types.
+// CHECK-DAG: llvm.bitcast {{.*}} : i32 to vector<4xf8E4M3FN>
+// CHECK-DAG: llvm.bitcast {{.*}} : vector<4xf8E4M3FN> to i32
+// CHECK-DAG: llvm.bitcast {{.*}} : i64 to vector<8xf8E4M3FN>
+// CHECK-DAG: llvm.bitcast {{.*}} : vector<8xf8E4M3FN> to i64
+// CHECK-DAG: llvm.bitcast {{.*}} : i32 to vector<4xf8E5M2>
+// CHECK-DAG: llvm.bitcast {{.*}} : vector<4xf8E5M2> to i32
+// CHECK-DAG: llvm.bitcast {{.*}} : i64 to vector<8xf8E5M2>
+// CHECK-DAG: llvm.bitcast {{.*}} : vector<8xf8E5M2> to i64

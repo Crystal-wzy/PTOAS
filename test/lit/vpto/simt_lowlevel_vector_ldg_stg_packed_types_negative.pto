@@ -23,6 +23,37 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.stg %bad, %gm_v4xf32[%c0] : !pto.ptr<vector<4xf32>, gm>, vector<4xf32>
     return
   }
+  // vector<16xf8E4M3FN> is fp8, but lane count 16 is rejected.
+  func.func @packed_vector_v16xf8e4_negative(%gm_v16xf8e4: !pto.ptr<vector<16xf8E4M3FN>, gm>) attributes {pto.aicore} {
+    %c0 = arith.constant 0 : index
+    %bad = pto.ldg %gm_v16xf8e4[%c0] : !pto.ptr<vector<16xf8E4M3FN>, gm> -> vector<16xf8E4M3FN>
+    pto.stg %bad, %gm_v16xf8e4[%c0] : !pto.ptr<vector<16xf8E4M3FN>, gm>, vector<16xf8E4M3FN>
+    return
+  }
+  // Non-fp8 packed vector types remain restricted to lane count 2.
+  func.func @packed_vector_v4xf16_negative(%gm_v4xf16: !pto.ptr<vector<4xf16>, gm>) attributes {pto.aicore} {
+    %c0 = arith.constant 0 : index
+    %bad = pto.ldg %gm_v4xf16[%c0] : !pto.ptr<vector<4xf16>, gm> -> vector<4xf16>
+    pto.stg %bad, %gm_v4xf16[%c0] : !pto.ptr<vector<4xf16>, gm>, vector<4xf16>
+    return
+  }
+  func.func @packed_vector_v4xi16_negative(%gm_v4xi16: !pto.ptr<vector<4xi16>, gm>) attributes {pto.aicore} {
+    %c0 = arith.constant 0 : index
+    %bad = pto.ldg %gm_v4xi16[%c0] : !pto.ptr<vector<4xi16>, gm> -> vector<4xi16>
+    pto.stg %bad, %gm_v4xi16[%c0] : !pto.ptr<vector<4xi16>, gm>, vector<4xi16>
+    return
+  }
+  func.func @packed_vector_v8xi8_negative(%gm_v8xi8: !pto.ptr<vector<8xi8>, gm>) attributes {pto.aicore} {
+    %c0 = arith.constant 0 : index
+    %bad = pto.ldg %gm_v8xi8[%c0] : !pto.ptr<vector<8xi8>, gm> -> vector<8xi8>
+    pto.stg %bad, %gm_v8xi8[%c0] : !pto.ptr<vector<8xi8>, gm>, vector<8xi8>
+    return
+  }
 }
 
 // CHECK: currently supports
+// CHECK-DAG: vector<4xf32>
+// CHECK-DAG: vector<16xf8E4M3FN>
+// CHECK-DAG: vector<4xf16>
+// CHECK-DAG: vector<4xi16>
+// CHECK-DAG: vector<8xi8>
