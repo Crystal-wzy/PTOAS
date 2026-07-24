@@ -2911,6 +2911,15 @@ def tinsert(src, dst, index_row, index_col):
     )
 
 
+def tconcat(src0, src1, dst):
+    """``pto.tconcat ins(src0, src1) outs(dst)``."""
+    _pto.tconcat(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
 def tmatmul(lhs, rhs, dst):
     """``pto.tmatmul ins(lhs, rhs) outs(dst)``."""
     _pto.TMatmulOp(
@@ -3194,6 +3203,16 @@ def tneg(src, dst):
     """``pto.tneg ins(src) outs(dst)``."""
     _pto.tneg(
         unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def tdequant(src, scale, offset, dst):
+    """``pto.tdequant ins(src, scale, offset) outs(dst)``."""
+    _pto.tdequant(
+        unwrap_surface_value(src),
+        unwrap_surface_value(scale),
+        unwrap_surface_value(offset),
         unwrap_surface_value(dst),
     )
 
@@ -6109,12 +6128,12 @@ __all__ = [
     "vsel",
     "make_tensor_view", "partition_view",
     "alloc_buffer", "alloc_tile",
-    "tload", "tstore", "tmov", "tinsert",
+    "tload", "tstore", "tmov", "tinsert", "tconcat",
     "tmatmul", "tmatmul_acc", "tmatmul_mx", "tmatmul_mx_acc", "tmatmul_mx_bias",
     "tgemv_mx", "tgemv_mx_acc", "tgemv_mx_bias",
     "tadd", "taddrelu", "tsub", "tmul", "tdiv", "tmax", "tmin",
     "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
-    "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg",
+    "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg", "tdequant",
     "trelu", "tlrelu",
     "trowsum", "trowmax", "trowmin", "trowprod", "trowargmax", "trowargmin",
     "tcolsum", "tcolmax", "tcolmin", "tcolprod", "tcolargmax", "tcolargmin",

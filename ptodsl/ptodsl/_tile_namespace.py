@@ -57,6 +57,7 @@ class _TileNamespace:
     transpose = staticmethod(_ops.ttrans)
     extract = staticmethod(_ops.textract)
     insert = staticmethod(_ops.tinsert)
+    concat = staticmethod(_ops.tconcat)
     matmul = staticmethod(_ops.tmatmul)
     matmul_acc = staticmethod(_ops.tmatmul_acc)
     matmul_mx = staticmethod(_ops.tmatmul_mx)
@@ -114,6 +115,7 @@ class _TileNamespace:
     recip = staticmethod(_ops.trecip)
     abs = staticmethod(_ops.tabs)
     neg = staticmethod(_ops.tneg)
+    dequant = staticmethod(_ops.tdequant)
 
     relu = staticmethod(_ops.trelu)
     lrelu = staticmethod(_ops.tlrelu)

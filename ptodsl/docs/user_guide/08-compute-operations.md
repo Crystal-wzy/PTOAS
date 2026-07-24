@@ -1282,9 +1282,49 @@ pto.tile.gemv_mx_bias(lhs_l0a_mx, lhs_scale, rhs_l0b_mx, rhs_scale, bias_tile, a
 | Partial elementwise | `tile.partadd`, `tile.partmul`, `tile.partmax`, `tile.partmin` |
 | Fill/padding | `tile.fillpad`, `tile.fillpad_expand`, `tile.fillpad_inplace` |
 | Windowing | `tile.extract`, `tile.insert` |
-| Tile movement | `tile.mov` |
+| Tile movement | `tile.mov`, `tile.concat` |
+| Dequantize | `tile.dequant` |
 | Tile matmul | `tile.matmul`, `tile.matmul_acc`, `tile.matmul_mx`, `tile.matmul_mx_acc`, `tile.matmul_mx_bias` |
 | Tile gemv | `tile.gemv_mx`, `tile.gemv_mx_acc`, `tile.gemv_mx_bias` |
+
+---
+
+### 8.1.15 Dequantize
+
+#### `pto.tile.dequant(src: Tile, scale: Tile, offset: Tile, dst: Tile) -> None`
+
+**Description**: Per-row dequantize: `dst[r, c] = (float(src[r, c]) - offset[r, 0]) * scale[r, 0]`.
+`src` is an integer tile (`i8` or `i16`); `scale`, `offset`, and `dst` are `f32`.
+`scale` and `offset` are per-row coefficient tiles (`[rows, 1]`) broadcast across the
+columns of `src`; `dst` has the same shape as `src`.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `Tile` | Integer source tile (`i8` or `i16`), `[rows, cols]` |
+| `scale` | `Tile` | Per-row f32 scale tile (`[rows, 1]`), broadcast across columns |
+| `offset` | `Tile` | Per-row f32 offset tile (`[rows, 1]`), broadcast across columns |
+| `dst` | `Tile` | f32 destination tile, same shape as `src` |
+
+**Returns**: None (side-effect: writes `dst`).
+
+**Hardware mapping**: Vector pipeline (`PIPE_V`). Source elements are converted to f32
+(`i16` via an even-part convert; `i8` via a sign-extending int8→int32→f32 sequence),
+then the broadcast offset is subtracted and the broadcast scale multiplied per vector chunk.
+
+**Constraints**:
+
+- `src` must be `i8` or `i16`; `scale`, `offset`, and `dst` must be `f32`.
+- `scale` and `offset` are per-row vectors (`[rows, 1]`); `scale.valid_rows == offset.valid_rows == dst.valid_rows`.
+- `dst.valid_shape == src.valid_shape`; all operands are row-major vector tiles (`loc=vec`).
+
+**Example**:
+
+```python
+# src: i16 [rows, cols]; scale/offset: f32 [rows, 1]; dst: f32 [rows, cols]
+pto.tile.dequant(src_tile, scale_tile, offset_tile, dst_tile)
+```
 
 ---
 
