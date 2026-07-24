@@ -31,13 +31,26 @@ using namespace mlir;
 
 namespace {
 
+// A hardware block is 32 bytes; block-strided ops count in these units.
+static constexpr int64_t kBlockSizeBytes = 32;
+
+// What one unit of an op's strideOperand means, in address terms.  This is a
+// property of the op's lowering, not of the pass: `Element` ops run their
+// offset through convertElementOffsetToBytes, `Block` ops pass a packed
+// control word straight to the intrinsic, and `Byte` ops pass a raw byte
+// offset.  See `strideUnitBytes` for the conversion.
+enum class StrideUnit {
+  Element, // vlds/vsts/vldsx2/vstas: offset in pointer elements
+  Block,   // vsstb/vsldb: repeat_stride in 32-byte blocks
+  Byte,    // sprsts/sprsti: raw byte offset
+};
+
 // Per-op-type descriptor: how to extract address operands and check post-update.
-// base/strideOperand indices are operand positions; updatedBaseResultIdx is the
-// result index for updated_base (or -1 if no such result exists).
+// base/strideOperand indices are operand positions.
 struct PostUpdateOpInfo {
   int baseOperandIdx;
   int strideOperandIdx;
-  int64_t weight;              // 1 for standard, 32 for block-stride
+  StrideUnit strideUnit;
   unsigned minResultsForPost;  // numResults > this means already post-update
 };
 
@@ -46,13 +59,49 @@ using PostUpdateTable = llvm::StringMap<PostUpdateOpInfo>;
 static const PostUpdateTable &getPostUpdateTable() {
   static const PostUpdateTable table = [] {
     PostUpdateTable t;
-    //                       base  strideOp  weight  minResultsForPost
-    t["pto.vlds"]         = { 0,    1,        1,      1 };
-    t["pto.vsts"]         = { 1,    2,        1,      0 };
-    t["pto.vsstb"]        = { 1,    3,        32,     0 };
+    //                       base  strideOp  strideUnit             minResults
+    t["pto.vlds"]         = { 0,    1,        StrideUnit::Element,   1 };
+    t["pto.vsts"]         = { 1,    2,        StrideUnit::Element,   0 };
+    t["pto.vsstb"]        = { 1,    3,        StrideUnit::Block,     0 };
     return t;
   }();
   return table;
+}
+
+// Bytes covered by one unit of `pto.addptr`'s offset on `base`.  This is the
+// size of the GEP element type the pointer lowers to, which for ordinary
+// int/float element types is just their byte width.  Packed low-precision
+// types are normalized to something else during lowering
+// (normalizeGEPElementTypeForLLVMLowering), so bail on anything that is not a
+// plain byte-sized int/float rather than guess.
+static std::optional<int64_t> addPtrUnitBytes(Value base) {
+  Type elemTy;
+  if (auto ptrTy = dyn_cast<pto::PtrType>(base.getType()))
+    elemTy = ptrTy.getElementType();
+  else if (auto memrefTy = dyn_cast<MemRefType>(base.getType()))
+    elemTy = memrefTy.getElementType();
+  else
+    return std::nullopt;
+
+  if (!elemTy || !elemTy.isIntOrFloat())
+    return std::nullopt;
+  unsigned bits = elemTy.getIntOrFloatBitWidth();
+  if (bits == 0 || bits % 8 != 0)
+    return std::nullopt;
+  return static_cast<int64_t>(bits / 8);
+}
+
+// Bytes covered by one unit of the op's strideOperand.
+static int64_t strideUnitBytes(StrideUnit unit, int64_t elemBytes) {
+  switch (unit) {
+  case StrideUnit::Element:
+    return elemBytes;
+  case StrideUnit::Block:
+    return kBlockSizeBytes;
+  case StrideUnit::Byte:
+    return 1;
+  }
+  llvm_unreachable("unhandled StrideUnit");
 }
 
 static const PostUpdateOpInfo *getPostUpdateInfo(Operation *op) {
@@ -569,11 +618,17 @@ static Value materializeAtLoopEntry(Value v, scf::ForOp forOp,
   return cloned->getResult(0);
 }
 
-// Compute the initial pointer: base_at_iter0 + weight * strideOperand_at_iter0.
-// weight=1 for vlds/vsts (offset in elements), weight=32 for vsstb/vsldb.
+// Compute the initial pointer, i.e. the address the op reaches on the first
+// iteration: base_at_iter0 + strideOperand_at_iter0 restated in addptr units.
+//
+// This is the mirror of the rescaling in `scaleBaseDelta`.  The initial offset
+// is W * strideOperand_0 bytes, and `pto.addptr` takes elements, so the offset
+// it needs is (W/E) * strideOperand_0.  For Element-class ops W == E and the
+// operand is used as-is; for Block-class ops the factor W/E is exact (E always
+// divides 32); for Byte-class ops the factor is a division that can fail.
 static Value computeInitialPtr(Value base, Value strideOperand,
-                               int64_t weight, scf::ForOp forOp,
-                               OpBuilder &builder) {
+                               int64_t elemBytes, int64_t unitBytes,
+                               scf::ForOp forOp, OpBuilder &builder) {
   Value baseAtEntry = materializeAtLoopEntry(base, forOp, builder);
   if (!baseAtEntry)
     return nullptr;
@@ -585,48 +640,89 @@ static Value computeInitialPtr(Value base, Value strideOperand,
   if (!soAtEntry)
     return nullptr;
 
-  if (auto constVal = getConstantIntValue(soAtEntry);
-      constVal && *constVal == 0)
+  auto constSo = getConstantIntValue(soAtEntry);
+  if (constSo && *constSo == 0)
     return baseAtEntry;
 
   builder.setInsertionPoint(forOp);
   Value scaledOffset = soAtEntry;
-  if (weight != 1) {
-    Value soIndex = soAtEntry;
-    if (soAtEntry.getType() != builder.getIndexType())
-      soIndex = builder.create<arith::IndexCastUIOp>(
-          forOp.getLoc(), builder.getIndexType(), soAtEntry);
-    Value weightVal =
-        builder.create<arith::ConstantIndexOp>(forOp.getLoc(), weight);
-    scaledOffset =
-        builder.create<arith::MulIOp>(forOp.getLoc(), soIndex, weightVal);
+  if (unitBytes != elemBytes) {
+    if (unitBytes % elemBytes == 0) {
+      Value soIndex = soAtEntry;
+      if (soAtEntry.getType() != builder.getIndexType())
+        soIndex = builder.create<arith::IndexCastUIOp>(
+            forOp.getLoc(), builder.getIndexType(), soAtEntry);
+      Value factor = builder.create<arith::ConstantIndexOp>(
+          forOp.getLoc(), unitBytes / elemBytes);
+      scaledOffset =
+          builder.create<arith::MulIOp>(forOp.getLoc(), soIndex, factor);
+    } else if (elemBytes % unitBytes == 0) {
+      // Finer stride unit than the pointer element (a raw byte offset on a
+      // wider element type): only representable when it lands on an element
+      // boundary, which we can only prove for a compile-time constant.
+      int64_t divisor = elemBytes / unitBytes;
+      if (!constSo || *constSo % divisor != 0)
+        return nullptr;
+      scaledOffset = builder.create<arith::ConstantIndexOp>(
+          forOp.getLoc(), *constSo / divisor);
+    } else {
+      return nullptr;
+    }
   }
   return builder.create<pto::AddPtrOp>(forOp.getLoc(), baseAtEntry,
                                        scaledOffset);
 }
 
+// Rescale a per-iteration base delta from `pto.addptr` units (elements) into
+// the op's strideOperand units.  Returns null when the conversion is not exact.
+//
+// Expanding the byte-denominated form
+//     stride_new = (E*delta(base) + W*delta(strideOperand)) / W
+//                = (E/W)*delta(base) + delta(strideOperand)
+// shows that only delta(base) is ever rescaled; delta(strideOperand) passes
+// through untouched.  That matters: it keeps the stride symbolic, so a
+// loop-varying increment stays supported for every op class.  When E == W the
+// factor is 1 and nothing is emitted at all, so Element-class ops (vlds/vsts)
+// behave exactly as before this scaling existed.
+static StrideExprRef scaleBaseDelta(StrideExprRef deltaBase, int64_t elemBytes,
+                                    int64_t unitBytes) {
+  if (unitBytes == elemBytes)
+    return deltaBase;
+
+  if (unitBytes % elemBytes == 0) {
+    // Coarser stride unit (e.g. 32-byte blocks over 4-byte elements): the base
+    // delta must be a compile-time constant that lands on a whole unit.
+    int64_t divisor = unitBytes / elemBytes;
+    auto constBase = foldConst(deltaBase);
+    if (!constBase || *constBase % divisor != 0)
+      return nullptr;
+    return makeConst(*constBase / divisor);
+  }
+
+  if (elemBytes % unitBytes == 0)
+    return makeMul(deltaBase, makeConst(elemBytes / unitBytes));
+
+  return nullptr;
+}
+
 // Combine per-operand strides into the final stride_new for the post-update op.
-// total = deltaBase + weight * deltaOffset; stride_new = total / weight.
-// Returns null if stride is zero or weight doesn't divide evenly.  Purely
-// symbolic: a rejected candidate leaves no IR behind, and the weight scaling
-// is folded rather than emitted, so no `index` weight is ever multiplied
-// against a narrower stride operand.
+// stride_new = (E/W) * deltaBase + deltaOffset, where E is the byte size of one
+// addptr unit and W the byte size of one strideOperand unit.  Returns null if
+// the stride is zero or the rescaling is inexact.  Purely symbolic: a rejected
+// candidate leaves no IR behind, and the scaling is folded rather than emitted,
+// so no `index` factor is ever multiplied against a narrower stride operand.
 static StrideExprRef combineStride(StrideExprRef deltaBase,
-                                   StrideExprRef deltaOffset, int64_t weight) {
-  StrideExprRef total =
-      makeAdd(deltaBase, makeMul(deltaOffset, makeConst(weight)));
-
-  auto constTotal = foldConst(total);
-  if (constTotal && *constTotal == 0)
+                                   StrideExprRef deltaOffset, int64_t elemBytes,
+                                   int64_t unitBytes) {
+  StrideExprRef scaledBase =
+      scaleBaseDelta(deltaBase, elemBytes, unitBytes);
+  if (!scaledBase)
     return nullptr;
-  if (weight == 1)
-    return total;
 
-  // Block-stride ops encode the stride pre-scaled by `weight`, so the total
-  // must be known at compile time and divide evenly.
-  if (!constTotal || *constTotal % weight != 0)
+  StrideExprRef total = makeAdd(scaledBase, deltaOffset);
+  if (auto constTotal = foldConst(total); constTotal && *constTotal == 0)
     return nullptr;
-  return makeConst(*constTotal / weight);
+  return total;
 }
 
 //===----------------------------------------------------------------------===//
@@ -785,7 +881,7 @@ struct PostUpdateRewrite {
   Value base;
   Value strideOperand; // original offset / repeat_stride operand
   Value stride;        // stride value (stride_new for block-stride ops)
-  Value initPtr;       // base + weight * strideOperand_at_iter0
+  Value initPtr;       // base + strideOperand_at_iter0, in addptr units
 };
 
 // A unique key for grouping rewrites that can share an iter_arg.
@@ -987,7 +1083,16 @@ private:
 
       Value base, strideOperand;
       extractBaseAndStrideOperand(&op, *info, base, strideOperand);
-      int64_t weight = info->weight;
+
+      // Both address terms have to be expressed in the same currency before
+      // they can be combined: delta(base) is measured in pto.addptr units
+      // (elements), while the strideOperand is counted in whatever unit the
+      // op's lowering expects.  Bail on pointers whose addptr unit we cannot
+      // pin down rather than guess at the scale.
+      std::optional<int64_t> elemBytes = addPtrUnitBytes(base);
+      if (!elemBytes)
+        continue;
+      int64_t unitBytes = strideUnitBytes(info->strideUnit, *elemBytes);
 
       // Analyze each operand independently: accumulator (iter_arg) first,
       // delta (IV/affine) fallback. Both return a symbolic per-iteration
@@ -999,7 +1104,8 @@ private:
       if (!deltaBase || !deltaOffset)
         continue;
 
-      StrideExprRef total = combineStride(deltaBase, deltaOffset, weight);
+      StrideExprRef total =
+          combineStride(deltaBase, deltaOffset, *elemBytes, unitBytes);
       if (!total)
         continue;
 
@@ -1034,8 +1140,8 @@ private:
       Value strideNew = materialize(finalExpr, strideType, op.getLoc(), forOp,
                                     constCache, builder);
 
-      Value initPtr =
-          computeInitialPtr(base, strideOperand, weight, forOp, builder);
+      Value initPtr = computeInitialPtr(base, strideOperand, *elemBytes,
+                                        unitBytes, forOp, builder);
       if (!initPtr)
         continue;
 

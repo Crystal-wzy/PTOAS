@@ -1,29 +1,28 @@
 // RUN: ptoas --pto-backend=vpto --pto-arch=a5 --enable-vpto-soft-postupdate --emit-vpto %s -o - | FileCheck %s
 
-// Negative: pto.vsstb whose *base* advances by a loop-varying amount.
-// Rescaling delta(base) from addptr elements into 32-byte blocks is a division
-// by 32/sizeof(f32) = 8, which can only be proven exact for a compile-time
-// constant.  The increment here is %iv, so the vsstb must be left alone.
-// (delta(repeat_stride) needs no such proof -- it is never rescaled -- so a
-// non-constant repeat_stride increment IS supported; see
-// soft_postupdate_accum-vsstb-nonconstant-rs.pto.)
-// The vlds in the same loop is a plain delta candidate and is still rewritten.
+// pto.vsstb repeat_stride is counted in 32-BYTE blocks, while pto.addptr takes
+// an offset in ELEMENTS.  The initial pointer therefore has to convert:
+//   addptr offset = rs_0 * (32 / sizeof(f32))  =  4 * 8  =  32
+// This file and its f16 twin differ only in element type, and must produce
+// DIFFERENT offsets -- a single hard-coded factor cannot satisfy both.
+//
+// dest is loop-invariant and rs advances by a constant 3 blocks per iteration,
+// so stride_new = (E/W)*0 + 3 = 3.
 
-// CHECK-LABEL: func.func @negative_vsstb_nonconstant_rs
+// CHECK-LABEL: func.func @vsstb_elemsize_f32
+// CHECK: pto.addptr %{{.*}}, %c32 :
 // CHECK: scf.for
-// The vsstb keeps its original result-less form: the line ends at the mask
-// operand, with no "-> !pto.ptr" updated_base appended.
-// CHECK:   pto.vsstb {{.*}}!pto.mask<b32>{{$}}
-// CHECK:   scf.yield
+// CHECK:   pto.vsstb {{.*}}, %c2_i16, %c3_i16, {{.*}} -> !pto.ptr<f32,
 
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
-  func.func @negative_vsstb_nonconstant_rs(%input: !pto.ptr<f32, gm>, %output: !pto.ptr<f32, gm>) attributes {pto.kernel} {
+  func.func @vsstb_elemsize_f32(%input: !pto.ptr<f32, gm>, %output: !pto.ptr<f32, gm>) attributes {pto.kernel} {
     %c0 = arith.constant 0 : index
     %c64 = arith.constant 64 : index
     %c1024 = arith.constant 1024 : index
     %c0_i64 = arith.constant 0 : i64
-    %c0_i16 = arith.constant 0 : i16
     %c2_i16 = arith.constant 2 : i16
+    %c3_i16 = arith.constant 3 : i16
+    %c4_i16 = arith.constant 4 : i16
     %c32_i64 = arith.constant 32 : i64
     %c128_i64 = arith.constant 128 : i64
     %c4096_i64 = arith.constant 4096 : i64
@@ -40,15 +39,14 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 
     pto.vecscope {
+      // repeat_stride starts at 4 blocks, so the initial pointer is nonzero.
       scf.for %iv = %c0 to %c1024 step %c64
-          iter_args(%dst = %ub_out, %remaining = %c1024_i32) -> (!pto.ptr<f32, ub>, i32) {
+          iter_args(%rs = %c4_i16, %remaining = %c1024_i32) -> (i16, i32) {
         %mask, %next_rem = pto.plt_b32 %remaining : i32 -> !pto.mask<b32>, i32
         %vec = pto.vlds %ub_in[%iv] {dist = "NORM"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
-
-        pto.vsstb %vec, %dst, %c2_i16, %c0_i16, %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, i16, i16, !pto.mask<b32>
-
-        %next_dst = pto.addptr %dst, %iv : <f32, ub> -> <f32, ub>
-        scf.yield %next_dst, %next_rem : !pto.ptr<f32, ub>, i32
+        pto.vsstb %vec, %ub_out, %c2_i16, %rs, %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, i16, i16, !pto.mask<b32>
+        %next_rs = arith.addi %rs, %c3_i16 : i16
+        scf.yield %next_rs, %next_rem : i16, i32
       }
     }
 
