@@ -15,12 +15,12 @@ import sys
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compute the VMI release version from a version file."
+        description="Compute the VMI release version from the top-level CMakeLists.txt."
     )
     parser.add_argument(
-        "--version-file",
-        default="docs/release/VMI_VERSION",
-        help="Path to the VMI version file.",
+        "--cmake-file",
+        default="CMakeLists.txt",
+        help="Path to the top-level CMakeLists.txt file.",
     )
     parser.add_argument(
         "--check-tag",
@@ -29,11 +29,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def read_version(version_file: pathlib.Path) -> str:
-    version = version_file.read_text(encoding="utf-8").strip()
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
-        raise ValueError(f"invalid VMI version '{version}' in {version_file}")
-    return version
+def read_version(cmake_file: pathlib.Path) -> str:
+    content = cmake_file.read_text(encoding="utf-8")
+    match = re.search(
+        r'set\s*\(\s*PTOAS_VMI_VERSION\s+"([0-9]+\.[0-9]+\.[0-9]+)"\s*\)',
+        content,
+    )
+    if not match:
+        raise ValueError(
+            f'could not find \'set(PTOAS_VMI_VERSION "x.y.z")\' in {cmake_file}'
+        )
+    return match.group(1)
 
 
 def normalize_tag(tag: str) -> str:
@@ -47,8 +53,8 @@ def normalize_tag(tag: str) -> str:
 
 def main() -> int:
     args = parse_args()
-    version_file = pathlib.Path(args.version_file)
-    version = read_version(version_file)
+    cmake_file = pathlib.Path(args.cmake_file)
+    version = read_version(cmake_file)
 
     if args.check_tag is not None:
         normalized_tag = normalize_tag(args.check_tag)

@@ -61,14 +61,17 @@ class ReleaseVersionScriptTests(unittest.TestCase):
     def test_vmi_version_script_accepts_vmi_tag_prefix(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
-            version_file = temp_root / "VMI_VERSION"
-            version_file.write_text("0.1.0\n", encoding="utf-8")
+            cmake_file = temp_root / "CMakeLists.txt"
+            cmake_file.write_text(
+                'project(ptoas VERSION 0.51)\nset(PTOAS_VMI_VERSION "0.1.0")\n',
+                encoding="utf-8",
+            )
             result = subprocess.run(
                 [
                     sys.executable,
                     str(REPO_ROOT / ".github/scripts/compute_vmi_version.py"),
-                    "--version-file",
-                    str(version_file),
+                    "--cmake-file",
+                    str(cmake_file),
                     "--check-tag",
                     "vmi-v0.1.0",
                 ],
@@ -77,6 +80,57 @@ class ReleaseVersionScriptTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.stdout.strip(), "0.1.0")
+
+    def test_vmi_version_bump_updates_only_vmi_version(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            cmake_file = temp_root / "CMakeLists.txt"
+            cmake_file.write_text(
+                'project(ptoas VERSION 0.51)\nset(PTOAS_VMI_VERSION "0.1.9")\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / ".github/scripts/update_vmi_version.py"),
+                    "--cmake-file",
+                    str(cmake_file),
+                    "--version",
+                    "vmi-v0.1.9",
+                    "--next",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.stdout.strip(), "0.1.10")
+            self.assertEqual(
+                cmake_file.read_text(encoding="utf-8"),
+                'project(ptoas VERSION 0.51)\nset(PTOAS_VMI_VERSION "0.1.10")\n',
+            )
+
+    def test_vmi_version_bump_rejects_ptoas_tag(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            cmake_file = temp_root / "CMakeLists.txt"
+            cmake_file.write_text(
+                'project(ptoas VERSION 0.51)\nset(PTOAS_VMI_VERSION "0.1.0")\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / ".github/scripts/update_vmi_version.py"),
+                    "--cmake-file",
+                    str(cmake_file),
+                    "--version",
+                    "v0.51",
+                    "--next",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
 
     def test_ptoas_version_bump_rejects_vmi_tag(self):
         with tempfile.TemporaryDirectory() as temp_dir:

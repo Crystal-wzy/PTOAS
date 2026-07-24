@@ -79,7 +79,6 @@ jobs:
             case "${GITHUB_REF_NAME}" in
               vmi-v*)
                 EXPECTED_RELEASE_VERSION="$(python .github/scripts/compute_vmi_version.py \
-                  --version-file docs/release/VMI_VERSION \
                   --check-tag "${GITHUB_REF_NAME}")"
                 PTOAS_VERSION="${GITHUB_REF_NAME#vmi-v}"
                 PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"
