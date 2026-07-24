@@ -783,16 +783,29 @@ static Value materialize(const StrideExprRef &e, Type wantType, Location loc,
 struct PostUpdateRewrite {
   Operation *op;
   Value base;
-  Value stride;  // stride value (stride_new for block-stride ops)
-  Value initPtr; // base + weight * strideOperand_at_iter0
+  Value strideOperand; // original offset / repeat_stride operand
+  Value stride;        // stride value (stride_new for block-stride ops)
+  Value initPtr;       // base + weight * strideOperand_at_iter0
 };
 
 // A unique key for grouping rewrites that can share an iter_arg.
-// Same base + same stride (by Value identity) = same group.
-using IterArgGroupKey = std::pair<Value, Value>;
+//
+// Two ops may share an iter_arg only if they walk the same address sequence,
+// i.e. they start at the same address and advance by the same stride.  The
+// start address is `initPtr`, which is derived from base *and* strideOperand,
+// so strideOperand has to be part of the key: same base and same stride but
+// different offsets (e.g. %ub[%iv] and %ub[%iv + 64]) are distinct sequences,
+// and merging them would make the second op start at the first one's address.
+//
+// Keying on the original operands rather than on `initPtr` itself keeps the
+// comparison by Value identity meaningful: computeInitialPtr may materialize a
+// fresh pto.addptr per candidate, so equal start addresses do not necessarily
+// share a Value.  This is conservative — it can split groups that could have
+// been merged — but never merges groups that must stay apart.
+using IterArgGroupKey = std::tuple<Value, Value, Value>;
 
 static IterArgGroupKey getGroupKey(const PostUpdateRewrite &rw) {
-  return {rw.base, rw.stride};
+  return {rw.base, rw.strideOperand, rw.stride};
 }
 
 // Apply post-update rewrites to a single scf.for.
@@ -943,13 +956,16 @@ struct VPTOSoftPostUpdatePass
 
 private:
   void processVecScope(pto::VecScopeOp vecscope, OpBuilder &builder) {
-    // Collect scf.for ops inside this vecscope (inner-to-outer order).
+    // Collect scf.for ops inside this vecscope.  Operation::walk defaults to
+    // post-order, so nested loops already come before the loops enclosing
+    // them.
     SmallVector<scf::ForOp> forOps;
     vecscope.walk([&](scf::ForOp forOp) { forOps.push_back(forOp); });
 
-    // Process inner-to-outer (walk gives us pre-order, reverse for post-order).
-    std::reverse(forOps.begin(), forOps.end());
-
+    // Process inner-to-outer, i.e. in collection order.  The order is load
+    // bearing: rewriting a loop erases it, which also destroys every loop
+    // nested inside it.  Visiting an enclosing loop first would leave the
+    // already-collected inner ForOp handles dangling.
     for (scf::ForOp forOp : forOps)
       processForOp(forOp, builder);
   }
@@ -1023,7 +1039,7 @@ private:
       if (!initPtr)
         continue;
 
-      rewrites.push_back({&op, base, strideNew, initPtr});
+      rewrites.push_back({&op, base, strideOperand, strideNew, initPtr});
     }
 
     if (!rewrites.empty())

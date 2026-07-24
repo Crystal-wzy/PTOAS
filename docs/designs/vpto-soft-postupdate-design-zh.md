@@ -308,13 +308,17 @@ Post-Update 模式下 `repeat_stride` 从地址偏移变为指针前进量，因
 
 #### 4.2.7 同一循环中的多个 Op
 
-按 `(base, stride_new)` 分组。同组的 op 共享一个 `iter_arg`，所有 op 使用同一个 pre-update 指针（block argument），不链式传递 `updated_base`。原因：同一迭代内同组 op 访问相同地址，链式传递会使后续 op 的地址偏移一个 stride。每组只需 yield 一个 `updated_base`。
+两个 op 能共享同一个 `iter_arg`，当且仅当它们走**同一条地址序列**——起点 `init_ptr = base_0 + weight * strideOperand_0` 相同，且步长 `stride_new` 相同。
 
-分组键按 **Value 同一性** 比较，因此 stride 的物化必须保证等值常量复用同一 SSA 值（见 4.2.6 步骤 1），否则语义相同的 op 会被拆成多组，退化为各自持有一个 `iter_arg`。
+理想的分组键是 `(init_ptr, stride_new)`。但 `init_ptr` 不适合直接入键：分组按 **Value 同一性** 比较，而 `computeInitialPtr` 可能为每个候选各自物化一个 `pto.addptr`，起点数值相同也未必是同一个 SSA 值。因此改用决定 `init_ptr` 的**原始操作数**：分组键取 `(base, strideOperand, stride_new)`。操作数相同必然起点相同，这是一个充分条件——可能把本可合并的组拆开，但绝不会合并本应分开的组。
+
+同组的 op 共享一个 `iter_arg`，所有 op 使用同一个 pre-update 指针（block argument），不链式传递 `updated_base`。原因：同一迭代内同组 op 访问相同地址，链式传递会使后续 op 的地址偏移一个 stride。每组只需 yield 一个 `updated_base`。
+
+因为键按 Value 同一性比较，stride 的物化必须保证等值常量复用同一 SSA 值（见 4.2.6 步骤 1）；否则语义相同的 op 会被拆成多组，退化为各自持有一个 `iter_arg`。
 
 #### 4.2.8 嵌套循环
 
-对于嵌套 `scf.for`，在每一层循环添加 `iter_arg` 携带指针，内层的 init 值接外层的当前值。处理方式：自内向外遍历。`scf.for` 的 `iter_args` 天然保证 init/yield 的对应关系。
+对于嵌套 `scf.for`，在每一层循环添加 `iter_arg` 携带指针，内层的 init 值接外层的当前值。`scf.for` 的 `iter_args` 天然保证 init/yield 的对应关系。
 
 ### 4.3 顺序路径
 
