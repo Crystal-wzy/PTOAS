@@ -14,9 +14,11 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include <memory>
 
 namespace mlir {
 namespace pto {
@@ -82,139 +84,275 @@ static bool isDirectlyInForBody(Operation *op, scf::ForOp forOp) {
 // Accumulator Analysis: Linear Decomposition
 //===----------------------------------------------------------------------===//
 
+// Stride analysis is purely symbolic: it never creates IR.  A candidate is
+// analyzed, checked for viability, and only then materialized at a single
+// insertion point.  Two properties follow from that split:
+//   - Every Value the analysis inspects is a pre-existing loop-body value, so
+//     "defined before insertPt" transitively implies its operands are too.
+//     Availability can be decided by looking at the expression's leaves alone.
+//   - The recursion is side-effect free, so it can be memoized; decomposition
+//     stays linear in the size of the def-chain DAG instead of exponential.
+struct StrideExpr;
+using StrideExprRef = std::shared_ptr<const StrideExpr>;
+
+struct StrideExpr {
+  enum class Kind { Const, Leaf, Add, Sub, Mul, Cast };
+  Kind kind;
+  int64_t constant = 0;        // Kind::Const
+  Value leaf;                  // Kind::Leaf
+  Operation *castOp = nullptr; // Kind::Cast — template op to clone
+  StrideExprRef lhs, rhs;
+};
+
+static StrideExprRef makeConst(int64_t c) {
+  auto e = std::make_shared<StrideExpr>();
+  e->kind = StrideExpr::Kind::Const;
+  e->constant = c;
+  return e;
+}
+
+static StrideExprRef makeLeaf(Value v) {
+  auto e = std::make_shared<StrideExpr>();
+  e->kind = StrideExpr::Kind::Leaf;
+  e->leaf = v;
+  return e;
+}
+
+// Compile-time value of `e`, if it has one.
+static std::optional<int64_t> foldConst(const StrideExprRef &e) {
+  if (!e)
+    return std::nullopt;
+  switch (e->kind) {
+  case StrideExpr::Kind::Const:
+    return e->constant;
+  case StrideExpr::Kind::Leaf:
+    return getConstantIntValue(e->leaf);
+  case StrideExpr::Kind::Cast:
+    // index_cast/index_castui preserve the numeric value; only the type
+    // changes, and the type is chosen at materialization time.
+    return foldConst(e->lhs);
+  case StrideExpr::Kind::Add:
+  case StrideExpr::Kind::Sub:
+  case StrideExpr::Kind::Mul: {
+    auto a = foldConst(e->lhs);
+    auto b = foldConst(e->rhs);
+    if (!a || !b)
+      return std::nullopt;
+    if (e->kind == StrideExpr::Kind::Add)
+      return *a + *b;
+    if (e->kind == StrideExpr::Kind::Sub)
+      return *a - *b;
+    return *a * *b;
+  }
+  }
+  return std::nullopt;
+}
+
+static StrideExprRef makeBinary(StrideExpr::Kind kind, StrideExprRef a,
+                                StrideExprRef b) {
+  auto e = std::make_shared<StrideExpr>();
+  e->kind = kind;
+  e->lhs = std::move(a);
+  e->rhs = std::move(b);
+  return e;
+}
+
+static StrideExprRef makeAdd(StrideExprRef a, StrideExprRef b) {
+  auto ca = foldConst(a), cb = foldConst(b);
+  if (ca && cb)
+    return makeConst(*ca + *cb);
+  if (ca && *ca == 0)
+    return b;
+  if (cb && *cb == 0)
+    return a;
+  return makeBinary(StrideExpr::Kind::Add, a, b);
+}
+
+static StrideExprRef makeSub(StrideExprRef a, StrideExprRef b) {
+  auto ca = foldConst(a), cb = foldConst(b);
+  if (ca && cb)
+    return makeConst(*ca - *cb);
+  if (cb && *cb == 0)
+    return a;
+  return makeBinary(StrideExpr::Kind::Sub, a, b);
+}
+
+static StrideExprRef makeMul(StrideExprRef a, StrideExprRef b) {
+  auto ca = foldConst(a), cb = foldConst(b);
+  if (ca && cb)
+    return makeConst(*ca * *cb);
+  if ((ca && *ca == 0) || (cb && *cb == 0))
+    return makeConst(0);
+  if (ca && *ca == 1)
+    return b;
+  if (cb && *cb == 1)
+    return a;
+  return makeBinary(StrideExpr::Kind::Mul, a, b);
+}
+
+static StrideExprRef makeCast(Operation *castOp, StrideExprRef a) {
+  if (auto c = foldConst(a))
+    return makeConst(*c);
+  auto e = std::make_shared<StrideExpr>();
+  e->kind = StrideExpr::Kind::Cast;
+  e->castOp = castOp;
+  e->lhs = std::move(a);
+  return e;
+}
+
+static void collectLeaves(const StrideExprRef &e,
+                          SmallVectorImpl<Value> &out) {
+  if (!e)
+    return;
+  if (e->kind == StrideExpr::Kind::Leaf) {
+    out.push_back(e->leaf);
+    return;
+  }
+  collectLeaves(e->lhs, out);
+  collectLeaves(e->rhs, out);
+}
+
+// Determine the concrete type `e` will materialize to.  Returns false when two
+// subexpressions demand different types (an expression we must not build).
+// `out` is left null when `e` is fully constant and can adapt to any type.
+static bool exprType(const StrideExprRef &e, Type &out) {
+  switch (e->kind) {
+  case StrideExpr::Kind::Const:
+    return true; // adapts to context
+  case StrideExpr::Kind::Leaf:
+    out = e->leaf.getType();
+    return true;
+  case StrideExpr::Kind::Cast:
+    out = e->castOp->getResult(0).getType();
+    return true;
+  case StrideExpr::Kind::Add:
+  case StrideExpr::Kind::Sub:
+  case StrideExpr::Kind::Mul: {
+    Type ta, tb;
+    if (!exprType(e->lhs, ta) || !exprType(e->rhs, tb))
+      return false;
+    if (ta && tb && ta != tb)
+      return false;
+    out = ta ? ta : tb;
+    return true;
+  }
+  }
+  return false;
+}
+
 // Result of decomposing a value into blockArg * coeff + increment.
 struct LinearDecomp {
   int64_t coeff;
-  Value increment; // nullptr means 0
+  StrideExprRef increment; // never null; zero is makeConst(0)
 };
 
-static Value addIncrements(Value a, Value b, scf::ForOp forOp,
-                           OpBuilder &builder) {
-  if (!a) return b;
-  if (!b) return a;
-  if (auto ca = getConstantIntValue(a); ca && *ca == 0) return b;
-  if (auto cb = getConstantIntValue(b); cb && *cb == 0) return a;
-  builder.setInsertionPoint(forOp.getBody()->getTerminator());
-  return builder.create<arith::AddIOp>(forOp.getLoc(), a, b);
-}
-
-static Value subIncrements(Value a, Value b, scf::ForOp forOp,
-                           OpBuilder &builder) {
-  if (!b) return a;
-  if (auto cb = getConstantIntValue(b); cb && *cb == 0) return a;
-  builder.setInsertionPoint(forOp.getBody()->getTerminator());
-  if (!a) {
-    if (b.getType().isIndex())
-      a = builder.create<arith::ConstantIndexOp>(forOp.getLoc(), 0);
-    else
-      a = builder.create<arith::ConstantIntOp>(
-          forOp.getLoc(), 0, b.getType().getIntOrFloatBitWidth());
-  }
-  return builder.create<arith::SubIOp>(forOp.getLoc(), a, b);
-}
+using DecompCache = DenseMap<Value, std::optional<LinearDecomp>>;
 
 // Decompose `v` into blockArg * coeff + increment by recursing through
-// addi/subi/muli/index_cast/addptr chains.
+// addi/subi/muli/index_cast/addptr chains.  Pure: builds only StrideExprs.
+// `cache` is scoped to one decomposition (a single `blockArg`).
 static std::optional<LinearDecomp>
 decomposeLinear(Value v, BlockArgument blockArg, scf::ForOp forOp,
-                OpBuilder &builder) {
-  // v == blockArg → {1, nullptr}
+                DecompCache &cache) {
+  // v == blockArg → {1, 0}
   if (v == blockArg)
-    return LinearDecomp{1, nullptr};
+    return LinearDecomp{1, makeConst(0)};
+
+  auto it = cache.find(v);
+  if (it != cache.end())
+    return it->second;
+  auto record = [&](std::optional<LinearDecomp> r) {
+    cache[v] = r;
+    return r;
+  };
 
   // v is other block arg (IV, different iter_arg, func arg) → {0, v}
   Operation *defOp = v.getDefiningOp();
   if (!defOp)
-    return LinearDecomp{0, v};
+    return record(LinearDecomp{0, makeLeaf(v)});
 
   // v is loop-invariant or constant → {0, v}
   if (forOp.isDefinedOutsideOfLoop(v) ||
       defOp->hasTrait<OpTrait::ConstantLike>())
-    return LinearDecomp{0, v};
+    return record(LinearDecomp{0, makeLeaf(v)});
 
   // v = addi(a, b) → {ca + cb, ia + ib}
   // v = subi(a, b) → {ca - cb, ia - ib}
   if (isa<arith::AddIOp, arith::SubIOp>(defOp)) {
-    auto da = decomposeLinear(defOp->getOperand(0), blockArg, forOp, builder);
-    auto db = decomposeLinear(defOp->getOperand(1), blockArg, forOp, builder);
+    auto da = decomposeLinear(defOp->getOperand(0), blockArg, forOp, cache);
+    auto db = decomposeLinear(defOp->getOperand(1), blockArg, forOp, cache);
     if (!da || !db)
-      return std::nullopt;
+      return record(std::nullopt);
     if (da->coeff == 0 && db->coeff == 0)
-      return LinearDecomp{0, v};
+      return record(LinearDecomp{0, makeLeaf(v)});
     bool isSub = isa<arith::SubIOp>(defOp);
-    return LinearDecomp{
+    return record(LinearDecomp{
         isSub ? da->coeff - db->coeff : da->coeff + db->coeff,
-        isSub ? subIncrements(da->increment, db->increment, forOp, builder)
-              : addIncrements(da->increment, db->increment, forOp, builder)};
+        isSub ? makeSub(da->increment, db->increment)
+              : makeAdd(da->increment, db->increment)});
   }
 
   // v = muli(a, b), one side blockArg-free with constant k → {c * k, i * k}
   if (auto mulOp = dyn_cast<arith::MulIOp>(defOp)) {
-    auto da = decomposeLinear(mulOp.getLhs(), blockArg, forOp, builder);
-    auto db = decomposeLinear(mulOp.getRhs(), blockArg, forOp, builder);
+    auto da = decomposeLinear(mulOp.getLhs(), blockArg, forOp, cache);
+    auto db = decomposeLinear(mulOp.getRhs(), blockArg, forOp, cache);
     if (!da || !db)
-      return std::nullopt;
+      return record(std::nullopt);
     if (da->coeff == 0 && db->coeff == 0)
-      return LinearDecomp{0, v};
+      return record(LinearDecomp{0, makeLeaf(v)});
     if (da->coeff != 0 && db->coeff != 0)
-      return std::nullopt;
-    auto &withBA = (da->coeff != 0) ? *da : *db;
+      return record(std::nullopt);
+    const LinearDecomp &withBA = (da->coeff != 0) ? *da : *db;
     Value multiplier = (da->coeff != 0) ? mulOp.getRhs() : mulOp.getLhs();
     auto constMul = getConstantIntValue(multiplier);
     if (!constMul)
-      return std::nullopt;
-    Value newInc = nullptr;
-    if (withBA.increment && *constMul != 0) {
-      if (*constMul == 1)
-        newInc = withBA.increment;
-      else {
-        builder.setInsertionPoint(forOp.getBody()->getTerminator());
-        newInc = builder.create<arith::MulIOp>(forOp.getLoc(),
-                                                withBA.increment, multiplier);
-      }
-    }
-    return LinearDecomp{withBA.coeff * *constMul, newInc};
+      return record(std::nullopt);
+    return record(LinearDecomp{withBA.coeff * *constMul,
+                               makeMul(withBA.increment, makeConst(*constMul))});
   }
 
   // v = index_cast(a) → {ca, cast(ia)}
   if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(defOp)) {
-    auto d = decomposeLinear(defOp->getOperand(0), blockArg, forOp, builder);
+    auto d = decomposeLinear(defOp->getOperand(0), blockArg, forOp, cache);
     if (!d)
-      return std::nullopt;
+      return record(std::nullopt);
     if (d->coeff == 0)
-      return LinearDecomp{0, v};
-    if (d->increment) {
-      builder.setInsertionPoint(forOp.getBody()->getTerminator());
-      Operation *cast = builder.clone(*defOp);
-      cast->setOperand(0, d->increment);
-      d->increment = cast->getResult(0);
-    }
-    return *d;
+      return record(LinearDecomp{0, makeLeaf(v)});
+    return record(LinearDecomp{d->coeff, makeCast(defOp, d->increment)});
   }
 
   // v = addptr(ptr, offset) → {c_ptr, i_ptr + offset}
   if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(defOp)) {
-    auto dp = decomposeLinear(addPtrOp.getPtr(), blockArg, forOp, builder);
+    auto dp = decomposeLinear(addPtrOp.getPtr(), blockArg, forOp, cache);
     if (!dp)
-      return std::nullopt;
+      return record(std::nullopt);
     if (dp->coeff == 0)
-      return LinearDecomp{0, v};
-    return LinearDecomp{
-        dp->coeff,
-        addIncrements(dp->increment, addPtrOp.getOffset(), forOp, builder)};
+      return record(LinearDecomp{0, makeLeaf(v)});
+    return record(LinearDecomp{
+        dp->coeff, makeAdd(dp->increment, makeLeaf(addPtrOp.getOffset()))});
   }
 
   // Unrecognized op → unknown
-  return std::nullopt;
+  return record(std::nullopt);
 }
+
+// Outcome of accumulator analysis.  Distinguishing "not an iter_arg" from
+// "is an iter_arg but could not be decomposed" matters: the former falls back
+// to delta analysis, the latter must give up (treating an unknown increment as
+// zero would silently miscompile).
+enum class StrideStatus { NotIterArg, Failed, Ok };
+
+struct StrideResult {
+  StrideStatus status;
+  StrideExprRef expr; // valid only when status == Ok
+};
 
 // Trace `v` back to an iter_arg BlockArgument of `forOp`, then decompose
 // the yield expression to extract the per-iteration increment. Walks through
 // index_cast (type-changing), addi/subi with loop-invariant offset, and
 // addptr with loop-invariant offset. Type casts along the path are applied
-// to the increment so its type matches v's context.
-static std::optional<Value> getIterArgIncrement(Value v, scf::ForOp forOp,
-                                                OpBuilder &builder) {
+// to the increment so its type matches v's context.  Pure: creates no IR.
+static StrideResult getIterArgIncrement(Value v, scf::ForOp forOp) {
   SmallVector<Operation *> casts;
   Value current = v;
 
@@ -222,33 +360,26 @@ static std::optional<Value> getIterArgIncrement(Value v, scf::ForOp forOp,
     if (auto blockArg = dyn_cast<BlockArgument>(current)) {
       if (blockArg.getOwner() != forOp.getBody() ||
           blockArg.getArgNumber() == 0)
-        return std::nullopt;
+        return {StrideStatus::NotIterArg, nullptr};
 
       unsigned idx = blockArg.getArgNumber() - 1;
       auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+      DecompCache cache;
       auto decomp =
-          decomposeLinear(yieldOp.getOperand(idx), blockArg, forOp, builder);
+          decomposeLinear(yieldOp.getOperand(idx), blockArg, forOp, cache);
       if (!decomp || decomp->coeff != 1)
-        return Value();
+        return {StrideStatus::Failed, nullptr};
 
-      Value inc = decomp->increment;
-      if (!inc) {
-        builder.setInsertionPoint(forOp);
-        inc = builder.create<arith::ConstantIndexOp>(forOp.getLoc(), 0);
-      }
-      for (Operation *op : llvm::reverse(casts)) {
-        builder.setInsertionPoint(forOp.getBody()->getTerminator());
-        Operation *c = builder.clone(*op);
-        c->setOperand(0, inc);
-        inc = c->getResult(0);
-      }
-      return inc;
+      StrideExprRef inc = decomp->increment;
+      for (Operation *op : llvm::reverse(casts))
+        inc = makeCast(op, inc);
+      return {StrideStatus::Ok, inc};
     }
 
     Operation *defOp = current.getDefiningOp();
     if (!defOp || forOp.isDefinedOutsideOfLoop(current) ||
         defOp->hasTrait<OpTrait::ConstantLike>())
-      return std::nullopt;
+      return {StrideStatus::NotIterArg, nullptr};
 
     if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(defOp)) {
       casts.push_back(defOp);
@@ -281,7 +412,7 @@ static std::optional<Value> getIterArgIncrement(Value v, scf::ForOp forOp,
       }
     }
 
-    return std::nullopt;
+    return {StrideStatus::NotIterArg, nullptr};
   }
 }
 
@@ -289,18 +420,29 @@ static std::optional<Value> getIterArgIncrement(Value v, scf::ForOp forOp,
 // Delta Analysis
 //===----------------------------------------------------------------------===//
 
+// Cached delta results.  A cached null expr means "delta is unknown"; absence
+// from the map means "not computed yet".
+using DeltaCache = DenseMap<Value, StrideExprRef>;
+
 // Compute the per-iteration delta of value `v` within `forOp`.
-// Returns the delta as a loop-invariant Value, or nullptr if unknown.
-static Value computeDelta(Value v, scf::ForOp forOp, OpBuilder &builder) {
+// Returns a loop-invariant symbolic delta, or null if unknown.  Pure.
+static StrideExprRef computeDelta(Value v, scf::ForOp forOp,
+                                  DeltaCache &cache) {
   // IV: delta = step
   if (v == forOp.getInductionVar())
-    return forOp.getStep();
+    return makeLeaf(forOp.getStep());
 
   // Constant or loop-invariant: delta = 0
-  if (forOp.isDefinedOutsideOfLoop(v)) {
-    builder.setInsertionPoint(forOp);
-    return builder.create<arith::ConstantIndexOp>(forOp.getLoc(), 0);
-  }
+  if (forOp.isDefinedOutsideOfLoop(v))
+    return makeConst(0);
+
+  auto it = cache.find(v);
+  if (it != cache.end())
+    return it->second;
+  auto record = [&](StrideExprRef r) {
+    cache[v] = r;
+    return r;
+  };
 
   // Block argument from iter_args: check yield = arg + c
   if (auto blockArg = dyn_cast<BlockArgument>(v)) {
@@ -316,41 +458,32 @@ static Value computeDelta(Value v, scf::ForOp forOp, OpBuilder &builder) {
         else if (addOp.getRhs() == blockArg)
           other = addOp.getLhs();
         if (other && forOp.isDefinedOutsideOfLoop(other))
-          return other;
+          return record(makeLeaf(other));
       }
-      return nullptr;
+      return record(nullptr);
     }
   }
 
   Operation *defOp = v.getDefiningOp();
   if (!defOp)
-    return nullptr;
+    return record(nullptr);
 
   // arith.addi(a, b): delta = delta(a) + delta(b)
   if (auto addOp = dyn_cast<arith::AddIOp>(defOp)) {
-    Value da = computeDelta(addOp.getLhs(), forOp, builder);
-    Value db = computeDelta(addOp.getRhs(), forOp, builder);
+    auto da = computeDelta(addOp.getLhs(), forOp, cache);
+    auto db = computeDelta(addOp.getRhs(), forOp, cache);
     if (!da || !db)
-      return nullptr;
-    // Optimize: if either is constant 0, return the other
-    if (auto ca = getConstantIntValue(da); ca && *ca == 0)
-      return db;
-    if (auto cb = getConstantIntValue(db); cb && *cb == 0)
-      return da;
-    builder.setInsertionPoint(forOp);
-    return builder.create<arith::AddIOp>(forOp.getLoc(), da, db);
+      return record(nullptr);
+    return record(makeAdd(da, db));
   }
 
   // arith.subi(a, b): delta = delta(a) - delta(b)
   if (auto subOp = dyn_cast<arith::SubIOp>(defOp)) {
-    Value da = computeDelta(subOp.getLhs(), forOp, builder);
-    Value db = computeDelta(subOp.getRhs(), forOp, builder);
+    auto da = computeDelta(subOp.getLhs(), forOp, cache);
+    auto db = computeDelta(subOp.getRhs(), forOp, cache);
     if (!da || !db)
-      return nullptr;
-    if (auto cb = getConstantIntValue(db); cb && *cb == 0)
-      return da;
-    builder.setInsertionPoint(forOp);
-    return builder.create<arith::SubIOp>(forOp.getLoc(), da, db);
+      return record(nullptr);
+    return record(makeSub(da, db));
   }
 
   // arith.muli(a, b) where one is loop-invariant:
@@ -360,42 +493,35 @@ static Value computeDelta(Value v, scf::ForOp forOp, OpBuilder &builder) {
     for (auto [invariant, variant] :
          {std::pair{rhs, lhs}, std::pair{lhs, rhs}}) {
       if (forOp.isDefinedOutsideOfLoop(invariant)) {
-        Value dv = computeDelta(variant, forOp, builder);
+        auto dv = computeDelta(variant, forOp, cache);
         if (!dv)
           continue;
-        if (auto cv = getConstantIntValue(dv); cv && *cv == 0) {
-          builder.setInsertionPoint(forOp);
-          return builder.create<arith::ConstantIndexOp>(forOp.getLoc(), 0);
-        }
-        if (auto cv = getConstantIntValue(dv); cv && *cv == 1)
-          return invariant;
-        builder.setInsertionPoint(forOp);
-        return builder.create<arith::MulIOp>(forOp.getLoc(), invariant, dv);
+        return record(makeMul(makeLeaf(invariant), dv));
       }
     }
-    return nullptr;
+    return record(nullptr);
   }
 
   // arith.index_castui / arith.index_cast: delta = delta(input)
   if (auto castOp = dyn_cast<arith::IndexCastUIOp>(defOp))
-    return computeDelta(castOp.getIn(), forOp, builder);
+    return record(computeDelta(castOp.getIn(), forOp, cache));
   if (auto castOp = dyn_cast<arith::IndexCastOp>(defOp))
-    return computeDelta(castOp.getIn(), forOp, builder);
+    return record(computeDelta(castOp.getIn(), forOp, cache));
 
-  return nullptr;
+  return record(nullptr);
 }
 
 // Get the per-iteration stride of `v`: tries accumulator analysis first
 // (for iter_arg-derived values with possibly loop-varying increment),
 // falls back to delta analysis (for IV-derived values, loop-invariant result).
-// getIterArgIncrement returns:
-//   nullopt        → not iter_arg-related, fall through to delta
-//   Some(Value())  → iter_arg found but decomposition failed, give up
-//   Some(non-null) → success
-static Value getStride(Value v, scf::ForOp forOp, OpBuilder &builder) {
-  if (auto result = getIterArgIncrement(v, forOp, builder))
-    return *result;
-  return computeDelta(v, forOp, builder);
+// Returns null if the stride cannot be determined.
+static StrideExprRef getStride(Value v, scf::ForOp forOp, DeltaCache &cache) {
+  StrideResult r = getIterArgIncrement(v, forOp);
+  if (r.status == StrideStatus::Ok)
+    return r.expr;
+  if (r.status == StrideStatus::Failed)
+    return nullptr;
+  return computeDelta(v, forOp, cache);
 }
 
 //===----------------------------------------------------------------------===//
@@ -481,65 +607,176 @@ static Value computeInitialPtr(Value base, Value strideOperand,
 
 // Combine per-operand strides into the final stride_new for the post-update op.
 // total = deltaBase + weight * deltaOffset; stride_new = total / weight.
-// Returns nullptr if stride is zero or weight doesn't divide evenly.
-// `strideOperandType` is needed for weight>1 to create the right integer type.
-static Value computeFinalStride(Value deltaBase, Value deltaOffset,
-                              int64_t weight, Type strideOperandType,
-                              Operation *op, scf::ForOp forOp,
-                              OpBuilder &builder) {
-  bool anyLoopVarying = !forOp.isDefinedOutsideOfLoop(deltaBase) ||
-                        !forOp.isDefinedOutsideOfLoop(deltaOffset);
-  auto setCombineIP = [&]() {
-    if (anyLoopVarying)
-      builder.setInsertionPoint(op);
-    else
-      builder.setInsertionPoint(forOp);
-  };
+// Returns null if stride is zero or weight doesn't divide evenly.  Purely
+// symbolic: a rejected candidate leaves no IR behind, and the weight scaling
+// is folded rather than emitted, so no `index` weight is ever multiplied
+// against a narrower stride operand.
+static StrideExprRef combineStride(StrideExprRef deltaBase,
+                                   StrideExprRef deltaOffset, int64_t weight) {
+  StrideExprRef total =
+      makeAdd(deltaBase, makeMul(deltaOffset, makeConst(weight)));
 
-  Value weightedDeltaOffset = deltaOffset;
-  if (weight != 1) {
-    if (auto co = getConstantIntValue(deltaOffset); co && *co != 0) {
-      setCombineIP();
-      weightedDeltaOffset = builder.create<arith::ConstantIndexOp>(
-          forOp.getLoc(), *co * weight);
-    } else if (auto co = getConstantIntValue(deltaOffset); co && *co == 0) {
-      // 0 * weight = 0
-    } else {
-      setCombineIP();
-      Value weightVal =
-          builder.create<arith::ConstantIndexOp>(forOp.getLoc(), weight);
-      weightedDeltaOffset =
-          builder.create<arith::MulIOp>(forOp.getLoc(), deltaOffset, weightVal);
-    }
-  }
-
-  Value stride;
-  auto cb = getConstantIntValue(deltaBase);
-  auto co = getConstantIntValue(weightedDeltaOffset);
-  if (cb && *cb == 0)
-    stride = weightedDeltaOffset;
-  else if (co && *co == 0)
-    stride = deltaBase;
-  else {
-    setCombineIP();
-    stride = builder.create<arith::AddIOp>(forOp.getLoc(), deltaBase,
-                                            weightedDeltaOffset);
-  }
-
-  if (auto constTotal = getConstantIntValue(stride);
-      constTotal && *constTotal == 0)
+  auto constTotal = foldConst(total);
+  if (constTotal && *constTotal == 0)
     return nullptr;
+  if (weight == 1)
+    return total;
 
-  if (weight != 1) {
-    auto constTotal = getConstantIntValue(stride);
-    if (!constTotal || *constTotal % weight != 0)
-      return nullptr;
-    setCombineIP();
-    unsigned bitWidth = strideOperandType.getIntOrFloatBitWidth();
-    return builder.create<arith::ConstantIntOp>(forOp.getLoc(),
-                                                *constTotal / weight, bitWidth);
+  // Block-stride ops encode the stride pre-scaled by `weight`, so the total
+  // must be known at compile time and divide evenly.
+  if (!constTotal || *constTotal % weight != 0)
+    return nullptr;
+  return makeConst(*constTotal / weight);
+}
+
+//===----------------------------------------------------------------------===//
+// Materialization
+//===----------------------------------------------------------------------===//
+
+// Can `v` be made available immediately before `insertPt`, cloning a pure
+// def-chain if needed?  Pure: inspects only, never mutates the IR.
+static bool canHoistBefore(Value v, Operation *insertPt, scf::ForOp forOp,
+                           DenseMap<Value, bool> &memo) {
+  if (forOp.isDefinedOutsideOfLoop(v) || isa<BlockArgument>(v))
+    return true;
+  Operation *defOp = v.getDefiningOp();
+  if (!defOp)
+    return true;
+  if (defOp->getBlock() != insertPt->getBlock())
+    return false;
+  // Already earlier in the block, so usable as-is: SSA guarantees its operands
+  // are defined even earlier.  This reasoning is only sound because analysis
+  // creates no IR — every value examined here predates the transform.
+  if (defOp->isBeforeInBlock(insertPt))
+    return true;
+  auto it = memo.find(v);
+  if (it != memo.end())
+    return it->second;
+  memo[v] = false;
+  if (!isPure(defOp))
+    return false;
+  for (Value operand : defOp->getOperands())
+    if (!canHoistBefore(operand, insertPt, forOp, memo))
+      return false;
+  memo[v] = true;
+  return true;
+}
+
+// Clone `v`'s def-chain before `insertPt` as needed.  Only valid after
+// canHoistBefore has approved `v`.
+static Value hoistBefore(Value v, Operation *insertPt, scf::ForOp forOp,
+                         OpBuilder &builder, DenseMap<Value, Value> &memo) {
+  if (forOp.isDefinedOutsideOfLoop(v) || isa<BlockArgument>(v))
+    return v;
+  Operation *defOp = v.getDefiningOp();
+  if (!defOp || defOp->getBlock() != insertPt->getBlock() ||
+      defOp->isBeforeInBlock(insertPt))
+    return v;
+  auto it = memo.find(v);
+  if (it != memo.end())
+    return it->second;
+
+  SmallVector<Value> newOperands;
+  for (Value operand : defOp->getOperands())
+    newOperands.push_back(hoistBefore(operand, insertPt, forOp, builder, memo));
+
+  builder.setInsertionPoint(insertPt);
+  Operation *cloned = builder.clone(*defOp);
+  for (auto [i, operand] : llvm::enumerate(newOperands))
+    cloned->setOperand(i, operand);
+  // Preserve which result was asked for; `v` need not be result 0.
+  Value res = cloned->getResult(cast<OpResult>(v).getResultNumber());
+  memo[v] = res;
+  return res;
+}
+
+// Rewrite `e` so that all of its leaves are available at `insertPt`.
+static StrideExprRef makeAvailableAt(const StrideExprRef &e,
+                                     Operation *insertPt, scf::ForOp forOp,
+                                     OpBuilder &builder,
+                                     DenseMap<Value, Value> &memo) {
+  switch (e->kind) {
+  case StrideExpr::Kind::Const:
+    return e;
+  case StrideExpr::Kind::Leaf: {
+    Value hv = hoistBefore(e->leaf, insertPt, forOp, builder, memo);
+    return hv == e->leaf ? e : makeLeaf(hv);
   }
-  return stride;
+  case StrideExpr::Kind::Cast:
+    return makeCast(e->castOp,
+                    makeAvailableAt(e->lhs, insertPt, forOp, builder, memo));
+  case StrideExpr::Kind::Add:
+    return makeAdd(makeAvailableAt(e->lhs, insertPt, forOp, builder, memo),
+                   makeAvailableAt(e->rhs, insertPt, forOp, builder, memo));
+  case StrideExpr::Kind::Sub:
+    return makeSub(makeAvailableAt(e->lhs, insertPt, forOp, builder, memo),
+                   makeAvailableAt(e->rhs, insertPt, forOp, builder, memo));
+  case StrideExpr::Kind::Mul:
+    return makeMul(makeAvailableAt(e->lhs, insertPt, forOp, builder, memo),
+                   makeAvailableAt(e->rhs, insertPt, forOp, builder, memo));
+  }
+  llvm_unreachable("unhandled StrideExpr kind");
+}
+
+// Constants are loop-invariant, so they are always emitted before the loop and
+// shared across every candidate in it.  Sharing matters beyond tidiness: the
+// rewrite groups ops by (base, stride) Value identity, so two candidates with
+// the same numeric stride must end up with the *same* Value to share an
+// iter_arg.
+using ConstCache = DenseMap<std::pair<int64_t, Type>, Value>;
+
+static Value materializeConst(int64_t c, Type ty, Location loc,
+                              scf::ForOp forOp, ConstCache &cache,
+                              OpBuilder &builder) {
+  if (!ty)
+    ty = builder.getIndexType();
+  auto key = std::make_pair(c, ty);
+  if (auto it = cache.find(key); it != cache.end())
+    return it->second;
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPoint(forOp);
+  Value v;
+  if (ty.isIndex())
+    v = builder.create<arith::ConstantIndexOp>(loc, c);
+  else
+    v = builder.create<arith::ConstantIntOp>(loc, c,
+                                             ty.getIntOrFloatBitWidth());
+  cache[key] = v;
+  return v;
+}
+
+// Emit `e` at the builder's current insertion point.  Sub-expressions are
+// emitted bottom-up, so every operand is created before its user and the
+// result dominates the insertion point by construction.
+static Value materialize(const StrideExprRef &e, Type wantType, Location loc,
+                         scf::ForOp forOp, ConstCache &cache,
+                         OpBuilder &builder) {
+  switch (e->kind) {
+  case StrideExpr::Kind::Const:
+    return materializeConst(e->constant, wantType, loc, forOp, cache, builder);
+  case StrideExpr::Kind::Leaf:
+    return e->leaf;
+  case StrideExpr::Kind::Cast: {
+    Value in = materialize(e->lhs, e->castOp->getOperand(0).getType(), loc,
+                           forOp, cache, builder);
+    Operation *cloned = builder.clone(*e->castOp);
+    cloned->setOperand(0, in);
+    return cloned->getResult(0);
+  }
+  case StrideExpr::Kind::Add:
+  case StrideExpr::Kind::Sub:
+  case StrideExpr::Kind::Mul: {
+    Value a = materialize(e->lhs, wantType, loc, forOp, cache, builder);
+    Value b = materialize(e->rhs, a.getType(), loc, forOp, cache, builder);
+    if (e->kind == StrideExpr::Kind::Add)
+      return builder.create<arith::AddIOp>(loc, a, b);
+    if (e->kind == StrideExpr::Kind::Sub)
+      return builder.create<arith::SubIOp>(loc, a, b);
+    return builder.create<arith::MulIOp>(loc, a, b);
+  }
+  }
+  llvm_unreachable("unhandled StrideExpr kind");
 }
 
 // Information about a post-update transformation to apply.
@@ -719,6 +956,9 @@ private:
 
   void processForOp(scf::ForOp forOp, OpBuilder &builder) {
     SmallVector<PostUpdateRewrite> rewrites;
+    // Shared across all candidates in this loop so equal strides map to one
+    // Value, which is what lets same-address ops share an iter_arg.
+    ConstCache constCache;
 
     for (Operation &op : *forOp.getBody()) {
       const PostUpdateOpInfo *info = getPostUpdateInfo(&op);
@@ -734,18 +974,49 @@ private:
       int64_t weight = info->weight;
 
       // Analyze each operand independently: accumulator (iter_arg) first,
-      // delta (IV/affine) fallback. Both return the per-iteration stride.
-      Value deltaBase = getStride(base, forOp, builder);
-      Value deltaOffset = getStride(strideOperand, forOp, builder);
+      // delta (IV/affine) fallback. Both return a symbolic per-iteration
+      // stride; no IR is created until the candidate is known to be viable.
+      DeltaCache deltaCache;
+      StrideExprRef deltaBase = getStride(base, forOp, deltaCache);
+      StrideExprRef deltaOffset = getStride(strideOperand, forOp, deltaCache);
 
       if (!deltaBase || !deltaOffset)
         continue;
 
-      Value strideNew = computeFinalStride(deltaBase, deltaOffset, weight,
-                                          strideOperand.getType(), &op,
-                                          forOp, builder);
-      if (!strideNew)
+      StrideExprRef total = combineStride(deltaBase, deltaOffset, weight);
+      if (!total)
         continue;
+
+      // Reject expressions whose subterms demand conflicting types.
+      Type strideType;
+      if (!exprType(total, strideType))
+        continue;
+      if (!strideType)
+        strideType = strideOperand.getType();
+
+      // A stride built only from loop-invariant leaves is materialized before
+      // the loop; otherwise it goes immediately before the candidate op.
+      SmallVector<Value> leaves;
+      collectLeaves(total, leaves);
+      bool allInvariant = llvm::all_of(
+          leaves, [&](Value l) { return forOp.isDefinedOutsideOfLoop(l); });
+
+      StrideExprRef finalExpr = total;
+      if (!allInvariant) {
+        // Every leaf must be usable at the candidate op.  Checked before any
+        // IR is created, so a rejected candidate leaves nothing behind.
+        DenseMap<Value, bool> canCache;
+        if (!llvm::all_of(leaves, [&](Value l) {
+              return canHoistBefore(l, &op, forOp, canCache);
+            }))
+          continue;
+        DenseMap<Value, Value> hoistMemo;
+        finalExpr = makeAvailableAt(total, &op, forOp, builder, hoistMemo);
+      }
+
+      builder.setInsertionPoint(allInvariant ? forOp.getOperation() : &op);
+      Value strideNew = materialize(finalExpr, strideType, op.getLoc(), forOp,
+                                    constCache, builder);
 
       Value initPtr =
           computeInitialPtr(base, strideOperand, weight, forOp, builder);
