@@ -18,6 +18,7 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/MathExtras.h"
 #include <memory>
 
 namespace mlir {
@@ -603,6 +604,11 @@ static Value materializeAtLoopEntry(Value v, scf::ForOp forOp,
   if (!defOp || !forOp->isAncestor(defOp))
     return nullptr;
 
+  // Cloning duplicates the op, so it must be safe to execute an extra time and
+  // its result must not depend on anything but its operands.
+  if (!isPure(defOp))
+    return nullptr;
+
   // Clone the defining op with operands materialized at loop entry.
   SmallVector<Value> newOperands;
   for (Value operand : defOp->getOperands()) {
@@ -615,7 +621,8 @@ static Value materializeAtLoopEntry(Value v, scf::ForOp forOp,
   Operation *cloned = builder.clone(*defOp);
   for (auto [i, operand] : llvm::enumerate(newOperands))
     cloned->setOperand(i, operand);
-  return cloned->getResult(0);
+  // Preserve which result was asked for; `v` need not be result 0.
+  return cloned->getResult(cast<OpResult>(v).getResultNumber());
 }
 
 // Compute the initial pointer, i.e. the address the op reaches on the first
@@ -840,6 +847,32 @@ static Value materializeConst(int64_t c, Type ty, Location loc,
                                              ty.getIntOrFloatBitWidth());
   cache[key] = v;
   return v;
+}
+
+// Check that every constant in `e` is representable in the type it would be
+// materialized as.  `stride_new` for block-stride ops is a narrow integer
+// (i16), and a stride that does not fit would otherwise become an out-of-range
+// arith.constant.  Pure, so an out-of-range candidate is rejected before any
+// IR is created.
+static bool constantsFitType(const StrideExprRef &e, Type wantType) {
+  switch (e->kind) {
+  case StrideExpr::Kind::Const: {
+    if (!wantType || wantType.isIndex())
+      return true; // index is 64-bit, always holds an int64_t
+    unsigned bitWidth = wantType.getIntOrFloatBitWidth();
+    return bitWidth >= 64 || llvm::isIntN(bitWidth, e->constant);
+  }
+  case StrideExpr::Kind::Leaf:
+    return true;
+  case StrideExpr::Kind::Cast:
+    return constantsFitType(e->lhs, e->castOp->getOperand(0).getType());
+  case StrideExpr::Kind::Add:
+  case StrideExpr::Kind::Sub:
+  case StrideExpr::Kind::Mul:
+    return constantsFitType(e->lhs, wantType) &&
+           constantsFitType(e->rhs, wantType);
+  }
+  return false;
 }
 
 // Emit `e` at the builder's current insertion point.  Sub-expressions are
@@ -1115,6 +1148,10 @@ private:
         continue;
       if (!strideType)
         strideType = strideOperand.getType();
+
+      // Reject strides whose constants do not fit the target operand type.
+      if (!constantsFitType(total, strideType))
+        continue;
 
       // A stride built only from loop-invariant leaves is materialized before
       // the loop; otherwise it goes immediately before the candidate op.

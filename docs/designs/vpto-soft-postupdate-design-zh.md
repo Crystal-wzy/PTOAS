@@ -279,11 +279,15 @@ delta 分析同样是纯符号的：表中每一行返回 `StrideExpr`，结果�
 
 2. **op 直接位于 `scf.for` 循环体内**（不嵌套在循环内的 `scf.if` 或其他控制流中），避免部分迭代问题。
 
-3. **`total_delta` 整除 `weight`。** weight=1 时自动满足；weight=32（vsstb/vsldb）时要求 `delta(base) % 32 == 0`。缩放在符号层折叠，因此只要 `delta(base)` 与 `delta(strideOperand)` 各自是常量，整除性即可判定。
+3. **`total_delta` 整除 `weight`。** weight=1 时自动满足。weight≠1 时，**当前实现要求整个 `total_delta` 是编译期常量**且整除 weight，不满足即放弃。
+
+   这比理论下限保守。由于 `weight * delta(strideOperand)` 天然整除 weight，整除性其实只取决于 `delta(base)`——原则上 `delta(strideOperand)` 可以是任意符号表达式，只要 `delta(base)` 是能被 weight 整除的常量即可。放宽需要给 `StrideExpr` 增加结构化的整除判定（识别 `Mul(e, Const(k))` 一类形式），暂未实现；此处记录该取舍，以免文档与实现口径不一致。
 
 4. **stride_new 为零时跳过。** 地址不前进，post-update 无收益。常量折叠使各项相消、合成结果恒为零的情形（如 base 每轮 +8、strideOperand 每轮 −8）同样能被识别。
 
 5. **类型一致性。** stride 表达式各子项须归结为同一类型，否则放弃，以免构造出 `arith.addi(index, i32)` 这类非法 op。`Const` 项不参与该约束——其类型在物化时按上下文决定。
+
+   此外，各 `Const` 项的数值须能被目标类型表示。`stride_new` 对块步长指令是窄整数（i16），超出范围的 stride 会构造出非法常量，因此在物化前一并检查并放弃。
 
 6. **操作数可用性（支配性）。** stride 表达式的每个叶子须在候选 op 处可用：循环不变量、block argument、或定义点早于候选 op。若叶子定义在候选 op **之后**，仅当其定义链全部为 pure op 时克隆到候选 op 之前（克隆保留原结果序号，多结果 op 亦正确）；否则放弃。该检查以只读方式先行完成，克隆发生在物化阶段。
 
