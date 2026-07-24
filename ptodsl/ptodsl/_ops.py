@@ -5821,12 +5821,14 @@ def stg(value, ptr_or_ref, offset=None, *, l1cache="cache", l2cache="nmfv"):
     buffer_value, index_value = resolve_address_access(ptr_or_ref, offset)
     elem_type = _pointer_element_type(buffer_value, context="stg(value, ptr, offset)")
     raw_value = unwrap_surface_value(value)
-    if raw_value.type == elem_type:
+    raw_value_type = getattr(raw_value, "type", None)
+    if raw_value_type == elem_type:
         stored_value = raw_value
     elif VectorType.isinstance(elem_type):
         raise TypeError(
             f"stg(value, ...) vector value type must match destination element type: "
-            f"got {raw_value.type}, expected {elem_type}"
+            f"got {raw_value_type if raw_value_type is not None else type(raw_value).__name__}, "
+            f"expected {elem_type}"
         )
     else:
         stored_value = coerce_scalar_to_type(value, elem_type, context="stg(value, ...)")

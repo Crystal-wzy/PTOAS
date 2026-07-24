@@ -889,6 +889,7 @@ def simt_memory_atomic_probe(
     idx = scalar.index_cast(pto.get_tid_x())
     value = pto.ldg(gm, idx, l1cache="cache", l2cache="nmfv")
     pto.stg(value, gm, idx, l1cache="uncache", l2cache="wtsred")
+    pto.stg(1, gm, idx)
 
     old = pto.atomic_add(gm, value, l2cache="nmfv", signedness="signed")
     pto.atomic_exch(gm, value, signedness="signed")
