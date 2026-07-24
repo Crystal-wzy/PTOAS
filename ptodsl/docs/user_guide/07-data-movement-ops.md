@@ -75,6 +75,41 @@ pto.tile.store(o_tile, o_view, offsets=[0, 0], sizes=[rows, cols])
 Both `tile.load` and `tile.store` operate at **tile granularity** — they are the idiomatic choice inside `@pto.jit` loops. When you need finer control over DMA scheduling, switch to
 `mode="explicit"` and use the DMA micro-instructions covered in the next section.
 
+#### `pto.tile.concat(src0: Tile, src1: Tile, dst: Tile) -> None`
+
+**Description**: Concatenates two tiles along the column dimension: `dst[:, 0:c0] = src0`
+and `dst[:, c0:c0+c1] = src1`, where `c0 = src0.valid_cols` and `c1 = src1.valid_cols`.
+All three tiles share the same element type and row-major layout;
+`src0.valid_rows == src1.valid_rows == dst.valid_rows` and `c0 + c1 == dst.valid_cols`.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src0` | `Tile` | Left source tile (`[rows, c0]`) |
+| `src1` | `Tile` | Right source tile (`[rows, c1]`) |
+| `dst` | `Tile` | Destination tile (`[rows, c0 + c1]`) |
+
+**Returns**: None (side-effect: writes `dst`).
+
+**Hardware mapping**: Vector pipeline (`PIPE_V`) — a row-wise chunked copy of `src0`
+to the destination origin and `src1` to the `c0` column offset.
+
+**Constraints**:
+
+- `src0`, `src1`, and `dst` share the same element type and row-major layout.
+- `src0.valid_rows == src1.valid_rows == dst.valid_rows`.
+- `src0.valid_cols + src1.valid_cols == dst.valid_cols`.
+
+**Example**:
+
+```python
+# dst[:, 0:c0] = src0 ; dst[:, c0:c0+c1] = src1
+pto.tile.concat(src0_tile, src1_tile, dst_tile)
+```
+
+---
+
 ## 7.2 DMA micro-instructions (explicit mode)
 
 Inside explicit-mode orchestration, data movement between memory spaces is expressed with grouped DMA instructions on typed pointers. There are four operations covering the four data-movement directions:
