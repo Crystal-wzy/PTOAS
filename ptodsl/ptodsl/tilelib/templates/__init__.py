@@ -13,6 +13,7 @@ from importlib import import_module
 
 _TEMPLATE_MODULES = {
     ("a5", "pto.tabs"): ".a5.tabs",
+    ("a5", "pto.tci"): ".a5.tci",
     ("a5", "pto.tadd"): ".a5.tadd",
     ("a5", "pto.tadds"): ".a5.tadds",
     ("a5", "pto.tand"): ".a5.tand",

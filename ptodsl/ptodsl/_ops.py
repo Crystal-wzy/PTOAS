@@ -3698,6 +3698,16 @@ def tgatherb(src, offsets, dst):
     )
 
 
+def tci(start, dst, *, tmp=None, descending=False):
+    """``pto.tci`` – generate contiguous integer sequence into dst tile (DPS)."""
+    _pto.tci(
+        _unwrap_optional_integer(start),
+        unwrap_surface_value(dst),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+        descending=descending,
+    )
+
+
 def tsel(mask, src0, src1, dst, *, tmp=None):
     """``pto.tsel ins(mask, src0, src1, tmp) outs(dst)`` with synthesized scratch when omitted."""
     resolved_tmp = tmp if tmp is not None else _resolve_selection_tmp(dst, tmp, context="tsel")

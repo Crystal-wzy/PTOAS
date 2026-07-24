@@ -610,6 +610,15 @@ def tile_sort_gather_surface_probe():
 
 
 @pto.jit(target="a5")
+def tile_ci_surface_probe():
+    dst_i32 = pto.alloc_tile(shape=[1, 64], dtype=pto.i32, valid_shape=[1, 64])
+    pto.tile.ci(0, dst_i32)
+
+    dst_ui32 = pto.alloc_tile(shape=[1, 64], dtype=pto.ui32, valid_shape=[1, 64])
+    pto.tile.ci(pto.ui32(0), dst_ui32, descending=True)
+
+
+@pto.jit(target="a5")
 def tile_surface_compute_probe():
     lhs = pto.alloc_tile(shape=[2, 16], dtype=pto.f32)
     rhs = pto.alloc_tile(shape=[2, 16], dtype=pto.f32)
@@ -4766,6 +4775,10 @@ def main() -> None:
     expect(tile_sort_gather_text.count("pto.tgather") == 2, "tile gather wrappers should lower to pto.tgather")
     expect("#pto.mask_pattern<P0101>" in tile_sort_gather_text, "pto.tile.gather should preserve P0101")
     expect("#pto.mask_pattern<P1010>" in tile_sort_gather_text, "pto.tgather should preserve P1010")
+    tile_ci_text = tile_ci_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(tile_ci_text, "tile ci surface specialization")
+    expect(tile_ci_text.count("pto.tci") == 2, "pto.tile.ci should lower to pto.tci")
+    expect("descending = true" in tile_ci_text, "pto.tile.ci(descending=True) should preserve the descending attribute in MLIR")
     expect(
         re.search(
             r"pto\.alloc_tile valid_row = %[a-zA-Z0-9_]+ valid_col = %[a-zA-Z0-9_]+ : !pto\.tile_buf<vec, 1x128xf32, valid=\?x\?>",

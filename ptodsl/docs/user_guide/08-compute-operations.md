@@ -572,7 +572,52 @@ pto.tile.fillpad(partial_tile, padded_tile)
 
 ---
 
-### 8.1.13 Tile windowing and tile-level matmul
+### 8.1.13 Contiguous integer sequence
+
+#### `pto.tile.ci(start: ScalarType, dst: Tile, *, tmp: Tile | None = None, descending: bool = False) -> None`
+
+**Description**: Generates a contiguous integer sequence into a destination tile. The tile is filled with sequential integer values starting from `start`.
+
+Conceptually:
+
+```text
+ascending:  dst[0, j] = start + j   for j in 0..cols-1
+descending: dst[0, j] = start - j   for j in 0..cols-1
+```
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `start` | `ScalarType` | Starting value of the sequence (must match `dst` element type) |
+| `dst` | `Tile` | Destination tile (must have `valid_shape[0] == 1`, i.e., single row) |
+| `tmp` | `Tile | None` | Optional scratch tile; when omitted, PTODSL uses the default backend path |
+| `descending` | `bool` | If `False` (default), generate ascending sequence; if `True`, generate descending sequence |
+
+**Returns**: None.
+
+**Constraints**:
+
+- `dst` must be a 1-row tile: `valid_shape[0] == 1`.
+- `dst` element type must be one of: `i16`, `ui16`, `i32`, `ui32`.
+- `start` must have the same element type as `dst`.
+- `dst` must use row-major layout in UB memory space.
+
+**Example** — generate ascending and descending index sequences:
+
+```python
+# Generate ascending indices: [5, 6, 7, ..., 36] (32 elements)
+idx_tile = pto.alloc_tile(shape=[1, 32], dtype=pto.i32)
+pto.tile.ci(5, idx_tile)
+
+# Generate descending indices: [100, 99, 98, ..., 69] (32 elements)
+desc_tile = pto.alloc_tile(shape=[1, 32], dtype=pto.i32)
+pto.tile.ci(100, desc_tile, descending=True)
+```
+
+---
+
+### 8.1.14 Tile windowing and tile-level matmul
 
 Tile windowing and tile-level matmul cover two common patterns in tiled matrix algorithms:
 
@@ -1262,7 +1307,7 @@ pto.tile.gemv_mx_bias(lhs_l0a_mx, lhs_scale, rhs_l0b_mx, rhs_scale, bias_tile, a
 
 ---
 
-### 8.1.14 Tile compute quick reference
+### 8.1.15 Tile compute quick reference
 
 | Category | Operations |
 |----------|------------|
@@ -1281,6 +1326,7 @@ pto.tile.gemv_mx_bias(lhs_l0a_mx, lhs_scale, rhs_l0b_mx, rhs_scale, bias_tile, a
 | Bitwise | `tile.bit_not`, `tile.bit_and`, `tile.bit_or`, `tile.bit_xor`, `tile.bit_shl`, `tile.bit_shr`, `tile.bit_ands`, `tile.bit_ors`, `tile.bit_xors`, `tile.bit_shls`, `tile.bit_shrs` |
 | Partial elementwise | `tile.partadd`, `tile.partmul`, `tile.partmax`, `tile.partmin` |
 | Fill/padding | `tile.fillpad`, `tile.fillpad_expand`, `tile.fillpad_inplace` |
+| Contiguous integer sequence | `tile.ci` |
 | Windowing | `tile.extract`, `tile.insert` |
 | Tile movement | `tile.mov`, `tile.concat` |
 | Dequantize | `tile.dequant` |

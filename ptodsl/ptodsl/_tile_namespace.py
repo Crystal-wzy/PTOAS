@@ -183,6 +183,7 @@ class _TileNamespace:
     sel = staticmethod(_ops.tsel)
     sels = staticmethod(_ops.tsels)
     cvt = staticmethod(_ops.tcvt)
+    ci = staticmethod(_ops.tci)
 
     bit_not = staticmethod(_ops.tnot)
     bit_and = staticmethod(_ops.tand)

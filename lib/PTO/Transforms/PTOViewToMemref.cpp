@@ -2960,7 +2960,8 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TCIOp>(
+        replaceOpWithClonedAttrs<pto::TCIOp>(
+            rewriter,
             op,
             TypeRange{},
             s,

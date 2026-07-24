@@ -505,6 +505,9 @@ static void appendOpContextAttrs(
           stringifyMaskPattern(maskPatternAttr.getValue()).str());
     }
   }
+  if (auto tci = dyn_cast<pto::TCIOp>(op)) {
+    attrs.emplace_back("descending", tci.getDescending() ? "true" : "false");
+  }
   (void)(tryAppendPrecisionType<pto::TExpOp>(
              op, attrs, pto::ExpPrecision::HighPrecision) ||
          tryAppendPrecisionType<pto::TLogOp>(
