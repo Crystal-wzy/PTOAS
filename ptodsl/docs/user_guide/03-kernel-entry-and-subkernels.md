@@ -1092,8 +1092,8 @@ TileOp and SIMT provide inline context manager forms: `with pto.tileop():`,
 `with pto.simt():`, and `with pto.simt(dim_x, dim_y, dim_z):`. These open
 one-off anonymous sub-kernel bodies without requiring a separate named Python
 function. Inline scopes are supported in top-level `@pto.jit` bodies. The
-dimensioned SIMT form uses the same inline body style while making the caller
-emit an explicit `pto.simt_launch`.
+dimensioned SIMT form remains in `pto.section.simt` with the authored static
+launch dimensions. The dimensions must be Python integers known at trace time.
 
 The examples below use `mode="auto"`. Inline TileOps use the same boundary
 contract in explicit callers, but explicit examples normally keep compute in
@@ -1144,11 +1144,11 @@ with pto.tileop():
   `mode="explicit"`. Explicit examples normally keep pure compute directly in
   the kernel body; use an inline scope when an anonymous helper boundary is
   intentional.
-- `with pto.simt():` preserves its scalar body inside one outlined
-  `pto.simt_entry` helper, and the caller emits `pto.store_vfsimt_info`.
-- `with pto.simt(dim_x, dim_y, dim_z):` uses the same inline outlining and
-  automatic capture rules, but emits a caller-side explicit SIMT launch with
-  the authored dimensions.
+- `with pto.simt():` remains in the enclosing kernel as `pto.section.simt`
+  with default launch dimensions `(1, 1, 1)`.
+- `with pto.simt(dim_x, dim_y, dim_z):` remains in the enclosing kernel as
+  `pto.section.simt` with the authored launch dimensions. The dimensions must
+  be Python integers known at trace time.
 - Inline TileOp captures obey the same ABI as `@pto.tileop`: only `pto.Tile`
   and PTO scalar values may cross into the helper. Pointer, TensorView, memref,
   vreg, and mask captures are rejected.
@@ -1157,8 +1157,6 @@ with pto.tileop():
 - Tile allocation, MTE, pipe synchronization, and other orchestration remain
   in the calling `@pto.jit` body. Cube-local scratch (`l0a`, `l0b`, `acc`) must
   be allocated by the caller before entering the block.
-- `with pto.simd():` and `with pto.cube():` are legacy interfaces and raise the
-  same migration diagnostic as `@pto.simd` and `@pto.cube`.
 
 ### Comparison
 

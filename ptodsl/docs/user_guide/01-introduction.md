@@ -262,7 +262,9 @@ These are reusable hardware-bound compute helpers:
 - **`@pto.simt`** is a scalar-programmable processor group that executes scalar instructions across many work-items in parallel. Typical operations: `lds`, `sts`, scalar arithmetic and comparison. Well-suited for per-element tile walks, boundary metadata, and pointwise blends.
 
 Named helpers use `@pto.tileop` or `@pto.simt`. One-off unit scopes use
-`with pto.tileop():` or `with pto.simt(...):`.
+`with pto.tileop():`, `with pto.simt():`, or
+`with pto.simt(dim_x, dim_y, dim_z):`; inline SIMT dimensions must be Python
+integers known at trace time.
 
 The boundary contract is strict: transient compute values do not escape, and
 data crosses helper boundaries only through Tiles, permitted scalars, or the
@@ -322,7 +324,7 @@ Chapter 11 walks through this example in full detail.
 |---------------|---------------|
 | New to PTODSL | Chapter 2 (Quick Start), then Chapter 3 (Kernel Entries & Modules) |
 | Writing your first kernel | Chapter 2 → Chapter 4 (Type System) → Chapter 5 (Control Flow) |
-| Looking up a specific operation | Chapters 6–10 and Chapter 13 (organized by topic) |
+| Looking up a specific operation | Chapters 6–10, Chapter 13, and Chapter 14 (organized by topic) |
 | Understanding the flash attention reference | Chapter 11 |
 
 **Chapter overview:**
@@ -342,3 +344,4 @@ Chapter 11 walks through this example in full detail.
 | 11 | Flash attention walkthrough |
 | 12 | Additional examples |
 | 13 | SIMT micro-ops |
+| 14 | The Virtual Micro-instruction Set (VMI): logical vector instructions, masks, and type-directed authoring |

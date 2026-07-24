@@ -272,9 +272,10 @@ static bool isVector2F16OrBF16Type(Type type) {
   });
 }
 
-static bool isInsideSimtEntry(Operation *op) {
+static bool isInsideSimtExecutionScope(Operation *op) {
   auto funcOp = op->getParentOfType<func::FuncOp>();
-  return funcOp && funcOp->hasAttr(pto::kPTOSimtEntryAttrName);
+  return (funcOp && funcOp->hasAttr(pto::kPTOSimtEntryAttrName)) ||
+         op->getParentOfType<pto::SectionSimtOp>();
 }
 
 static bool isSupportedConvertType(Type type) {
@@ -505,10 +506,10 @@ static LogicalResult verifyAtomicCommon(Operation *op, Value ptr, Type valueType
     return op->emitOpError()
            << "does not accept signedness for floating-point atomics";
   if (isVector2F16OrBF16Type(valueType)) {
-    if (!isInsideSimtEntry(op))
+    if (!isInsideSimtExecutionScope(op))
       return op->emitOpError()
              << "requires packed atomics to be inside a pto.simt_entry "
-                "function on beta.1";
+                "function or pto.section.simt on beta.1";
     if (!op->getResult(0).use_empty())
       return op->emitOpError()
              << "does not support using the old value result for packed "
@@ -1515,7 +1516,7 @@ static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
     case VcvtElemKind::F8E5M2:
       return VcvtContract{/*requiresRnd=*/true, /*requiresSat=*/true,
                           /*requiresPart=*/true, VcvtPartFamily::Packed4,
-                          "R"};
+                          "RAHZ"};
     case VcvtElemKind::HiF8:
       return VcvtContract{/*requiresRnd=*/true, /*requiresSat=*/true,
                           /*requiresPart=*/true, VcvtPartFamily::Packed4,
@@ -1744,6 +1745,10 @@ getVstsMaskGranularityOverride(StringRef dist, Type elementType) {
   if (dist == "PK_B16")
     return StringRef("b16");
   if (dist == "PK_B32" || dist == "PK_B64" || dist == "PK4_B32")
+    return StringRef("b32");
+  if (dist == "PK_B64")
+    return StringRef("b32");
+  if (dist == "PK4_B32")
     return StringRef("b32");
 
   return std::nullopt;
@@ -5589,9 +5594,10 @@ static LogicalResult verifyGroupReductionVecOp(ReductionOp op) {
   auto inputType = cast<VRegType>(op.getInput().getType());
   Type elemType = inputType.getElementType();
   if (auto intType = dyn_cast<IntegerType>(elemType)) {
-    if (intType.getWidth() < 16 || intType.getWidth() > 32)
+    if (intType.getWidth() != 8 && intType.getWidth() != 16 &&
+        intType.getWidth() != 32)
       return op.emitOpError(
-          "requires 16-bit or 32-bit integer vector element type");
+          "requires 8-bit, 16-bit, or 32-bit integer vector element type");
     return success();
   }
   if (!elemType.isF16() && !elemType.isF32())

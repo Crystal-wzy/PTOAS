@@ -21,6 +21,8 @@ from .._diagnostics import (
 from .._kernel_signature import RuntimeScalarParameterSpec
 from .._ops import const
 from .._surface_values import (
+    AddressOffsetValue,
+    AllocatedBufferValue,
     is_runtime_scalar_ir_type,
     is_tile_ir_type,
     unwrap_surface_value,
@@ -216,7 +218,13 @@ class TraceSession:
 
     def validate_surface_value_access(self, value) -> None:
         """Reject inline-subkernel SSA values that escaped their outlined helper body."""
-        record = self._escaped_inline_values.get(value)
+        try:
+            record = self._escaped_inline_values.get(value)
+        except TypeError:
+            raw_value = getattr(value, "_value", None)
+            if raw_value is None:
+                return
+            record = self._escaped_inline_values.get(raw_value)
         if record is None:
             return
         role, type_text = record
@@ -248,7 +256,18 @@ class TraceSession:
             return _pto.SectionCubeOp()
         return None
 
-    def _create_inline_subkernel_wrapper(self, role: str):
+    def _create_inline_subkernel_wrapper(
+        self,
+        role: str,
+        *,
+        simt_launch_dims: tuple | None = None,
+    ):
+        if role == "simt":
+            dim_x, dim_y, dim_z = _coerce_simt_section_dims(simt_launch_dims)
+            wrapper_op = _pto.SectionSimtOp(dim_x, dim_y, dim_z)
+            body_block = wrapper_op.body.blocks.append()
+            return wrapper_op, body_block
+
         wrapper_op = None
         if self._subkernel_section_policy(role) != "function_kind":
             wrapper_op = self._create_subkernel_section_op(role)
@@ -342,7 +361,10 @@ class TraceSession:
             symbol_name=symbol_name,
             target=target,
         )
-        wrapper_op, body_block = self._create_inline_subkernel_wrapper(role)
+        wrapper_op, body_block = self._create_inline_subkernel_wrapper(
+            role,
+            simt_launch_dims=simt_launch_dims,
+        )
         outline_frame = InlineSubkernelOutlineFrame(
             trace_frame=frame,
             helper_symbol_name=self._next_inline_subkernel_symbol(symbol_name),
@@ -359,7 +381,13 @@ class TraceSession:
             self._erase_attached_op(wrapper_op)
             raise
         else:
-            self._outline_inline_subkernel(outline_frame)
+            if role == "simt":
+                self._note_escaped_inline_values(
+                    self._collect_defined_values((wrapper_op,)),
+                    role=role,
+                )
+            else:
+                self._outline_inline_subkernel(outline_frame)
         finally:
             popped = self._subkernel_stack.pop()
             if popped is not frame:
@@ -582,6 +610,7 @@ class TraceSession:
             raise RuntimeError("@pto.simt helper lowering does not support nested SIMT helper calls")
 
         arg_templates = tuple(args)
+        _reject_simt_helper_alloc_buffer_args(arg_templates)
         arg_types = tuple(unwrap_surface_value(arg).type for arg in arg_templates)
         static_kwargs = _simt_static_kwargs_signature(kwargs)
         owner_symbol_name = self.current_function_owner_symbol_name
@@ -911,6 +940,17 @@ def _coerce_simt_launch_dims(dims):
     )
 
 
+def _coerce_simt_section_dims(dims):
+    if dims is None:
+        dims = (1, 1, 1)
+    if not isinstance(dims, (tuple, list)) or len(dims) != 3:
+        raise TypeError("pto.simt(...) expects exactly three launch dimensions: dim_x, dim_y, dim_z")
+    return tuple(
+        _coerce_i32_dim_attr(dim, context=f"pto.simt(..., dim[{index}])")
+        for index, dim in enumerate(dims)
+    )
+
+
 def _coerce_i32_dim(value, *, context: str):
     raw_value = unwrap_surface_value(value)
     i32 = IntegerType.get_signless(32)
@@ -928,6 +968,36 @@ def _coerce_i32_dim(value, *, context: str):
             raise TypeError(f"{context} expects i32 launch dimension, got {raw_value.type}")
         return _strip_integer_signedness(raw_value)
     raise TypeError(f"{context} expects i32 launch dimension, got {raw_value.type}")
+
+
+def _coerce_i32_dim_attr(value, *, context: str):
+    raw_value = unwrap_surface_value(value)
+    i32 = IntegerType.get_signless(32)
+    if isinstance(raw_value, bool):
+        raise TypeError(f"{context} does not accept bool values")
+    if isinstance(raw_value, int):
+        if raw_value < 0:
+            raise ValueError(f"{context} expects a non-negative i32 launch dimension, got {raw_value}")
+        if raw_value > 0x7FFFFFFF:
+            raise ValueError(f"{context} expects a signed i32 launch dimension, got {raw_value}")
+        return IntegerAttr.get(i32, raw_value)
+    raise TypeError(f"{context} expects a static Python int launch dimension, got {type(value).__name__}")
+
+
+def _is_alloc_buffer_arg(value) -> bool:
+    if isinstance(value, AllocatedBufferValue):
+        return True
+    return isinstance(value, AddressOffsetValue) and isinstance(value.base, AllocatedBufferValue)
+
+
+def _reject_simt_helper_alloc_buffer_args(args):
+    for index, arg in enumerate(args):
+        if _is_alloc_buffer_arg(arg):
+            raise TypeError(
+                "@pto.simt helpers do not accept pto.alloc_buffer persistent buffers; "
+                "use an inline pto.simt(...) scope or pass an explicitly authored typed pointer"
+                f" (argument {index})"
+            )
 
 
 def _symbol_name(ir_fn) -> str:

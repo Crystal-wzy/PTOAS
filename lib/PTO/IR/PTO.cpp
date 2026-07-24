@@ -30,6 +30,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -121,6 +122,27 @@ static bool isKnownZeroOrUnitExtent(int64_t value);
 static bool isByteIntegerType(Type ty);
 static LogicalResult verifyTileBufCommon(Operation *op, Type ty, StringRef name,
                                          bool allowLowPrecision = false);
+
+namespace {
+struct PTOInlinerInterface : public DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+
+  bool isLegalToInline(Operation *call, Operation *callable,
+                       bool wouldBeCloned) const final {
+    return true;
+  }
+
+  bool isLegalToInline(Region *dest, Region *src, bool wouldBeCloned,
+                       IRMapping &valueMapping) const final {
+    return true;
+  }
+
+  bool isLegalToInline(Operation *op, Region *dest, bool wouldBeCloned,
+                       IRMapping &valueMapping) const final {
+    return true;
+  }
+};
+} // namespace
 static LogicalResult verifyTileBufSameElemType(Operation *op, Type lhs, Type rhs,
                                                StringRef lhsName,
                                                StringRef rhsName);
@@ -2345,6 +2367,29 @@ static std::optional<int64_t> getConstantIntegerValue(Value value) {
   return std::nullopt;
 }
 
+LogicalResult mlir::pto::SectionSimtOp::verify() {
+  func::FuncOp func = getOperation()->getParentOfType<func::FuncOp>();
+  if (!func)
+    return emitOpError("must be nested under a func.func");
+
+  if (getDimXAttr().getInt() < 0 || getDimYAttr().getInt() < 0 ||
+      getDimZAttr().getInt() < 0)
+    return emitOpError("requires non-negative i32 launch dimensions");
+
+  if (func->hasAttr(pto::kPTOSimtEntryAttrName))
+    return emitOpError("must not appear inside a function marked with '")
+           << pto::kPTOSimtEntryAttrName << "'";
+
+  WalkResult nested = getBody().walk([&](SectionSimtOp nestedOp) {
+    nestedOp.emitOpError("nested pto.section.simt is not allowed");
+    return WalkResult::interrupt();
+  });
+  if (nested.wasInterrupted())
+    return failure();
+
+  return success();
+}
+
 LogicalResult mlir::pto::FusionRegionOp::verify() {
   Region &bodyRegion = getBody();
   if (bodyRegion.empty())
@@ -2646,6 +2691,97 @@ LogicalResult mlir::pto::LocalArraySetOp::verify() {
   return success();
 }
 
+// Resolve the field type reached by following a constant `path` of field
+// indices from `root`, descending through nested structs. Emits an actionable
+// op error and returns failure on an empty path, an out-of-range index, or a
+// descent into a non-struct field. On success writes the terminal field type to
+// `fieldTyOut`.
+static LogicalResult walkStructPath(Operation *op, mlir::pto::StructType root,
+                                    llvm::ArrayRef<int64_t> path,
+                                    Type &fieldTyOut) {
+  if (path.empty())
+    return op->emitOpError() << "struct path must have at least one index";
+  Type cur = root;
+  for (auto [depth, idx] : llvm::enumerate(path)) {
+    auto st = dyn_cast<mlir::pto::StructType>(cur);
+    if (!st)
+      return op->emitOpError()
+             << "struct path index " << depth
+             << " descends into non-struct field of type " << cur;
+    if (idx < 0 || idx >= static_cast<int64_t>(st.getNumFields()))
+      return op->emitOpError()
+             << "struct path index " << depth << " (" << idx
+             << ") is out of range for " << st << " with " << st.getNumFields()
+             << " field(s)";
+    cur = st.getFieldType(static_cast<unsigned>(idx));
+  }
+  fieldTyOut = cur;
+  return success();
+}
+
+// The declared struct is stack storage owned by the enclosing scope, and the
+// value lowers to a pointer to that storage. Letting it reach a terminator
+// would publish that address outside the owning scope: `return %s` hands the
+// caller a pointer into a dead frame, and `scf.yield %s` carries it out of the
+// region that owns it. Both are rejected here rather than emitted as C++ that
+// looks fine and is undefined at run time.
+LogicalResult mlir::pto::DeclareStructOp::verify() {
+  for (Operation *user : getS().getUsers()) {
+    if (!user->hasTrait<mlir::OpTrait::IsTerminator>())
+      continue;
+    return emitOpError()
+           << "stack-local struct must not escape the scope that declares it, "
+              "but its value is passed to '"
+           << user->getName()
+           << "', which would expose the address of storage that is about to "
+              "die; declare the struct in the outer scope and pass it down as "
+              "a function argument instead (pto.struct_set mutates in place, "
+              "so a struct never needs to be returned or yielded)";
+  }
+  return success();
+}
+
+// Both accessors bottom out at a scalar. A path ending on a nested !pto.struct
+// is rejected: the member chain lowers to `emitc.member`, which yields an
+// lvalue, and handing a whole aggregate back as an SSA value would mean copying
+// it out of the struct — so reaching into a nested struct is spelled as a longer
+// path instead.
+static LogicalResult verifyStructLeafIsScalar(Operation *op, Type fieldTy) {
+  if (!fieldTy.isIntOrFloat())
+    return op->emitOpError()
+           << "struct path must end at a scalar field, but ends at " << fieldTy
+           << "; extend the path to reach a scalar inside it";
+  return success();
+}
+
+LogicalResult mlir::pto::StructGetOp::verify() {
+  Type fieldTy;
+  if (failed(walkStructPath(getOperation(), getS().getType(), getPath(),
+                            fieldTy)))
+    return failure();
+  if (failed(verifyStructLeafIsScalar(getOperation(), fieldTy)))
+    return failure();
+  if (getValue().getType() != fieldTy)
+    return emitOpError() << "result type " << getValue().getType()
+                         << " does not match field type " << fieldTy
+                         << " at the given path";
+  return success();
+}
+
+LogicalResult mlir::pto::StructSetOp::verify() {
+  Type fieldTy;
+  if (failed(walkStructPath(getOperation(), getS().getType(), getPath(),
+                            fieldTy)))
+    return failure();
+  if (failed(verifyStructLeafIsScalar(getOperation(), fieldTy)))
+    return failure();
+  if (getValue().getType() != fieldTy)
+    return emitOpError() << "value type " << getValue().getType()
+                         << " does not match field type " << fieldTy
+                         << " at the given path";
+  return success();
+}
+
 LogicalResult mlir::pto::CastPtrOp::verify() {
   Type inputType = getInput().getType();
   Type resultType = getResult().getType();
@@ -2701,6 +2837,8 @@ void PTODialect::initialize() {
 #define GET_ATTRDEF_LIST
 #include "PTO/IR/PTOAttrs.cpp.inc"
       >();
+
+  addInterfaces<PTOInlinerInterface>();
 }
 
 
@@ -2797,6 +2935,58 @@ LogicalResult mlir::pto::validatePTOEntryFunctions(ModuleOp module) {
     }
   }
   return success();
+}
+
+// A !pto.struct is represented as a pointer to stack storage. Its provenance
+// therefore has to remain explicit: the value either comes directly from
+// pto.declare_struct or is received as a function entry argument. Operations
+// such as arith.select and scf.if must not manufacture another struct-typed SSA
+// result, because that alias hides the declaration from DeclareStructOp's
+// direct-use escape check. CFG block arguments may relay an existing value:
+// forwarding a declaration directly is already rejected because the branch is
+// a terminator, while forwarding a function argument preserves its lifetime.
+//
+// Function results are rejected separately because func.func records them in
+// its signature rather than as SSA results. Passing structs down into helpers
+// remains supported, and pto.struct_set mutates in place, so no derived struct
+// result is needed.
+LogicalResult mlir::pto::validateStructProvenance(ModuleOp module) {
+  if (!module)
+    return success();
+
+  WalkResult result = module.walk([&](Operation *op) -> WalkResult {
+    if (auto func = dyn_cast<func::FuncOp>(op)) {
+      for (auto [i, resultTy] :
+           llvm::enumerate(func.getFunctionType().getResults())) {
+        if (!isa<StructType>(resultTy))
+          continue;
+        func.emitOpError()
+            << "result " << i << " has type " << resultTy
+            << ", but a stack-local struct must not be returned: the value is "
+               "a pointer into the callee's frame, and returning it (even "
+               "when it merely passes an argument back through) launders its "
+               "provenance; pass the struct down as an argument instead "
+               "(pto.struct_set mutates in place, so a result is never needed)";
+        return WalkResult::interrupt();
+      }
+    }
+
+    if (!isa<DeclareStructOp>(op)) {
+      for (auto [i, opResult] : llvm::enumerate(op->getResults())) {
+        if (!isa<StructType>(opResult.getType()))
+          continue;
+        op->emitOpError()
+            << "result " << i << " has type " << opResult.getType()
+            << ", but only 'pto.declare_struct' may produce a !pto.struct "
+               "result; derived results hide the stack-storage lifetime and "
+               "can escape their declaring scope";
+        return WalkResult::interrupt();
+      }
+    }
+
+    return WalkResult::advance();
+  });
+  return result.wasInterrupted() ? failure() : success();
 }
 
 void mlir::pto::annotatePTOEntryFunctions(ModuleOp module) {
@@ -3389,6 +3579,14 @@ LogicalResult mlir::pto::SyncSetOp::verify() {
 
   auto verifyA2A3 = [&]() -> LogicalResult { return success(); };
   auto verifyA5 = [&]() -> LogicalResult {
+    if (IntegerAttr eventIdAttr = getEventIdAttr()) {
+      int64_t eventId = eventIdAttr.getInt();
+      if (eventId < 0 || eventId > 31) {
+        return emitOpError()
+               << "A5 sync.set expects static event_id in [0, 31], but got "
+               << eventId;
+      }
+    }
     switch (getPipe().getPipe()) {
     case PIPE::PIPE_FIX:
     case PIPE::PIPE_MTE3:
@@ -3552,6 +3750,13 @@ LogicalResult mlir::pto::SyncWaitOp::verify() {
 
   auto verifyA2A3 = [&]() -> LogicalResult { return success(); };
   auto verifyA5 = [&]() -> LogicalResult {
+    if (IntegerAttr eventIdAttr = getEventIdAttr()) {
+      int64_t eventId = eventIdAttr.getInt();
+      if (eventId < 0 || eventId > 31)
+        return emitOpError()
+               << "A5 sync.wait expects static physical event_id in [0, 31], but got "
+               << eventId;
+    }
     switch (getPipe().getPipe()) {
     case PIPE::PIPE_FIX:
     case PIPE::PIPE_MTE1:
@@ -13272,6 +13477,83 @@ LogicalResult LocalArrayType::verify(
   return success();
 }
 
+// ---- StructType ----
+// Asm form: !pto.struct<T0, T1, ..., Tn-1>
+// A field type must be "scalar-storable": an exactly-nameable scalar or a
+// nested !pto.struct (see the two predicates below). The allowlist deliberately
+// excludes the vec/cube types (tile_buf / tensor_view / partition view) and any
+// other handle type, keeping the scalar struct world disjoint from the
+// fractal/layout world.
+
+// A struct field's scalar type must map onto a C++ scalar that the backend can
+// name exactly: integers of width 8/16/32/64 and f16/bf16/f32/f64. Widths the
+// backend has no spelling for (i1, i24, ...) and the packed low-precision
+// vec/cube formats (f8/f4 variants) would otherwise be emitted as `float`,
+// silently changing the field's width and semantics, so reject them here.
+static bool isStructScalar(Type t) {
+  if (llvm::isa<Float16Type, BFloat16Type, Float32Type, Float64Type>(t))
+    return true;
+  if (auto intTy = llvm::dyn_cast<IntegerType>(t)) {
+    unsigned w = intTy.getWidth();
+    return w == 8 || w == 16 || w == 32 || w == 64;
+  }
+  return false;
+}
+
+// A field is either such a scalar or a nested !pto.struct. !pto.local_array is
+// deliberately NOT allowed: a field is reached with `emitc.member`, whose result
+// must be an `!emitc.lvalue`, and `!emitc.lvalue` cannot wrap `!emitc.array`
+// (the type an array field lowers to). There is no way to spell the access, so
+// the restriction is enforced here rather than failing later in the backend.
+static bool isStructStorable(Type t) {
+  return isStructScalar(t) || llvm::isa<StructType>(t);
+}
+
+Type StructType::parse(AsmParser &parser) {
+  SmallVector<Type> fields;
+  if (parser.parseCommaSeparatedList(
+          AsmParser::Delimiter::LessGreater, [&]() -> ParseResult {
+            Type t;
+            if (parser.parseType(t))
+              return failure();
+            fields.push_back(t);
+            return success();
+          }))
+    return Type();
+  return StructType::getChecked(
+      [&]() { return parser.emitError(parser.getNameLoc()); },
+      parser.getContext(), fields);
+}
+
+void StructType::print(AsmPrinter &printer) const {
+  printer << "<";
+  llvm::ArrayRef<Type> fields = getFieldTypes();
+  for (size_t i = 0; i < fields.size(); ++i) {
+    if (i)
+      printer << ", ";
+    printer.printType(fields[i]);
+  }
+  printer << ">";
+}
+
+LogicalResult StructType::verify(
+    llvm::function_ref<InFlightDiagnostic()> emitError,
+    llvm::ArrayRef<Type> fieldTypes) {
+  if (fieldTypes.empty())
+    return emitError() << "'!pto.struct' requires at least one field";
+  for (auto [i, f] : llvm::enumerate(fieldTypes)) {
+    if (!isStructStorable(f))
+      return emitError()
+             << "'!pto.struct' field " << i << " type " << f
+             << " is not scalar-storable; only i8/i16/i32/i64 (signed, "
+                "unsigned or signless), f16/bf16/f32/f64, or a nested "
+                "!pto.struct are allowed (!pto.local_array cannot be a field "
+                "because emitc.member cannot yield an array lvalue; tile_buf / "
+                "tensor_view belong to the vec/cube world)";
+  }
+  return success();
+}
+
 // =============================================================================
 // Decompose Helper (Reverse Engineering AffineMap -> Strides)
 // =============================================================================
@@ -17691,24 +17973,30 @@ static bool isSupportedSimtKeepResumeType(Type type) {
   return type.isF16() || type.isBF16() || type.isF32();
 }
 
-static LogicalResult verifyInsideSimtEntry(Operation *op) {
+static bool isInsideSimtExecutionScope(Operation *op) {
   func::FuncOp func = getParentFunc(op);
-  if (!func || !func->hasAttr(pto::kPTOSimtEntryAttrName))
+  return (func && func->hasAttr(pto::kPTOSimtEntryAttrName)) ||
+         op->getParentOfType<pto::SectionSimtOp>();
+}
+
+static LogicalResult verifyInsideSimtExecutionScope(Operation *op) {
+  if (!isInsideSimtExecutionScope(op))
     return op->emitOpError("must appear inside a function marked with '")
-           << pto::kPTOSimtEntryAttrName << "'";
+           << pto::kPTOSimtEntryAttrName
+           << "' or inside pto.section.simt";
   return success();
 }
 
 LogicalResult SyncthreadsOp::verify() {
-  return verifyInsideSimtEntry(getOperation());
+  return verifyInsideSimtExecutionScope(getOperation());
 }
 
 LogicalResult ThreadfenceOp::verify() {
-  return verifyInsideSimtEntry(getOperation());
+  return verifyInsideSimtExecutionScope(getOperation());
 }
 
 LogicalResult ThreadfenceBlockOp::verify() {
-  return verifyInsideSimtEntry(getOperation());
+  return verifyInsideSimtExecutionScope(getOperation());
 }
 
 void SyncthreadsOp::getEffects(
@@ -18265,6 +18553,39 @@ static void printStL2Cache(OpAsmPrinter &printer, Operation *op,
   if (!l2cache)
     return;
   printer << "l2cache(" << stringifyStL2Cache(l2cache.getValue()) << ")";
+}
+
+// custom<StructPath>($path): a bracketed list of constant field indices, e.g.
+// `[0, 2]`. Backs pto.struct_get / pto.struct_set so they read as `%s[0, 2]`.
+static ParseResult parseStructPath(OpAsmParser &parser,
+                                   DenseI64ArrayAttr &path) {
+  SmallVector<int64_t> indices;
+  if (parser.parseLSquare())
+    return failure();
+  if (failed(parser.parseOptionalRSquare())) {
+    do {
+      int64_t idx = 0;
+      if (parser.parseInteger(idx))
+        return failure();
+      indices.push_back(idx);
+    } while (succeeded(parser.parseOptionalComma()));
+    if (parser.parseRSquare())
+      return failure();
+  }
+  path = DenseI64ArrayAttr::get(parser.getContext(), indices);
+  return success();
+}
+
+static void printStructPath(OpAsmPrinter &printer, Operation *op,
+                            DenseI64ArrayAttr path) {
+  printer << "[";
+  llvm::ArrayRef<int64_t> indices = path.asArrayRef();
+  for (size_t i = 0; i < indices.size(); ++i) {
+    if (i)
+      printer << ", ";
+    printer << indices[i];
+  }
+  printer << "]";
 }
 
 // [Include 必须放在最后]
