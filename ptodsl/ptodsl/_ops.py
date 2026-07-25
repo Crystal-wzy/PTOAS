@@ -415,7 +415,7 @@ def _normalize_dist_token(dist, *, allowed: set[str], context: str):
     return normalized
 
 
-def vldsx2(source, offset_or_dist, dist=None):
+def vldsx2(source, offset_or_dist, dist=None, *, result_vreg_type=None):
     """``pto.vldsx2`` – dual vector load with deinterleave."""
     if isinstance(source, TileSliceValue):
         if dist is not None:
@@ -436,7 +436,10 @@ def vldsx2(source, offset_or_dist, dist=None):
 
     if dist is None:
         raise TypeError("vldsx2(ptr, offset, dist) requires an explicit offset and dist")
-    result_type = _infer_vreg_type_from_address_source(source)
+    if result_vreg_type is not None:
+        result_type = _resolve(result_vreg_type)
+    else:
+        result_type = _infer_vreg_type_from_address_source(source)
     op = _pto.Vldsx2Op(
         result_type,
         result_type,
@@ -2107,6 +2110,19 @@ def vdintlv(lhs, rhs):
     return wrap_surface_value(low), wrap_surface_value(high)
 
 
+def chistv2(acc, source, mask, bin_val):
+    """``pto.chistv2`` – accumulate 128-bin histogram from b8 source into b16 accumulator."""
+    return wrap_surface_value(
+        _pto.Chistv2Op(
+            unwrap_surface_value(acc).type,
+            unwrap_surface_value(acc),
+            unwrap_surface_value(source),
+            unwrap_surface_value(mask),
+            unwrap_surface_value(bin_val),
+        ).result
+    )
+
+
 def vselr(src0, src1):
     """``pto.vselr`` – vector select/reorder helper."""
     _reject_low_precision_vreg_operands(src0, src1, context="pto.vselr(...)")
@@ -3688,6 +3704,70 @@ def tgather(
         offset=offset,
     )
 
+def ttri(diagonal, dst, *, upper_or_lower="lower"):
+    """``pto.ttri ins(diagonal) outs(dst)``."""
+    if isinstance(upper_or_lower, str):
+        if upper_or_lower == "lower":
+            upper_or_lower = 0
+        elif upper_or_lower == "upper":
+            upper_or_lower = 1
+        else:
+            raise ValueError(
+                f"upper_or_lower must be 'lower' or 'upper', got {upper_or_lower!r}"
+            )
+    elif upper_or_lower not in (0, 1):
+        raise ValueError(f"upper_or_lower must be 0 (lower) or 1 (upper), got {upper_or_lower}")
+    if not isinstance(diagonal, int):
+        raise TypeError(
+            f"ttri(diagonal) expects an int, got {type(diagonal).__name__}"
+        )
+    dst_dtype = str(infer_tile_element_type(dst))
+    _TRI_ALLOWED_DTYPES = {
+        "i8", "i16", "i32", "ui8", "ui16", "ui32", "f16", "bf16", "f32",
+    }
+    if dst_dtype not in _TRI_ALLOWED_DTYPES:
+        raise ValueError(
+            f"ttri dst dtype must be one of {sorted(_TRI_ALLOWED_DTYPES)}, "
+            f"got {dst_dtype!r}"
+        )
+    _pto.ttri(
+        _coerce_i32(diagonal, context="ttri(diagonal)"),
+        unwrap_surface_value(dst),
+        upper_or_lower=upper_or_lower,
+    )
+
+def tthistogram(src, idx, dst, *, byte=None):
+    """``pto.thistogram ins(src, idx) outs(dst)``."""
+    if byte is not None:
+        if not isinstance(byte, int) or byte not in (0, 1, 2, 3):
+            raise ValueError(f"byte must be an int in [0, 3], got {byte!r}")
+    src_dtype = str(infer_tile_element_type(src))
+    idx_dtype = str(infer_tile_element_type(idx))
+    dst_dtype = str(infer_tile_element_type(dst))
+    if src_dtype not in ("ui16", "ui32"):
+        raise ValueError(
+            f"thistogram src dtype must be ui16 or ui32, got {src_dtype!r}"
+        )
+    if idx_dtype != "ui8":
+        raise ValueError(
+            f"thistogram idx dtype must be ui8, got {idx_dtype!r}"
+        )
+    if dst_dtype != "ui32":
+        raise ValueError(
+            f"thistogram dst dtype must be ui32, got {dst_dtype!r}"
+        )
+    effective_byte = 1 if byte is None else byte
+    if src_dtype == "ui16" and effective_byte not in (0, 1):
+        raise ValueError(
+            f"thistogram with ui16 src only supports byte 0 (LSB) or 1 (MSB), "
+            f"got byte={effective_byte}"
+        )
+    _pto.thistogram(
+        unwrap_surface_value(src),
+        unwrap_surface_value(idx),
+        unwrap_surface_value(dst),
+        byte=byte,
+    )
 
 def tgatherb(src, offsets, dst):
     """``pto.tgatherb`` – tile gather using byte offsets (DPS)."""
@@ -6187,6 +6267,8 @@ __all__ = [
     "tnot", "tand", "tands", "tor", "tors", "txor", "txors", "tshl", "tshls", "tshr", "tshrs",
     "tpartadd", "tpartmul", "tpartmax", "tpartmin",
     "tfillpad", "tfillpad_expand", "tfillpad_inplace",
+    "ttri", "tthistogram",
+    "chistv2",
     "as_ptr",
     "mte_load", "mte_store", "mte_gm_ub", "mte_ub_gm", "mte_ub_ub", "mte_ub_l1",
     "mte_gm_l1", "mte_l1_ub", "mte_gm_l1_frac", "mte_l1_bt", "mte_l1_fb", "mem_bar",

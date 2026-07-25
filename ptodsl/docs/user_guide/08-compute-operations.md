@@ -1307,7 +1307,143 @@ pto.tile.gemv_mx_bias(lhs_l0a_mx, lhs_scale, rhs_l0b_mx, rhs_scale, bias_tile, a
 
 ---
 
-### 8.1.15 Tile compute quick reference
+### 8.1.15 Triangular mask generation
+
+#### `pto.tile.tri(diagonal: IndexLike, dst: Tile, *, upper_or_lower: str | int = "lower") -> None`
+
+**Description**: Fills `dst` with a triangular mask pattern. When `upper_or_lower="lower"` (default), `dst[i,j] = 1` if `j <= i + diagonal`, else `0`. When `upper_or_lower="upper"`, `dst[i,j] = 1` if `j >= i + diagonal`, else `0`. The `diagonal` parameter shifts the diagonal boundary and may be negative.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `diagonal` | `IndexLike` | Diagonal offset (runtime integer; may be negative) |
+| `dst` | `Tile` | Destination tile (filled in-place) |
+| `upper_or_lower` | `str \| int` | `"lower"` (default, equivalent to `0`) or `"upper"` (equivalent to `1`). |
+
+> **Backward compatibility**: The DSL layer also accepts the legacy integer values `0` (`"lower"`) and `1` (`"upper"`). The internal IR uses `0`/`1` regardless of which form is passed at the DSL level.
+
+**Returns**: None (writes to `dst`).
+
+**Constraints**:
+- `upper_or_lower` must be `"lower"` or `"upper"` (or `0`/`1`).
+- `dst` must be in UB (`vec` address space) with `RowMajor` + `NoneBox` layout.
+- Supported element types: `f16`, `f32`, `bf16`, `i8`, `i16`, `i32`, `ui8`, `ui16`, `ui32`.
+- Runs on `PIPE_V` (vector pipe).
+
+**Example** — lower-triangular mask with diagonal offset:
+
+```python
+# 4×8 tile, valid region 4×4
+out_tile = pto.alloc_tile(shape=[4, 8], dtype=pto.f32, valid_shape=[4, 4])
+
+# Lower triangular, diagonal=0 → dst[i,j]=1 where j<=i
+pto.tile.tri(0, out_tile, upper_or_lower="lower")
+
+# Upper triangular, diagonal=2 → dst[i,j]=1 where j>=i+2
+pto.tile.tri(2, out_tile, upper_or_lower="upper")
+
+# Lower triangular, diagonal=-1 → skips first row (i=0 has no j<=-1)
+pto.tile.tri(-1, out_tile, upper_or_lower="lower")
+```
+
+---
+
+### 8.1.16 Row-wise histogram
+
+#### `pto.tile.histogram(src: Tile, idx: Tile, dst: Tile, *, byte: int | None = None) -> None`
+
+**Description**: Computes a per-row ascending cumulative 256-bin histogram and writes the result to `dst`. Each row of `src` is treated as a collection of multi-byte elements; one byte plane (selected by `byte`) is histogrammed, optionally filtered by index values from `idx`. The output `dst` has shape `(rows, 256)` with `ui32` element type, where each row stores the cumulative histogram of the selected byte plane.
+
+The `byte` parameter selects which byte of each source element to histogram, following MSB-first radix-sort ordering:
+
+**uint16 source** (`byte` ∈ {0, 1}):
+
+| `byte` | Byte selected | Filtering |
+|--------|---------------|-----------|
+| `1` (default) | MSB (bits 15–8) | None |
+| `0` | LSB (bits 7–0) | Only elements whose MSB equals `idx[row]` |
+
+**uint32 source** (`byte` ∈ {0, 1, 2, 3}):
+
+| `byte` | Byte selected | Filtering |
+|--------|---------------|-----------|
+| `3` | byte3 (bits 31–24, MSB) | None |
+| `2` | byte2 (bits 23–16) | byte3 == `idx[0]` |
+| `1` | byte1 (bits 15–8) | byte3 == `idx[0]` AND byte2 == `idx[1]` |
+| `0` | byte0 (bits 7–0, LSB) | byte3 == `idx[0]` AND byte2 == `idx[1]` AND byte1 == `idx[2]` |
+
+The `idx` tile stores filter byte values. For uint16 sources, `idx` has shape `(rows, 1)` with `ColMajor` layout (one filter byte per row). For uint32 sources, `idx` has shape `(3-byte, cols)` with `RowMajor` layout — each row broadcasts one filter byte across all columns. When `byte=3` (uint32 MSB, no filtering), `idx` is unused.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `Tile` | Source tile; element type `ui16` or `ui32`, `RowMajor` + `NoneBox` |
+| `idx` | `Tile` | Filter-index tile; element type `ui8`. Layout depends on source type (see above) |
+| `dst` | `Tile` | Destination tile; element type `ui32`, shape `(rows, 256)`, `RowMajor` + `NoneBox` |
+| `byte` | `int \| None` | Byte selector (0–3). Default is `1`. For uint16, only 0 or 1 are valid. |
+
+**Returns**: None (writes to `dst`).
+
+**Constraints**:
+- A5 target only.
+- `src` element type must be `ui16` or `ui32`; `idx` must be `ui8`; `dst` must be `ui32`.
+- `src`, `idx`, `dst` must be in UB (`vec` address space).
+- `dst` rows must match `src` rows (both physical and valid).
+- `dst` must have at least 256 physical columns.
+- For uint16: `byte` ∈ {0, 1}; `idx` uses `ColMajor` + `NoneBox` with exactly 1 column; `idx` rows must match `src` rows.
+- For uint32 with `byte` < 3: `idx` uses `RowMajor` + `NoneBox`; `idx` columns must match `src` columns; `idx` rows must equal `3 - byte`.
+- For uint32 with `byte` = 3: `idx` is unused (any shape accepted).
+- Runs on `PIPE_V` (vector pipe).
+
+**Example** — uint16 MSB histogram (no filtering):
+
+```python
+# Source: 2 rows × 128 cols of uint16
+src_tile = pto.alloc_tile(shape=[32, 128], dtype=pto.ui16, valid_shape=[2, 128])
+# idx: 32×1 uint8 (ColMajor, unused for byte=1 but must be present)
+idx_tile = pto.alloc_tile(shape=[32, 1], dtype=pto.ui8,
+                           valid_shape=[2, 1], blayout="ColMajor")
+# Output: 2 rows × 256 bins of uint32
+dst_tile = pto.alloc_tile(shape=[32, 256], dtype=pto.ui32, valid_shape=[2, 256])
+
+pto.tile.load(src_view, src_tile)
+pto.tile.histogram(src_tile, idx_tile, dst_tile, byte=1)
+pto.tile.store(dst_tile, out_view)
+```
+
+**Example** — uint32 byte3 (MSB) histogram:
+
+```python
+src_tile = pto.alloc_tile(shape=[32, 128], dtype=pto.ui32, valid_shape=[2, 128])
+# idx unused for byte=3; allocate a minimal tile
+idx_tile = pto.alloc_tile(shape=[1, 32], dtype=pto.ui8, valid_shape=[1, 1])
+dst_tile = pto.alloc_tile(shape=[32, 256], dtype=pto.ui32, valid_shape=[2, 256])
+
+pto.tile.load(src_view, src_tile)
+pto.tile.histogram(src_tile, idx_tile, dst_tile, byte=3)
+pto.tile.store(dst_tile, out_view)
+```
+
+**Example** — uint32 byte0 (LSB) histogram with full cascaded filtering:
+
+```python
+# Source: 2 rows × 128 cols of uint32
+src_tile = pto.alloc_tile(shape=[32, 128], dtype=pto.ui32, valid_shape=[2, 128])
+# idx: 3 rows × 128 cols of uint8 (3 filter bytes for byte=0)
+idx_tile = pto.alloc_tile(shape=[3, 128], dtype=pto.ui8, valid_shape=[3, 128])
+dst_tile = pto.alloc_tile(shape=[32, 256], dtype=pto.ui32, valid_shape=[2, 256])
+
+pto.tile.load(src_view, src_tile)
+pto.tile.load(idx_view, idx_tile)
+pto.tile.histogram(src_tile, idx_tile, dst_tile, byte=0)
+pto.tile.store(dst_tile, out_view)
+```
+
+---
+
+### 8.1.17 Tile compute quick reference
 
 | Category | Operations |
 |----------|------------|
@@ -1326,6 +1462,8 @@ pto.tile.gemv_mx_bias(lhs_l0a_mx, lhs_scale, rhs_l0b_mx, rhs_scale, bias_tile, a
 | Bitwise | `tile.bit_not`, `tile.bit_and`, `tile.bit_or`, `tile.bit_xor`, `tile.bit_shl`, `tile.bit_shr`, `tile.bit_ands`, `tile.bit_ors`, `tile.bit_xors`, `tile.bit_shls`, `tile.bit_shrs` |
 | Partial elementwise | `tile.partadd`, `tile.partmul`, `tile.partmax`, `tile.partmin` |
 | Fill/padding | `tile.fillpad`, `tile.fillpad_expand`, `tile.fillpad_inplace` |
+| Triangular mask | `tile.tri` |
+| Row-wise histogram | `tile.histogram` |
 | Contiguous integer sequence | `tile.ci` |
 | Windowing | `tile.extract`, `tile.insert` |
 | Tile movement | `tile.mov`, `tile.concat` |
@@ -1335,7 +1473,7 @@ pto.tile.gemv_mx_bias(lhs_l0a_mx, lhs_scale, rhs_l0b_mx, rhs_scale, bias_tile, a
 
 ---
 
-### 8.1.15 Dequantize
+### 8.1.18 Dequantize
 
 #### `pto.tile.dequant(src: Tile, scale: Tile, offset: Tile, dst: Tile) -> None`
 

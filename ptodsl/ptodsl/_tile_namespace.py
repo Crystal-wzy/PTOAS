@@ -180,6 +180,9 @@ class _TileNamespace:
     gather = staticmethod(_ops.tgather)
     gatherb = staticmethod(_ops.tgatherb)
 
+    tri = staticmethod(_ops.ttri)
+    histogram = staticmethod(_ops.tthistogram)
+
     sel = staticmethod(_ops.tsel)
     sels = staticmethod(_ops.tsels)
     cvt = staticmethod(_ops.tcvt)

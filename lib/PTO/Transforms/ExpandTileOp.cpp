@@ -505,6 +505,15 @@ static void appendOpContextAttrs(
           stringifyMaskPattern(maskPatternAttr.getValue()).str());
     }
   }
+  if (auto ttri = dyn_cast<pto::TTriOp>(op)) {
+    attrs.emplace_back("upper_or_lower", std::to_string(ttri.getUpperOrLower()));
+  }
+  if (auto thistogram = dyn_cast<pto::THistogramOp>(op)) {
+    int byte = 1;
+    if (auto byteAttr = thistogram.getByteAttr())
+      byte = byteAttr.getInt();
+    attrs.emplace_back("byte", std::to_string(byte));
+  }
   if (auto tci = dyn_cast<pto::TCIOp>(op)) {
     attrs.emplace_back("descending", tci.getDescending() ? "true" : "false");
   }
