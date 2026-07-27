@@ -24,7 +24,10 @@ module {
 }
 
 // CHECK-LABEL: func.func @vmi_to_vpto_group_broadcast_s32_lane_stride4_small_group(
+// CHECK: %[[IOTA:.*]] = pto.vci {{.*}} -> !pto.vreg<64xui32>
+// CHECK: %[[RAMP:.*]] = pto.vshrs %[[IOTA]], {{.*}}
 // CHECK-COUNT-4: pto.vselr
+// CHECK-NOT: pto.vsel {{.*}}
 // CHECK-NOT: pto.vmi.
 // CHECK-NOT: !pto.vmi.
 // CHECK-NOT: unrealized_conversion_cast

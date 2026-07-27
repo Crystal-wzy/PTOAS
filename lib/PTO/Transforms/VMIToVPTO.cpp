@@ -3145,83 +3145,6 @@ LogicalResult checkContiguousFullGroupChunks(
   return success();
 }
 
-LogicalResult checkFullGroupSlotSourceShape(
-    Operation *op, VMIVRegType type, int64_t groupSize, int64_t numGroups,
-    int64_t *lanesPerPart, int64_t *groupCount, PatternRewriter &rewriter) {
-  auto fail = [&](const Twine &message) {
-    return rewriter.notifyMatchFailure(op, message);
-  };
-
-  VMILayoutAttr layout = type.getLayoutAttr();
-  if (!layout || !layout.isGroupSlots() || layout.getNumGroups() != numGroups)
-    return fail("group slot op requires matching num_groups VMI layout");
-  if (type.getElementCount() != numGroups)
-    return fail("group slot op requires one logical lane per group");
-  FailureOr<int64_t> lanes = getDataLanesPerPart(type.getElementType());
-  if (failed(lanes))
-    return fail("group slot op requires known physical lanes per part");
-  if (groupSize <= 0)
-    return fail("group slot op requires positive derived group size");
-  if (*lanes % groupSize != 0 && groupSize % *lanes != 0)
-    return fail("group slot op requires group size to divide or be a "
-                "multiple of physical lanes per part");
-
-  *lanesPerPart = *lanes;
-  *groupCount = numGroups;
-  return success();
-}
-
-LogicalResult checkFullGroupBroadcastResultShape(
-    Operation *op, VMIVRegType type, int64_t groupSize, int64_t lanesPerPart,
-    int64_t *layoutFactor, int64_t *groupCount, PatternRewriter &rewriter) {
-  auto fail = [&](const Twine &message) {
-    return rewriter.notifyMatchFailure(op, message);
-  };
-
-  VMILayoutAttr layout = type.getLayoutAttr();
-  if (!layout)
-    return fail("group_broadcast result requires assigned VMI layout");
-  if (layout.isGroupSlots())
-    return fail("group_broadcast result requires a dense VMI layout");
-  bool laneStridedDense = layout.isDense() && layout.getLaneStride() > 1;
-  if (!laneStridedDense && failed(checkFullDataPhysicalChunks(type, nullptr)))
-    return fail("group_broadcast result requires full physical chunks");
-  FailureOr<int64_t> resultLanes = getDataLanesPerPart(type.getElementType());
-  if (failed(resultLanes) || *resultLanes != lanesPerPart)
-    return fail("group_broadcast result requires matching physical lanes");
-  if (groupSize <= 0 || type.getElementCount() % groupSize != 0)
-    return fail("group_broadcast result requires derived group size to evenly "
-                "divide lane count");
-  FailureOr<int64_t> factor = getDataLayoutFactor(type);
-  if (failed(factor))
-    return fail("group_broadcast result requires known layout factor");
-
-  if (*factor == 1) {
-    if (lanesPerPart % groupSize != 0 && groupSize % lanesPerPart != 0)
-      return fail("group_broadcast contiguous result requires group size to "
-                  "divide or be a multiple of physical lanes per part");
-  } else {
-    FailureOr<int64_t> blockElems = getVMILayoutBlockElems(type);
-    bool blockFragmentSmallGroup =
-        layout.isBlockDeinterleaved() && succeeded(blockElems) &&
-        groupSize < lanesPerPart && lanesPerPart % *blockElems == 0;
-    bool deinterleavedSmallGroup =
-        layout.isDeinterleaved() &&
-        groupSize < lanesPerPart && groupSize >= *factor &&
-        groupSize % *factor == 0 && lanesPerPart % (groupSize / *factor) == 0;
-    int64_t logicalSpanPerResultChunk = lanesPerPart * *factor;
-    if (!blockFragmentSmallGroup && !deinterleavedSmallGroup &&
-        (groupSize < lanesPerPart ||
-         groupSize % logicalSpanPerResultChunk != 0))
-      return fail("group_broadcast deinterleaved result requires every "
-                  "physical result chunk to stay within one logical group");
-  }
-
-  *layoutFactor = *factor;
-  *groupCount = type.getElementCount() / groupSize;
-  return success();
-}
-
 FailureOr<Value> createZeroVector(Location loc, VRegType type,
                                   PatternRewriter &rewriter) {
   FailureOr<Value> zero =
@@ -3287,78 +3210,6 @@ FailureOr<Value> createGroupSlotIndexVector(Location loc, VRegType indexType,
                       .getResult();
     result = rewriter.create<VselOp>(loc, indexType, splat, result, *laneMask)
                  .getResult();
-  }
-  return result;
-}
-
-FailureOr<Value> createMappedGroupSlotIndexVector(
-    Location loc, VMIVRegType resultVMIType, int64_t part, int64_t chunk,
-    VRegType indexType, int64_t groupSize, int64_t slots, int64_t &sourceChunk,
-    PatternRewriter &rewriter, int64_t slotLaneStride = 1) {
-  if (groupSize <= 0 || slots <= 0)
-    return failure();
-
-  int64_t lanesPerPart = indexType.getElementCount();
-  SmallVector<int64_t> slotByLane;
-  slotByLane.reserve(lanesPerPart);
-  std::optional<int64_t> resolvedSourceChunk;
-  for (int64_t lane = 0; lane < lanesPerPart; ++lane) {
-    FailureOr<bool> padding =
-        isPaddingLane(resultVMIType, part, chunk, lane);
-    if (failed(padding))
-      return failure();
-    if (*padding) {
-      slotByLane.push_back(0);
-      continue;
-    }
-    FailureOr<int64_t> logicalLane =
-        mapPhysicalLaneToLogical(resultVMIType, part, chunk, lane);
-    if (failed(logicalLane))
-      return failure();
-    int64_t group = *logicalLane / groupSize;
-    int64_t candidateSourceChunk = group / slots;
-    if (resolvedSourceChunk && *resolvedSourceChunk != candidateSourceChunk)
-      return failure();
-    resolvedSourceChunk = candidateSourceChunk;
-    slotByLane.push_back((group % slots) * slotLaneStride);
-  }
-  if (!resolvedSourceChunk)
-    return failure();
-  sourceChunk = *resolvedSourceChunk;
-
-  FailureOr<Value> baseScalar = createScalarOffsetConstant(
-      loc, indexType.getElementType(), slotByLane.front(), rewriter);
-  FailureOr<MaskType> maskType =
-      getMaskTypeForVReg(indexType, rewriter.getContext());
-  FailureOr<Value> allMask = createAllTrueMaskForVReg(loc, indexType, rewriter);
-  if (failed(baseScalar) || failed(maskType) || failed(allMask))
-    return failure();
-
-  Value result = rewriter
-                     .create<VdupOp>(loc, indexType, *baseScalar, *allMask,
-                                     /*position=*/nullptr)
-                     .getResult();
-  int64_t rangeBegin = 0;
-  while (rangeBegin < lanesPerPart) {
-    int64_t slot = slotByLane[rangeBegin];
-    int64_t rangeEnd = rangeBegin + 1;
-    while (rangeEnd < lanesPerPart && slotByLane[rangeEnd] == slot)
-      ++rangeEnd;
-    if (rangeBegin != 0 || slot != slotByLane.front()) {
-      FailureOr<Value> slotScalar = createScalarOffsetConstant(
-          loc, indexType.getElementType(), slot, rewriter);
-      FailureOr<Value> laneMask =
-          createLaneRangeMask(loc, *maskType, rangeBegin, rangeEnd, rewriter);
-      if (failed(slotScalar) || failed(laneMask))
-        return failure();
-      Value splat = rewriter
-                        .create<VdupOp>(loc, indexType, *slotScalar, *allMask,
-                                        /*position=*/nullptr)
-                        .getResult();
-      result = rewriter.create<VselOp>(loc, indexType, splat, result, *laneMask)
-                   .getResult();
-    }
-    rangeBegin = rangeEnd;
   }
   return result;
 }
@@ -6426,299 +6277,240 @@ static LogicalResult lowerGroupBroadcastParts(
     Operation *op, ValueRange sourceParts, VMIVRegType sourceVMIType,
     VMIVRegType resultVMIType, TypeRange resultTypes, int64_t numGroups,
     ConversionPatternRewriter &rewriter, SmallVectorImpl<Value> &results) {
-  FailureOr<int64_t> groupSize =
-      getGroupSizeFromNumGroups(resultVMIType, numGroups);
-  if (failed(groupSize))
-    return rewriter.notifyMatchFailure(
-        op, "group_broadcast requires num_groups to evenly divide lane count");
-  int64_t lanesPerPart = 0;
-  int64_t groupCount = 0;
-  if (failed(checkFullGroupSlotSourceShape(op, sourceVMIType, *groupSize,
-                                           numGroups, &lanesPerPart,
-                                           &groupCount, rewriter)))
-    return failure();
-  int64_t resultLayoutFactor = 0;
-  int64_t resultGroupCount = 0;
-  if (failed(checkFullGroupBroadcastResultShape(
-          op, resultVMIType, *groupSize, lanesPerPart, &resultLayoutFactor,
-          &resultGroupCount, rewriter)))
-    return failure();
-  if (resultGroupCount != groupCount)
-    return rewriter.notifyMatchFailure(
-        op, "group_broadcast requires matching source/result group slots");
-
   if (sourceParts.empty() || resultTypes.empty())
     return rewriter.notifyMatchFailure(op, "group_broadcast arity mismatch");
+
+  std::string layoutReason;
+  VMILayoutSupport supports;
+  FailureOr<VMIGroupBroadcastLayoutFact> fact =
+      supports.getGroupBroadcastLayoutFactForLayouts(
+          sourceVMIType, resultVMIType, numGroups, &layoutReason);
+  if (failed(fact))
+    return rewriter.notifyMatchFailure(
+        op, Twine("group_broadcast requires a supported layout table row; ") +
+                layoutReason);
 
   auto firstSourceType = dyn_cast<VRegType>(sourceParts.front().getType());
   if (!firstSourceType)
     return rewriter.notifyMatchFailure(op,
                                        "group_broadcast source must be vreg");
+  if (llvm::any_of(sourceParts, [&](Value sourcePart) {
+        return sourcePart.getType() != firstSourceType;
+      }))
+    return rewriter.notifyMatchFailure(
+        op, "group_broadcast requires uniform physical source vreg types");
+  if (firstSourceType.getElementCount() != fact->lanesPerPart)
+    return rewriter.notifyMatchFailure(
+        op, "group_broadcast physical source lanes do not match the supported "
+            "layout row");
   unsigned indexBits =
       pto::getPTOStorageElemBitWidth(firstSourceType.getElementType());
   if (indexBits != 8 && indexBits != 16 && indexBits != 32)
     return rewriter.notifyMatchFailure(
         op, "group_broadcast requires 8/16/32-bit index elements");
-  auto indexElementType = IntegerType::get(rewriter.getContext(), indexBits);
+  auto indexElementType =
+      IntegerType::get(rewriter.getContext(), indexBits,
+                       IntegerType::SignednessSemantics::Unsigned);
+  auto indexScalarType = IntegerType::get(rewriter.getContext(), indexBits);
   auto indexType =
       VRegType::get(rewriter.getContext(), firstSourceType.getElementCount(),
                     indexElementType);
   FailureOr<Value> allMask =
-      createAllTrueMaskForVReg(op->getLoc(), firstSourceType, rewriter);
+      createAllTrueMaskForVReg(op->getLoc(), indexType, rewriter);
   if (failed(allMask))
     return rewriter.notifyMatchFailure(
         op, "failed to create group_broadcast all mask");
+
   VMILayoutAttr resultLayout = resultVMIType.getLayoutAttr();
   VMILayoutAttr sourceLayout = sourceVMIType.getLayoutAttr();
-  FailureOr<int64_t> resultBlockElems =
-      getVMILayoutBlockElems(resultVMIType);
-  if (failed(resultBlockElems))
+  int64_t sourceSlots = sourceLayout.getSlots();
+  int64_t sourceLaneStride = sourceLayout.getLaneStride();
+  if (sourceSlots <= 0 || sourceLaneStride <= 0)
     return rewriter.notifyMatchFailure(
-        op, "group_broadcast requires a computable result block size");
-  int64_t selectionGroupSize = *groupSize;
-  if (resultLayoutFactor != 1 && resultLayout &&
-      resultLayout.isBlockDeinterleaved() &&
-      *groupSize < lanesPerPart)
-    selectionGroupSize = *resultBlockElems;
-  auto resolveLargeGroupSource = [&](int64_t group, int64_t chunksPerGroup,
-                                     int64_t &sourceChunk,
-                                     int64_t &baseGroupSlot) {
-    int64_t slots = sourceLayout.getSlots();
-    if (slots > 0) {
-      sourceChunk = group / slots;
-      baseGroupSlot = group % slots;
-      return;
+        op, "group_broadcast requires explicit positive source group slots");
+
+  enum class SelectorKind { Constant, LogicalRamp, VCGBlockRamp };
+  SelectorKind selectorKind;
+  int64_t selectorPeriod = 0;
+  if (fact->blockClass == VMIGroupBlockClass::FullPartMultiple) {
+    selectorKind = SelectorKind::Constant;
+  } else if (resultLayout.isContiguous() && resultLayout.getLaneStride() == 1) {
+    selectorKind = SelectorKind::LogicalRamp;
+    selectorPeriod = fact->groupSize;
+  } else if ((resultLayout.isContiguous() &&
+              resultLayout.getLaneStride() > 1) ||
+             resultLayout.isDeinterleaved() ||
+             resultLayout.isBlockDeinterleaved()) {
+    selectorKind = SelectorKind::VCGBlockRamp;
+    selectorPeriod = fact->vcgBlockElems;
+  } else {
+    return rewriter.notifyMatchFailure(
+        op, "group_broadcast layout table row has no selector lowering plan");
+  }
+
+  std::optional<int64_t> selectorShift;
+  std::optional<int64_t> sourceLaneStrideShift;
+  if (selectorKind != SelectorKind::Constant) {
+    selectorShift = getPowerOfTwoLog2(selectorPeriod);
+    sourceLaneStrideShift = getPowerOfTwoLog2(sourceLaneStride);
+    if (!selectorShift || !sourceLaneStrideShift)
+      return rewriter.notifyMatchFailure(
+          op, "group_broadcast ramp requires power-of-two selector period "
+              "and source lane stride");
+  }
+
+  Value sharedRamp;
+  llvm::DenseMap<int64_t, Value> selectorByBaseIndex;
+  auto getSelector = [&](int64_t baseSlot) -> FailureOr<Value> {
+    int64_t baseIndex = baseSlot * sourceLaneStride;
+    auto cached = selectorByBaseIndex.find(baseIndex);
+    if (cached != selectorByBaseIndex.end())
+      return cached->second;
+
+    if (selectorKind == SelectorKind::Constant) {
+      FailureOr<Value> baseScalar = createScalarOffsetConstant(
+          op->getLoc(), indexScalarType, baseIndex, rewriter);
+      if (failed(baseScalar))
+        return failure();
+      Value selector =
+          rewriter
+              .create<VdupOp>(op->getLoc(), indexType, *baseScalar, *allMask,
+                              /*position=*/nullptr)
+              .getResult();
+      selectorByBaseIndex.try_emplace(baseIndex, selector);
+      return selector;
     }
-    sourceChunk = group * chunksPerGroup;
-    baseGroupSlot = 0;
+
+    if (!sharedRamp) {
+      FailureOr<Value> zero = createScalarOffsetConstant(
+          op->getLoc(), indexScalarType, 0, rewriter);
+      if (failed(zero))
+        return failure();
+      sharedRamp =
+          rewriter.create<VciOp>(op->getLoc(), indexType, *zero, StringAttr{})
+              .getResult();
+      if (*selectorShift != 0) {
+        Value shift = createI16Constant(op->getLoc(), *selectorShift, rewriter);
+        sharedRamp = rewriter
+                         .create<VshrsOp>(op->getLoc(), indexType, sharedRamp,
+                                          shift, *allMask)
+                         .getResult();
+      }
+      if (*sourceLaneStrideShift != 0) {
+        Value shift =
+            createI16Constant(op->getLoc(), *sourceLaneStrideShift, rewriter);
+        sharedRamp = rewriter
+                         .create<VshlsOp>(op->getLoc(), indexType, sharedRamp,
+                                          shift, *allMask)
+                         .getResult();
+      }
+    }
+
+    Value selector = sharedRamp;
+    if (baseIndex != 0) {
+      FailureOr<Value> baseScalar = createScalarOffsetConstant(
+          op->getLoc(), indexScalarType, baseIndex, rewriter);
+      if (failed(baseScalar))
+        return failure();
+      selector = rewriter
+                     .create<VaddsOp>(op->getLoc(), indexType, selector,
+                                      *baseScalar, *allMask)
+                     .getResult();
+    }
+    selectorByBaseIndex.try_emplace(baseIndex, selector);
+    return selector;
   };
 
   results.clear();
   results.resize(resultTypes.size());
-  for (auto [flatIndex, resultType] : llvm::enumerate(resultTypes)) {
-    auto resultVRegType = dyn_cast<VRegType>(resultType);
-    if (!resultVRegType || resultVRegType != firstSourceType)
+  FailureOr<int64_t> resultLayoutFactor = getDataLayoutFactor(resultVMIType);
+  if (failed(resultLayoutFactor))
+    return rewriter.notifyMatchFailure(
+        op, "group_broadcast requires a computable result layout factor");
+
+  int64_t flatIndex = 0;
+  for (int64_t part = 0; part < *resultLayoutFactor; ++part) {
+    FailureOr<int64_t> chunks = *resultLayoutFactor == 1
+                                    ? FailureOr<int64_t>(resultTypes.size())
+                                    : getDataChunksInPart(resultVMIType, part);
+    if (failed(chunks))
       return rewriter.notifyMatchFailure(
-          op, "group_broadcast requires uniform physical vreg types");
-    int64_t sourceChunk = flatIndex;
-    int64_t baseGroupSlot = 0;
-    Value mappedGroupSlotIndex;
-    if (resultLayoutFactor == 1) {
-      bool laneStridedDense =
-          resultLayout && resultLayout.isDense() &&
-          resultLayout.getLaneStride() > 1;
-      if (laneStridedDense) {
-        VMILayoutAttr sourceLayout = sourceVMIType.getLayoutAttr();
-        int64_t slots = sourceLayout.getSlots();
-        if (slots <= 0) {
-          if (sourceParts.empty() ||
-              groupCount % static_cast<int64_t>(sourceParts.size()) != 0)
-            return rewriter.notifyMatchFailure(
-                op, "group_broadcast lane-stride source requires explicit "
-                    "group_slots slots or derivable legacy slot count");
-          slots = groupCount / sourceParts.size();
-        }
-        FailureOr<Value> index = createMappedGroupSlotIndexVector(
-            op->getLoc(), resultVMIType, /*part=*/0, flatIndex, indexType,
-            *groupSize, slots, sourceChunk, rewriter,
-            sourceLayout.getLaneStride());
-        if (failed(index))
-          return rewriter.notifyMatchFailure(
-              op, "failed to create group_broadcast lane-stride group-slot "
-                  "index vector");
-        mappedGroupSlotIndex = *index;
-      } else if (*groupSize >= lanesPerPart) {
-        int64_t chunksPerGroup = *groupSize / lanesPerPart;
-        int64_t group = flatIndex / chunksPerGroup;
-        resolveLargeGroupSource(group, chunksPerGroup, sourceChunk,
-                                baseGroupSlot);
-      } else {
-        VMILayoutAttr sourceLayout = sourceVMIType.getLayoutAttr();
-        int64_t slots = sourceLayout.getSlots();
-        if (slots <= 0) {
-          if (sourceParts.empty() ||
-              groupCount % static_cast<int64_t>(sourceParts.size()) != 0)
-            return rewriter.notifyMatchFailure(
-                op, "group_broadcast small-group source requires explicit "
-                    "group_slots slots or derivable legacy slot count");
-          slots = groupCount / sourceParts.size();
-        }
-        int64_t groupsPerResultChunk = lanesPerPart / *groupSize;
-        int64_t firstGroup = flatIndex * groupsPerResultChunk;
-        sourceChunk = firstGroup / slots;
-        baseGroupSlot = firstGroup % slots;
-      }
-    } else {
-      bool blockFragmentSmallGroup =
-          resultLayout && resultLayout.isBlockDeinterleaved() &&
-          *groupSize < lanesPerPart;
-      bool deinterleavedSmallGroup =
-          resultLayout && resultLayout.isDeinterleaved() &&
-          *groupSize < lanesPerPart;
-      if (blockFragmentSmallGroup) {
-        int64_t runningFlatIndex = 0;
-        bool found = false;
-        for (int64_t part = 0; part < resultLayoutFactor && !found; ++part) {
-          FailureOr<int64_t> chunks = getDataChunksInPart(resultVMIType, part);
-          if (failed(chunks))
-            return rewriter.notifyMatchFailure(
-                op, "group_broadcast failed to enumerate result chunks");
-          for (int64_t chunk = 0; chunk < *chunks;
-               ++chunk, ++runningFlatIndex) {
-            if (runningFlatIndex != static_cast<int64_t>(flatIndex))
-              continue;
-            int64_t groupsPerResultChunk =
-                lanesPerPart / *resultBlockElems;
-            int64_t firstGroup = chunk * groupsPerResultChunk;
-            int64_t slots = sourceLayout.getSlots();
-            if (slots <= 0) {
-              if (sourceParts.empty() ||
-                  groupCount % static_cast<int64_t>(sourceParts.size()) != 0)
-                return rewriter.notifyMatchFailure(
-                    op,
-                    "group_broadcast block-fragment source requires explicit "
-                    "group_slots slots or derivable legacy slot count");
-              slots = groupCount / sourceParts.size();
-            }
-            sourceChunk = firstGroup / slots;
-            baseGroupSlot = firstGroup % slots;
-            found = true;
-            break;
-          }
-        }
-        if (!found)
-          return rewriter.notifyMatchFailure(
-              op, "group_broadcast result chunk index is out of range");
-      } else if (deinterleavedSmallGroup) {
-        int64_t runningFlatIndex = 0;
-        bool found = false;
-        for (int64_t part = 0; part < resultLayoutFactor && !found; ++part) {
-          FailureOr<int64_t> chunks = getDataChunksInPart(resultVMIType, part);
-          if (failed(chunks))
-            return rewriter.notifyMatchFailure(
-                op, "group_broadcast failed to enumerate result chunks");
-          for (int64_t chunk = 0; chunk < *chunks;
-               ++chunk, ++runningFlatIndex) {
-            if (runningFlatIndex != static_cast<int64_t>(flatIndex))
-              continue;
-            int64_t slots = sourceLayout.getSlots();
-            if (slots <= 0) {
-              if (sourceParts.empty() ||
-                  groupCount % static_cast<int64_t>(sourceParts.size()) != 0)
-                return rewriter.notifyMatchFailure(
-                    op, "group_broadcast deinterleaved small-group source "
-                        "requires explicit group_slots slots or derivable "
-                        "legacy slot count");
-              slots = groupCount / sourceParts.size();
-            }
-            FailureOr<Value> index = createMappedGroupSlotIndexVector(
-                op->getLoc(), resultVMIType, part, chunk, indexType, *groupSize,
-                slots, sourceChunk, rewriter, sourceLayout.getLaneStride());
-            if (failed(index))
-              return rewriter.notifyMatchFailure(
-                  op,
-                  "failed to create group_broadcast mapped group-slot index "
-                  "vector");
-            mappedGroupSlotIndex = *index;
-            found = true;
-            break;
-          }
-        }
-        if (!found)
-          return rewriter.notifyMatchFailure(
-              op, "group_broadcast result chunk index is out of range");
-      } else {
-        int64_t runningFlatIndex = 0;
-        bool found = false;
-        for (int64_t part = 0; part < resultLayoutFactor && !found; ++part) {
-          FailureOr<int64_t> chunks = getDataChunksInPart(resultVMIType, part);
-          if (failed(chunks))
-            return rewriter.notifyMatchFailure(
-                op, "group_broadcast failed to enumerate result chunks");
-          for (int64_t chunk = 0; chunk < *chunks;
-               ++chunk, ++runningFlatIndex) {
-            if (runningFlatIndex != static_cast<int64_t>(flatIndex))
-              continue;
-            FailureOr<int64_t> firstLogical =
-                mapPhysicalLaneToLogical(resultVMIType, part, chunk, 0);
-            FailureOr<int64_t> lastLogical = mapPhysicalLaneToLogical(
-                resultVMIType, part, chunk, lanesPerPart - 1);
-            if (failed(firstLogical) || failed(lastLogical))
-              return rewriter.notifyMatchFailure(
-                  op, "group_broadcast failed to map result chunk lanes");
-            int64_t firstGroup = *firstLogical / *groupSize;
-            int64_t lastGroup = *lastLogical / *groupSize;
-            if (firstGroup != lastGroup)
-              return rewriter.notifyMatchFailure(
-                  op, "group_broadcast result chunk crosses logical groups");
-            int64_t chunksPerGroup = *groupSize / lanesPerPart;
-            resolveLargeGroupSource(firstGroup, chunksPerGroup, sourceChunk,
-                                    baseGroupSlot);
-            found = true;
-            break;
-          }
-        }
-        if (!found)
-          return rewriter.notifyMatchFailure(
-              op, "group_broadcast result chunk index is out of range");
-      }
-    }
-    if (*groupSize >= lanesPerPart) {
+          op, "group_broadcast failed to enumerate result chunks");
+    for (int64_t chunk = 0; chunk < *chunks; ++chunk, ++flatIndex) {
+      if (flatIndex >= static_cast<int64_t>(resultTypes.size()))
+        return rewriter.notifyMatchFailure(
+            op, "group_broadcast physical result count is too small");
+
+      Type resultType = resultTypes[flatIndex];
+      auto resultVRegType = dyn_cast<VRegType>(resultType);
+      if (!resultVRegType || resultVRegType != firstSourceType)
+        return rewriter.notifyMatchFailure(
+            op, "group_broadcast requires uniform physical vreg types");
+
+      FailureOr<int64_t> firstLogical =
+          mapPhysicalLaneToLogical(resultVMIType, part, chunk, 0);
+      if (failed(firstLogical))
+        return rewriter.notifyMatchFailure(
+            op, "group_broadcast failed to map the first result lane");
+      int64_t firstGroup = *firstLogical / fact->groupSize;
+      int64_t sourceChunk = firstGroup / sourceSlots;
+      int64_t baseSlot = firstGroup % sourceSlots;
       if (sourceChunk < 0 ||
           sourceChunk >= static_cast<int64_t>(sourceParts.size()))
         return rewriter.notifyMatchFailure(
             op, "group_broadcast source chunk is out of range");
-      if (sourceLayout.getSlots() > 1) {
-        FailureOr<Value> groupSlotIndex = createGroupSlotIndexVector(
-            op->getLoc(), indexType, selectionGroupSize, baseGroupSlot,
-            rewriter, sourceLayout.getLaneStride());
-        if (failed(groupSlotIndex))
+
+      // The support table selects one of the three affine selector forms.
+      // Check the table property against the canonical lane map so new table
+      // rows cannot silently reuse an incompatible lowering plan.
+      for (int64_t lane = 0; lane < fact->lanesPerPart; ++lane) {
+        FailureOr<bool> padding =
+            isPaddingLane(resultVMIType, part, chunk, lane);
+        if (failed(padding))
           return rewriter.notifyMatchFailure(
-              op, "failed to create group_broadcast group-slot index vector");
-        results[flatIndex] =
-            rewriter
-                .create<VselrOp>(op->getLoc(), resultType,
-                                 sourceParts[sourceChunk], *groupSlotIndex)
-                .getResult();
-      } else {
+              op, "group_broadcast failed to map result padding lanes");
+        if (*padding)
+          continue;
+        FailureOr<int64_t> logical =
+            mapPhysicalLaneToLogical(resultVMIType, part, chunk, lane);
+        if (failed(logical))
+          return rewriter.notifyMatchFailure(
+              op, "group_broadcast failed to map a result lane");
+        int64_t actualGroup = *logical / fact->groupSize;
+        int64_t expectedGroup = firstGroup;
+        if (selectorKind != SelectorKind::Constant)
+          expectedGroup += lane / selectorPeriod;
+        if (actualGroup != expectedGroup ||
+            actualGroup / sourceSlots != sourceChunk)
+          return rewriter.notifyMatchFailure(
+              op, "group_broadcast layout table row does not match its "
+                  "selector lowering plan");
+      }
+
+      if (selectorKind == SelectorKind::Constant && sourceSlots == 1) {
         results[flatIndex] =
             rewriter
                 .create<VdupOp>(op->getLoc(), resultType,
                                 sourceParts[sourceChunk], *allMask,
                                 rewriter.getStringAttr("LOWEST"))
                 .getResult();
+        continue;
       }
-    } else {
-      bool blockFragmentSmallGroup =
-          resultLayout && resultLayout.isBlockDeinterleaved();
-      bool deinterleavedSmallGroup = resultLayout &&
-                                     resultLayout.isDeinterleaved();
-      if (resultLayoutFactor != 1 && !blockFragmentSmallGroup &&
-          !deinterleavedSmallGroup)
+
+      FailureOr<Value> selector = getSelector(baseSlot);
+      if (failed(selector))
         return rewriter.notifyMatchFailure(
-            op, "group_broadcast small-group deinterleaved result is not "
-                "supported");
-      if (sourceChunk < 0 ||
-          sourceChunk >= static_cast<int64_t>(sourceParts.size()))
-        return rewriter.notifyMatchFailure(
-            op, "group_broadcast source chunk is out of range");
-      FailureOr<Value> groupSlotIndex =
-          mappedGroupSlotIndex
-              ? FailureOr<Value>(mappedGroupSlotIndex)
-              : createGroupSlotIndexVector(op->getLoc(), indexType,
-                                           selectionGroupSize, baseGroupSlot,
-                                           rewriter,
-                                           sourceLayout.getLaneStride());
-      if (failed(groupSlotIndex))
-        return rewriter.notifyMatchFailure(
-            op, "failed to create group_broadcast group-slot index vector");
+            op, "failed to create group_broadcast selector ramp");
       results[flatIndex] =
           rewriter
               .create<VselrOp>(op->getLoc(), resultType,
-                               sourceParts[sourceChunk], *groupSlotIndex)
+                               sourceParts[sourceChunk], *selector)
               .getResult();
     }
   }
+  if (flatIndex != static_cast<int64_t>(resultTypes.size()))
+    return rewriter.notifyMatchFailure(
+        op, "group_broadcast physical result count is too large");
   return success();
 }
 
@@ -9735,320 +9527,27 @@ private:
 
 struct OneToNVMIGroupBroadcastOpPattern
     : OpConversionPattern<VMIGroupBroadcastOp> {
-  using OpConversionPattern<
-      VMIGroupBroadcastOp>::OpConversionPattern;
+  using OpConversionPattern<VMIGroupBroadcastOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(VMIGroupBroadcastOp op, OneToNOpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto sourceVMIType = cast<VMIVRegType>(op.getSource().getType());
     auto resultVMIType = cast<VMIVRegType>(op.getResult().getType());
-    FailureOr<int64_t> groupSize = getGroupSizeFromNumGroups(
-        resultVMIType, op.getNumGroupsAttr().getInt());
-    if (failed(groupSize))
-      return rewriter.notifyMatchFailure(
-          op,
-          "group_broadcast requires num_groups to evenly divide lane count");
-    int64_t lanesPerPart = 0;
-    int64_t groupCount = 0;
-    if (failed(checkFullGroupSlotSourceShape(
-            op, sourceVMIType, *groupSize, op.getNumGroupsAttr().getInt(),
-            &lanesPerPart, &groupCount, rewriter)))
-      return failure();
-    int64_t resultLayoutFactor = 0;
-    int64_t resultGroupCount = 0;
-    if (failed(checkFullGroupBroadcastResultShape(
-            op, resultVMIType, *groupSize, lanesPerPart, &resultLayoutFactor,
-            &resultGroupCount, rewriter)))
-      return failure();
-    if (resultGroupCount != groupCount)
-      return rewriter.notifyMatchFailure(
-          op, "group_broadcast requires matching source/result group slots");
-
     ValueRange sourceParts = adaptor.getSource();
     FailureOr<SmallVector<Type>> maybe_resultTypes =
         getConvertedResultTypes(op, 0, *this->getTypeConverter());
     if (failed(maybe_resultTypes))
       return failure();
     SmallVector<Type> resultTypes = std::move(*maybe_resultTypes);
-    if (sourceParts.empty() || resultTypes.empty())
-      return rewriter.notifyMatchFailure(op, "group_broadcast arity mismatch");
-
-    auto firstSourceType = dyn_cast<VRegType>(sourceParts.front().getType());
-    if (!firstSourceType)
-      return rewriter.notifyMatchFailure(op,
-                                         "group_broadcast source must be vreg");
-    unsigned indexBits =
-        pto::getPTOStorageElemBitWidth(firstSourceType.getElementType());
-    if (indexBits != 8 && indexBits != 16 && indexBits != 32)
-      return rewriter.notifyMatchFailure(
-          op, "group_broadcast requires 8/16/32-bit index elements");
-    auto indexElementType = IntegerType::get(rewriter.getContext(), indexBits);
-    auto indexType =
-        VRegType::get(rewriter.getContext(), firstSourceType.getElementCount(),
-                      indexElementType);
-    FailureOr<Value> allMask =
-        createAllTrueMaskForVReg(op.getLoc(), firstSourceType, rewriter);
-    if (failed(allMask))
-      return rewriter.notifyMatchFailure(
-          op, "failed to create group_broadcast all mask");
-    VMILayoutAttr resultLayout = resultVMIType.getLayoutAttr();
-    VMILayoutAttr sourceLayout = sourceVMIType.getLayoutAttr();
-    FailureOr<int64_t> resultBlockElems =
-        getVMILayoutBlockElems(resultVMIType);
-    if (failed(resultBlockElems))
-      return rewriter.notifyMatchFailure(
-          op, "group_broadcast requires a computable result block size");
-    int64_t selectionGroupSize = *groupSize;
-    if (resultLayoutFactor != 1 && resultLayout &&
-        resultLayout.isBlockDeinterleaved() &&
-        *groupSize < lanesPerPart)
-      selectionGroupSize = *resultBlockElems;
-    auto resolveLargeGroupSource = [&](int64_t group, int64_t chunksPerGroup,
-                                       int64_t &sourceChunk,
-                                       int64_t &baseGroupSlot) {
-      int64_t slots = sourceLayout.getSlots();
-      if (slots > 0) {
-        sourceChunk = group / slots;
-        baseGroupSlot = group % slots;
-        return;
-      }
-      sourceChunk = group * chunksPerGroup;
-      baseGroupSlot = 0;
-    };
-
     SmallVector<Value> results;
-    results.resize(resultTypes.size());
-    for (auto [flatIndex, resultType] : llvm::enumerate(resultTypes)) {
-      auto resultVRegType = dyn_cast<VRegType>(resultType);
-      if (!resultVRegType || resultVRegType != firstSourceType)
-        return rewriter.notifyMatchFailure(
-            op, "group_broadcast requires uniform physical vreg types");
-      int64_t sourceChunk = flatIndex;
-      int64_t baseGroupSlot = 0;
-      Value mappedGroupSlotIndex;
-      if (resultLayoutFactor == 1) {
-        bool laneStridedDense =
-            resultLayout && resultLayout.isDense() &&
-            resultLayout.getLaneStride() > 1;
-        if (laneStridedDense) {
-          VMILayoutAttr sourceLayout = sourceVMIType.getLayoutAttr();
-          int64_t slots = sourceLayout.getSlots();
-          if (slots <= 0) {
-            if (sourceParts.empty() ||
-                groupCount % static_cast<int64_t>(sourceParts.size()) != 0)
-              return rewriter.notifyMatchFailure(
-                  op, "group_broadcast lane-stride source requires explicit "
-                      "group_slots slots or derivable legacy slot count");
-            slots = groupCount / sourceParts.size();
-          }
-          FailureOr<Value> index = createMappedGroupSlotIndexVector(
-              op.getLoc(), resultVMIType, /*part=*/0, flatIndex, indexType,
-              *groupSize, slots, sourceChunk, rewriter,
-              sourceLayout.getLaneStride());
-          if (failed(index))
-            return rewriter.notifyMatchFailure(
-                op, "failed to create group_broadcast lane-stride group-slot "
-                    "index vector");
-          mappedGroupSlotIndex = *index;
-        } else if (*groupSize >= lanesPerPart) {
-          int64_t chunksPerGroup = *groupSize / lanesPerPart;
-          int64_t group = flatIndex / chunksPerGroup;
-          resolveLargeGroupSource(group, chunksPerGroup, sourceChunk,
-                                  baseGroupSlot);
-        } else {
-          VMILayoutAttr sourceLayout = sourceVMIType.getLayoutAttr();
-          int64_t slots = sourceLayout.getSlots();
-          if (slots <= 0) {
-            if (sourceParts.empty() ||
-                groupCount % static_cast<int64_t>(sourceParts.size()) != 0)
-              return rewriter.notifyMatchFailure(
-                  op, "group_broadcast small-group source requires explicit "
-                      "group_slots slots or derivable legacy slot count");
-            slots = groupCount / sourceParts.size();
-          }
-          int64_t groupsPerResultChunk = lanesPerPart / *groupSize;
-          int64_t firstGroup = flatIndex * groupsPerResultChunk;
-          sourceChunk = firstGroup / slots;
-          baseGroupSlot = firstGroup % slots;
-        }
-      } else {
-        bool blockFragmentSmallGroup =
-            resultLayout && resultLayout.isBlockDeinterleaved() &&
-            *groupSize < lanesPerPart;
-        bool deinterleavedSmallGroup =
-            resultLayout && resultLayout.isDeinterleaved() &&
-            *groupSize < lanesPerPart;
-        if (blockFragmentSmallGroup) {
-          int64_t runningFlatIndex = 0;
-          bool found = false;
-          for (int64_t part = 0; part < resultLayoutFactor && !found; ++part) {
-            FailureOr<int64_t> chunks =
-                getDataChunksInPart(resultVMIType, part);
-            if (failed(chunks))
-              return rewriter.notifyMatchFailure(
-                  op, "group_broadcast failed to enumerate result chunks");
-            for (int64_t chunk = 0; chunk < *chunks;
-                 ++chunk, ++runningFlatIndex) {
-              if (runningFlatIndex != static_cast<int64_t>(flatIndex))
-                continue;
-              int64_t groupsPerResultChunk =
-                  lanesPerPart / *resultBlockElems;
-              int64_t firstGroup = chunk * groupsPerResultChunk;
-              int64_t slots = sourceLayout.getSlots();
-              if (slots <= 0) {
-                if (sourceParts.empty() ||
-                    groupCount % static_cast<int64_t>(sourceParts.size()) != 0)
-                  return rewriter.notifyMatchFailure(
-                      op,
-                      "group_broadcast block-fragment source requires explicit "
-                      "group_slots slots or derivable legacy slot count");
-                slots = groupCount / sourceParts.size();
-              }
-              sourceChunk = firstGroup / slots;
-              baseGroupSlot = firstGroup % slots;
-              found = true;
-              break;
-            }
-          }
-          if (!found)
-            return rewriter.notifyMatchFailure(
-                op, "group_broadcast result chunk index is out of range");
-        } else if (deinterleavedSmallGroup) {
-          int64_t runningFlatIndex = 0;
-          bool found = false;
-          for (int64_t part = 0; part < resultLayoutFactor && !found; ++part) {
-            FailureOr<int64_t> chunks =
-                getDataChunksInPart(resultVMIType, part);
-            if (failed(chunks))
-              return rewriter.notifyMatchFailure(
-                  op, "group_broadcast failed to enumerate result chunks");
-            for (int64_t chunk = 0; chunk < *chunks;
-                 ++chunk, ++runningFlatIndex) {
-              if (runningFlatIndex != static_cast<int64_t>(flatIndex))
-                continue;
-              int64_t slots = sourceLayout.getSlots();
-              if (slots <= 0) {
-                if (sourceParts.empty() ||
-                    groupCount % static_cast<int64_t>(sourceParts.size()) != 0)
-                  return rewriter.notifyMatchFailure(
-                      op, "group_broadcast deinterleaved small-group source "
-                          "requires explicit group_slots slots or derivable "
-                          "legacy slot count");
-                slots = groupCount / sourceParts.size();
-              }
-              FailureOr<Value> index = createMappedGroupSlotIndexVector(
-                  op.getLoc(), resultVMIType, part, chunk, indexType,
-                  *groupSize, slots, sourceChunk, rewriter,
-                  sourceLayout.getLaneStride());
-              if (failed(index))
-                return rewriter.notifyMatchFailure(
-                    op,
-                    "failed to create group_broadcast mapped group-slot index "
-                    "vector");
-              mappedGroupSlotIndex = *index;
-              found = true;
-              break;
-            }
-          }
-          if (!found)
-            return rewriter.notifyMatchFailure(
-                op, "group_broadcast result chunk index is out of range");
-        } else {
-          int64_t runningFlatIndex = 0;
-          bool found = false;
-          for (int64_t part = 0; part < resultLayoutFactor && !found; ++part) {
-            FailureOr<int64_t> chunks =
-                getDataChunksInPart(resultVMIType, part);
-            if (failed(chunks))
-              return rewriter.notifyMatchFailure(
-                  op, "group_broadcast failed to enumerate result chunks");
-            for (int64_t chunk = 0; chunk < *chunks;
-                 ++chunk, ++runningFlatIndex) {
-              if (runningFlatIndex != static_cast<int64_t>(flatIndex))
-                continue;
-              FailureOr<int64_t> firstLogical =
-                  mapPhysicalLaneToLogical(resultVMIType, part, chunk, 0);
-              FailureOr<int64_t> lastLogical = mapPhysicalLaneToLogical(
-                  resultVMIType, part, chunk, lanesPerPart - 1);
-              if (failed(firstLogical) || failed(lastLogical))
-                return rewriter.notifyMatchFailure(
-                    op, "group_broadcast failed to map result chunk lanes");
-              int64_t firstGroup = *firstLogical / *groupSize;
-              int64_t lastGroup = *lastLogical / *groupSize;
-              if (firstGroup != lastGroup)
-                return rewriter.notifyMatchFailure(
-                    op, "group_broadcast result chunk crosses logical groups");
-              int64_t chunksPerGroup = *groupSize / lanesPerPart;
-              resolveLargeGroupSource(firstGroup, chunksPerGroup, sourceChunk,
-                                      baseGroupSlot);
-              found = true;
-              break;
-            }
-          }
-          if (!found)
-            return rewriter.notifyMatchFailure(
-                op, "group_broadcast result chunk index is out of range");
-        }
-      }
-      if (*groupSize >= lanesPerPart) {
-        if (sourceChunk < 0 ||
-            sourceChunk >= static_cast<int64_t>(sourceParts.size()))
-          return rewriter.notifyMatchFailure(
-              op, "group_broadcast source chunk is out of range");
-        if (sourceLayout.getSlots() > 1) {
-          FailureOr<Value> groupSlotIndex = createGroupSlotIndexVector(
-              op.getLoc(), indexType, selectionGroupSize, baseGroupSlot,
-              rewriter, sourceLayout.getLaneStride());
-          if (failed(groupSlotIndex))
-            return rewriter.notifyMatchFailure(
-                op, "failed to create group_broadcast group-slot index vector");
-          results[flatIndex] =
-              rewriter
-                  .create<VselrOp>(op.getLoc(), resultType,
-                                   sourceParts[sourceChunk], *groupSlotIndex)
-                  .getResult();
-        } else {
-          results[flatIndex] =
-              rewriter
-                  .create<VdupOp>(op.getLoc(), resultType,
-                                  sourceParts[sourceChunk], *allMask,
-                                  rewriter.getStringAttr("LOWEST"))
-                  .getResult();
-        }
-      } else {
-        bool blockFragmentSmallGroup =
-            resultLayout && resultLayout.isBlockDeinterleaved();
-        bool deinterleavedSmallGroup = resultLayout &&
-                                       resultLayout.isDeinterleaved();
-        if (resultLayoutFactor != 1 && !blockFragmentSmallGroup &&
-            !deinterleavedSmallGroup)
-          return rewriter.notifyMatchFailure(
-              op, "group_broadcast small-group deinterleaved result is not "
-                  "supported");
-        if (sourceChunk < 0 ||
-            sourceChunk >= static_cast<int64_t>(sourceParts.size()))
-          return rewriter.notifyMatchFailure(
-              op, "group_broadcast source chunk is out of range");
-        FailureOr<Value> groupSlotIndex =
-            mappedGroupSlotIndex
-                ? FailureOr<Value>(mappedGroupSlotIndex)
-                : createGroupSlotIndexVector(op.getLoc(), indexType,
-                                             selectionGroupSize, baseGroupSlot,
-                                             rewriter,
-                                             sourceLayout.getLaneStride());
-        if (failed(groupSlotIndex))
-          return rewriter.notifyMatchFailure(
-              op, "failed to create group_broadcast group-slot index vector");
-        results[flatIndex] =
-            rewriter
-                .create<VselrOp>(op.getLoc(), resultType,
-                                 sourceParts[sourceChunk], *groupSlotIndex)
-                .getResult();
-      }
-    }
+    if (failed(lowerGroupBroadcastParts(
+            op, sourceParts, sourceVMIType, resultVMIType, resultTypes,
+            op.getNumGroupsAttr().getInt(), rewriter, results)))
+      return failure();
 
-    replaceOpWithFlatConvertedValues(rewriter, op, results, *this->getTypeConverter());
+    replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                     *this->getTypeConverter());
     return success();
   }
 };
