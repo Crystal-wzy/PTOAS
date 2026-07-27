@@ -129,7 +129,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          dnf install -y ninja-build cmake git gcc-c++ lld zip binutils patchelf chrpath
+          dnf install -y ninja-build cmake git ccache gcc-c++ lld zip binutils patchelf chrpath
           dnf clean all
 
       - name: Install Python dependencies

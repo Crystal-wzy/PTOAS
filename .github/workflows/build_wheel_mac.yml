@@ -129,7 +129,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install ninja
+          brew install ninja ccache
 
       - name: Install Python dependencies
         run: |
