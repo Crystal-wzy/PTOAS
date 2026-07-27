@@ -3433,11 +3433,15 @@ LogicalResult mlir::pto::SyncSetOp::verify() {
     }
     switch (getPipe().getPipe()) {
     case PIPE::PIPE_FIX:
+    case PIPE::PIPE_MTE1:
+    case PIPE::PIPE_MTE2:
     case PIPE::PIPE_MTE3:
+    case PIPE::PIPE_V:
       return success();
     default:
-      return emitOpError()
-             << "A5 sync.set expects pipe to be one of <PIPE_FIX>, <PIPE_MTE3>";
+      return emitOpError() << "A5 sync.set expects pipe to be one of "
+                              "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, "
+                              "<PIPE_MTE3>, <PIPE_V>";
     }
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);

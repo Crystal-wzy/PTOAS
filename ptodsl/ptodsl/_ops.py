@@ -6205,7 +6205,7 @@ def set_intra_flag(pipe, event_id):
     _validate_sync_pipe(
         pipe,
         context="set_intra_flag(pipe, event_id)",
-        allowed=("PIPE_FIX", "PIPE_MTE3"),
+        allowed=("PIPE_FIX", "PIPE_MTE1", "PIPE_MTE2", "PIPE_MTE3", "PIPE_V"),
     )
     event_operand = _sync_event_id_operand_in_range(
         event_id,
@@ -6222,7 +6222,7 @@ def wait_intra_flag(pipe, event_id):
     _validate_sync_pipe(
         pipe,
         context="wait_intra_flag(pipe, event_id)",
-        allowed=("PIPE_FIX", "PIPE_MTE3", "PIPE_V"),
+        allowed=("PIPE_FIX", "PIPE_MTE1", "PIPE_MTE2", "PIPE_MTE3", "PIPE_V"),
     )
     event_operand = _sync_event_id_operand_in_range(
         event_id,

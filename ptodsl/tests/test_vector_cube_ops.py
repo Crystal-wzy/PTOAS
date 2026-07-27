@@ -725,8 +725,8 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         cases = [
             (_ops.set_cross_flag, (pto.Pipe.V, 0), "set_cross_flag(pipe, event_id)", "<PIPE_FIX>", "<PIPE_V>"),
             (_ops.wait_cross_flag, (pto.Pipe.MTE3, 0), "wait_cross_flag(pipe, event_id)", "<PIPE_FIX>", "<PIPE_MTE3>"),
-            (_ops.set_intra_flag, (pto.Pipe.V, 0), "set_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE3>", "<PIPE_V>"),
-            (_ops.wait_intra_flag, (pto.Pipe.MTE2, 0), "wait_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE3>, <PIPE_V>", "<PIPE_MTE2>"),
+            (_ops.set_intra_flag, ("M", 0), "set_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, <PIPE_MTE3>, <PIPE_V>", "<PIPE_M>"),
+            (_ops.wait_intra_flag, (pto.Pipe.MTE3, 0), "wait_intra_flag(pipe, event_id)", "<PIPE_FIX>, <PIPE_V>", "<PIPE_MTE3>"),
         ]
 
         with patch.object(_ops._pto, "sync_set") as sync_set_op, \
