@@ -23,7 +23,6 @@ REQUIRED_FILES = {
     "ptoas/_runtime/share/ptoas/TileOps/__init__.py",
     "ptoas/mlir/ir.py",
     "ptoas/mlir/dialects/pto.py",
-    "ptoas/mlir/_mlir_libs/libPTOASPythonCAPI.so",
 }
 FORBIDDEN_FILES = {
     "ptoas/_runtime/bin/ptoas",
@@ -35,6 +34,10 @@ NATIVE_MODULE_PATHS = {
     for suffix in importlib.machinery.EXTENSION_SUFFIXES
 }
 MLIR_NATIVE_MODULE_PREFIX = "ptoas/mlir/_mlir_libs/"
+COMMON_CAPI_LIBRARY_PATHS = {
+    f"{MLIR_NATIVE_MODULE_PREFIX}libPTOASPythonCAPI{suffix}"
+    for suffix in (".so", ".dylib")
+}
 MLIR_NATIVE_MODULE_PATHS = {
     f"{MLIR_NATIVE_MODULE_PREFIX}_mlir{suffix}"
     for suffix in importlib.machinery.EXTENSION_SUFFIXES
@@ -110,6 +113,13 @@ def validate_wheel_payload(wheel: Path) -> None:
             raise SystemExit(
                 "wheel must contain exactly one ptoas-owned MLIR native module, "
                 f"found {mlir_native_modules}"
+            )
+
+        common_capi_libraries = sorted(COMMON_CAPI_LIBRARY_PATHS & names)
+        if len(common_capi_libraries) != 1:
+            raise SystemExit(
+                "wheel must contain exactly one PTOAS MLIR common CAPI library, "
+                f"found {common_capi_libraries}"
             )
 
         site_initializers = sorted(SITE_INITIALIZER_PATHS & names)
