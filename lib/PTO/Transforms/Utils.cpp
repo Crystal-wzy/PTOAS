@@ -180,6 +180,18 @@ std::optional<AddressSpaceAttr> GetBufferSpaceAttr(Value operand) {
 std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
   if (auto subViewOp = dyn_cast<memref::SubViewOp>(op)) {
     return std::make_pair(subViewOp.getResult(), subViewOp.getViewSource());
+  } else if (auto makeViewOp = dyn_cast<pto::MakeTensorViewOp>(op)) {
+    return std::make_pair(makeViewOp.getResult(), makeViewOp.getPtr());
+  } else if (auto partViewOp = dyn_cast<pto::PartitionViewOp>(op)) {
+    return std::make_pair(partViewOp.getResult(), partViewOp.getSource());
+  } else if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(op)) {
+    return std::make_pair(addPtrOp.getResult(), addPtrOp.getPtr());
+  } else if (auto ptrToIntOp = dyn_cast<pto::PtrToIntOp>(op)) {
+    return std::make_pair(ptrToIntOp.getResult(), ptrToIntOp.getPtr());
+  } else if (auto intToPtrOp = dyn_cast<pto::IntToPtrOp>(op)) {
+    return std::make_pair(intToPtrOp.getResult(), intToPtrOp.getAddr());
+  } else if (auto castPtrOp = dyn_cast<pto::CastPtrOp>(op)) {
+    return std::make_pair(castPtrOp.getResult(), castPtrOp.getInput());
   } else if (auto subViewOp = dyn_cast<pto::SubViewOp>(op)) {
     return std::make_pair(subViewOp.getResult(), subViewOp.getSource());
   } else if (auto bitcastOp = dyn_cast<pto::BitcastOp>(op)) {

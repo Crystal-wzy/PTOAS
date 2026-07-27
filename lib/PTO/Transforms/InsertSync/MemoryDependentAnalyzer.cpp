@@ -262,18 +262,18 @@ bool MemoryDependentAnalyzer::MemAlias(const BaseMemInfo *a,
  
 bool MemoryDependentAnalyzer::isGMBufferOverlap(const BaseMemInfo *a,
                                                 const BaseMemInfo *b) {
+  if (a->baseAddresses.empty() || b->baseAddresses.empty())
+    return true;
   if (a->rootBuffer != b->rootBuffer) {
     Value realRootA = GetRealRoot(a->rootBuffer);
     Value realRootB = GetRealRoot(b->rootBuffer);
     if (realRootA != realRootB) {
         return false;
     }
-    if (a->baseAddresses.empty() || b->baseAddresses.empty()) return true;
     if (a->allocateSize == 0 || b->allocateSize == 0) return true;
     return isBufferAddressRangeOverlap(a, b);
   }
  
-  if (a->baseAddresses.empty() || b->baseAddresses.empty()) return true; 
   if (a->allocateSize == 0 || b->allocateSize == 0) return true;
  
   return isBufferAddressRangeOverlap(a, b);

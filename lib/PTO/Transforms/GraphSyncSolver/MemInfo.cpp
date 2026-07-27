@@ -18,6 +18,7 @@
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <cstdint>
 
@@ -26,19 +27,42 @@ using namespace pto::syncsolver;
 
 namespace mlir::pto::syncsolver {
 
+static std::optional<int64_t> getTileBufferBitSize(pto::TileBufType type) {
+  auto bitWidth = getPTOStorageElemBitWidth(type.getElementType());
+  if (bitWidth == 0)
+    return ShapedType::kDynamic;
+
+  ArrayRef<int64_t> shape = type.getShape();
+  if (type.getCompactModeI32() ==
+      static_cast<int32_t>(pto::CompactMode::RowPlusOne)) {
+    if (shape.size() != 2 || llvm::is_contained(shape, ShapedType::kDynamic))
+      return ShapedType::kDynamic;
+
+    bool rowMajor = type.getBLayoutValueI32() ==
+                    static_cast<int32_t>(pto::BLayout::RowMajor);
+    int64_t major = rowMajor ? shape[0] : shape[1];
+    int64_t minor = rowMajor ? shape[1] : shape[0];
+    if (major == 0 || minor == 0)
+      return 0;
+    return ((major - 1) * (minor + 1) + minor) *
+           static_cast<int64_t>(bitWidth);
+  }
+
+  int64_t numElements = 1;
+  for (int64_t dim : shape) {
+    if (dim == ShapedType::kDynamic)
+      return ShapedType::kDynamic;
+    numElements *= dim;
+  }
+  return numElements * bitWidth;
+}
+
 static std::optional<int64_t> getBufferBitSize(Value value) {
   if (auto multiType = dyn_cast<pto::MultiTileBufType>(value.getType())) {
-    auto slotType = multiType.getSlotType();
-    auto bitWidth = getPTOStorageElemBitWidth(slotType.getElementType());
-    if (bitWidth == 0)
-      return ShapedType::kDynamic;
-    int64_t numElements = 1;
-    for (int64_t dim : slotType.getShape()) {
-      if (dim == ShapedType::kDynamic)
-        return ShapedType::kDynamic;
-      numElements *= dim;
-    }
-    return numElements * bitWidth;
+    return getTileBufferBitSize(multiType.getSlotType());
+  }
+  if (auto tileType = dyn_cast<pto::TileBufType>(value.getType())) {
+    return getTileBufferBitSize(tileType);
   }
   auto shaped = dyn_cast<ShapedType>(value.getType());
   if (!shaped || !shaped.hasStaticShape()) {
@@ -185,6 +209,9 @@ bool PointerLikeInfo::checkConflict(const PointerLikeInfo &pointerLikeInfo1,
   auto &offsets2 = pointerLikeInfo2.addresses;
   auto sz1 = static_cast<int64_t>(offsets1.size());
   auto sz2 = static_cast<int64_t>(offsets2.size());
+  if (sz1 == 0 || sz2 == 0)
+    return pointerLikeInfo1.addressSpace == pto::AddressSpace::GM ||
+           pointerLikeInfo2.addressSpace == pto::AddressSpace::GM;
 
   int64_t len1 = sz1;
   int64_t len2 = sz2;
@@ -235,7 +262,6 @@ bool MemInfo::checkConflict(const MemInfo &memInfo1, const MemInfo &memInfo2,
                                           memInfo2.pointerLikeInfo.value(),
                                           lcmLen, eventIdNum);
   }
-
   auto getUnknownAddressSpace =
       [](const MemInfo &memInfo) -> std::optional<pto::AddressSpace> {
     if (!memInfo.pointerLikeInfo ||

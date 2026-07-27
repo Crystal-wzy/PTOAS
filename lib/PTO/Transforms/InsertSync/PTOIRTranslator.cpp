@@ -54,6 +54,27 @@ static uint64_t getStaticBufferSizeInBytes(ArrayRef<int64_t> shape,
   return size;
 }
 
+static uint64_t getTileBufferFootprintBytes(pto::TileBufType type) {
+  ArrayRef<int64_t> shape = type.getShape();
+  uint64_t elemBytes = pto::getPTOStorageElemByteSize(type.getElementType());
+  if (elemBytes == 0)
+    return 0;
+  if (type.getCompactModeI32() !=
+      static_cast<int32_t>(pto::CompactMode::RowPlusOne))
+    return getStaticBufferSizeInBytes(shape, type.getElementType());
+  if (shape.size() != kTileRank2D ||
+      llvm::is_contained(shape, ShapedType::kDynamic))
+    return 0;
+
+  bool rowMajor =
+      type.getBLayoutValueI32() == static_cast<int32_t>(pto::BLayout::RowMajor);
+  uint64_t major = static_cast<uint64_t>(rowMajor ? shape[0] : shape[1]);
+  uint64_t minor = static_cast<uint64_t>(rowMajor ? shape[1] : shape[0]);
+  if (major == 0 || minor == 0)
+    return 0;
+  return ((major - 1) * (minor + 1) + minor) * elemBytes;
+}
+
 static pto::AddressSpace getTileAddressSpace(pto::TileBufType type) {
   if (auto attr =
           dyn_cast_or_null<pto::AddressSpaceAttr>(type.getMemorySpace()))
@@ -250,13 +271,11 @@ void PTOIRTranslator::UpdateKernelArgMemInfo() {
       space = ptrType.getMemorySpace().getAddressSpace();
     } else if (auto tileType = dyn_cast<pto::TileBufType>(argType)) {
       space = getTileAddressSpace(tileType);
-      sizeInBytes = getStaticBufferSizeInBytes(tileType.getShape(),
-                                               tileType.getElementType());
+      sizeInBytes = getTileBufferFootprintBytes(tileType);
     } else if (auto multiType = dyn_cast<pto::MultiTileBufType>(argType)) {
       pto::TileBufType slotType = multiType.getSlotType();
       space = getTileAddressSpace(slotType);
-      sizeInBytes = getStaticBufferSizeInBytes(slotType.getShape(),
-                                               slotType.getElementType());
+      sizeInBytes = getTileBufferFootprintBytes(slotType);
       baseAddresses.clear();
       for (uint32_t slot = 0; slot < multiType.getCount(); ++slot)
         baseAddresses.push_back(sizeInBytes == 0 ? 0 : slot * sizeInBytes);
@@ -311,18 +330,24 @@ void PTOIRTranslator::RecursionIR(Region *region) {
     else if (auto subViewOp = dyn_cast<pto::PartitionViewOp>(op)) {
       UpdateAliasBufferInfo(subViewOp.getResult(), subViewOp.getSource());
     }
-    else if (auto subViewOp = dyn_cast<pto::SubViewOp>(op)) {
-      UpdateTileSubViewAliasBufferInfo(subViewOp);
-    } else if (auto intToPtrOp = dyn_cast<pto::IntToPtrOp>(op)) {
+    else if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(op)) {
+      UpdateAliasBufferInfo(addPtrOp.getResult(), addPtrOp.getPtr());
+    }
+    else if (auto ptrToIntOp = dyn_cast<pto::PtrToIntOp>(op)) {
+      UpdateAliasBufferInfo(ptrToIntOp.getResult(), ptrToIntOp.getPtr());
+    }
+    else if (auto intToPtrOp = dyn_cast<pto::IntToPtrOp>(op)) {
       if (failed(UpdateIntToPtrOpMemInfo(intToPtrOp)))
         return WalkResult::interrupt();
-    } else if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(op)) {
-      UpdateAliasBufferInfo(addPtrOp.getResult(), addPtrOp.getPtr());
-    } else if (auto castPtrOp = dyn_cast<pto::CastPtrOp>(op)) {
+    }
+    else if (auto castPtrOp = dyn_cast<pto::CastPtrOp>(op)) {
       if (isa<pto::PtrType>(castPtrOp.getInput().getType()) &&
           isa<pto::PtrType>(castPtrOp.getResult().getType())) {
         UpdateAliasBufferInfo(castPtrOp.getResult(), castPtrOp.getInput());
       }
+    }
+    else if (auto subViewOp = dyn_cast<pto::SubViewOp>(op)) {
+      UpdateTileSubViewAliasBufferInfo(subViewOp);
     } else if (auto multiGet = dyn_cast<pto::MultiTileGetOp>(op)) {
       UpdateMultiTileGetAliasBufferInfo(multiGet);
     }
@@ -367,7 +392,7 @@ void PTOIRTranslator::RecursionIR(Region *region) {
 }
 
 // ============================================================================
-// 4. 处理 AllocTile / PointerCast
+// 4. 处理本地 tile 分配
 // ============================================================================
 LogicalResult PTOIRTranslator::UpdateAllocTileOpMemInfo(pto::AllocTileOp op) {
   Value res = op.getResult();
@@ -386,24 +411,9 @@ LogicalResult PTOIRTranslator::UpdateAllocTileOpMemInfo(pto::AllocTileOp op) {
 
   // 1. 计算大小
   if (tileType) {
-    ArrayRef<int64_t> shape = tileType.getShape();
-    bool isStatic = true;
-    for (int64_t dim : shape) {
-      if (dim == ShapedType::kDynamic) {
-        isStatic = false;
-        break;
-      }
-    }
-
-    if (isStatic) {
-      int64_t elemSize = static_cast<int64_t>(
-          pto::getPTOStorageElemByteSize(tileType.getElementType()));
-      if (elemSize == 0)
-        return failure();
-      int64_t numElements = 1;
-      for (auto dim : shape) numElements *= dim;
-      sizeInBytes = numElements * elemSize;
-    }
+    sizeInBytes = getTileBufferFootprintBytes(tileType);
+    if (sizeInBytes == 0)
+      return failure();
   }
 
   // 2. 解析地址空间
@@ -434,14 +444,9 @@ PTOIRTranslator::UpdateAllocMultiTileOpMemInfo(pto::AllocMultiTileOp op) {
   auto multiType = op.getResult().getType();
   pto::TileBufType slotType = multiType.getSlotType();
 
-  uint64_t slotBytes = pto::getPTOStorageElemByteSize(slotType.getElementType());
+  uint64_t slotBytes = getTileBufferFootprintBytes(slotType);
   if (slotBytes == 0)
     return failure();
-  for (int64_t dim : slotType.getShape()) {
-    if (dim == ShapedType::kDynamic)
-      return op.emitError("requires a static slot shape for sync analysis");
-    slotBytes *= static_cast<uint64_t>(dim);
-  }
 
   pto::AddressSpace space = pto::AddressSpace::MAT;
   if (auto attr = dyn_cast_or_null<pto::AddressSpaceAttr>(
@@ -484,17 +489,9 @@ PTOIRTranslator::UpdateDeclareTileOpMemInfo(pto::DeclareTileOp op) {
   if (!tileType)
     return op.emitError("requires a tile_buf result for sync analysis");
 
-  uint64_t sizeInBytes = pto::getPTOStorageElemByteSize(
-      tileType.getElementType());
+  uint64_t sizeInBytes = getTileBufferFootprintBytes(tileType);
   if (sizeInBytes == 0)
     return failure();
-  for (int64_t dim : tileType.getShape()) {
-    if (dim == ShapedType::kDynamic) {
-      sizeInBytes = 0;
-      break;
-    }
-    sizeInBytes *= static_cast<uint64_t>(dim);
-  }
 
   pto::AddressSpace space = pto::AddressSpace::MAT;
   if (auto attr = dyn_cast_or_null<pto::AddressSpaceAttr>(

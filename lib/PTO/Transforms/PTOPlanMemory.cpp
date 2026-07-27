@@ -62,6 +62,33 @@ struct LocalMemSpec {
   int64_t alignBytes = 1;
 };
 
+static std::optional<int64_t> getTileBufferFootprintBytes(TileBufType type) {
+  ArrayRef<int64_t> shape = type.getShape();
+  unsigned elemBytes = getPTOStorageElemByteSize(type.getElementType());
+  if (elemBytes == 0)
+    return std::nullopt;
+
+  if (type.getCompactModeI32() !=
+      static_cast<int32_t>(pto::CompactMode::RowPlusOne)) {
+    std::optional<int64_t> totalStaticSize = getStaticTotalSize(shape);
+    if (!totalStaticSize.has_value())
+      return std::nullopt;
+    return totalStaticSize.value() * static_cast<int64_t>(elemBytes);
+  }
+
+  if (shape.size() != 2 || llvm::is_contained(shape, ShapedType::kDynamic))
+    return std::nullopt;
+
+  bool rowMajor =
+      type.getBLayoutValueI32() == static_cast<int32_t>(pto::BLayout::RowMajor);
+  int64_t major = rowMajor ? shape[0] : shape[1];
+  int64_t minor = rowMajor ? shape[1] : shape[0];
+  if (major == 0 || minor == 0)
+    return 0;
+  return ((major - 1) * (minor + 1) + minor) *
+         static_cast<int64_t>(elemBytes);
+}
+
 static int64_t ceilDivBitsToBytes(int64_t bits) {
   return (bits + kBitsPerByte - 1) / kBitsPerByte;
 }
@@ -977,28 +1004,23 @@ BufferInfo MemLivenessAnalysis::GetBufferInfo(Operation *op, Value operand,
   bufferInfo.operation = op;
   bufferInfo.bufferScope = bufferScope;
   // get buffer size, now for static shape
-  ArrayRef<int64_t> shape;
   Type elementType;
+  std::optional<int64_t> footprintBytes;
   if (auto tileType = dyn_cast<TileBufType>(operand.getType())) {
-    shape = tileType.getShape();
     elementType = tileType.getElementType();
+    footprintBytes = getTileBufferFootprintBytes(tileType);
   } else if (auto multiType = dyn_cast<MultiTileBufType>(operand.getType())) {
-    shape = multiType.getSlotType().getShape();
-    elementType = multiType.getSlotType().getElementType();
+    TileBufType slotType = multiType.getSlotType();
+    elementType = slotType.getElementType();
+    footprintBytes = getTileBufferFootprintBytes(slotType);
   } else {
     llvm_unreachable("local memory planner expects tile buffer roots");
   }
   bufferInfo.bufferType = elementType;
-  std::optional<int64_t> totalStaticSize =
-      getStaticTotalSize(shape);
-  if (!totalStaticSize.has_value())
-    llvm::report_fatal_error("failed to obtain buffer static shape size");
-  unsigned elemBytes = getPTOStorageElemByteSize(elementType);
-  if (elemBytes == 0)
-    llvm::report_fatal_error("failed to obtain buffer element byte size");
-  bufferInfo.constBits =
-      totalStaticSize.value() *
-      static_cast<int64_t>(elemBytes * kBitsPerByte);
+  if (!footprintBytes.has_value())
+    llvm::report_fatal_error(
+        "failed to obtain buffer static physical footprint");
+  bufferInfo.constBits = footprintBytes.value() * kBitsPerByte;
   return bufferInfo;
 }
 

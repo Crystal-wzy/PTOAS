@@ -30,6 +30,18 @@ Value findMultiTileSlotExpr(Value v) {
       return {};
     if (auto get = dyn_cast<pto::MultiTileGetOp>(op))
       return get.getSlot();
+    if (auto subview = dyn_cast<pto::SubViewOp>(op)) {
+      v = subview.getSource();
+      continue;
+    }
+    if (auto reshape = dyn_cast<pto::TReshapeOp>(op)) {
+      v = reshape.getSrc();
+      continue;
+    }
+    if (auto bitcast = dyn_cast<pto::BitcastOp>(op)) {
+      v = bitcast.getSrc();
+      continue;
+    }
     return {};
   }
   return {};

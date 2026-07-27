@@ -176,6 +176,7 @@ def CastPtrOp : PTO_Op<"castptr", [Pure]> {
 //===----------------------------------------------------------------------===//
 
 def LoadScalarOp : PTO_Op<"load_scalar", [
+    OpPipeInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let summary = "Load a single scalar element from a pointer at offset.";
@@ -192,9 +193,14 @@ def LoadScalarOp : PTO_Op<"load_scalar", [
   let assemblyFormat = [{
     $ptr `[` $offset `]` attr-dict `:` type($ptr) `->` type($value)
   }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
+  }];
 }
 
 def StoreScalarOp : PTO_Op<"store_scalar", [
+    OpPipeInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let summary = "Store a single scalar element to a pointer at offset.";
@@ -211,6 +217,10 @@ def StoreScalarOp : PTO_Op<"store_scalar", [
 
   let assemblyFormat = [{
     $value `,` $ptr `[` $offset `]` attr-dict `:` type($ptr) `,` type($value)
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
   }];
 }
 
@@ -6660,6 +6670,7 @@ def TSqrtOp: PTO_TOp<"tsqrt", [
 def TStoreFPOp: PTO_TOp<"tstore_fp", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
 ]> {
   let summary = "TSTORE_FP: Store an accumulator tile into global memory using a scaling (fp) tile for vector quantization parameters.";
 
