@@ -50,6 +50,21 @@ set(PTOAS_RELEASE_VERSION_OVERRIDE ""
 # same CLI without making CMake a second source of package-version truth.
 set(PTOAS_CLI_VERSION_LABEL ""
     CACHE STRING "Optional label prepended to the packaged ptoas version")
+
+# Editable installs intentionally link against the developer's external LLVM
+# build instead of bundling it. Apply that contract explicitly to every native
+# Python target; generated and project-owned extensions live in different
+# CMake directories and must use the same install RPATH policy.
+function(ptoas_append_editable_llvm_rpath target_name)
+  if(NOT SKBUILD_STATE STREQUAL "editable")
+    return()
+  endif()
+  get_filename_component(_ptoas_editable_llvm_library_dir
+    "${LLVM_BUILD_LIBRARY_DIR}" REALPATH)
+  set_property(TARGET "${target_name}" APPEND PROPERTY
+    INSTALL_RPATH "${_ptoas_editable_llvm_library_dir}")
+endfunction()
+
 set(PTOAS_EXACT_GIT_TAG_VERSION "")
 if(EXISTS "${PROJECT_SOURCE_DIR}/.git")
   find_package(Git QUIET)

@@ -15,16 +15,10 @@ include(AddMLIRPython)
 add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=ptoas.mlir.")
 set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ptoas_mlir")
 
-# scikit-build-core editable installs use the external LLVM build directly.
-# Wheel builds retain AddMLIRPython's package-relative RPATHs for
-# auditwheel/delocate to repair.
-if(SKBUILD_STATE STREQUAL "editable")
-  set(CMAKE_INSTALL_REMOVE_ENVIRONMENT_RPATH OFF)
-else()
-  # Do not carry toolchain-injected paths, such as a Conda compiler RPATH,
-  # into distribution modules.
-  set(CMAKE_INSTALL_REMOVE_ENVIRONMENT_RPATH ON)
-endif()
+# Do not carry toolchain-injected paths, such as a Conda compiler RPATH, into
+# installed Python modules. Wheel builds retain AddMLIRPython's package-relative
+# RPATHs for repair; editable builds append only the external LLVM directory.
+set(CMAKE_INSTALL_REMOVE_ENVIRONMENT_RPATH ON)
 
 # This directory materializes C++ sources exported by upstream MLIR. PTOAS
 # keeps -Werror enabled globally, but upstream sources are not part of the
@@ -145,16 +139,13 @@ add_mlir_python_modules(PTOAS_Python
 # Python environment. Discover the native targets by CMake type so additional
 # generated MLIR extensions inherit the same contract automatically.
 if(SKBUILD_STATE STREQUAL "editable")
-  get_filename_component(_ptoas_editable_llvm_library_dir
-    "${LLVM_BUILD_LIBRARY_DIR}" REALPATH)
   get_property(_ptoas_python_directory_targets
     DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
   foreach(_ptoas_python_target IN LISTS _ptoas_python_directory_targets)
     get_target_property(_ptoas_python_target_type
       "${_ptoas_python_target}" TYPE)
     if(_ptoas_python_target_type MATCHES "^(MODULE|SHARED)_LIBRARY$")
-      set_property(TARGET "${_ptoas_python_target}" APPEND PROPERTY
-        INSTALL_RPATH "${_ptoas_editable_llvm_library_dir}")
+      ptoas_append_editable_llvm_rpath("${_ptoas_python_target}")
     endif()
   endforeach()
 endif()

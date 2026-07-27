@@ -7,16 +7,9 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 # Do not carry toolchain-injected paths, such as a Conda compiler RPATH, into
-# installed Python modules. Distribution builds keep only MLIR's relative
-# package RPATHs; editable builds add their external link paths below.
+# installed Python modules. Distribution builds keep only package-relative
+# RPATHs; editable builds add the external LLVM directory explicitly below.
 set(CMAKE_INSTALL_REMOVE_ENVIRONMENT_RPATH ON)
-
-# scikit-build-core editable installs use the external LLVM build directly.
-# Keep this developer-only fallback local to the PTOAS Python extension; wheel
-# builds use package-relative RPATHs and let auditwheel/delocate collect LLVM.
-if(SKBUILD_STATE STREQUAL "editable")
-  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
-endif()
 
 set(PTOAS_RUNTIME_SOURCES
   ptoas.cpp
@@ -145,6 +138,7 @@ elseif(UNIX)
   set_property(TARGET PTOASPythonCore PROPERTY INSTALL_RPATH
     "$ORIGIN;$ORIGIN/mlir/_mlir_libs")
 endif()
+ptoas_append_editable_llvm_rpath(PTOASPythonCore)
 
 declare_mlir_python_sources(PTOASRuntimePythonSources
   ROOT_DIR "${CMAKE_SOURCE_DIR}/ptodsl/ptoas"
