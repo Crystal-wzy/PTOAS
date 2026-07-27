@@ -97,6 +97,12 @@ static bool isLocalAddressSpace(pto::AddressSpace space) {
          space != pto::AddressSpace::Zero;
 }
 
+static pto::AddressSpace getPointerLikeAddressSpace(Type type) {
+  if (auto space = pto::getPTOAddressSpaceAttr(type))
+    return space.getAddressSpace();
+  return pto::AddressSpace::GM;
+}
+
 static bool isStaticRank2Shape(ArrayRef<int64_t> shape) {
   return shape.size() == kTileRank2D && llvm::none_of(shape, [](int64_t dim) {
            return dim == ShapedType::kDynamic;
@@ -262,20 +268,40 @@ static pto::TCoreType getTileOpHelperCoreType(pto::PipelineType pipe) {
 // 如果无法计算静态值，返回 {-1, -1} 表示这是动态的
 static std::pair<int64_t, int64_t> getStaticOffsetAndSize(Operation *op,
                                                           Value src) {
-  auto srcType = dyn_cast<MemRefType>(src.getType());
-  if (!srcType)
+  Type elemType;
+  if (auto srcMemRefType = dyn_cast<MemRefType>(src.getType())) {
+    elemType = srcMemRefType.getElementType();
+  } else if (auto ptrType = dyn_cast<pto::PtrType>(src.getType())) {
+    elemType = ptrType.getElementType();
+  } else {
     return {0, 0};
+  }
 
-  int64_t elemSize = static_cast<int64_t>(
-      pto::getPTOStorageElemByteSize(srcType.getElementType()));
+  int64_t elemSize =
+      static_cast<int64_t>(pto::getPTOStorageElemByteSize(elemType));
   if (elemSize == 0)
     return {-1, -1};
+
+  // === Case 0: pto.addptr ===
+  // The addptr offset is in elements. Keep the parent range size because the
+  // pointer may be wrapped into a wider tensor view later; scalar accesses are
+  // still modeled through the op's MemoryEffects below.
+  if (auto addPtr = dyn_cast<pto::AddPtrOp>(op)) {
+    int64_t offset = 0;
+    if (!getConstIndexValue(addPtr.getOffset(), offset))
+      return {-1, -1};
+    return {offset * elemSize, 0};
+  }
+
+  auto srcMemRefType = dyn_cast<MemRefType>(src.getType());
+  if (!srcMemRefType)
+    return {0, 0};
 
   // === Case 1: memref.subview ===
   if (auto subView = dyn_cast<memref::SubViewOp>(op)) {
     int64_t baseOffset;
     StrideVector strides;
-    if (failed(mlir::pto::getPTOMemRefStridesAndOffset(srcType, strides,
+    if (failed(mlir::pto::getPTOMemRefStridesAndOffset(srcMemRefType, strides,
                                                        baseOffset))) {
       return {-1, -1};
     }
@@ -348,10 +374,20 @@ void PTOIRTranslator::UpdateKernelArgMemInfo() {
       continue;
     }
 
+    pto::AddressSpace space = pto::AddressSpace::GM;
+    if (auto ptrType = dyn_cast<pto::PtrType>(argType)) {
+      space = ptrType.getMemorySpace().getAddressSpace();
+    } else if (auto memRefType = dyn_cast<MemRefType>(argType)) {
+      if (auto attr = memRefType.getMemorySpace()) {
+        if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(attr))
+          space = ptoAttr.getAddressSpace();
+      }
+    }
+
     std::unique_ptr<BaseMemInfo> newMemInfo = std::make_unique<BaseMemInfo>(
         funcArg,                  // baseBuffer
         funcArg,                  // rootBuffer
-        pto::AddressSpace::GM,    // Scope
+        space,                    // Scope
         SmallVector<uint64_t>{0}, // Base Addresses
         0                         // Allocate Size
     );
@@ -402,6 +438,16 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       UpdateMemrefSubViewAliasBufferInfo(memrefSubView);
     } else if (auto slotMarker = dyn_cast<pto::SlotMarkerOp>(op)) {
       UpdateSlotMarkerAliasBufferInfo(slotMarker);
+    } else if (auto intToPtrOp = dyn_cast<pto::IntToPtrOp>(op)) {
+      if (failed(UpdateIntToPtrOpMemInfo(intToPtrOp)))
+        return WalkResult::interrupt();
+    } else if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(op)) {
+      UpdateAliasBufferInfo(addPtrOp.getResult(), addPtrOp.getPtr());
+    } else if (auto castPtrOp = dyn_cast<pto::CastPtrOp>(op)) {
+      if (isa<pto::PtrType, MemRefType>(castPtrOp.getInput().getType()) &&
+          isa<pto::PtrType, MemRefType>(castPtrOp.getResult().getType())) {
+        UpdateAliasBufferInfo(castPtrOp.getResult(), castPtrOp.getInput());
+      }
     } else if (auto castOp = dyn_cast<memref::ReinterpretCastOp>(op)) {
       UpdateAliasBufferInfo(castOp.getResult(), castOp.getSource());
     }
@@ -443,6 +489,12 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       UpdateMacroOpInfo(op);
     } else if (auto callOp = dyn_cast<func::CallOp>(op)) {
       UpdateTileOpCallInfo(callOp);
+    } else if (isa<pto::LoadScalarOp, pto::StoreScalarOp>(op)) {
+      // Scalar GM pointer accesses do not implement OpPipeInterface, but they
+      // execute on PIPE_S and can race with async MTE/FIX tile stores touching
+      // the same GM payload.
+      UpdatePTOOpInfoWithPipeline(op, pto::PipelineType::PIPE_S,
+                                  /*skipIfNoMemInfo=*/true);
     } else if (isa<pto::OpPipeInterface>(op)) {
       // --- Case D: 带有 OpPipeInterface 的计算/搬运指令 ---
       UpdatePTOOpInfo(op);
@@ -674,8 +726,12 @@ PTOIRTranslator::UpdateDeclareGlobalOpMemInfo(pto::DeclareGlobalOp op) {
 // ============================================================================
 void PTOIRTranslator::UpdatePTOOpInfo(Operation *op) {
   // 1. 获取流水线类型 (现在通过 Interface)
-  pto::PipelineType pipe = getOpPipeline(op);
+  UpdatePTOOpInfoWithPipeline(op, getOpPipeline(op));
+}
 
+void PTOIRTranslator::UpdatePTOOpInfoWithPipeline(Operation *op,
+                                                  pto::PipelineType pipe,
+                                                  bool skipIfNoMemInfo) {
   // 如果 Op 不属于任何关心的流水线，直接跳过，不建立 Sync 节点
   if (pipe == pto::PipelineType::PIPE_UNASSIGNED)
     return;
@@ -705,6 +761,9 @@ void PTOIRTranslator::UpdatePTOOpInfo(Operation *op) {
     LLVM_DEBUG(llvm::dbgs() << "Warning: Op " << op->getName()
                             << " has Pipe but no MemoryEffects interface.\n");
   }
+
+  if (skipIfNoMemInfo && defVec.empty() && useVec.empty())
+    return;
 
   // 3. 构建 Compound Node
   auto compoundElement = std::make_unique<CompoundInstanceElement>(
@@ -1000,6 +1059,35 @@ void PTOIRTranslator::UpdateConservativeAliasBufferInfo(Value result,
   auto &resultMemInfoVec = buffer2MemInfoMap_[result];
   for (auto &parentInfo : buffer2MemInfoMap_[source])
     resultMemInfoVec.emplace_back(parentInfo->clone(result));
+}
+
+LogicalResult PTOIRTranslator::UpdateIntToPtrOpMemInfo(pto::IntToPtrOp op) {
+  Value result = op.getResult();
+  if (!result)
+    return failure();
+
+  // Preserve provenance across the explicit byte-address round trip:
+  //   %addr = pto.ptrtoint %ptr
+  //   %ptr2 = pto.inttoptr %addr
+  // `ptr2` is the same address as `ptr`, possibly with a different element
+  // type, so scalar memory ops must participate in the same GM dependency
+  // chain as tile stores/loads through the original pointer.
+  if (auto ptrToInt = op.getAddr().getDefiningOp<pto::PtrToIntOp>()) {
+    UpdateConservativeAliasBufferInfo(result, ptrToInt.getPtr());
+    if (buffer2MemInfoMap_.contains(result))
+      return success();
+  }
+
+  // A raw integer address may still point at any object in its address space.
+  // Keep it in the sync IR instead of letting scalar ops be dropped by
+  // skipIfNoMemInfo=true.
+  auto space = getPointerLikeAddressSpace(result.getType());
+  auto newMemInfo = std::make_unique<BaseMemInfo>(
+      result, result, space, SmallVector<uint64_t>{0},
+      /*allocateSize=*/0, /*hasKnownPhysicalAddresses=*/false,
+      /*aliasesUnknownRange=*/true);
+  buffer2MemInfoMap_[result].emplace_back(newMemInfo->clone());
+  return success();
 }
 
 void PTOIRTranslator::UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op) {

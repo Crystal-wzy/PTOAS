@@ -81,6 +81,7 @@ private:
   void UpdateMemrefSubViewAliasBufferInfo(memref::SubViewOp op);
   void UpdateTileSubViewAliasBufferInfo(pto::SubViewOp op);
   void UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op);
+  LogicalResult UpdateIntToPtrOpMemInfo(pto::IntToPtrOp op);
  
   // --- 控制流处理 (SCF) ---
   void UpdateForOpInfo(scf::ForOp forOp);
@@ -90,6 +91,8 @@ private:
  
   // --- 核心：处理计算/搬运指令 (生成 Compound 节点) ---
   void UpdatePTOOpInfo(Operation *op);
+  void UpdatePTOOpInfoWithPipeline(Operation *op, PipelineType pipe,
+                                   bool skipIfNoMemInfo = false);
   void UpdateMacroOpInfo(Operation *op);
   void MakeMacroCompound(Operation *op, PipelineType pipe, ValueRange defValues,
                          ValueRange useValues, int macroPhaseId);
