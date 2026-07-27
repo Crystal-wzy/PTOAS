@@ -55,5 +55,5 @@ PTOAS_RELEASE_VERSION_OVERRIDE = { env = "PTOAS_RELEASE_VERSION_OVERRIDE", defau
 
 [tool.scikit-build.metadata.version]
 provider = "scikit_build_core.metadata.regex"
-input = "../../docs/release/VMI_VERSION"
-regex = '^(?P<value>[0-9]+\.[0-9]+\.[0-9]+)\s*$'
+input = "../../CMakeLists.txt"
+regex = 'set\s*\(\s*PTOAS_VMI_VERSION\s+"(?P<value>[0-9]+\.[0-9]+\.[0-9]+)"\s*\)'
