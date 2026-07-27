@@ -51,7 +51,36 @@ static std::string formatVMIMaskType(int64_t elementCount,
 
 static void printVMIType(OpAsmPrinter &printer, Type type) {
   if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
-    printer << "!pto.ptr" << ptrType;
+    StringRef memorySpaceKeyword;
+    switch (ptrType.getMemorySpace().getAddressSpace()) {
+    case pto::AddressSpace::GM:
+    case pto::AddressSpace::Zero:
+      memorySpaceKeyword = "gm";
+      break;
+    case pto::AddressSpace::MAT:
+      memorySpaceKeyword = "l1";
+      break;
+    case pto::AddressSpace::LEFT:
+      memorySpaceKeyword = "l0a";
+      break;
+    case pto::AddressSpace::RIGHT:
+      memorySpaceKeyword = "l0b";
+      break;
+    case pto::AddressSpace::ACC:
+      memorySpaceKeyword = "l0c";
+      break;
+    case pto::AddressSpace::VEC:
+      memorySpaceKeyword = "ub";
+      break;
+    case pto::AddressSpace::BIAS:
+      memorySpaceKeyword = "bt";
+      break;
+    case pto::AddressSpace::SCALING:
+      memorySpaceKeyword = "fb";
+      break;
+    }
+    printer << "!pto.ptr<" << ptrType.getElementType() << ", "
+            << memorySpaceKeyword << ">";
     return;
   }
   printer << type;
