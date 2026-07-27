@@ -15231,8 +15231,8 @@ static bool isInsideSectionOrAttributedKernel(Operation *op) {
 }
 
 static LogicalResult verifySplitAttr(Operation *op, int64_t split) {
-  if (split < 0 || split > 2)
-    return op->emitOpError("expects 'split' to be 0, 1, or 2");
+  if (split < 0 || split > 4)
+    return op->emitOpError("expects 'split' to be 0, 1, 2, 3, or 4");
   return success();
 }
 
@@ -16094,7 +16094,7 @@ static LogicalResult verifyAivSubblockIdOperand(Operation *op,
 
   if (split == 0) {
     return op->emitOpError(
-        "expects 'aiv_subblockid' only when 'split' is 1 or 2");
+        "expects 'aiv_subblockid' only when 'split' is 1, 2, 3, or 4");
   }
 
   if (isa<TensorViewType>(pipeEntryType)) {

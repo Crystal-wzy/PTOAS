@@ -467,7 +467,7 @@ def PTOInferValidatePipeInit : Pass<"pto-infer-validate-pipe-init", "ModuleOp"> 
     Runs after frontend pipe lowering and before memory planning. For each
     logical pipe, this pass:
     - validates that downstream `pto.tpush` / `pto.tpop` / `pto.tfree` users
-      do not mix `split = 0` with `split = 1/2`
+      do not mix `split = 0` with `split = 1/2/3/4`
     - preserves explicit `nosplit` attrs on internal pipe init ops and rejects
       conflicts across peer pipe init pairs
     - infers missing `nosplit` attrs from downstream split usage for backward
