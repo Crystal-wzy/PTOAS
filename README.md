@@ -164,7 +164,7 @@ pip install /path/to/ptoas*.whl
 ```python
 import ptodsl
 from ptodsl import pto, scalar
-from mlir.dialects import pto as mlir_pto
+from ptoas.mlir.dialects import pto as mlir_pto
 ```
 
 > 说明：
@@ -184,7 +184,7 @@ from mlir.dialects import pto as mlir_pto
 ## 4. 运行环境配置 (Runtime Environment)
 
 如果你已经通过 `pip install .`、`pip install -e .` 或 `pip install ptoas*.whl`
-完成安装，那么 `import ptodsl` / `from mlir.dialects import pto` / `ptoas`
+完成安装，那么 `import ptodsl` / `from ptoas.mlir.dialects import pto` / `ptoas`
 都不应再依赖手动设置 `PYTHONPATH`。
 
 下面这组环境变量主要用于**直接消费 build/install tree** 的场景，例如：
@@ -243,9 +243,9 @@ ptoas --version
 在支持的 `ptoas` 安装环境中，PTO Dialect 与 PTODSL 都可以直接导入。
 
 ```python
-from mlir.ir import Context, Module, Location
-# [关键] 从 mlir.dialects 导入 pto，这是 Out-of-tree 绑定的标准用法
-from mlir.dialects import pto
+from ptoas.mlir.ir import Context, Module, Location
+# PTOAS 自带的 MLIR Python API 位于 ptoas.mlir 命名空间。
+from ptoas.mlir.dialects import pto
 from ptodsl import pto as jit_pto, scalar
 
 with Context() as ctx, Location.unknown():

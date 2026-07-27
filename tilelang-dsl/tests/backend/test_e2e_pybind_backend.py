@@ -46,7 +46,7 @@ except ImportError:
 def _check_pto_dialect_available():
     """Check if PTO dialect bindings are available."""
     try:
-        from mlir.dialects import pto
+        from ptoas.mlir.dialects import pto
         return True
     except ImportError:
         return False

@@ -9,7 +9,7 @@
 
 from enum import Enum
 
-from mlir.dialects import pto as _pto
+from ptoas.mlir.dialects import pto as _pto
 
 
 class _ConstExprHelper:

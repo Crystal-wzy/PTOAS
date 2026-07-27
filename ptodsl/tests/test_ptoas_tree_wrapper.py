@@ -123,6 +123,31 @@ class TreeWrapperTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "ptoas/_cli.py"):
                 module._require_python_root(python_root, context="test")
 
+    def test_archive_wrapper_rejects_a_different_python_minor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            python_root = Path(temp_dir) / "archive"
+            wrapper = python_root / "bin" / "ptoas"
+            self._make_package(python_root)
+            wrapper.parent.mkdir(parents=True)
+            wrapper.write_text("", encoding="utf-8")
+            (python_root / ".ptoas-python-version").write_text(
+                "0.0\n", encoding="utf-8"
+            )
+
+            module = self._load_wrapper(
+                wrapper,
+                "test_ptoas_archive_python_version",
+                python_root_mode="wrapper-relative",
+                python_root=Path(".."),
+            )
+            saved_argv = list(sys.argv)
+            try:
+                sys.argv = [str(wrapper)]
+                with self.assertRaisesRegex(SystemExit, "requires CPython 0.0"):
+                    module.main()
+            finally:
+                sys.argv = saved_argv
+
 
 if __name__ == "__main__":
     unittest.main()

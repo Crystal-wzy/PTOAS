@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
-from mlir.ir import Context, F32Type, MLIRError, Module
-from mlir.dialects import pto
+from ptoas.mlir.ir import Context, F32Type, MLIRError, Module
+from ptoas.mlir.dialects import pto
 
 
 def expect_equal(actual: str, expected: str, label: str) -> None:

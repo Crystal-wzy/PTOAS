@@ -9,7 +9,7 @@
 //===- DialectPTO.cpp -----------------------------------------------------===//
 //
 // Python bindings for the PTO dialect types in the project-owned ptoas._core
-// extension. The public Python facade remains mlir.dialects.pto.
+// extension. The public Python facade remains ptoas.mlir.dialects.pto.
 //
 //===----------------------------------------------------------------------===//
 

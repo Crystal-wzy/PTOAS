@@ -29,7 +29,7 @@ add_dependencies(TileLangDSLPackage TileLangDSLPackageStage)
 install(
   DIRECTORY "${TILELANG_DSL_PACKAGE_SRC_DIR}"
   DESTINATION "."
-  COMPONENT PTOAS_Runtime
+  COMPONENT PTOAS_CompilerArchive
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
 )
@@ -37,7 +37,7 @@ install(
 install(
   DIRECTORY "${CMAKE_SOURCE_DIR}/lib/TileOps"
   DESTINATION "share/ptoas"
-  COMPONENT PTOAS_Runtime
+  COMPONENT PTOAS_CompilerArchive
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
 )

@@ -29,7 +29,7 @@ add_dependencies(PTODSLPackage PTODSLPackageStage)
 install(
   DIRECTORY "${PTODSL_PACKAGE_SRC_DIR}"
   DESTINATION "."
-  COMPONENT PTOAS_Runtime
+  COMPONENT PTOAS_CompilerArchive
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
 )
@@ -37,7 +37,7 @@ install(
 install(
   DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/ptoas"
   DESTINATION "."
-  COMPONENT PTOAS_Runtime
+  COMPONENT PTOAS_CompilerArchive
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
 )

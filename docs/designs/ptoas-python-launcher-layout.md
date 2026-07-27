@@ -14,6 +14,10 @@ This document records the internal launcher contract for the Python-backed
 `ptoas` command. The user-facing README should describe how to install and run
 PTOAS without exposing these implementation details.
 
+The PTOAS-owned MLIR Python runtime lives under `ptoas.mlir`; its namespace and
+native-library isolation requirements are recorded separately in
+[`ptoas-mlir-namespace-and-native-isolation.md`](ptoas-mlir-namespace-and-native-isolation.md).
+
 ## Entry Model
 
 The wheel launcher uses the standard Python console-script and native-extension
@@ -28,7 +32,7 @@ both                 -> import ptoas._core -> ptoas._core.main(argv)
 
 `ptoas._core` is the single PTOAS-owned native extension. It provides the
 compiler entry point and the native PTO dialect bindings used by the public
-`mlir.dialects.pto` facade. CMake and Python own the platform and ABI-specific
+`ptoas.mlir.dialects.pto` facade. CMake and Python own the platform and ABI-specific
 filename. Launcher and packaging code refer to the import name and never
 construct `.so`, `.dylib`, or `.pyd` paths.
 
@@ -109,15 +113,28 @@ bin/ptoas
 ptoas/_cli.py
 ptoas/_core.<abi>.so
 ptoas/_runtime/share/ptoas/TileOps
+ptoas/mlir/
+ptodsl/
 lib/<native dependencies>
 tilelang_dsl/
 ```
 
-The archive requires a Python interpreter compatible with the packaged
-extension ABI. `bin/ptoas` adds the archive root to `sys.path`, then uses the
-same `ptoas._cli -> ptoas._core` path as the install tree. Linux archives set
-the extension runtime path to `$ORIGIN/../lib`; macOS archives rewrite the
-extension's install names relative to its package directory.
+The archive is assembled by installing `PTOAS_Python` and then
+`PTOAS_CompilerArchive` into one staging prefix. The second component owns the
+wrapper and compiler-time Python resources and performs relocation against the
+already staged native payload. Packaging code does not scan source trees or
+assemble Python packages from unrelated build directories.
+
+The current archive is built against CPython 3.11 and requires a CPython 3.11
+interpreter. `bin/ptoas` adds the archive root to `sys.path`, then uses the same
+`ptoas._cli -> ptoas._core` path as the install tree. The packaged `ptodsl/`
+tree supports the compiler's default PTODSL TileLib backend; it does not turn
+the archive into a normal pip-installable PTODSL distribution.
+
+Linux archives use package-relative and archive-relative `$ORIGIN` RPATHs;
+macOS archives use the equivalent `@loader_path` install names. Package-owned
+MLIR extensions remain under `ptoas/mlir/_mlir_libs`, while only external
+native dependencies are collected under the archive `lib/` directory.
 
 ## PTODSL and TileLib Runtime
 

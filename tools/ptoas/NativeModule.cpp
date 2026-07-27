@@ -35,7 +35,7 @@ int runPTOASFromPython(const std::vector<std::string> &arguments) {
 
 PYBIND11_MODULE(_core, module) {
   module.doc() = "PTOAS compiler and PTO dialect native bindings";
-  py::module_::import("mlir.ir");
+  py::module_::import("ptoas.mlir.ir");
   mlir::pto::python::populatePTODialectBindings(module);
   module.def("main", &runPTOASFromPython, py::arg("argv"));
 }

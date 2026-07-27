@@ -16,8 +16,8 @@ from .._diagnostics import kernel_module_return_value_error
 from .._context import make_context
 from .._types import _resolve
 
-from mlir.dialects import func
-from mlir.ir import InsertionPoint, Location
+from ptoas.mlir.dialects import func
+from ptoas.mlir.ir import InsertionPoint, Location
 
 
 class TracingRuntime:

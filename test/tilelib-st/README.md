@@ -307,7 +307,7 @@ build:
 ```bash
 "$PYTHON_BIN" - <<'PY'
 from ptodsl import pto  # noqa: F401
-from mlir.dialects import pto as _pto  # noqa: F401
+from ptoas.mlir.dialects import pto as _pto  # noqa: F401
 
 print("ptodsl imports ok")
 PY

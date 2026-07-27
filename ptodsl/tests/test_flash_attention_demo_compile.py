@@ -12,7 +12,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 from ptodsl._context import make_context
-from mlir.ir import Module
+from ptoas.mlir.ir import Module
 
 
 def expect(condition: bool, message: str) -> None:

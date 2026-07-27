@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Union, Any
 
 if TYPE_CHECKING:
     from .semantic import SemanticKernel
-    from mlir import ir as _ods_ir
+    from ptoas.mlir import ir as _ods_ir
 
 
 @dataclass(frozen=True)
@@ -70,10 +70,10 @@ class LoweringResult:
 
         Registers all required dialects (func, arith, scf, pto) before parsing.
         """
-        from mlir import ir as _ods_ir
-        from mlir.dialects import func as _func_dialect
-        from mlir.dialects import arith as _arith_dialect
-        from mlir.dialects import scf as _scf_dialect
+        from ptoas.mlir import ir as _ods_ir
+        from ptoas.mlir.dialects import func as _func_dialect
+        from ptoas.mlir.dialects import arith as _arith_dialect
+        from ptoas.mlir.dialects import scf as _scf_dialect
         from pto.dialects import pto as _pto_dialect
 
         ctx = context if context is not None else _ods_ir.Context()
@@ -180,7 +180,7 @@ class PybindBackend(LoweringBackend):
             return self._mlir_available
 
         try:
-            from mlir import ir
+            from ptoas.mlir import ir
             self._mlir_available = True
         except ImportError:
             self._mlir_available = False

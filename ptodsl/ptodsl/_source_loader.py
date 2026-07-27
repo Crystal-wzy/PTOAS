@@ -20,7 +20,7 @@ from ._diagnostics import (
     jit_source_file_error,
 )
 
-from mlir.ir import Location, Module
+from ptoas.mlir.ir import Location, Module
 
 
 @dataclass(frozen=True)

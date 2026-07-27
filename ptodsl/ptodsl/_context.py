@@ -8,14 +8,14 @@
 
 """MLIR context construction for an installed or explicitly configured PTODSL."""
 
-from mlir.dialects import pto as _pto_dialect
+from ptoas.mlir.dialects import pto as _pto_dialect
 
 try:
-    from mlir.dialects import llvm as _llvm_dialect
+    from ptoas.mlir.dialects import llvm as _llvm_dialect
 except Exception:  # pragma: no cover - depends on the installed MLIR package.
     _llvm_dialect = None
 
-from mlir.ir import Context
+from ptoas.mlir.ir import Context
 
 
 def make_context() -> Context:

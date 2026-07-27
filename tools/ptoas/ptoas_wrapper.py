@@ -17,6 +17,7 @@ from pathlib import Path
 
 _PYTHON_ROOT_MODE = "@PTOAS_WRAPPER_PYTHON_ROOT_MODE@"
 _PYTHON_ROOT = Path(r"@PTOAS_WRAPPER_PYTHON_ROOT@")
+_ARCHIVE_PYTHON_REQUIREMENT_FILE = ".ptoas-python-version"
 
 
 def _resolve_wrapper_path(argv0: str | None = None) -> Path:
@@ -59,6 +60,18 @@ def _add_configured_python_root(wrapper: Path) -> Path:
 
 def main() -> None:
     wrapper = _resolve_wrapper_path()
+    requirement_file = wrapper.parent.parent / _ARCHIVE_PYTHON_REQUIREMENT_FILE
+    if requirement_file.is_file():
+        required_python_major_minor = requirement_file.read_text(
+            encoding="utf-8"
+        ).strip()
+        actual = f"{sys.version_info.major}.{sys.version_info.minor}"
+        if actual != required_python_major_minor:
+            raise SystemExit(
+                "this ptoas compiler archive requires CPython "
+                f"{required_python_major_minor}, but the active interpreter is "
+                f"{actual} ({sys.executable})"
+            )
     _add_configured_python_root(wrapper)
     from ptoas import _cli
 

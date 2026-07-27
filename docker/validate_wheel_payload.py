@@ -21,6 +21,9 @@ REQUIRED_FILES = {
     "ptoas/__init__.py",
     "ptoas/_cli.py",
     "ptoas/_runtime/share/ptoas/TileOps/__init__.py",
+    "ptoas/mlir/ir.py",
+    "ptoas/mlir/dialects/pto.py",
+    "ptoas/mlir/_mlir_libs/libPTOASPythonCAPI.so",
 }
 FORBIDDEN_FILES = {
     "ptoas/_runtime/bin/ptoas",
@@ -29,6 +32,15 @@ PTOAS_ENTRYPOINT_TARGET = "ptoas._cli:main"
 WHEEL_GLOB = "ptoas*.whl"
 NATIVE_MODULE_PATHS = {
     f"ptoas/_core{suffix}"
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES
+}
+MLIR_NATIVE_MODULE_PREFIX = "ptoas/mlir/_mlir_libs/"
+MLIR_NATIVE_MODULE_PATHS = {
+    f"{MLIR_NATIVE_MODULE_PREFIX}_mlir{suffix}"
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES
+}
+SITE_INITIALIZER_PATHS = {
+    f"{MLIR_NATIVE_MODULE_PREFIX}_site_initialize_0{suffix}"
     for suffix in importlib.machinery.EXTENSION_SUFFIXES
 }
 
@@ -91,6 +103,27 @@ def validate_wheel_payload(wheel: Path) -> None:
             raise SystemExit(
                 "wheel must contain exactly one importable ptoas._core extension, "
                 f"found {native_modules}"
+            )
+
+        mlir_native_modules = sorted(MLIR_NATIVE_MODULE_PATHS & names)
+        if len(mlir_native_modules) != 1:
+            raise SystemExit(
+                "wheel must contain exactly one ptoas-owned MLIR native module, "
+                f"found {mlir_native_modules}"
+            )
+
+        site_initializers = sorted(SITE_INITIALIZER_PATHS & names)
+        if len(site_initializers) != 1:
+            raise SystemExit(
+                "wheel must contain exactly one PTOAS MLIR site initializer, "
+                f"found {site_initializers}"
+            )
+
+        top_level_mlir = sorted(name for name in names if name.startswith("mlir/"))
+        if top_level_mlir:
+            raise SystemExit(
+                "wheel must not install a top-level mlir package; "
+                f"found {top_level_mlir[:10]}"
             )
 
         present_forbidden = sorted(FORBIDDEN_FILES & names)

@@ -150,7 +150,6 @@ jobs:
           echo "LLVM_BUILD_DIR=/llvm-workspace/llvm-project/build-release" >> $GITHUB_ENV
           echo "PTO_SOURCE_DIR=$GITHUB_WORKSPACE" >> $GITHUB_ENV
           echo "PTO_BUILD_DIR=$GITHUB_WORKSPACE/build-release" >> $GITHUB_ENV
-          echo "PTO_INSTALL_DIR=$GITHUB_WORKSPACE/install-release" >> $GITHUB_ENV
 
       - name: Resolve LLVM source SHA
         id: llvm-source
@@ -262,8 +261,13 @@ jobs:
       - name: Collect ptoas binary and dependencies
         if: matrix.python == '3.11'
         run: |
-          cmake --install "${PTO_BUILD_DIR}" --prefix "${PTO_INSTALL_DIR}"
-          bash $PTO_SOURCE_DIR/docker/collect_ptoas_dist.sh $GITHUB_WORKSPACE/ptoas-dist
+          rm -rf "$GITHUB_WORKSPACE/ptoas-dist"
+          cmake --install "${PTO_BUILD_DIR}" \
+            --prefix "$GITHUB_WORKSPACE/ptoas-dist" \
+            --component PTOAS_Python
+          cmake --install "${PTO_BUILD_DIR}" \
+            --prefix "$GITHUB_WORKSPACE/ptoas-dist" \
+            --component PTOAS_CompilerArchive
 
       - name: Archive ptoas binary artifact
         if: matrix.python == '3.11'
@@ -271,6 +275,31 @@ jobs:
           chmod +x "$GITHUB_WORKSPACE/ptoas-dist/bin/ptoas"
           tar -czf "$GITHUB_WORKSPACE/ptoas-bin-${{ matrix.arch }}.tar.gz" \
             -C "$GITHUB_WORKSPACE/ptoas-dist" .
+
+      - name: Smoke test archived ptoas binary artifact
+        if: matrix.python == '3.11'
+        run: |
+          TEST_DIR="$RUNNER_TEMP/ptoas-dist-smoke-${{ matrix.arch }}"
+          rm -rf "$TEST_DIR"
+          mkdir -p "$TEST_DIR/extracted"
+          tar -xzf "$GITHUB_WORKSPACE/ptoas-bin-${{ matrix.arch }}.tar.gz" \
+            -C "$TEST_DIR/extracted"
+
+          test -x "$TEST_DIR/extracted/bin/ptoas"
+          test -f "$TEST_DIR/extracted/ptoas/_cli.py"
+          test -f "$TEST_DIR/extracted/ptoas/mlir/ir.py"
+          test -f "$TEST_DIR/extracted/ptodsl/__init__.py"
+          test -f "$TEST_DIR/extracted/tilelang_dsl/__init__.py"
+          test -d "$TEST_DIR/extracted/share/ptoas/TileOps"
+          test "$(cat "$TEST_DIR/extracted/.ptoas-python-version")" = "3.11"
+          compgen -G "$TEST_DIR/extracted/ptoas/_core*.so" >/dev/null
+
+          env -u PYTHONPATH -u DYLD_LIBRARY_PATH -u LD_LIBRARY_PATH \
+            "$TEST_DIR/extracted/bin/ptoas" --version
+          env -u PYTHONPATH -u DYLD_LIBRARY_PATH -u LD_LIBRARY_PATH \
+            "$TEST_DIR/extracted/bin/ptoas" \
+            "$PTO_SOURCE_DIR/test/lit/pto/kernel_kind_vector_scf_while_emitc.pto" \
+            >/dev/null
 
       - name: Upload ptoas binary artifact
         if: matrix.python == '3.11'

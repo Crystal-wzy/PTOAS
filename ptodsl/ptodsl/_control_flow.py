@@ -28,8 +28,8 @@ from ._surface_types import const_expr
 from ._tracing.active import current_session
 from ._surface_values import unwrap_surface_value, wrap_like_surface_value, wrap_surface_value
 
-from mlir.dialects import pto as _pto, scf
-from mlir.ir import InsertionPoint
+from ptoas.mlir.dialects import pto as _pto, scf
+from ptoas.mlir.ir import InsertionPoint
 
 
 # ── vecscope ──────────────────────────────────────────────────────────────────

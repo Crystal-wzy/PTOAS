@@ -12,8 +12,8 @@
 # Usage: ./test_wheel_imports.sh
 #
 # This script tests that the installed wheel can import:
-#   - mlir.ir
-#   - mlir.dialects.pto
+#   - ptoas.mlir.ir
+#   - ptoas.mlir.dialects.pto
 #   - ptodsl
 #   - from ptodsl import pto, scalar
 #   - ptoas CLI entry
@@ -76,11 +76,21 @@ cd /tmp
 PTOAS_ENTRYPOINT="$(command -v ptoas)"
 PYTHON_ENTRYPOINT="$(command -v "${PYTHON_BIN}")"
 
-echo "Testing mlir.ir import..."
-"$PYTHON_BIN" -c "import mlir.ir; print('mlir.ir imported successfully')"
+echo "Testing ptoas.mlir.ir import..."
+"$PYTHON_BIN" -c "from ptoas.mlir import ir; print('ptoas.mlir.ir imported successfully')"
 
 echo "Testing pto dialect import..."
-"$PYTHON_BIN" -c "from mlir.dialects import pto; print('pto dialect imported successfully')"
+"$PYTHON_BIN" -c "from ptoas.mlir.dialects import pto; print('pto dialect imported successfully')"
+
+echo "Testing that PTOAS does not claim the top-level mlir namespace..."
+"$PYTHON_BIN" - <<'PY'
+try:
+    import mlir  # noqa: F401
+except ImportError:
+    pass
+else:
+    raise SystemExit("the ptoas wheel unexpectedly provides a top-level mlir package")
+PY
 
 echo "Testing ptodsl import..."
 "$PYTHON_BIN" -c "import ptodsl; print(f'ptodsl imported successfully from {ptodsl.__file__}')"

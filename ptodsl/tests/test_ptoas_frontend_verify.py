@@ -19,7 +19,7 @@ from ptodsl import pto
 from ptodsl import scalar
 from ptodsl._context import make_context
 from ptodsl._runtime.toolchain import resolve_ptoas_binary
-from mlir.ir import Module
+from ptoas.mlir.ir import Module
 
 
 def expect(condition: bool, message: str) -> None:

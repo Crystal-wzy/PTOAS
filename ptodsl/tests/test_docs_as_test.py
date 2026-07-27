@@ -26,7 +26,7 @@ from ptodsl import pto, scalar
 from ptodsl._context import make_context
 from ptodsl._runtime.launch import LaunchHandle, _marshal_launch_args
 from ptodsl._runtime.toolchain import resolve_ptoas_binary
-from mlir.ir import Module
+from ptoas.mlir.ir import Module
 from support.docs_fragment_fixtures import FRAGMENT_FIXTURES, render_fragment_fixture
 
 FENCE_RE = re.compile(r"^```(?P<lang>[A-Za-z0-9_+-]*)\s*$")

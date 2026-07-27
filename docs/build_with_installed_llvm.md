@@ -111,7 +111,7 @@ cmake --install build
 - install 目录：
   - `$PTO_INSTALL_DIR/bin/ptoas`
   - `$PTO_INSTALL_DIR/ptoas/_core.cpython-*.so`
-  - `$PTO_INSTALL_DIR/mlir/dialects/pto.py`
+  - `$PTO_INSTALL_DIR/ptoas/mlir/dialects/pto.py`
   - `$PTO_INSTALL_DIR/share/ptoas/oplib/level3`
 
 ## 补充：运行环境

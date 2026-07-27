@@ -8,6 +8,13 @@
 
 include(AddMLIRPython)
 
+# Keep the complete PTOAS-owned MLIR Python runtime below the project namespace
+# so it can coexist with independently packaged MLIR distributions. This is a
+# package-prefix contract as well as a Python import path: MLIR's generated
+# capsules and nanobind registration code use the same value.
+add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=ptoas.mlir.")
+set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ptoas_mlir")
+
 # Do not carry toolchain-injected paths, such as a Conda compiler RPATH, into
 # installed Python modules. Distribution builds keep only MLIR's relative
 # package RPATHs; editable builds add their external link paths below.
@@ -33,11 +40,11 @@ if(PTOAS_ENABLE_WERROR)
   endif()
 endif()
 
-# Build the `mlir` Python package from MLIR's exported source declarations and
+# Build the `ptoas.mlir` Python package from MLIR's exported source declarations and
 # add PTOAS's dialect to the same package. This is the composition mechanism
 # supported by AddMLIRPython and avoids copying or overlaying another build's
 # package tree.
-set(PTOAS_MLIR_PYTHON_PACKAGE_DIR "${CMAKE_BINARY_DIR}/python/mlir")
+set(PTOAS_MLIR_PYTHON_PACKAGE_DIR "${CMAKE_BINARY_DIR}/python/ptoas/mlir")
 
 declare_mlir_python_sources(PTOASPythonSources)
 
@@ -104,9 +111,9 @@ set(PTOAS_MLIR_PYTHON_SOURCE_SETS
 # CAPI and contains both the PTO dialect implementation and compiler driver.
 add_mlir_python_common_capi_library(PTOASPythonCAPI
   INSTALL_COMPONENT PTOAS_Python
-  INSTALL_DESTINATION "mlir/_mlir_libs"
+  INSTALL_DESTINATION "ptoas/mlir/_mlir_libs"
   OUTPUT_DIRECTORY "${PTOAS_MLIR_PYTHON_PACKAGE_DIR}/_mlir_libs"
-  RELATIVE_INSTALL_ROOT "../../../.."
+  RELATIVE_INSTALL_ROOT "../../../"
   DECLARED_HEADERS
     MLIRPythonCAPI.HeaderSources
   DECLARED_SOURCES
@@ -125,7 +132,7 @@ set_property(TARGET PTOASPythonCAPI PROPERTY LINKER_LANGUAGE CXX)
 
 add_mlir_python_modules(PTOAS_Python
   ROOT_PREFIX "${PTOAS_MLIR_PYTHON_PACKAGE_DIR}"
-  INSTALL_PREFIX mlir
+  INSTALL_PREFIX ptoas/mlir
   DECLARED_SOURCES
     ${PTOAS_MLIR_PYTHON_SOURCE_SETS}
     PTOASPythonSources

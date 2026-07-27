@@ -9,7 +9,7 @@
 Scalar arithmetic helpers – exposed as top-level ``scalar.*`` from the
 ``ptodsl`` package (for example ``from ptodsl import scalar``).
 
-Arithmetic helpers operate on raw ``mlir.ir.Value`` objects and emit the
+Arithmetic helpers operate on raw ``ptoas.mlir.ir.Value`` objects and emit the
 corresponding arith dialect operations at the active insertion point.
 Scalar memory helpers (`load` / `store`) also accept PTODSL surface-level
 address views such as `tile[row, col]` and `tile.as_ptr() + offset`.
@@ -33,11 +33,11 @@ from ._surface_values import (
 )
 from ._types import _resolve
 
-from mlir.dialects import arith
-from mlir.dialects import llvm
-from mlir.dialects import math
-from mlir.ir import IndexType, IntegerType, MemRefType, Operation, VectorType
-from mlir.dialects import pto as _pto
+from ptoas.mlir.dialects import arith
+from ptoas.mlir.dialects import llvm
+from ptoas.mlir.dialects import math
+from ptoas.mlir.ir import IndexType, IntegerType, MemRefType, Operation, VectorType
+from ptoas.mlir.dialects import pto as _pto
 
 
 def muli(lhs, rhs):

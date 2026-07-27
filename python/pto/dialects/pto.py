@@ -9,7 +9,7 @@
 import functools
 from typing import Optional
 
-from mlir import ir as _ods_ir
+from ptoas.mlir import ir as _ods_ir
 
 from . import _pto_ops_gen as _pto_ops_gen
 from ._ods_common import (
@@ -1138,9 +1138,9 @@ def _project_result(group, index, ty):
 
 def _load_standard_dialects():
     try:
-        from mlir.dialects import arith as _mlir_arith  # noqa: F401
-        from mlir.dialects import func as _mlir_func  # noqa: F401
-        from mlir.dialects import scf as _mlir_scf  # noqa: F401
+        from ptoas.mlir.dialects import arith as _mlir_arith  # noqa: F401
+        from ptoas.mlir.dialects import func as _mlir_func  # noqa: F401
+        from ptoas.mlir.dialects import scf as _mlir_scf  # noqa: F401
     except ImportError as exc:
         raise RuntimeError("mlir standard dialect python bindings are required for vkernel parsing") from exc
 

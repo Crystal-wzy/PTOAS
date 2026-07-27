@@ -160,8 +160,8 @@ Validate Python dialect loading:
 
 ```bash
 python3 - <<'PY'
-from mlir.ir import Context, Module, Location
-from mlir.dialects import pto
+from ptoas.mlir.ir import Context, Module, Location
+from ptoas.mlir.dialects import pto
 
 with Context() as ctx, Location.unknown():
     pto.register_dialect(ctx, load=True)
@@ -174,6 +174,6 @@ PY
 
 - `def_property family does not currently support keep_alive`: reinstall `pybind11==2.12.0`, clear the affected CMake cache if needed, and reconfigure.
 - CMake cannot find LLVM or MLIR: confirm `LLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm` and `MLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir` exist and were produced by the `llvmorg-19.1.7` build.
-- Python cannot import `mlir.dialects.pto`: re-export `PYTHONPATH` with MLIR core first and PTO install second, and confirm `_pto.cpython-*.so` exists under MLIR's `_mlir_libs`.
+- Python cannot import `ptoas.mlir.dialects.pto`: make sure the PTOAS build/install Python root is on `PYTHONPATH`, and confirm `_core.cpython-*.so` and `ptoas/mlir/_mlir_libs/_mlir*.so` exist in the same package tree.
 - Runtime linker errors for LLVM or PTO libraries: re-export `LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH`.
 - Builds are very slow under `/mnt/c`: move the workspace into the WSL Linux filesystem, for example `$HOME/llvm-workspace`.

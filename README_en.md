@@ -152,7 +152,7 @@ After installation, the following imports should work directly:
 ```python
 import ptodsl
 from ptodsl import pto, scalar
-from mlir.dialects import pto as mlir_pto
+from ptoas.mlir.dialects import pto as mlir_pto
 ```
 
 > Notes:
@@ -198,9 +198,9 @@ In a supported `ptoas` install environment, both the PTO Dialect and PTODSL
 can be imported directly.
 
 ```python
-from mlir.ir import Context, Module, Location
-# [Key] Import pto from mlir.dialects — the standard pattern for out-of-tree bindings
-from mlir.dialects import pto
+from ptoas.mlir.ir import Context, Module, Location
+# PTOAS ships its MLIR Python API in the ptoas.mlir namespace.
+from ptoas.mlir.dialects import pto
 from ptodsl import pto as jit_pto, scalar
 
 with Context() as ctx, Location.unknown():

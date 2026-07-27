@@ -11,7 +11,7 @@
 
 from ptodsl import pto
 from ptodsl._context import make_context
-from mlir.ir import Module
+from ptoas.mlir.ir import Module
 
 
 @pto.simt(max_threads=64, ast_rewrite=False)

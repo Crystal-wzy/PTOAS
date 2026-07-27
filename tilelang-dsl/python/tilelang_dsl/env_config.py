@@ -24,7 +24,7 @@ def check_mlir_bindings_available() -> bool:
         True if mlir.ir module can be imported, False otherwise.
     """
     try:
-        from mlir import ir
+        from ptoas.mlir import ir
         return True
     except ImportError:
         return False
@@ -37,7 +37,7 @@ def check_pto_dialect_available() -> bool:
         True if mlir.dialects.pto can be imported, False otherwise.
     """
     try:
-        from mlir.dialects import pto
+        from ptoas.mlir.dialects import pto
         return True
     except ImportError:
         return False
@@ -83,7 +83,7 @@ def print_environment_help() -> None:
     print("  export PYTHONPATH=$PTOAS_BUILD_DIR/python")
     print()
     print("After setup, verify with:")
-    print("  python3 -c 'from mlir import ir; print(\"MLIR bindings OK\")'")
+    print("  python3 -c 'from ptoas.mlir import ir; print(\"MLIR bindings OK\")'")
     print("  python3 -c 'from pto.dialects import pto; print(\"PTO dialect OK\")'")
     print()
     print("=" * 60)

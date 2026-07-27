@@ -130,6 +130,9 @@ add_mlir_python_extension(PTOASPythonCore _core
     PTOCAPI
     PTOASPythonCAPI
 )
+target_compile_definitions(PTOASPythonCore PRIVATE
+  "MLIR_PYTHON_PACKAGE_PREFIX=ptoas.mlir."
+)
 target_include_directories(PTOASPythonCore PRIVATE
   "${CMAKE_SOURCE_DIR}/lib/Bindings/Python"
 )
@@ -137,10 +140,10 @@ mlir_python_setup_extension_rpath(PTOASPythonCore)
 
 if(APPLE)
   set_property(TARGET PTOASPythonCore PROPERTY INSTALL_RPATH
-    "@loader_path;@loader_path/../mlir/_mlir_libs")
+    "@loader_path;@loader_path/mlir/_mlir_libs")
 elseif(UNIX)
   set_property(TARGET PTOASPythonCore PROPERTY INSTALL_RPATH
-    "$ORIGIN;$ORIGIN/../mlir/_mlir_libs")
+    "$ORIGIN;$ORIGIN/mlir/_mlir_libs")
 endif()
 
 declare_mlir_python_sources(PTOASRuntimePythonSources
@@ -183,7 +186,34 @@ endif()
 install(PROGRAMS "${PTOAS_INSTALL_WRAPPER_BINARY}"
   DESTINATION bin
   RENAME ptoas
-  COMPONENT PTOAS_Runtime
+  COMPONENT PTOAS_CompilerArchive
+)
+
+set(PTOAS_ARCHIVE_PYTHON_VERSION_FILE
+    "${CMAKE_CURRENT_BINARY_DIR}/.ptoas-python-version")
+file(WRITE "${PTOAS_ARCHIVE_PYTHON_VERSION_FILE}"
+  "${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}\n")
+install(FILES "${PTOAS_ARCHIVE_PYTHON_VERSION_FILE}"
+  DESTINATION "."
+  COMPONENT PTOAS_CompilerArchive
+)
+
+# The standalone compiler archive is staged by installing PTOAS_Python first
+# and PTOAS_CompilerArchive second into the same prefix. Generate the deploy
+# script so known native entry points come from CMake targets; the script scans
+# only AddMLIRPython's generated extension directory for the remaining modules.
+configure_file(
+  "${CMAKE_SOURCE_DIR}/cmake/RelocatePTOASCompilerArchive.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/RelocatePTOASCompilerArchive.cmake.in"
+  @ONLY
+)
+file(GENERATE
+  OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/RelocatePTOASCompilerArchive.cmake"
+  INPUT "${CMAKE_CURRENT_BINARY_DIR}/RelocatePTOASCompilerArchive.cmake.in"
+)
+install(SCRIPT
+  "${CMAKE_CURRENT_BINARY_DIR}/RelocatePTOASCompilerArchive.cmake"
+  COMPONENT PTOAS_CompilerArchive
 )
 
 install(
