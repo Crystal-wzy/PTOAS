@@ -140,8 +140,28 @@ static Value computeTileAddress(Value value, IRRewriter &rewriter,
 static pto::TileBufType getSubviewPhysicalType(pto::SubViewOp op) {
   pto::TileBufType sourceType = op.getSource().getType();
   pto::TileBufType resultType = op.getResult().getType();
+  ArrayRef<int64_t> physicalShape = sourceType.getShape();
+
+  int64_t inheritedRowStride = 0;
+  int64_t inheritedColStride = 0;
+  int64_t childRowStride = 0;
+  int64_t childColStride = 0;
+  auto compactChildType = pto::TileBufType::get(
+      op.getContext(), resultType.getShape(), resultType.getElementType(),
+      resultType.getMemorySpace(), resultType.getValidShape(),
+      resultType.getConfigAttr());
+  // If the child tile's compact layout has the same pointer stride as the
+  // inherited subview, the addressed handle can use the child physical shape.
+  // Otherwise keep the parent shape and express the logical slice via valid.
+  if (getTilePointerStrides(sourceType, inheritedRowStride,
+                            inheritedColStride) &&
+      getTilePointerStrides(compactChildType, childRowStride, childColStride) &&
+      inheritedRowStride == childRowStride &&
+      inheritedColStride == childColStride)
+    physicalShape = resultType.getShape();
+
   return pto::TileBufType::get(
-      op.getContext(), sourceType.getShape(), resultType.getElementType(),
+      op.getContext(), physicalShape, resultType.getElementType(),
       resultType.getMemorySpace(), resultType.getValidShape(),
       resultType.getConfigAttr());
 }
