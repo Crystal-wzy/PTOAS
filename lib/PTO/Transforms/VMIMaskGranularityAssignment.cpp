@@ -231,6 +231,12 @@ struct MaskGranularitySolver {
           return WalkResult::interrupt();
         return WalkResult::advance();
       }
+      if (auto vmuls = dyn_cast<VMIMulSOp>(op)) {
+        if (failed(requestMaskUseForSource(vmuls.getMaskMutable(),
+                                           vmuls.getSrc(), op)))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
       if (auto vmull = dyn_cast<VMIVmullOp>(op)) {
         if (failed(requestMaskUse(vmull.getMaskMutable(), "b32", op)))
           return WalkResult::interrupt();

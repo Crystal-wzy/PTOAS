@@ -8092,6 +8092,56 @@ struct OneToNVMIBinaryOpPattern : OpConversionPattern<SourceOp> {
   }
 };
 
+template <typename SourceOp, typename TargetOp>
+struct OneToNVMIVecScalarOpPattern : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      SourceOp op,
+      typename OpConversionPattern<SourceOp>::OneToNOpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    if (op.getPmode().has_value() && *op.getPmode() == "merge")
+      return rewriter.notifyMatchFailure(
+          op, "merge predicate mode requires an explicit passthru lowering");
+
+    ValueRange sourceParts = adaptor.getSrc();
+    FailureOr<Value> scalar =
+        getSingleValue(op, adaptor.getScalar(),
+                       "vector-scalar scalar must convert to one value",
+                       rewriter);
+    ValueRange maskParts = adaptor.getMask();
+    FailureOr<SmallVector<Type>> maybeResultTypes =
+        getConvertedResultTypes(op, 0, *this->getTypeConverter());
+    if (failed(scalar) || failed(maybeResultTypes))
+      return failure();
+    SmallVector<Type> resultTypes = std::move(*maybeResultTypes);
+    if (sourceParts.empty() || sourceParts.size() != maskParts.size() ||
+        sourceParts.size() != resultTypes.size())
+      return rewriter.notifyMatchFailure(
+          op, "physical vector-scalar arity mismatch");
+
+    SmallVector<Value> results;
+    results.reserve(resultTypes.size());
+    for (auto [source, mask, resultType] :
+         llvm::zip_equal(sourceParts, maskParts, resultTypes)) {
+      auto vregType = dyn_cast<VRegType>(resultType);
+      auto maskType = dyn_cast<MaskType>(mask.getType());
+      if (!vregType || !maskType || source.getType() != resultType ||
+          vregType.getElementType() != (*scalar).getType())
+        return rewriter.notifyMatchFailure(
+            op, "physical vector-scalar part type mismatch");
+      results.push_back(
+          rewriter
+              .create<TargetOp>(op.getLoc(), resultType, source, *scalar, mask)
+              .getResult());
+    }
+
+    replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                     *this->getTypeConverter());
+    return success();
+  }
+};
+
 struct OneToNVMIVmullOpPattern : OpConversionPattern<VMIVmullOp> {
   using OpConversionPattern<VMIVmullOp>::OpConversionPattern;
 
@@ -11185,7 +11235,9 @@ void populateVMIConversionPatterns(
       OneToNVMIBinaryOpPattern<VMISubFOp, VsubOp>,
       OneToNVMIBinaryOpPattern<VMISubIOp, VsubOp>,
       OneToNVMIBinaryOpPattern<VMIMulFOp, VmulOp>,
-      OneToNVMIBinaryOpPattern<VMIMulIOp, VmulOp>, OneToNVMIVmullOpPattern,
+      OneToNVMIBinaryOpPattern<VMIMulIOp, VmulOp>,
+      OneToNVMIVecScalarOpPattern<VMIMulSOp, VmulsOp>,
+      OneToNVMIVmullOpPattern,
       OneToNVMIFmaOpPattern, OneToNVMIBinaryOpPattern<VMIDivFOp, VdivOp>,
       OneToNVMIBinaryOpPattern<VMIMinFOp, VminOp>,
       OneToNVMIBinaryOpPattern<VMIMinIOp, VminOp>,
@@ -12251,6 +12303,18 @@ verifySupportedVMIToVPTOOps(ModuleOp module,
     if (auto muli = dyn_cast<VMIMulIOp>(op))
       return emitMaskableUnsupported(
           op, "pto.vmi.muli", cast<VMIVRegType>(muli.getResult().getType()));
+    if (auto vmuls = dyn_cast<VMIMulSOp>(op)) {
+      if (vmuls.getPmode().has_value() && *vmuls.getPmode() == "merge") {
+        vmuls.emitError()
+            << kVMIDiagUnsupportedPrefix
+            << "pto.vmi.vmuls with pmode=merge requires an explicit "
+               "passthru lowering";
+        return WalkResult::interrupt();
+      }
+      return emitMaskableUnsupported(
+          op, "pto.vmi.vmuls",
+          cast<VMIVRegType>(vmuls.getResult().getType()));
+    }
     if (auto vmull = dyn_cast<VMIVmullOp>(op)) {
       std::string reason;
       if (succeeded(checkSupportedVmullShape(vmull, &reason)))
