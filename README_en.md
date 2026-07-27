@@ -161,6 +161,7 @@ from ptoas.mlir.dialects import pto as mlir_pto
 > - The VMI release line keeps the `ptoas` CLI name; `ptoas --version` prints `ptoas vmi A.B.C`.
 > - The `ptoas` and `ptoas-vmi` release wheels are **mutually exclusive**. They both install the same top-level `ptoas` Python package and `ptoas` console script, so do **not** install them into the same Python environment. Mixing them will overwrite files, and uninstalling one can break the other.
 > - `ptoas-bin-*.tar.gz` compiler-only tarballs provide CLI/toolchain bits, not a PTODSL-capable Python distribution.
+> - Release tags use `ptoas-vX.Y` for the main toolchain and `vmi-vA.B.C` for the `ptoas-vmi` distribution. Before creating a VMI release tag, update the version in `packaging/ptoas-vmi/pyproject.toml` to the matching `A.B.C` through the release PR.
 > - `--no-build-isolation` keeps pip from baking a temporary pybind11 path into `CMakeCache.txt`, which would break later `ninja` reconfigure runs after the temporary virtual environment is removed.
 
 If you previously ran `pip install -e .` without the flag and your build is now broken, fix the existing `CMakeCache.txt` with:

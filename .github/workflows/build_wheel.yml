@@ -75,58 +75,6 @@ jobs:
           echo "PY_PATH=/opt/python/$PY_VER" >> $GITHUB_ENV
           echo "/opt/python/$PY_VER/bin" >> $GITHUB_PATH
 
-      - name: Compute PTOAS CLI version
-        run: |
-          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
-            case "${GITHUB_REF_NAME}" in
-              vmi-v*)
-                EXPECTED_RELEASE_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_vmi_version.py \
-                  --check-tag "${GITHUB_REF_NAME}")"
-                PTOAS_VERSION="${GITHUB_REF_NAME#vmi-v}"
-                PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"
-                PTOAS_PYTHON_PACKAGE_NAME="ptoas-vmi"
-                ;;
-              ptoas-v*)
-                EXPECTED_RELEASE_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode release)"
-                PTOAS_VERSION="${GITHUB_REF_NAME#ptoas-v}"
-                PTOAS_CLI_VERSION="${PTOAS_VERSION}"
-                PTOAS_PYTHON_PACKAGE_NAME="ptoas"
-                ;;
-              v*)
-                EXPECTED_RELEASE_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode release)"
-                PTOAS_VERSION="${GITHUB_REF_NAME#v}"
-                PTOAS_CLI_VERSION="${PTOAS_VERSION}"
-                PTOAS_PYTHON_PACKAGE_NAME="ptoas"
-                ;;
-              *)
-                echo "release tags for the wheel workflow must start with 'v', 'ptoas-v', or 'vmi-v'" >&2
-                exit 1
-                ;;
-            esac
-            if [ "${PTOAS_VERSION}" != "${EXPECTED_RELEASE_VERSION}" ]; then
-              echo "release tag '${GITHUB_REF_NAME}' does not match computed version '${EXPECTED_RELEASE_VERSION}'" >&2
-              exit 1
-            fi
-          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${{ inputs.release_kind }}" = "vmi" ]; then
-            PTOAS_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_vmi_version.py)"
-            PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"
-            PTOAS_PYTHON_PACKAGE_NAME="ptoas-vmi"
-          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            PTOAS_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode release)"
-            PTOAS_CLI_VERSION="${PTOAS_VERSION}"
-            PTOAS_PYTHON_PACKAGE_NAME="ptoas"
-          else
-            PTOAS_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode dev)"
-            PTOAS_CLI_VERSION="${PTOAS_VERSION}"
-            PTOAS_PYTHON_PACKAGE_NAME="ptoas"
-          fi
-          echo "PTOAS_VERSION=${PTOAS_VERSION}" >> "$GITHUB_ENV"
-          echo "PTOAS_CLI_VERSION=${PTOAS_CLI_VERSION}" >> "$GITHUB_ENV"
-          echo "PTOAS_PYTHON_PACKAGE_NAME=${PTOAS_PYTHON_PACKAGE_NAME}" >> "$GITHUB_ENV"
-          echo "Using PTOAS CLI version: ${PTOAS_CLI_VERSION}"
-          echo "Using PTOAS wheel version: ${PTOAS_VERSION}"
-          echo "Using PTOAS Python package name: ${PTOAS_PYTHON_PACKAGE_NAME}"
-
       - name: Install system dependencies
         run: |
           dnf install -y ninja-build cmake git ccache gcc-c++ lld zip binutils patchelf chrpath
@@ -137,6 +85,59 @@ jobs:
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x
           # (see pybind11 static_assert on def_property + keep_alive).
           pip install --no-cache-dir numpy 'pybind11<3' nanobind 'scikit-build-core>=0.12.2,<2' auditwheel
+
+      - name: Resolve PTOAS distribution version
+        run: |
+          VMI_PROJECT_METADATA="$(cd packaging/ptoas-vmi && python -m scikit_build_core.build project-table)"
+          VMI_PROJECT_VERSION="$(printf '%s\n' "${VMI_PROJECT_METADATA}" | python -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            case "${GITHUB_REF_NAME}" in
+              vmi-v*)
+                EXPECTED_RELEASE_VERSION="${VMI_PROJECT_VERSION}"
+                PTOAS_VERSION="${GITHUB_REF_NAME#vmi-v}"
+                PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"
+                PTOAS_PYTHON_PACKAGE_NAME="ptoas-vmi"
+                ;;
+              ptoas-v*)
+                EXPECTED_RELEASE_VERSION="$(python .github/scripts/compute_ptoas_version.py --mode release)"
+                PTOAS_VERSION="${GITHUB_REF_NAME#ptoas-v}"
+                PTOAS_CLI_VERSION="${PTOAS_VERSION}"
+                PTOAS_PYTHON_PACKAGE_NAME="ptoas"
+                ;;
+              v*)
+                EXPECTED_RELEASE_VERSION="$(python .github/scripts/compute_ptoas_version.py --mode release)"
+                PTOAS_VERSION="${GITHUB_REF_NAME#v}"
+                PTOAS_CLI_VERSION="${PTOAS_VERSION}"
+                PTOAS_PYTHON_PACKAGE_NAME="ptoas"
+                ;;
+              *)
+                echo "release tags for the wheel workflow must start with 'v', 'ptoas-v', or 'vmi-v'" >&2
+                exit 1
+                ;;
+            esac
+            if [ "${PTOAS_VERSION}" != "${EXPECTED_RELEASE_VERSION}" ]; then
+              echo "release tag '${GITHUB_REF_NAME}' does not match project version '${EXPECTED_RELEASE_VERSION}'" >&2
+              exit 1
+            fi
+          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${{ inputs.release_kind }}" = "vmi" ]; then
+            PTOAS_VERSION="${VMI_PROJECT_VERSION}"
+            PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"
+            PTOAS_PYTHON_PACKAGE_NAME="ptoas-vmi"
+          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            PTOAS_VERSION="$(python .github/scripts/compute_ptoas_version.py --mode release)"
+            PTOAS_CLI_VERSION="${PTOAS_VERSION}"
+            PTOAS_PYTHON_PACKAGE_NAME="ptoas"
+          else
+            PTOAS_VERSION="$(python .github/scripts/compute_ptoas_version.py --mode dev)"
+            PTOAS_CLI_VERSION="${PTOAS_VERSION}"
+            PTOAS_PYTHON_PACKAGE_NAME="ptoas"
+          fi
+          echo "PTOAS_VERSION=${PTOAS_VERSION}" >> "$GITHUB_ENV"
+          echo "PTOAS_CLI_VERSION=${PTOAS_CLI_VERSION}" >> "$GITHUB_ENV"
+          echo "PTOAS_PYTHON_PACKAGE_NAME=${PTOAS_PYTHON_PACKAGE_NAME}" >> "$GITHUB_ENV"
+          echo "Using PTOAS CLI version: ${PTOAS_CLI_VERSION}"
+          echo "Using PTOAS wheel version: ${PTOAS_VERSION}"
+          echo "Using PTOAS Python package name: ${PTOAS_PYTHON_PACKAGE_NAME}"
 
       - name: Validate PEP 517 project metadata
         run: |
@@ -225,7 +226,6 @@ jobs:
           fi
           rm -rf "${PTO_SOURCE_DIR}/build/wheel-dist"
           mkdir -p "${PTO_SOURCE_DIR}/build/wheel-dist"
-          PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_CLI_VERSION}" \
           SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}" \
             python -m pip wheel "${PTOAS_WHEEL_SOURCE_DIR}" \
               --no-build-isolation --no-deps \
@@ -433,37 +433,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add CMakeLists.txt
           git commit -m "chore(release): bump base version to v${{ steps.bump.outputs.next_base_version }}"
-          git push origin HEAD:${{ github.event.repository.default_branch }}
-
-  bump_vmi_version:
-    name: Bump VMI version after release
-    if: github.event_name == 'release' && github.event.action == 'released' && startsWith(github.ref_name, 'vmi-v')
-    needs: upload_release_assets
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout default branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-
-      - name: Update VMI version
-        id: bump
-        run: |
-          next_vmi_version="$(python3 .github/scripts/update_vmi_version.py \
-            --version "${GITHUB_REF_NAME}" \
-            --next)"
-          echo "next_vmi_version=${next_vmi_version}" >> "$GITHUB_OUTPUT"
-
-      - name: Commit version bump
-        run: |
-          if git diff --quiet -- CMakeLists.txt; then
-            echo "CMakeLists.txt already matches the next VMI version."
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add CMakeLists.txt
-          git commit -m "chore(release): bump VMI version to v${{ steps.bump.outputs.next_vmi_version }}"
           git push origin HEAD:${{ github.event.repository.default_branch }}

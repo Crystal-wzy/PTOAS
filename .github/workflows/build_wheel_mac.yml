@@ -75,13 +75,24 @@ jobs:
         run: |
           echo "PY_PATH=$(python -c 'import sys; print(sys.prefix)')" >> $GITHUB_ENV
 
-      - name: Compute PTOAS CLI version
+      - name: Install system dependencies
         run: |
+          brew install ninja ccache
+
+      - name: Install Python dependencies
+        run: |
+          # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x
+          # (see pybind11 static_assert on def_property + keep_alive).
+          pip install --no-cache-dir numpy 'pybind11<3' nanobind 'scikit-build-core>=0.12.2,<2' delocate
+
+      - name: Resolve PTOAS distribution version
+        run: |
+          VMI_PROJECT_METADATA="$(cd packaging/ptoas-vmi && python -m scikit_build_core.build project-table)"
+          VMI_PROJECT_VERSION="$(printf '%s\n' "${VMI_PROJECT_METADATA}" | python -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
           if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
             case "${GITHUB_REF_NAME}" in
               vmi-v*)
-                EXPECTED_RELEASE_VERSION="$(python .github/scripts/compute_vmi_version.py \
-                  --check-tag "${GITHUB_REF_NAME}")"
+                EXPECTED_RELEASE_VERSION="${VMI_PROJECT_VERSION}"
                 PTOAS_VERSION="${GITHUB_REF_NAME#vmi-v}"
                 PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"
                 PTOAS_PYTHON_PACKAGE_NAME="ptoas-vmi"
@@ -104,11 +115,11 @@ jobs:
                 ;;
             esac
             if [ "${PTOAS_VERSION}" != "${EXPECTED_RELEASE_VERSION}" ]; then
-              echo "release tag '${GITHUB_REF_NAME}' does not match computed version '${EXPECTED_RELEASE_VERSION}'" >&2
+              echo "release tag '${GITHUB_REF_NAME}' does not match project version '${EXPECTED_RELEASE_VERSION}'" >&2
               exit 1
             fi
           elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${{ inputs.release_kind }}" = "vmi" ]; then
-            PTOAS_VERSION="$(python .github/scripts/compute_vmi_version.py)"
+            PTOAS_VERSION="${VMI_PROJECT_VERSION}"
             PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"
             PTOAS_PYTHON_PACKAGE_NAME="ptoas-vmi"
           elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
@@ -126,16 +137,6 @@ jobs:
           echo "Using PTOAS CLI version: ${PTOAS_CLI_VERSION}"
           echo "Using PTOAS wheel version: ${PTOAS_VERSION}"
           echo "Using PTOAS Python package name: ${PTOAS_PYTHON_PACKAGE_NAME}"
-
-      - name: Install system dependencies
-        run: |
-          brew install ninja ccache
-
-      - name: Install Python dependencies
-        run: |
-          # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x
-          # (see pybind11 static_assert on def_property + keep_alive).
-          pip install --no-cache-dir numpy 'pybind11<3' nanobind 'scikit-build-core>=0.12.2,<2' delocate
 
       - name: Validate PEP 517 project metadata
         run: |
@@ -228,7 +229,6 @@ jobs:
           export _PYTHON_HOST_PLATFORM="$(python "$PTO_SOURCE_DIR/docker/get_macos_wheel_plat_name.py" "$TARGET_ARCH")"
           rm -rf "${PTO_SOURCE_DIR}/build/wheel-dist"
           mkdir -p "${PTO_SOURCE_DIR}/build/wheel-dist"
-          PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_CLI_VERSION}" \
           SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}" \
             python -m pip wheel "${PTOAS_WHEEL_SOURCE_DIR}" \
               --no-build-isolation --no-deps \

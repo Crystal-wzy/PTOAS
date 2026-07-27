@@ -15,16 +15,15 @@ include(AddMLIRPython)
 add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=ptoas.mlir.")
 set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ptoas_mlir")
 
-# Do not carry toolchain-injected paths, such as a Conda compiler RPATH, into
-# installed Python modules. Distribution builds keep only MLIR's relative
-# package RPATHs; editable builds add their external link paths below.
-set(CMAKE_INSTALL_REMOVE_ENVIRONMENT_RPATH ON)
-
 # scikit-build-core editable installs use the external LLVM build directly.
-# Keep this developer-only fallback local to the MLIR Python targets; wheel
-# builds use package-relative RPATHs and let auditwheel/delocate collect LLVM.
+# Wheel builds retain AddMLIRPython's package-relative RPATHs for
+# auditwheel/delocate to repair.
 if(SKBUILD_STATE STREQUAL "editable")
-  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+  set(CMAKE_INSTALL_REMOVE_ENVIRONMENT_RPATH OFF)
+else()
+  # Do not carry toolchain-injected paths, such as a Conda compiler RPATH,
+  # into distribution modules.
+  set(CMAKE_INSTALL_REMOVE_ENVIRONMENT_RPATH ON)
 endif()
 
 # This directory materializes C++ sources exported by upstream MLIR. PTOAS
@@ -139,3 +138,23 @@ add_mlir_python_modules(PTOAS_Python
   COMMON_CAPI_LINK_LIBS
     PTOASPythonCAPI
 )
+
+# AddMLIRPython deliberately resets each generated target's install RPATH to
+# its package-relative layout. Append the external LLVM directory afterwards
+# for editable installs, where those dependencies are not bundled into the
+# Python environment. Discover the native targets by CMake type so additional
+# generated MLIR extensions inherit the same contract automatically.
+if(SKBUILD_STATE STREQUAL "editable")
+  get_filename_component(_ptoas_editable_llvm_library_dir
+    "${LLVM_BUILD_LIBRARY_DIR}" REALPATH)
+  get_property(_ptoas_python_directory_targets
+    DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(_ptoas_python_target IN LISTS _ptoas_python_directory_targets)
+    get_target_property(_ptoas_python_target_type
+      "${_ptoas_python_target}" TYPE)
+    if(_ptoas_python_target_type MATCHES "^(MODULE|SHARED)_LIBRARY$")
+      set_property(TARGET "${_ptoas_python_target}" APPEND PROPERTY
+        INSTALL_RPATH "${_ptoas_editable_llvm_library_dir}")
+    endif()
+  endforeach()
+endif()

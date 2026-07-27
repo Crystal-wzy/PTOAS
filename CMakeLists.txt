@@ -36,7 +36,6 @@ if((NOT DEFINED MLIR_DIR OR MLIR_DIR STREQUAL "")
 endif()
 
 project(ptoas VERSION 0.55)
-set(PTOAS_VMI_VERSION "0.1.4")
 
 # Wheel builds carry the same Linux hardening policy as release CMake builds.
 # Including the cache settings here keeps the policy backend-independent.
@@ -46,6 +45,11 @@ endif()
 
 set(PTOAS_RELEASE_VERSION_OVERRIDE ""
     CACHE STRING "Override the version printed by ptoas --version")
+# scikit-build-core owns wheel metadata and supplies its resolved PEP 621
+# version here. The optional label distinguishes distributions that install the
+# same CLI without making CMake a second source of package-version truth.
+set(PTOAS_CLI_VERSION_LABEL ""
+    CACHE STRING "Optional label prepended to the packaged ptoas version")
 set(PTOAS_EXACT_GIT_TAG_VERSION "")
 if(EXISTS "${PROJECT_SOURCE_DIR}/.git")
   find_package(Git QUIET)
@@ -67,6 +71,13 @@ endif()
 set(PTOAS_CLI_VERSION "${PROJECT_VERSION}")
 if(PTOAS_EXACT_GIT_TAG_VERSION)
   set(PTOAS_CLI_VERSION "${PTOAS_EXACT_GIT_TAG_VERSION}")
+endif()
+if(SKBUILD AND SKBUILD_PROJECT_VERSION_FULL)
+  set(PTOAS_CLI_VERSION "${SKBUILD_PROJECT_VERSION_FULL}")
+endif()
+if(PTOAS_CLI_VERSION_LABEL)
+  set(PTOAS_CLI_VERSION
+      "${PTOAS_CLI_VERSION_LABEL} ${PTOAS_CLI_VERSION}")
 endif()
 if(PTOAS_RELEASE_VERSION_OVERRIDE)
   set(PTOAS_CLI_VERSION "${PTOAS_RELEASE_VERSION_OVERRIDE}")
