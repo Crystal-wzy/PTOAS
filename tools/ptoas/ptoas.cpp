@@ -2706,10 +2706,10 @@ static void prepareVPTOForEmission(PassManager &pm) {
   kernelModulePM.addNestedPass<func::FuncOp>(
       createVPTOExpandWrapperOpsPass());
   kernelModulePM.addPass(createCSEPass());
-  if (enableSoftPostUpdate)
-    kernelModulePM.addPass(pto::createVPTOSoftPostUpdatePass());
   kernelModulePM.addNestedPass<func::FuncOp>(
       pto::createPTOInferVPTOVecScopePass());
+  if (enableSoftPostUpdate)
+    kernelModulePM.addPass(pto::createVPTOSoftPostUpdatePass());
   kernelModulePM.addPass(createLoopInvariantCodeMotionPass());
   kernelModulePM.addNestedPass<func::FuncOp>(
       pto::createPTONarrowVPTOLoopCountersPass());

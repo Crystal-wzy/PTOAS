@@ -117,12 +117,14 @@ VPTOSoftPostUpdate pass:
   单次遍历 pto.vecscope 内所有指令，对每条指令查询
   PostUpdateSet（static DenseSet<OperationName>，维护第 2 章中的指令集合）:
     若命中:
-      若在 scf.for 内 → 循环路径（按优先级依次尝试）：
-        1. 累加器分析 —— offset 或 base 是否为 iter_arg 且 yield 中有显式递增？
-        2. 若累加器分析未命中 → delta 分析 —— stride 是否为循环不变量？
-        3. 合法性检查
-        4. 改写
-        5. 若产生了新的 iter_arg，向外层循环传播
+      若在 scf.for 内 → 循环路径（分析与物化两阶段）：
+        阶段一 · 纯符号分析（不产生任何 IR）：
+          1. 累加器分析 —— offset 或 base 是否为 iter_arg 且 yield 中有显式递增？
+          2. 若累加器分析未命中 → delta 分析 —— stride 是否为循环不变量？
+        阶段二 · 判定与物化：
+          3. 合法性检查（含类型一致性、操作数可用性）
+          4. 在唯一插入点物化 stride，然后改写
+          5. 若产生了新的 iter_arg，向外层循环传播
       若不在 scf.for 内 → 顺序路径：
         从当前指令起向后扫描，收集连续的同类型、同 base、等差常量偏移的序列，
         一次性链式改写为 post-update，迭代器跳过已处理的指令
@@ -130,9 +132,11 @@ VPTOSoftPostUpdate pass:
 
 ### 4.2 循环路径
 
-循环路径有两条互斥的分析路径：**累加器分析**（优先）和 **delta 分析**（兜底）。前者处理 base 或 strideOperand 已通过 `iter_args` 显式累加的场景（stride 可以是任意已计算的值），后者处理从 IV 全新计算、无累加器的场景（stride 须为循环不变量）。
+循环路径对 base 和 strideOperand **各自独立**分析：每个操作数先试 **累加器分析**（优先），未命中再退到 **delta 分析**（兜底），两者的结果最后合并为 `total_delta`。前者处理该操作数已通过 `iter_args` 显式累加的场景（stride 可以是任意已计算的值），后者处理从 IV 全新计算、无累加器的场景（stride 须为循环不变量）。因此同一条指令的 base 走累加器、strideOperand 走 delta 是允许的组合。
 
 两类指令（vlds/vsts 与 vsstb/vsldb）的分析和改写通过统一的地址描述符抽象，共享同一套分析流程。
+
+无论走哪条路径，分析都只产出**符号表达式**，不触碰 IR；确认候选可行后才在单一插入点物化（见 4.2.2）。
 
 #### 4.2.1 地址描述符
 
@@ -161,26 +165,68 @@ init_ptr    = base_0 + weight * strideOperand_0   // 通过 pto.addptr 创建
 
 约束：`total_delta` 必须整除 `weight`（weight=1 时自动满足，weight=32 时要求 `delta(base) % 32 == 0`，因为 `weight * delta(strideOperand)` 天然整除 32）。
 
-#### 4.2.2 累加器分析（优先）
+#### 4.2.2 分析与物化分离
 
-对 base 和 strideOperand 分别检查是否为 `scf.for` 的 block argument（来自 `iter_args`），且对应的 `scf.yield` 值为该 block argument 加一个增量值：
-
-```
-getIterArgIncrement(Value v, ForOp forOp) -> std::optional<Value>:
-  若 v 是 forOp 的 block argument，且对应的 yield 操作数形如 arith.addi(v, s)
-  （或等价的指针加法），返回 s；否则返回 nullopt。
-```
+循环路径分两个阶段。**分析阶段**不产生任何 IR：`decomposeLinear`、`getIterArgIncrement`、`computeDelta` 均为纯函数，返回符号表达式 `StrideExpr`。**物化阶段**在候选通过全部合法性检查之后，由 `materialize` 在唯一插入点一次性发射 IR。
 
 ```
-baseIncr = getIterArgIncrement(desc.base, forOp)
+StrideExpr := Const(int64)                  // 类型在物化时按上下文决定
+            | Leaf(Value)                   // IR 中已存在的叶子值
+            | Add(e, e) | Sub(e, e) | Mul(e, e)
+            | Cast(op, e)                   // index_cast/index_castui，op 为克隆模板
+```
+
+`StrideExpr` 在构造时即做常量折叠（`foldConst`），因此 `total_delta` 是否为常量、是否整除 `weight`、是否恒为零，全部在符号层判定，判定不依赖任何已生成的 IR。
+
+该划分是正确性要求，而非代码组织风格。以下三条性质依赖于它：
+
+1. **支配性由构造保证。** 物化自底向上进行，每个新建 op 的操作数要么是刚发射的子表达式，要么是已通过可用性检查的叶子，因此结果天然支配插入点。
+
+   可用性检查（4.2.5 检查 6）本身也依赖分析不建 IR。分析期间考察的每个 `Value` 都先于本次变换存在；对这样的值，"定义点早于插入点"可**传递地**推出"其操作数也早于插入点"，于是只需检查表达式的叶子。而对于变换过程中新建的 op，这条蕴含关系并不成立——它自身位置合法，不代表它的操作数在该位置可用。把 IR 生成推迟到分析之后，正是为了让被检查的值始终落在前一种情形里。
+
+2. **递归可 memoize。** 纯函数的结果只取决于入参，`decomposeLinear` 与 `computeDelta` 按 `Value` 缓存，共享子表达式只分解一次，分解代价与定义链 DAG 的规模成线性关系。
+
+3. **被拒候选不留残留。** 合法性检查全部先于物化完成，放弃某个候选时 IR 尚未被触碰。`weight` 缩放这类中间运算也只存在于符号层，不会以 op 的形式落地。
+
+#### 4.2.3 累加器分析（优先）
+
+对 base 和 strideOperand 分别检查是否为 `scf.for` 的 block argument（来自 `iter_args`），且对应的 `scf.yield` 值可分解为 `blockArg + increment`。
+
+分解通过递归线性分解实现：沿 `arith.addi`/`arith.subi`/`arith.muli`/`arith.index_cast`/`pto.addptr` 定义链递归，将 yield 表达式分离为 `blockArg * coeff + increment`。要求 `coeff == 1`（保证等差递推），`increment` 不要求是常量或循环不变量。
+
+```
+decomposeLinear(Value v, BlockArgument blockArg) -> {coeff, StrideExpr increment}:
+  v == blockArg           → {1, Const(0)}
+  v 是循环不变量或其他 block arg → {0, Leaf(v)}
+  v = addi(a, b)         → {ca + cb, Add(ia, ib)}
+  v = subi(a, b)         → {ca - cb, Sub(ia, ib)}
+  v = muli(a, b)（一侧不含 blockArg 且为常量 k）→ {c * k, Mul(i, Const(k))}
+  v = addptr(ptr, offset) → {c_ptr, Add(i_ptr, Leaf(offset))}
+  v = index_cast(a)       → {ca, Cast(op, ia)}
+  其他                    → unknown（放弃）
+  结果按 v 缓存
+
+getIterArgIncrement(Value v, ForOp forOp) -> {status, StrideExpr}:
+  沿 v 的定义链回溯，穿过 index_cast（记录类型转换）、addi/subi/addptr
+  与循环不变量的组合（跳过偏移），直到找到 iter_arg BlockArgument。
+  对该 iter_arg 的 yield 操作数调用 decomposeLinear：
+    coeff == 1            → {Ok, 路径上收集的类型转换套用于 increment}
+    分解失败或 coeff != 1 → {Failed, -}
+  未回溯到 iter_arg       → {NotIterArg, -}
+```
+
+三态返回是必要的：`NotIterArg` 表示该操作数与累加器无关，应回退 delta 路径；`Failed` 表示确实是 iter_arg 但增量无法分解，此时必须整体放弃——把未知增量当作 0 会静默算错地址。
+
+```
+baseIncr = getIterArgIncrement(desc.base, forOp)      // NotIterArg → 回退 delta
 soIncr   = getIterArgIncrement(desc.strideOperand, forOp)
 
-若两者均为 nullopt → 非累加器模式，走 delta 路径
-否则 → total_delta = (baseIncr or 0) + weight * (soIncr or 0)
+任一为 Failed → 放弃该候选
+否则 → total_delta = delta(base) + weight * delta(strideOperand)   // 符号相加
         stride_new = total_delta / weight
 ```
 
-不要求 stride 是常量或循环不变量，只要值在 IR 中已计算出来即可。
+不要求 stride 是常量或循环不变量；增量也不要求定义在候选 op 之前——不满足时由 4.2.5 的可用性检查决定克隆或放弃。
 
 **示例（vlds，weight=1）：**
 
@@ -194,9 +240,11 @@ scf.for %iv = %c0 to %c16 step %c1
   scf.yield %next_off
 }
 ```
-`baseIncr` = nullopt，`soIncr` = `%s`。`total_delta = %s`，`stride_new = %s / 1 = %s`。
+`baseIncr` = `NotIterArg`（回退 delta，得 `Const(0)`），`soIncr` = `{Ok, Leaf(%s)}`。`total_delta = Leaf(%s)`，`stride_new = %s / 1 = %s`。
 
-#### 4.2.3 delta 分析（累加器未命中时）
+注意 `%s` 在本例中定义于 `pto.vlds` 之前，但这不是前提：若 `%s` 定义在 `pto.vlds` 之后，4.2.5 会把它的定义链克隆到候选 op 之前，结果不变。
+
+#### 4.2.4 delta 分析（累加器未命中时）
 
 当 base 和 strideOperand 都不是 iter_arg 时，回退到 delta 分析。
 
@@ -221,27 +269,39 @@ stride_new  = total_delta / weight
 
 **正确性：** delta 表中的操作构成仿射函数的封闭运算集合。定义链仅由这些操作构成时，delta 计算不会遗漏。遇到表外操作时保守放弃。
 
-#### 4.2.4 合法性检查
+delta 分析同样是纯符号的：表中每一行返回 `StrideExpr`，结果按 `Value` 缓存。
 
-无论由累加器分析还是 delta 分析产出 stride，都须满足以下条件：
+#### 4.2.5 合法性检查
+
+无论由累加器分析还是 delta 分析产出 stride，都须满足以下条件。全部检查在物化之前完成，任一不满足即放弃该候选，且不留下任何 IR。
 
 1. **op 尚未处于 Post-Update 形式。** 检查 `op.getUpdatedBase()` 为空。
 
 2. **op 直接位于 `scf.for` 循环体内**（不嵌套在循环内的 `scf.if` 或其他控制流中），避免部分迭代问题。
 
-3. **`total_delta` 整除 `weight`。** weight=1 时自动满足；weight=32（vsstb/vsldb）时要求 `delta(base) % 32 == 0`。
+3. **`total_delta` 整除 `weight`。** weight=1 时自动满足。weight≠1 时，**当前实现要求整个 `total_delta` 是编译期常量**且整除 weight，不满足即放弃。
 
-4. **stride_new 为零时跳过。** 地址不前进，post-update 无收益。
+   这比理论下限保守。由于 `weight * delta(strideOperand)` 天然整除 weight，整除性其实只取决于 `delta(base)`——原则上 `delta(strideOperand)` 可以是任意符号表达式，只要 `delta(base)` 是能被 weight 整除的常量即可。放宽需要给 `StrideExpr` 增加结构化的整除判定（识别 `Mul(e, Const(k))` 一类形式），暂未实现；此处记录该取舍，以免文档与实现口径不一致。
 
-#### 4.2.5 改写
+4. **stride_new 为零时跳过。** 地址不前进，post-update 无收益。常量折叠使各项相消、合成结果恒为零的情形（如 base 每轮 +8、strideOperand 每轮 −8）同样能被识别。
+
+5. **类型一致性。** stride 表达式各子项须归结为同一类型，否则放弃，以免构造出 `arith.addi(index, i32)` 这类非法 op。`Const` 项不参与该约束——其类型在物化时按上下文决定。
+
+   此外，各 `Const` 项的数值须能被目标类型表示。`stride_new` 对块步长指令是窄整数（i16），超出范围的 stride 会构造出非法常量，因此在物化前一并检查并放弃。
+
+6. **操作数可用性（支配性）。** stride 表达式的每个叶子须在候选 op 处可用：循环不变量、block argument、或定义点早于候选 op。若叶子定义在候选 op **之后**，仅当其定义链全部为 pure op 时克隆到候选 op 之前（克隆保留原结果序号，多结果 op 亦正确）；否则放弃。该检查以只读方式先行完成，克隆发生在物化阶段。
+
+#### 4.2.6 改写
 
 改写步骤对所有指令统一：
 
-1. 计算初始指针 `init_ptr = base_0 + weight * strideOperand_0`（通过 `pto.addptr`；若值为零则直接用 `base_0`）。
-2. 新增指针类型的 `iter_arg`，初始值为 `init_ptr`。
-3. 创建 Post-Update op：将 `strideOperand` 替换为 `stride_new`，base 替换为 iter_arg 的 block argument。其余操作数（block_stride、mask、dist 等）不变。
-4. 将 `updated_base` 通过 `scf.yield` 传出。
-5. 交由 DCE 清除死代码。
+1. **物化 stride。** 叶子全部循环不变时发射到循环外，否则发射到候选 op 之前。常量按 `(值, 类型)` 在同一循环内复用同一个 SSA 值——4.2.7 的分组按 `(base, stride_new)` 的 **Value 同一性** 判定，重复创建等值常量会把本可共享 `iter_arg` 的 op 拆成多组。
+
+2. 计算初始指针 `init_ptr = base_0 + weight * strideOperand_0`（通过 `pto.addptr`；若值为零则直接用 `base_0`）。
+3. 新增指针类型的 `iter_arg`，初始值为 `init_ptr`。
+4. 创建 Post-Update op：将 `strideOperand` 替换为 `stride_new`，base 替换为 iter_arg 的 block argument。其余操作数（block_stride、mask、dist 等）不变。
+5. 将 `updated_base` 通过 `scf.yield` 传出。
+6. 交由 DCE 清除死代码。
 
 **vsstb/vsldb 的硬件语义补充：**
 
@@ -250,13 +310,19 @@ Post-Update：`dest_p + blk*32*block_stride`（repeat_stride 不参与存储地�
 
 Post-Update 模式下 `repeat_stride` 从地址偏移变为指针前进量，因此初始指针需吸收原始偏移 `32*rs_0`。
 
-#### 4.2.6 同一循环中的多个 Op
+#### 4.2.7 同一循环中的多个 Op
 
-按 `(base, stride_new)` 分组。同组的 op 共享一个 `iter_arg`，所有 op 使用同一个 pre-update 指针（block argument），不链式传递 `updated_base`。原因：同一迭代内同组 op 访问相同地址，链式传递会使后续 op 的地址偏移一个 stride。每组只需 yield 一个 `updated_base`。
+两个 op 能共享同一个 `iter_arg`，当且仅当它们走**同一条地址序列**——起点 `init_ptr = base_0 + weight * strideOperand_0` 相同，且步长 `stride_new` 相同。
 
-#### 4.2.7 嵌套循环
+理想的分组键是 `(init_ptr, stride_new)`。但 `init_ptr` 不适合直接入键：分组按 **Value 同一性** 比较，而 `computeInitialPtr` 可能为每个候选各自物化一个 `pto.addptr`，起点数值相同也未必是同一个 SSA 值。因此改用决定 `init_ptr` 的**原始操作数**：分组键取 `(base, strideOperand, stride_new)`。操作数相同必然起点相同，这是一个充分条件——可能把本可合并的组拆开，但绝不会合并本应分开的组。
 
-对于嵌套 `scf.for`，在每一层循环添加 `iter_arg` 携带指针，内层的 init 值接外层的当前值。处理方式：自内向外遍历。`scf.for` 的 `iter_args` 天然保证 init/yield 的对应关系。
+同组的 op 共享一个 `iter_arg`，所有 op 使用同一个 pre-update 指针（block argument），不链式传递 `updated_base`。原因：同一迭代内同组 op 访问相同地址，链式传递会使后续 op 的地址偏移一个 stride。每组只需 yield 一个 `updated_base`。
+
+因为键按 Value 同一性比较，stride 的物化必须保证等值常量复用同一 SSA 值（见 4.2.6 步骤 1）；否则语义相同的 op 会被拆成多组，退化为各自持有一个 `iter_arg`。
+
+#### 4.2.8 嵌套循环
+
+对于嵌套 `scf.for`，在每一层循环添加 `iter_arg` 携带指针，内层的 init 值接外层的当前值。`scf.for` 的 `iter_args` 天然保证 init/yield 的对应关系。
 
 ### 4.3 顺序路径
 
@@ -305,13 +371,15 @@ Post-Update 模式下 `repeat_stride` 从地址偏移变为指针前进量，因
 
 ### 5.1 在 Pipeline 中的位置
 
-pass 应运行在 VPTO 后端 pipeline 中，位于 `VPTOExpandWrapperOps` 之后、`PrepareVPTOLLVMLoweringPass` 之前：
+pass 应运行在 VPTO 后端 pipeline 中，位于 `PTOInferVPTOVecScope` 之后、`PrepareVPTOLLVMLoweringPass` 之前：
 
 ```
 VPTOExpandWrapperOps
 CSE
-→ VPTOSoftPostUpdate（新增）        ← 在此处
 PTOInferVPTOVecScope
+→ VPTOSoftPostUpdate（新增）        ← 在此处
+Canonicalizer
+CSE
 ...
 PrepareVPTOLLVMLoweringPass
 LowerVPTOOpsPass
@@ -319,8 +387,10 @@ LowerVPTOOpsPass
 
 该位置确保：
 - Wrapper op 已展开（IR 干净）
-- Vecscope 结构完整
+- **`pto.vecscope` 已存在**。pass 只改写 `pto.vecscope` 内的 op，而多数 kernel 的 vecscope 是由 `PTOInferVPTOVecScope` 创建的——排在它之前会让 pass 对这类输入静默失效。手写 vecscope 的测试用例不会暴露该问题，因此回归测试中必须包含不含手写 vecscope 的输入（`soft_postupdate_inferred-vecscope.pto`）
 - Post-Update 结果对 LLVM lowering 可见，后者根据 `getUpdatedBase()` 选择 `vldsx1` 或 `vldsx1.post`
+
+`PTOInferVPTOVecScope` 以整 op 方式把 `scf.for` 搬入 `pto.vecscope`（`wrapCluster` 用 `splice` 移动整个 op），循环体内部结构不变，因此 4.2.5 检查 2「op 直接位于循环体内」的判定不受影响。
 
 ### 5.2 Pass 注册
 
@@ -338,34 +408,38 @@ def VPTOSoftPostUpdate : Pass<"vpto-soft-postupdate", "ModuleOp"> {
 ### ~~Step 1：pass 框架与循环 delta 分析~~（已完成）
 
 1. ~~搭建 pass 框架：PostUpdateSet、遍历逻辑、pipeline 集成、CLI 开关。~~
-2. ~~实现 delta 递归分析（4.2.3）。~~
+2. ~~实现 delta 递归分析（4.2.4）。~~
 3. ~~实现 delta 路径的合法性检查和改写（新增 iter_arg）。~~
 4. ~~支持同一循环中多个 op。~~
 5. ~~支持 `pto.vlds`、`pto.vsts`、`pto.vsstb`。~~
 6. ~~添加 delta 路径的 lit 测试和反向测试。~~
 
-### Step 2：循环累加器分析
+### ~~Step 2：循环累加器分析~~（已完成）
 
-7. 实现 `getIterArgIncrement` helper。
-8. 实现累加器分析（4.2.1）：base/offset 统一检测与 stride 合并。
-9. 实现累加器路径的改写（4.2.4）。
-10. 在遍历逻辑中将累加器分析置于 delta 分析之前。
-11. 添加累加器路径的 lit 测试（含非常量 stride、base 和 offset 都是 iter_arg 等场景）。
+7. ~~实现 `getIterArgIncrement` helper。~~
+8. ~~实现累加器分析（4.2.3）：base/offset 统一检测与 stride 合并。~~
+9. ~~实现累加器路径的改写（4.2.6）。~~
+10. ~~在遍历逻辑中将累加器分析置于 delta 分析之前。~~
+11. ~~添加累加器路径的 lit 测试（含非常量 stride、base 和 offset 都是 iter_arg 等场景）。~~
+12. ~~实现 `StrideExpr` 符号表达式与常量折叠（4.2.2），使 `decomposeLinear` / `getIterArgIncrement` / `computeDelta` 成为纯函数并按 `Value` 缓存。~~
+13. ~~实现 `getIterArgIncrement` 的三态返回（`NotIterArg` / `Failed` / `Ok`）。~~
+14. ~~实现物化阶段：类型一致性检查、叶子可用性检查（必要时克隆 pure 定义链）、常量按 `(值, 类型)` 复用。~~
+15. ~~补充回归测试：增量定义在消费者之后、多增量组合、weight=32 非常量增量的负向用例。~~
 
 ### Step 3：顺序路径
 
-12. 实现顺序路径的序列检测（4.3.1）和合法性检查（4.3.2）。
-13. 实现链式改写（4.3.3）和迭代器跳过逻辑。
-14. 添加顺序路径的 lit 测试。
+16. 实现顺序路径的序列检测（4.3.1）和合法性检查（4.3.2）。
+17. 实现链式改写（4.3.3）和迭代器跳过逻辑。
+18. 添加顺序路径的 lit 测试。
 
 ### Step 4：扩展指令覆盖
 
-15. 为 2.2 中的指令（`vldsx2`、`vsldb`、`plds`、`pldi` 等）添加 ODS `updated_base` 定义。
-16. 扩展 PostUpdateSet，使 pass 覆盖新指令。
-17. 补充对应的 LLVM lowering（post intrinsic callee）和 lit 测试。
+19. 为 2.2 中的指令（`vldsx2`、`vsldb`、`plds`、`pldi` 等）添加 ODS `updated_base` 定义。
+20. 扩展 PostUpdateSet，使 pass 覆盖新指令。
+21. 补充对应的 LLVM lowering（post intrinsic callee）和 lit 测试。
 
 ### Step 5：验证与开启
 
-18. 端到端验证：用 ptoas 编译，与 bisheng Post-Update 输出对比已知 kernel。
-19. NPU 验证：在硬件上运行 Post-Update kernel（通过现有 `test/vpto/cases/micro-op/vector-load-store/` 框架）。
-20. 将默认值切换为开启。
+22. 端到端验证：用 ptoas 编译，与 bisheng Post-Update 输出对比已知 kernel。
+23. NPU 验证：在硬件上运行 Post-Update kernel（通过现有 `test/vpto/cases/micro-op/vector-load-store/` 框架）。
+24. 将默认值切换为开启。
