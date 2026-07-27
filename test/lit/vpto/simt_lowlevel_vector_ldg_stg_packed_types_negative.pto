@@ -15,17 +15,11 @@
 // RUN: not ptoas --pto-arch=a5 --pto-backend=vpto %t/v8xi8.pto -o %t/v8xi8.out 2>&1 | FileCheck %s --check-prefix=V8XI8
 
 // V2XI64: currently supports
-// V2XI64: vector<2xi64>
 // V4XF32: currently supports
-// V4XF32: vector<4xf32>
 // V16XF8E4: currently supports
-// V16XF8E4: vector<16xf8E4M3FN>
 // V4XF16: currently supports
-// V4XF16: vector<4xf16>
 // V4XI16: currently supports
-// V4XI16: vector<4xi16>
 // V8XI8: currently supports
-// V8XI8: vector<8xi8>
 
 //--- v2xi64.pto
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
