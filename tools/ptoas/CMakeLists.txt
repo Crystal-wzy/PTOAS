@@ -6,6 +6,18 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+# Do not carry toolchain-injected paths, such as a Conda compiler RPATH, into
+# installed Python modules. Distribution builds keep only MLIR's relative
+# package RPATHs; editable builds add their external link paths below.
+set(CMAKE_INSTALL_REMOVE_ENVIRONMENT_RPATH ON)
+
+# scikit-build-core editable installs use the external LLVM build directly.
+# Keep this developer-only fallback local to the PTOAS Python extension; wheel
+# builds use package-relative RPATHs and let auditwheel/delocate collect LLVM.
+if(SKBUILD_STATE STREQUAL "editable")
+  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+endif()
+
 set(PTOAS_RUNTIME_SOURCES
   ptoas.cpp
   driver.cpp

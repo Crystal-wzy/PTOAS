@@ -234,7 +234,6 @@ jobs:
             python -m pip wheel "${PTOAS_WHEEL_SOURCE_DIR}" \
               --no-build-isolation --no-deps \
               --wheel-dir "${PTO_SOURCE_DIR}/build/wheel-dist"
-          cmake --install "${PTO_BUILD_DIR}" --prefix "${PTO_INSTALL_DIR}"
           shopt -s nullglob
           built_wheels=("$PTO_SOURCE_DIR"/build/wheel-dist/ptoas*.whl)
           if [ "${#built_wheels[@]}" -gt 0 ]; then
@@ -272,6 +271,10 @@ jobs:
           echo "delocate dependency summary:"
           delocate-listdeps "${wheels[0]}" || true
 
+          # The raw wheel intentionally keeps package-relative RPATHs. Give
+          # delocate the external LLVM build only while resolving and bundling
+          # its shared dependencies.
+          export DYLD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
           delocate-wheel \
             --require-archs "${REQUIRED_ARCH}" \
             --wheel-dir "$PTO_WHEELHOUSE" \
@@ -335,6 +338,7 @@ jobs:
       - name: Collect ptoas binary and dependencies
         if: matrix.python == '3.11'
         run: |
+          cmake --install "${PTO_BUILD_DIR}" --prefix "${PTO_INSTALL_DIR}"
           bash "$PTO_SOURCE_DIR/docker/collect_ptoas_dist_mac.sh" "$GITHUB_WORKSPACE/ptoas-dist"
 
       - name: Archive ptoas binary artifact

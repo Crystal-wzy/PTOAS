@@ -231,7 +231,6 @@ jobs:
             python -m pip wheel "${PTOAS_WHEEL_SOURCE_DIR}" \
               --no-build-isolation --no-deps \
               --wheel-dir "${PTO_SOURCE_DIR}/build/wheel-dist"
-          cmake --install "${PTO_BUILD_DIR}" --prefix "${PTO_INSTALL_DIR}"
 
       - name: Validate wheel payload and launcher contract
         run: |
@@ -241,8 +240,11 @@ jobs:
         run: |
           export PTO_WHEEL_DIST_DIR=$PTO_SOURCE_DIR/build/wheel-dist
           export PTO_WHEELHOUSE=$GITHUB_WORKSPACE/wheelhouse
-          export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
           mkdir -p "$PTO_WHEELHOUSE"
+          # The raw wheel intentionally keeps package-relative RPATHs. Give
+          # auditwheel the external LLVM build only while resolving and
+          # bundling its shared dependencies.
+          export LD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
           auditwheel repair --plat manylinux_2_34_${{ matrix.arch }} "$PTO_WHEEL_DIST_DIR"/ptoas*.whl -w "$PTO_WHEELHOUSE"
 
       - name: Test wheel installation
@@ -260,6 +262,7 @@ jobs:
       - name: Collect ptoas binary and dependencies
         if: matrix.python == '3.11'
         run: |
+          cmake --install "${PTO_BUILD_DIR}" --prefix "${PTO_INSTALL_DIR}"
           bash $PTO_SOURCE_DIR/docker/collect_ptoas_dist.sh $GITHUB_WORKSPACE/ptoas-dist
 
       - name: Archive ptoas binary artifact

@@ -8,6 +8,18 @@
 
 include(AddMLIRPython)
 
+# Do not carry toolchain-injected paths, such as a Conda compiler RPATH, into
+# installed Python modules. Distribution builds keep only MLIR's relative
+# package RPATHs; editable builds add their external link paths below.
+set(CMAKE_INSTALL_REMOVE_ENVIRONMENT_RPATH ON)
+
+# scikit-build-core editable installs use the external LLVM build directly.
+# Keep this developer-only fallback local to the MLIR Python targets; wheel
+# builds use package-relative RPATHs and let auditwheel/delocate collect LLVM.
+if(SKBUILD_STATE STREQUAL "editable")
+  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+endif()
+
 # This directory materializes C++ sources exported by upstream MLIR. PTOAS
 # keeps -Werror enabled globally, but upstream sources are not part of the
 # project warning contract. Scope the exception to this directory; the
