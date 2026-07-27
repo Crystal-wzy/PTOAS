@@ -2614,7 +2614,7 @@ def vmi_wrapper_dispatch_probe():
     pred = pto.vmi.vcmp(scaled, lhs, mask, "ogt")
     selected = pto.vmi.vsel(pred, scaled, expanded)
     shuffled = pto.vmi.vselr(selected, idx)
-    total = pto.vmi.vcadd(shuffled, mask, reassoc=True)
+    total = pto.vmi.vcadd(shuffled, mask, reassoc=False)
     peak = pto.vmi.vcmax(shuffled, mask)
     floor = pto.vmi.vcmin(shuffled, mask)
     group_peak = pto.vmi.vcmax(shuffled, group_mask, group=8)

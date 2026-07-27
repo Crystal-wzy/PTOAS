@@ -807,8 +807,8 @@ group_max = pto.vmi.vcmax(
 - `reassoc` is only meaningful for `vcadd` on floating-point data.
 - Floating-point `vcadd` must spell `reassoc` explicitly at the PTODSL surface.
 - `reassoc=None` is rejected by PTODSL; use `reassoc=True` or `reassoc=False`.
-- The current VMI op encoding remains presence-based, so `reassoc=False`
-  lowers to the same no-attribute form as legacy callers.
+- The current VMI op encoding remains presence-based, so PTODSL preserves the
+  `reassoc` attribute for both `reassoc=True` and `reassoc=False`.
 
 ---
 
