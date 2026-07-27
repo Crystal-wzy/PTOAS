@@ -5687,9 +5687,10 @@ LogicalResult pto::TAndOp::verify() {
     if (failed(elemOr))
       return failure();
     auto it = mlir::dyn_cast<IntegerType>(*elemOr);
-    if (!it || (it.getWidth() != 8 && it.getWidth() != 16))
+    if (!it || (it.getWidth() != 8 && it.getWidth() != 16 &&
+                it.getWidth() != 32))
       return emitOpError(
-          "expects A2/A3 tand src0, src1, and dst element type to be i8/i16");
+          "expects A2/A3 tand src0, src1, and dst element type to be i8/i16/i32");
     return success();
   };
 
@@ -10102,9 +10103,10 @@ mlir::LogicalResult mlir::pto::TOrOp::verify() {
     if (failed(elemOr))
       return failure();
     auto it = mlir::dyn_cast<IntegerType>(*elemOr);
-    if (!it || (it.getWidth() != 8 && it.getWidth() != 16))
+    if (!it || (it.getWidth() != 8 && it.getWidth() != 16 &&
+                it.getWidth() != 32))
       return emitOpError(
-          "expects A2/A3 tor src0, src1, and dst element type to be i8/i16");
+          "expects A2/A3 tor src0, src1, and dst element type to be i8/i16/i32");
     return success();
   };
 
@@ -12998,9 +13000,10 @@ mlir::LogicalResult mlir::pto::TXorOp::verify() {
     if (failed(verifyTileBufSameValidShape(*this, tmpTy, getDst().getType(), "tmp", "dst")))
       return failure();
     auto it = mlir::dyn_cast<IntegerType>(elem);
-    if (!it || (it.getWidth() != 8 && it.getWidth() != 16))
+    if (!it || (it.getWidth() != 8 && it.getWidth() != 16 &&
+                it.getWidth() != 32))
       return emitOpError(
-          "expects A2/A3 txor src0, src1, tmp, and dst element type to be i8/i16");
+          "expects A2/A3 txor src0, src1, tmp, and dst element type to be i8/i16/i32");
     return success();
   };
 
