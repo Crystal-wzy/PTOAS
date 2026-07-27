@@ -72,6 +72,29 @@ PointerLikeInfo getPointerLikeInfo(pto::PointerCastOp pointerCastOp) {
   return pointerLikeInfo;
 }
 
+static std::optional<pto::AddressSpace> getValueAddressSpace(Value value) {
+  if (!value)
+    return std::nullopt;
+  if (auto space = pto::getPTOAddressSpaceAttr(value.getType()))
+    return space.getAddressSpace();
+  if (auto memRefType = dyn_cast<BaseMemRefType>(value.getType());
+      memRefType && !memRefType.getMemorySpace()) {
+    return pto::AddressSpace::GM;
+  }
+  if (isa<pto::TensorViewType, pto::PartitionTensorViewType>(value.getType()))
+    return pto::AddressSpace::GM;
+  return std::nullopt;
+}
+
+static MemInfo getConservativeIntToPtrMemInfo(pto::IntToPtrOp intToPtr) {
+  PointerLikeInfo pointerLikeInfo(intToPtr);
+  pointerLikeInfo.addressSpace = getValueAddressSpace(intToPtr.getResult());
+  pointerLikeInfo.addresses.push_back(ShapedType::kDynamic);
+  pointerLikeInfo.allocateSize = ShapedType::kDynamic;
+  pointerLikeInfo.aliasesUnknownRange = true;
+  return MemInfo(intToPtr.getResult(), pointerLikeInfo);
+}
+
 // Walk back through metadata-only view ops (`pto.bind_tile`) to the
 // nearest `pto.pointer_cast`. Used to anchor slot_marker MemInfo on its
 // underlying multi-address alloc cast.
@@ -140,6 +163,9 @@ MemInfo getMemInfo(Value val) {
     if (auto pointerCastOp = llvm::dyn_cast<pto::PointerCastOp>(defOp)) {
       return MemInfo(val, getPointerLikeInfo(pointerCastOp));
     }
+    if (auto intToPtr = llvm::dyn_cast<pto::IntToPtrOp>(defOp)) {
+      return getConservativeIntToPtrMemInfo(intToPtr);
+    }
     if (auto slotMarker = llvm::dyn_cast<pto::SlotMarkerOp>(defOp)) {
       return getMemInfoForSlotMarker(slotMarker);
     }
@@ -167,6 +193,11 @@ bool PointerLikeInfo::checkConflict(const PointerLikeInfo &pointerLikeInfo1,
   if (pointerLikeInfo1.addressSpace.value() !=
       pointerLikeInfo2.addressSpace.value()) {
     return false;
+  }
+
+  if (pointerLikeInfo1.aliasesUnknownRange ||
+      pointerLikeInfo2.aliasesUnknownRange) {
+    return true;
   }
 
   auto &offsets1 = pointerLikeInfo1.addresses;
@@ -223,6 +254,34 @@ bool MemInfo::checkConflict(const MemInfo &memInfo1, const MemInfo &memInfo2,
                                           memInfo2.pointerLikeInfo.value(),
                                           lcmLen, eventIdNum);
   }
+
+  auto getUnknownAddressSpace =
+      [](const MemInfo &memInfo) -> std::optional<pto::AddressSpace> {
+    if (!memInfo.pointerLikeInfo ||
+        !memInfo.pointerLikeInfo->aliasesUnknownRange) {
+      return std::nullopt;
+    }
+    return memInfo.pointerLikeInfo->addressSpace;
+  };
+  auto aliasesAddressSpace =
+      [](const MemInfo &memInfo, pto::AddressSpace space) -> bool {
+    if (memInfo.pointerLikeInfo && memInfo.pointerLikeInfo->addressSpace &&
+        *memInfo.pointerLikeInfo->addressSpace == space) {
+      return true;
+    }
+    auto valueSpace = getValueAddressSpace(memInfo.value);
+    return valueSpace && *valueSpace == space;
+  };
+
+  if (auto unknownSpace = getUnknownAddressSpace(memInfo1)) {
+    if (aliasesAddressSpace(memInfo2, *unknownSpace))
+      return true;
+  }
+  if (auto unknownSpace = getUnknownAddressSpace(memInfo2)) {
+    if (aliasesAddressSpace(memInfo1, *unknownSpace))
+      return true;
+  }
+
   return memInfo1.value == memInfo2.value;
 }
 

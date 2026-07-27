@@ -25,6 +25,7 @@ struct PointerLikeInfo {
   std::optional<int64_t> allocateSize;
   std::optional<pto::AddressSpace> addressSpace;
   LoopLikeOpInterface parentLoop{nullptr};
+  bool aliasesUnknownRange{false};
 
   PointerLikeInfo() = default;
   explicit PointerLikeInfo(Operation *op) : op(op) {}

@@ -95,6 +95,10 @@ std::string PointerLikeInfo::str() const {
     ret += comma.get();
     ret += std::to_string(allocateSize.value());
   }
+  if (aliasesUnknownRange) {
+    ret += comma.get();
+    ret += "unknown-range";
+  }
   ret += ")";
   return ret;
 }

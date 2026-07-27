@@ -21,7 +21,7 @@ module attributes {pto.target_arch = "a2a3"} {
             outs(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
                outs(%part : !pto.partition_tensor_view<1x32xui32>)
-    %dst0 = pto.addptr %dst, %c0 : !pto.ptr<ui32, gm> -> !pto.ptr<ui32, gm>
+    %dst0 = pto.addptr %dst, %c1 : !pto.ptr<ui32, gm> -> !pto.ptr<ui32, gm>
     pto.store_scalar %val, %dst0[%c0] : !pto.ptr<ui32, gm>, ui32
     return
   }
@@ -41,8 +41,52 @@ module attributes {pto.target_arch = "a2a3"} {
             outs(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
                outs(%part : !pto.partition_tensor_view<1x32xui32>)
-    %dst0 = pto.addptr %dst, %c0 : !pto.ptr<ui32, gm> -> !pto.ptr<ui32, gm>
+    %dst0 = pto.addptr %dst, %c1 : !pto.ptr<ui32, gm> -> !pto.ptr<ui32, gm>
     %loaded = pto.load_scalar %dst0[%c0] : !pto.ptr<ui32, gm> -> ui32
+    pto.store_scalar %loaded, %sink[%c0] : !pto.ptr<ui32, gm>, ui32
+    return
+  }
+
+  func.func @tstore_then_load_scalar_ptr_roundtrip(%dst: !pto.ptr<ui32, gm>,
+                                                   %sink: !pto.ptr<ui32, gm>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %c5_i32 = arith.constant 5 : i32
+    %fill = builtin.unrealized_conversion_cast %c5_i32 : i32 to ui32
+    %tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %view = pto.make_tensor_view %dst, shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<1x32xui32>
+    %part = pto.partition_view %view, offsets = [%c0, %c0], sizes = [%c1, %c32] : !pto.tensor_view<1x32xui32> -> !pto.partition_tensor_view<1x32xui32>
+    pto.tci ins(%fill : ui32)
+            outs(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+               outs(%part : !pto.partition_tensor_view<1x32xui32>)
+    %addr = pto.ptrtoint %dst : !pto.ptr<ui32, gm> -> i64
+    %ptr = pto.inttoptr %addr : i64 -> !pto.ptr<ui32, gm>
+    %loaded = pto.load_scalar %ptr[%c0] : !pto.ptr<ui32, gm> -> ui32
+    pto.store_scalar %loaded, %sink[%c0] : !pto.ptr<ui32, gm>, ui32
+    return
+  }
+
+  func.func @tstore_then_load_scalar_unknown_inttoptr(%dst: !pto.ptr<ui32, gm>,
+                                                      %sink: !pto.ptr<ui32, gm>,
+                                                      %addr: i64)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %c5_i32 = arith.constant 5 : i32
+    %fill = builtin.unrealized_conversion_cast %c5_i32 : i32 to ui32
+    %tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %view = pto.make_tensor_view %dst, shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<1x32xui32>
+    %part = pto.partition_view %view, offsets = [%c0, %c0], sizes = [%c1, %c32] : !pto.tensor_view<1x32xui32> -> !pto.partition_tensor_view<1x32xui32>
+    pto.tci ins(%fill : ui32)
+            outs(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+               outs(%part : !pto.partition_tensor_view<1x32xui32>)
+    %ptr = pto.inttoptr %addr : i64 -> !pto.ptr<ui32, gm>
+    %loaded = pto.load_scalar %ptr[%c0] : !pto.ptr<ui32, gm> -> ui32
     pto.store_scalar %loaded, %sink[%c0] : !pto.ptr<ui32, gm>, ui32
     return
   }
@@ -62,7 +106,7 @@ module attributes {pto.target_arch = "a2a3"} {
     %dst_part = pto.partition_view %dst_view, offsets = [%c0, %c0], sizes = [%c1, %c32] : !pto.tensor_view<1x32xui32> -> !pto.partition_tensor_view<1x32xui32>
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x32xui32>)
               outs(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    %dst0 = pto.addptr %dst, %c0 : !pto.ptr<ui32, gm> -> !pto.ptr<ui32, gm>
+    %dst0 = pto.addptr %dst, %c1 : !pto.ptr<ui32, gm> -> !pto.ptr<ui32, gm>
     pto.store_scalar %val, %dst0[%c0] : !pto.ptr<ui32, gm>, ui32
     pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
                outs(%dst_part : !pto.partition_tensor_view<1x32xui32>)
@@ -81,7 +125,7 @@ module attributes {pto.target_arch = "a2a3"} {
     %src_part = pto.partition_view %src_view, offsets = [%c0, %c0], sizes = [%c1, %c32] : !pto.tensor_view<1x32xui32> -> !pto.partition_tensor_view<1x32xui32>
     %dst_view = pto.make_tensor_view %dst, shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<1x32xui32>
     %dst_part = pto.partition_view %dst_view, offsets = [%c0, %c0], sizes = [%c1, %c32] : !pto.tensor_view<1x32xui32> -> !pto.partition_tensor_view<1x32xui32>
-    %dst0 = pto.addptr %dst, %c0 : !pto.ptr<ui32, gm> -> !pto.ptr<ui32, gm>
+    %dst0 = pto.addptr %dst, %c1 : !pto.ptr<ui32, gm> -> !pto.ptr<ui32, gm>
     %loaded = pto.load_scalar %dst0[%c0] : !pto.ptr<ui32, gm> -> ui32
     pto.store_scalar %loaded, %sink[%c0] : !pto.ptr<ui32, gm>, ui32
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x32xui32>)
@@ -102,6 +146,21 @@ module attributes {pto.target_arch = "a2a3"} {
 // CHECK:      TSTORE(
 // CHECK-NEXT: set_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
 // CHECK-NEXT: wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+// CHECK:      uint32_t {{.*}} = {{.*}}[{{.*}}];
+
+// CHECK-LABEL: AICORE void tstore_then_load_scalar_ptr_roundtrip(
+// CHECK:      TSTORE(
+// CHECK-NEXT: set_flag(PIPE_MTE3, PIPE_S, EVENT_ID[[ROUNDTRIP:[0-9]+]]);
+// CHECK:      reinterpret_cast<int64_t>
+// CHECK:      reinterpret_cast<__gm__ uint32_t{{ *}}*>
+// CHECK:      wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID[[ROUNDTRIP]]);
+// CHECK:      uint32_t {{.*}} = {{.*}}[{{.*}}];
+
+// CHECK-LABEL: AICORE void tstore_then_load_scalar_unknown_inttoptr(
+// CHECK:      TSTORE(
+// CHECK-NEXT: set_flag(PIPE_MTE3, PIPE_S, EVENT_ID[[UNKNOWN:[0-9]+]]);
+// CHECK:      reinterpret_cast<__gm__ uint32_t{{ *}}*>
+// CHECK:      wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID[[UNKNOWN]]);
 // CHECK:      uint32_t {{.*}} = {{.*}}[{{.*}}];
 
 // CHECK-LABEL: AICORE void store_scalar_then_tstore(

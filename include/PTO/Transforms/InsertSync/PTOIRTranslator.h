@@ -81,6 +81,7 @@ private:
   void UpdateMemrefSubViewAliasBufferInfo(memref::SubViewOp op);
   void UpdateTileSubViewAliasBufferInfo(pto::SubViewOp op);
   void UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op);
+  LogicalResult UpdateIntToPtrOpMemInfo(pto::IntToPtrOp op);
  
   // --- 控制流处理 (SCF) ---
   void UpdateForOpInfo(scf::ForOp forOp);

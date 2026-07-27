@@ -97,6 +97,12 @@ static bool isLocalAddressSpace(pto::AddressSpace space) {
          space != pto::AddressSpace::Zero;
 }
 
+static pto::AddressSpace getPointerLikeAddressSpace(Type type) {
+  if (auto space = pto::getPTOAddressSpaceAttr(type))
+    return space.getAddressSpace();
+  return pto::AddressSpace::GM;
+}
+
 static bool isStaticRank2Shape(ArrayRef<int64_t> shape) {
   return shape.size() == kTileRank2D && llvm::none_of(shape, [](int64_t dim) {
            return dim == ShapedType::kDynamic;
@@ -432,6 +438,9 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       UpdateMemrefSubViewAliasBufferInfo(memrefSubView);
     } else if (auto slotMarker = dyn_cast<pto::SlotMarkerOp>(op)) {
       UpdateSlotMarkerAliasBufferInfo(slotMarker);
+    } else if (auto intToPtrOp = dyn_cast<pto::IntToPtrOp>(op)) {
+      if (failed(UpdateIntToPtrOpMemInfo(intToPtrOp)))
+        return WalkResult::interrupt();
     } else if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(op)) {
       UpdateAliasBufferInfo(addPtrOp.getResult(), addPtrOp.getPtr());
     } else if (auto castPtrOp = dyn_cast<pto::CastPtrOp>(op)) {
@@ -1050,6 +1059,35 @@ void PTOIRTranslator::UpdateConservativeAliasBufferInfo(Value result,
   auto &resultMemInfoVec = buffer2MemInfoMap_[result];
   for (auto &parentInfo : buffer2MemInfoMap_[source])
     resultMemInfoVec.emplace_back(parentInfo->clone(result));
+}
+
+LogicalResult PTOIRTranslator::UpdateIntToPtrOpMemInfo(pto::IntToPtrOp op) {
+  Value result = op.getResult();
+  if (!result)
+    return failure();
+
+  // Preserve provenance across the explicit byte-address round trip:
+  //   %addr = pto.ptrtoint %ptr
+  //   %ptr2 = pto.inttoptr %addr
+  // `ptr2` is the same address as `ptr`, possibly with a different element
+  // type, so scalar memory ops must participate in the same GM dependency
+  // chain as tile stores/loads through the original pointer.
+  if (auto ptrToInt = op.getAddr().getDefiningOp<pto::PtrToIntOp>()) {
+    UpdateConservativeAliasBufferInfo(result, ptrToInt.getPtr());
+    if (buffer2MemInfoMap_.contains(result))
+      return success();
+  }
+
+  // A raw integer address may still point at any object in its address space.
+  // Keep it in the sync IR instead of letting scalar ops be dropped by
+  // skipIfNoMemInfo=true.
+  auto space = getPointerLikeAddressSpace(result.getType());
+  auto newMemInfo = std::make_unique<BaseMemInfo>(
+      result, result, space, SmallVector<uint64_t>{0},
+      /*allocateSize=*/0, /*hasKnownPhysicalAddresses=*/false,
+      /*aliasesUnknownRange=*/true);
+  buffer2MemInfoMap_[result].emplace_back(newMemInfo->clone());
+  return success();
 }
 
 void PTOIRTranslator::UpdateSlotMarkerAliasBufferInfo(pto::SlotMarkerOp op) {

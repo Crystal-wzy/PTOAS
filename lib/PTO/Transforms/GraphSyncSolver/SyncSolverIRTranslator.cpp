@@ -87,6 +87,9 @@ llvm::SmallVector<Value> IRTranslator::tracebackMemValsStep(Value val) {
 
   if (auto addPtr = dyn_cast<pto::AddPtrOp>(defOp)) {
     out.push_back(addPtr.getPtr());
+  } else if (auto intToPtr = dyn_cast<pto::IntToPtrOp>(defOp)) {
+    if (auto ptrToInt = intToPtr.getAddr().getDefiningOp<pto::PtrToIntOp>())
+      out.push_back(ptrToInt.getPtr());
   } else if (auto castPtr = dyn_cast<pto::CastPtrOp>(defOp);
              castPtr &&
              isa<pto::PtrType, MemRefType>(castPtr.getInput().getType()) &&

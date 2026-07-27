@@ -147,6 +147,12 @@ bool MemoryDependentAnalyzer::MemAlias(const BaseMemInfo *a,
       llvm::errs() << "    -> Scope Mismatch. False.\n";
     return false;
   }
+
+  if (a->aliasesUnknownRange || b->aliasesUnknownRange) {
+    if (isTraceEnabled())
+      llvm::errs() << "    -> Unknown range in same scope. True.\n";
+    return true;
+  }
  
   // 1. GM 内存
   if (as == pto::AddressSpace::GM) {
