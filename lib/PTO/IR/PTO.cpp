@@ -3059,6 +3059,10 @@ LogicalResult AllocMultiTileOp::verify() {
   if (failed(verifyTileBufLayoutConstraints(*this, slotTy, "slot")))
     return failure();
 
+  if (failed(verifyConstantLocalAddress(getOperation(), getAddr(),
+                                        slotTy.getMemorySpace())))
+    return failure();
+
   // Multi-buffer slots are placed at product(shape) * element_size byte
   // intervals -- both level3 validation and PTOPlanMemory size them that way.
   // `row_plus_one` compaction inflates the

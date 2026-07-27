@@ -151,6 +151,10 @@ static std::string getMemorySpaceString(pto::PartitionTensorViewType) {
   return "gm";
 }
 
+static std::string getMemorySpaceString(pto::PtrType ptrType) {
+  return stringifyMemorySpace(ptrType.getMemorySpace().getAddressSpace());
+}
+
 static StringRef getBLayoutString(pto::BLayout layout) {
   return layout == pto::BLayout::ColMajor ? "col_major" : "row_major";
 }
@@ -659,6 +663,14 @@ static void appendScalarOperandSpecJson(std::string &json, Value operand) {
   json += "}";
 }
 
+static void appendPtrOperandSpecJson(std::string &json, pto::PtrType ptrType) {
+  json += "{\"kind\":\"pointer\",\"dtype\":\"";
+  json += getDtypeString(ptrType.getElementType());
+  json += "\",\"memory_space\":\"";
+  json += getMemorySpaceString(ptrType);
+  json += "\"}";
+}
+
 static std::optional<std::string>
 buildOperandSpecsJson(Operation *operation) {
   std::string json = "[";
@@ -694,6 +706,16 @@ buildOperandSpecsJson(Operation *operation) {
         return std::nullopt;
       }
       appendViewOperandSpecJson(json, operand, viewType);
+      continue;
+    }
+
+    if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
+      if (getDtypeString(ptrType.getElementType()).empty()) {
+        operation->emitError(
+            "InsertTemplateAttributes encountered an unsupported pointer dtype");
+        return std::nullopt;
+      }
+      appendPtrOperandSpecJson(json, ptrType);
       continue;
     }
 
@@ -966,6 +988,8 @@ struct InsertTemplateAttributesPass
     SmallVector<Operation *> tileOperations;
     module.walk([&](Operation *operation) {
       if (isa<pto::TReshapeOp>(operation))
+        return;
+      if (isa<pto::LoadScalarOp, pto::StoreScalarOp>(operation))
         return;
       if (isa<pto::OpPipeInterface>(operation))
         tileOperations.push_back(operation);

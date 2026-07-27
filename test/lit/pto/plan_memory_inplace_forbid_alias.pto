@@ -51,10 +51,9 @@ module attributes {"pto.target_arch" = "a3"} {
 // CHECK-DAG: %[[B512:.*]] = arith.constant 512 : i64
 // CHECK-DAG: %[[B1024:.*]] = arith.constant 1024 : i64
 // CHECK-DAG: %[[B1536:.*]] = arith.constant 1536 : i64
-// CHECK-DAG: %[[B2048:.*]] = arith.constant 2048 : i64
 // CHECK: pto.alloc_tile addr = %[[B0]]
 // CHECK: pto.alloc_tile addr = %[[B512]]
 // CHECK: pto.alloc_tile addr = %[[B1024]]
-// CHECK: pto.alloc_tile addr = %[[B2048]]
 // CHECK: pto.alloc_tile addr = %[[B1536]]
+// CHECK: pto.alloc_tile addr = %[[B512]]
 // CHECK-NOT: memref.alloc

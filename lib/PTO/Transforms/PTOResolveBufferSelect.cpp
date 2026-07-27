@@ -41,6 +41,12 @@ using namespace mlir;
 
 namespace {
 
+static uint64_t alignUp(uint64_t value, uint64_t align) {
+  if (align == 0)
+    return value;
+  return ((value + align - 1) / align) * align;
+}
+
 static Value ensureI64(Value value, IRRewriter &rewriter, Location loc) {
   if (!value)
     return {};
@@ -97,12 +103,45 @@ static bool getTilePointerStrides(pto::TileBufType type, int64_t &rowStride,
     if (sl != 1)
       return false;
     rowStride = innerCols;
-    colStride = shape[0];
+    colStride =
+        shape[0] +
+        (type.getCompactModeI32() ==
+                 static_cast<int32_t>(pto::CompactMode::RowPlusOne)
+             ? 1
+             : 0);
   } else {
-    rowStride = shape[1];
+    rowStride =
+        shape[1] +
+        (type.getCompactModeI32() ==
+                 static_cast<int32_t>(pto::CompactMode::RowPlusOne)
+             ? 1
+             : 0);
     colStride = innerRows;
   }
   return true;
+}
+
+static uint64_t getTileAddressAlignmentBytes(pto::TileBufType type) {
+  auto addrSpace =
+      dyn_cast_or_null<pto::AddressSpaceAttr>(type.getMemorySpace());
+  if (!addrSpace)
+    return 1;
+
+  switch (addrSpace.getAddressSpace()) {
+  case pto::AddressSpace::LEFT:
+  case pto::AddressSpace::RIGHT:
+  case pto::AddressSpace::ACC:
+    return 512;
+  case pto::AddressSpace::VEC:
+  case pto::AddressSpace::MAT:
+  case pto::AddressSpace::BIAS:
+  case pto::AddressSpace::SCALING:
+    return 32;
+  case pto::AddressSpace::GM:
+  case pto::AddressSpace::Zero:
+    return 1;
+  }
+  return 1;
 }
 
 static Value computeTileAddress(Value value, IRRewriter &rewriter,
@@ -241,10 +280,15 @@ static LogicalResult getMultiTileAddresses(pto::AllocMultiTileOp alloc,
     return alloc.emitError(
         "requires a static slot shape and known element byte size");
 
+  uint64_t slotStride =
+      alignUp(*slotBytes,
+              getTileAddressAlignmentBytes(
+                  alloc.getResult().getType().getSlotType()));
+
   addrs.push_back(base);
   for (uint32_t slot = 1; slot < count; ++slot) {
     Value offset = rewriter.create<arith::ConstantIntOp>(
-        alloc.getLoc(), static_cast<int64_t>(slot * *slotBytes), 64);
+        alloc.getLoc(), static_cast<int64_t>(slot * slotStride), 64);
     addrs.push_back(
         rewriter.create<arith::AddIOp>(alloc.getLoc(), base, offset));
   }

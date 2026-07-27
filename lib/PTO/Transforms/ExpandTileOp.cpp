@@ -1412,6 +1412,8 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
   func.walk([&](Operation *op) {
     if (isa<pto::TReshapeOp>(op))
       return;
+    if (isa<pto::LoadScalarOp, pto::StoreScalarOp>(op))
+      return;
     if (isa<pto::OpPipeInterface>(op))
       tileOps.push_back(op);
   });

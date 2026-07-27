@@ -31,6 +31,8 @@ module attributes {"pto.target_arch" = "a3"} {
               outs(%src : !pto.tile_buf<vec, 32x32xf16>) {layout = #pto.layout<nd>}
     pto.tmov ins(%src : !pto.tile_buf<vec, 32x32xf16>)
              outs(%dst : !pto.tile_buf<vec, 32x32xf16>)
+    pto.tstore ins(%src : !pto.tile_buf<vec, 32x32xf16>)
+               outs(%gm_part : !pto.partition_tensor_view<1x1x1x32x32xf16>) {layout = #pto.layout<nd>}
     return
   }
 }

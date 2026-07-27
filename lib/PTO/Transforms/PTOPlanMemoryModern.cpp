@@ -321,6 +321,14 @@ static bool hasReadEffectOnValue(Operation *op, Value value) {
   return false;
 }
 
+static ValueRange getDpsInits(Operation *op) {
+  if (auto dpsOp = dyn_cast<pto::PTO_DpsInitOpInterface>(op))
+    return dpsOp.getDpsInits();
+  if (auto dpsOp = dyn_cast<DestinationStyleOpInterface>(op))
+    return dpsOp.getDpsInits();
+  return ValueRange();
+}
+
 struct PlannerAnalysis {
   func::FuncOp func;
   DenseMap<Value, RootList> valueToRoots;
@@ -738,8 +746,7 @@ struct PlannerAnalysis {
           seedForIterArgAliases(forOp);
         }
 
-        auto dpsOp = dyn_cast<DestinationStyleOpInterface>(op);
-        ValueRange dpsInits = dpsOp ? dpsOp.getDpsInits() : ValueRange();
+        ValueRange dpsInits = getDpsInits(op);
         for (Value operand : op->getOperands()) {
           if (llvm::is_contained(dpsInits, operand))
             continue;

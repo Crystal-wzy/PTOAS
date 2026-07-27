@@ -49,6 +49,14 @@ static std::string formatVMIMaskType(int64_t elementCount,
   return result;
 }
 
+static void printVMIType(OpAsmPrinter &printer, Type type) {
+  if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
+    printer << "!pto.ptr" << ptrType;
+    return;
+  }
+  printer << type;
+}
+
 static bool isSupportedVMIElementType(Type type) {
   return isa<IntegerType, FloatType, IndexType>(type) ||
          pto::isPTOLowPrecisionType(type);
@@ -3734,9 +3742,11 @@ void VMIvStoreOp::print(OpAsmPrinter &p) {
   }
   p.printOptionalAttrDict((*this)->getAttrs(), {"operandSegmentSizes"});
   p << " : ";
-  for (auto val : getValues())
-    p << val.getType() << ", ";
-  p << getDestination().getType();
+  for (auto val : getValues()) {
+    printVMIType(p, val.getType());
+    p << ", ";
+  }
+  printVMIType(p, getDestination().getType());
   if (!getMask().empty())
     p << ", " << getMask()[0].getType();
 }
@@ -4101,7 +4111,9 @@ void VMIvLoadOp::print(OpAsmPrinter &p) {
     p.printOperand(getRepeatStride());
   }
   p.printOptionalAttrDict((*this)->getAttrs(), {"operandSegmentSizes"});
-  p << " : " << getSource().getType() << " -> " << getResults().getTypes();
+  p << " : ";
+  printVMIType(p, getSource().getType());
+  p << " -> " << getResults().getTypes();
 }
 
 LogicalResult VMIvLoadOp::verify() {

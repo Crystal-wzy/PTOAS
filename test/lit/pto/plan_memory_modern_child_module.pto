@@ -39,7 +39,6 @@ module attributes {pto.target_arch = "a3"} {
 }
 
 // CHECK-LABEL: func.func @child_entry
-// CHECK-DAG: %[[SRC_ADDR:.*]] = arith.constant 0 : i64
-// CHECK-DAG: %[[DST_ADDR:.*]] = arith.constant 512 : i64
-// CHECK: pto.alloc_tile addr = %[[SRC_ADDR]]
-// CHECK: pto.alloc_tile addr = %[[DST_ADDR]]
+// CHECK-DAG: %[[ADDR:.*]] = arith.constant 0 : i64
+// CHECK: pto.alloc_tile addr = %[[ADDR]]
+// CHECK: pto.alloc_tile addr = %[[ADDR]]

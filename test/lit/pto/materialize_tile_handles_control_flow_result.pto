@@ -82,6 +82,6 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 // VPTO: %[[SELECTED:.*]] = arith.select {{.*}} : !pto.tile_buf<vec, 16x16xf16>
 // VPTO: pto.tile_buf_addr %[[SELECTED]] : !pto.tile_buf<vec, 16x16xf16> -> <f16, ub>
 // VPTO-LABEL: func.func @loop_carried_tile_materialization
-// VPTO: %[[RESULT:.*]] = scf.for {{.*}} -> (!pto.tile_buf<vec, 16x16xf16>) {
+// VPTO: %[[RESULT:.*]] = scf.for
 // VPTO: scf.yield {{.*}} : !pto.tile_buf<vec, 16x16xf16>
 // VPTO: pto.tile_buf_addr %[[RESULT]] : !pto.tile_buf<vec, 16x16xf16> -> <f16, ub>

@@ -3341,6 +3341,12 @@ int mlir::pto::compilePTOASModule(
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTORematerializeFixpipeVectorQuantPass());
 
+  if (planMemoryImpl != "legacy" && planMemoryImpl != "modern") {
+    llvm::errs() << "Error: invalid --plan-memory-impl='" << planMemoryImpl
+                 << "', expected 'legacy' or 'modern'.\n";
+    return 1;
+  }
+
   if (effectiveLevel != PTOBuildLevel::Level3) {
     pto::PlanMemoryOptions planMemoryOptions;
     planMemoryOptions.memMode = "local";
@@ -3352,12 +3358,8 @@ int mlir::pto::compilePTOASModule(
     planMemoryOptions.orderBySize = effectivePlanMemoryOrderBySize;
     if (planMemoryImpl == "legacy") {
       pm.addPass(pto::createPlanMemoryPass(planMemoryOptions));
-    } else if (planMemoryImpl == "modern") {
-      pm.addPass(pto::createPlanMemoryModernPass(planMemoryOptions));
     } else {
-      llvm::errs() << "Error: invalid --plan-memory-impl='" << planMemoryImpl
-                   << "', expected 'legacy' or 'modern'.\n";
-      return 1;
+      pm.addPass(pto::createPlanMemoryModernPass(planMemoryOptions));
     }
   }
   pm.addPass(pto::createPTOResolveReservedBuffersPass());
