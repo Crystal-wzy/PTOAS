@@ -31,7 +31,8 @@ fi
 
 "${PYTHON_BIN}" -m pip install \
   'scikit-build-core>=0.12.2,<2' \
-  'pybind11<3'
+  'pybind11<3' \
+  'nanobind>=2.4'
 
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
   "${PYTHON_BIN}" -m pip install --editable "${PTO_SOURCE_DIR}" \

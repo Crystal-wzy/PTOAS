@@ -16,18 +16,21 @@ PTOAS without exposing these implementation details.
 
 ## Entry Model
 
-The wheel, build-tree, and install-tree launchers use the standard Python
-console-script and native-extension model:
+The wheel launcher uses the standard Python console-script and native-extension
+model. Build-tree and install-tree entrypoints are narrow CMake adapters around
+the same Python CLI and native extension:
 
 ```text
 wheel console script -> ptoas._cli.main()
 CMake tree wrapper   -> add its own Python root -> ptoas._cli.launch()
-both                 -> import ptoas._native -> ptoas._native.main(argv)
+both                 -> import ptoas._core -> ptoas._core.main(argv)
 ```
 
-`ptoas._native` is built with `pybind11_add_module`. CMake and Python therefore
-own the platform and ABI-specific filename. Launcher and packaging code refer to
-the import name and never construct `.so`, `.dylib`, or `.pyd` paths.
+`ptoas._core` is the single PTOAS-owned native extension. It provides the
+compiler entry point and the native PTO dialect bindings used by the public
+`mlir.dialects.pto` facade. CMake and Python own the platform and ABI-specific
+filename. Launcher and packaging code refer to the import name and never
+construct `.so`, `.dylib`, or `.pyd` paths.
 
 The LLVM-based driver implementation is compiled as an object library so it
 can use LLVM's RTTI and exception settings independently from pybind11. Those
@@ -73,7 +76,7 @@ The build-tree wrapper resolves only its own generated outputs:
 
 - wrapper: `<build>/tools/ptoas/ptoas`
 - Python root: `<build>/python`
-- native module: importable as `ptoas._native` from the Python root
+- native module: importable as `ptoas._core` from the Python root
 - TileOps: `<build>/python/ptoas/_runtime/share/ptoas/TileOps`
 
 Missing Python packages or TileOps resources are hard layout errors. The
@@ -86,7 +89,7 @@ The install-tree wrapper resolves only files under the same prefix:
 
 - wrapper: `<prefix>/bin/ptoas`
 - Python root: `<prefix>`
-- native module: importable as `ptoas._native` from the Python root
+- native module: importable as `ptoas._core` from the Python root
 - TileOps: `<prefix>/ptoas/_runtime/share/ptoas/TileOps`
 
 The install-tree wrapper only adds `<prefix>` to `sys.path`, then delegates to
@@ -104,7 +107,7 @@ Standalone compiler archives contain the installed Python wrapper and package:
 ```text
 bin/ptoas
 ptoas/_cli.py
-ptoas/_native.<abi>.so
+ptoas/_core.<abi>.so
 ptoas/_runtime/share/ptoas/TileOps
 lib/<native dependencies>
 tilelang_dsl/
@@ -112,7 +115,7 @@ tilelang_dsl/
 
 The archive requires a Python interpreter compatible with the packaged
 extension ABI. `bin/ptoas` adds the archive root to `sys.path`, then uses the
-same `ptoas._cli -> ptoas._native` path as the install tree. Linux archives set
+same `ptoas._cli -> ptoas._core` path as the install tree. Linux archives set
 the extension runtime path to `$ORIGIN/../lib`; macOS archives rewrite the
 extension's install names relative to its package directory.
 

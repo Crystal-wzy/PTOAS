@@ -27,13 +27,22 @@ def launch(user_args, *, wrapper=None):
 
 
 class TreeWrapperTests(unittest.TestCase):
-    def _load_wrapper(self, wrapper_path: Path, module_name: str):
+    def _load_wrapper(
+        self,
+        wrapper_path: Path,
+        module_name: str,
+        *,
+        python_root_mode: str,
+        python_root: Path,
+    ):
         spec = importlib.util.spec_from_file_location(module_name, WRAPPER_SOURCE)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         module.__file__ = str(wrapper_path)
+        module._PYTHON_ROOT_MODE = python_root_mode
+        module._PYTHON_ROOT = python_root
         return module
 
     def _run_wrapper(self, wrapper_module, python_root: Path, wrapper: Path):
@@ -73,7 +82,12 @@ class TreeWrapperTests(unittest.TestCase):
             wrapper.parent.mkdir(parents=True)
             wrapper.write_text("", encoding="utf-8")
 
-            module = self._load_wrapper(wrapper, "test_ptoas_build_wrapper")
+            module = self._load_wrapper(
+                wrapper,
+                "test_ptoas_build_wrapper",
+                python_root_mode="absolute",
+                python_root=python_root,
+            )
             cli = self._run_wrapper(module, python_root, wrapper)
 
         self.assertEqual(cli.calls, [(["--version"], wrapper.resolve())])
@@ -86,7 +100,12 @@ class TreeWrapperTests(unittest.TestCase):
             wrapper.parent.mkdir(parents=True)
             wrapper.write_text("", encoding="utf-8")
 
-            module = self._load_wrapper(wrapper, "test_ptoas_install_wrapper")
+            module = self._load_wrapper(
+                wrapper,
+                "test_ptoas_install_wrapper",
+                python_root_mode="wrapper-relative",
+                python_root=Path(".."),
+            )
             cli = self._run_wrapper(module, install_root, wrapper)
 
         self.assertEqual(cli.calls, [(["--version"], wrapper.resolve())])
@@ -98,6 +117,8 @@ class TreeWrapperTests(unittest.TestCase):
             module = self._load_wrapper(
                 Path(temp_dir) / "build" / "tools" / "ptoas" / "ptoas",
                 "test_ptoas_missing_cli",
+                python_root_mode="absolute",
+                python_root=python_root,
             )
             with self.assertRaisesRegex(SystemExit, "ptoas/_cli.py"):
                 module._require_python_root(python_root, context="test")

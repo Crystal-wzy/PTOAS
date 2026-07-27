@@ -354,7 +354,7 @@ jobs:
 
           test -x "$TEST_DIR/extracted/bin/ptoas"
           test -f "$TEST_DIR/extracted/ptoas/_cli.py"
-          compgen -G "$TEST_DIR/extracted/ptoas/_native*.so" >/dev/null
+          compgen -G "$TEST_DIR/extracted/ptoas/_core*.so" >/dev/null
 
           env -u PYTHONPATH -u DYLD_LIBRARY_PATH -u LD_LIBRARY_PATH \
             "$TEST_DIR/extracted/bin/ptoas" --version

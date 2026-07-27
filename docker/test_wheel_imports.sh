@@ -89,7 +89,7 @@ echo "Testing ptodsl public imports..."
 "$PYTHON_BIN" -c "from ptodsl import pto, scalar; print('ptodsl public imports imported successfully')"
 
 echo "Testing installed ptoas console entry..."
-"$PYTHON_BIN" -c "from ptoas import _native; print(f'ptoas native extension imported successfully from {_native.__file__}')"
+"$PYTHON_BIN" -c "from ptoas import _core; print(f'ptoas native extension imported successfully from {_core.__file__}')"
 PTOAS_VERSION_OUTPUT="$(ptoas --version | tr -d '\r')"
 echo "${PTOAS_VERSION_OUTPUT}"
 EXPECTED_PTOAS_CLI_VERSION="${PTOAS_CLI_VERSION:-${PTOAS_VERSION:-}}"

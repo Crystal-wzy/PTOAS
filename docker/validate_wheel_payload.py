@@ -28,7 +28,7 @@ FORBIDDEN_FILES = {
 PTOAS_ENTRYPOINT_TARGET = "ptoas._cli:main"
 WHEEL_GLOB = "ptoas*.whl"
 NATIVE_MODULE_PATHS = {
-    f"ptoas/_native{suffix}"
+    f"ptoas/_core{suffix}"
     for suffix in importlib.machinery.EXTENSION_SUFFIXES
 }
 
@@ -89,7 +89,7 @@ def validate_wheel_payload(wheel: Path) -> None:
         native_modules = sorted(NATIVE_MODULE_PATHS & names)
         if len(native_modules) != 1:
             raise SystemExit(
-                "wheel must contain exactly one importable ptoas._native extension, "
+                "wheel must contain exactly one importable ptoas._core extension, "
                 f"found {native_modules}"
             )
 

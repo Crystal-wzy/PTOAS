@@ -54,16 +54,12 @@ llvm_config.with_system_environment(
      'ASCEND_HOME_PATH', 'ASCEND_OPP_PATH', 'ASCEND_AICPU_PATH',
      'ASCEND_TOOLKIT_HOME', 'LD_LIBRARY_PATH', 'PYTHONPATH'])
 
-# Keep build-tree lit tests self-contained.  PTOAS contributes an overlay
-# under the build tree (generated dialect Python plus the PTO extension),
-# while the base ``mlir.ir`` package comes from the LLVM/MLIR build.  MLIR's
-# own lit setup wires these paths from its CMake-generated site configuration;
-# do the same here instead of requiring developers to export PYTHONPATH.
+# Keep build-tree lit tests self-contained. The PTOAS build stages the complete
+# MLIR Python runtime together with generated PTO dialect modules and the PTO
+# extension under one build-tree Python root.
 if getattr(config, 'enable_bindings_python', False):
-    python_paths = [config.ptoas_python_dir]
-    if config.mlir_python_package_dir:
-        python_paths.append(config.mlir_python_package_dir)
-    llvm_config.with_environment('PYTHONPATH', python_paths, append_path=True)
+    llvm_config.with_environment(
+        'PYTHONPATH', [config.ptoas_python_dir], append_path=True)
 
 llvm_config.use_default_substitutions()
 

@@ -7,12 +7,16 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-"""Add a CMake tree's Python root, then run the regular PTOAS CLI module."""
+"""Run the regular PTOAS CLI from a configured CMake package tree."""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+
+_PYTHON_ROOT_MODE = "@PTOAS_WRAPPER_PYTHON_ROOT_MODE@"
+_PYTHON_ROOT = Path(r"@PTOAS_WRAPPER_PYTHON_ROOT@")
 
 
 def _resolve_wrapper_path(argv0: str | None = None) -> Path:
@@ -22,10 +26,6 @@ def _resolve_wrapper_path(argv0: str | None = None) -> Path:
         return wrapper.resolve()
 
     raise SystemExit(f"unable to locate the ptoas tree wrapper: {candidate}")
-
-
-def _is_build_tree_wrapper(wrapper: Path) -> bool:
-    return len(wrapper.parents) >= 2 and wrapper.parents[1].name == "tools"
 
 
 def _require_python_root(python_root: Path, *, context: str) -> Path:
@@ -38,19 +38,18 @@ def _require_python_root(python_root: Path, *, context: str) -> Path:
     )
 
 
-def _add_tree_python_root(wrapper: Path) -> Path:
-    if _is_build_tree_wrapper(wrapper):
-        if len(wrapper.parents) < 3:
-            raise SystemExit("unable to locate the build-tree root for ptoas")
-        python_root = _require_python_root(
-            wrapper.parents[2] / "python", context="build-tree"
-        )
-    else:
-        if len(wrapper.parents) < 2:
-            raise SystemExit("unable to locate the install-tree root for ptoas")
-        python_root = _require_python_root(
-            wrapper.parents[1], context="install-tree"
-        )
+def _configured_python_root(wrapper: Path) -> Path:
+    if _PYTHON_ROOT_MODE == "absolute":
+        return _PYTHON_ROOT
+    if _PYTHON_ROOT_MODE == "wrapper-relative":
+        return wrapper.parent / _PYTHON_ROOT
+    raise SystemExit(f"unsupported PTOAS wrapper mode: {_PYTHON_ROOT_MODE}")
+
+
+def _add_configured_python_root(wrapper: Path) -> Path:
+    python_root = _require_python_root(
+        _configured_python_root(wrapper), context="configured"
+    )
 
     python_root_text = str(python_root)
     if python_root_text not in sys.path:
@@ -60,7 +59,7 @@ def _add_tree_python_root(wrapper: Path) -> Path:
 
 def main() -> None:
     wrapper = _resolve_wrapper_path()
-    _add_tree_python_root(wrapper)
+    _add_configured_python_root(wrapper)
     from ptoas import _cli
 
     raise SystemExit(_cli.launch(sys.argv[1:], wrapper=wrapper))

@@ -12,19 +12,19 @@
 
 set(PTODSL_PACKAGE_SRC_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/ptodsl")
-set(PTODSL_BUILD_ROOT "${CMAKE_BINARY_DIR}/python")
 set(PTODSL_BUILD_PACKAGE_DIR
-    "${PTODSL_BUILD_ROOT}/ptodsl")
+    "${CMAKE_BINARY_DIR}/python/ptodsl")
 
-add_custom_target(PTODSLPackage ALL
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PTODSL_BUILD_ROOT}"
-  COMMAND ${CMAKE_COMMAND} -E remove_directory "${PTODSL_BUILD_PACKAGE_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${PTODSL_PACKAGE_SRC_DIR}"
-          "${PTODSL_BUILD_PACKAGE_DIR}"
-  COMMENT "Staging ptodsl package into build/python"
-  VERBATIM
+declare_mlir_python_sources(PTODSLPythonSources
+  ROOT_DIR "${PTODSL_PACKAGE_SRC_DIR}"
+  SOURCES_GLOB "*.py"
 )
+add_mlir_python_sources_target(PTODSLPackageStage
+  OUTPUT_DIRECTORY "${PTODSL_BUILD_PACKAGE_DIR}"
+  SOURCES_TARGETS PTODSLPythonSources
+)
+add_custom_target(PTODSLPackage ALL)
+add_dependencies(PTODSLPackage PTODSLPackageStage)
 
 install(
   DIRECTORY "${PTODSL_PACKAGE_SRC_DIR}"

@@ -190,7 +190,7 @@ from mlir.dialects import pto as mlir_pto
 下面这组环境变量主要用于**直接消费 build/install tree** 的场景，例如：
 
 - 不走 pip 安装，直接调试 CMake install 输出
-- 调试 `ptoas` CLI、动态库搜索路径或 MLIR Python overlay
+- 调试 `ptoas` CLI、动态库搜索路径或 build-tree Python package
 - 复用仓库脚本做 compile-only / simulator / sample 生成
 
 您可以将以下命令添加到 `.bashrc` 或启动脚本中。
@@ -198,11 +198,9 @@ from mlir.dialects import pto as mlir_pto
 ```bash
 # --- 运行时变量配置 (基于之前定义的路径) ---
 
-# 1. Python Path: 拼接 MLIR Core 和 PTO Core
-#    这样在 python 中 import mlir.dialects.pto 时能正确找到
-export MLIR_PYTHON_ROOT=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
-export PTO_PYTHON_ROOT=$PTO_INSTALL_DIR/
-export PYTHONPATH=$PTO_PYTHON_ROOT:$MLIR_PYTHON_ROOT:$PYTHONPATH
+# 1. Python Path: PTOAS 的 build/install tree 已包含统一的 MLIR + PTO package
+export PTO_PYTHON_ROOT=$PTO_INSTALL_DIR
+export PYTHONPATH=$PTO_PYTHON_ROOT:$PYTHONPATH
 
 # 2. Library Path: 确保能加载 LLVM 和 PTO 的动态库
 export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH

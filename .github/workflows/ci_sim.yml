@@ -224,7 +224,6 @@ jobs:
           set -euo pipefail
           echo "LLVM_ROOT=${RUNNER_TOOL_CACHE}/llvm-project" >> "${GITHUB_ENV}"
           echo "LLVM_DIR=${RUNNER_TOOL_CACHE}/llvm-project/llvm/build-assert" >> "${GITHUB_ENV}"
-          echo "MLIR_PYTHONPATH=${RUNNER_TOOL_CACHE}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core" >> "${GITHUB_ENV}"
 
       - name: Resolve PTODSL build directories
         shell: bash
@@ -715,10 +714,17 @@ jobs:
           mkdir -p "${TILELANG_DSL_WORKSPACE}"
           export LLVM_BUILD_DIR="${LLVM_DIR}"
           export MLIR_PYTHON_ROOT="${MLIR_PYTHONPATH}"
-          ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
-          PTOAS_BIN="${PTOAS_BIN}" \
-          bash test/tilelang_st/script/run_ci.sh -r sim -v a5 --jobs 64 --smoke \
-            2>&1 | tee "${TILELANG_DSL_WORKSPACE}/run_ci.log"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
+            PTOAS_BIN="${PTOAS_BIN}" \
+            bash test/tilelang_st/script/run_ci.sh -r sim -v a5 --jobs 64 --smoke \
+              2>&1 | tee "${TILELANG_DSL_WORKSPACE}/run_ci.log"
+          else
+            ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
+            PTOAS_BIN="${PTOAS_BIN}" \
+            bash test/tilelang_st/script/run_ci.sh -r sim -v a5 --jobs 64 \
+              2>&1 | tee "${TILELANG_DSL_WORKSPACE}/run_ci.log"
+          fi
 
       - name: Restore PTODSL LLVM build cache
         id: ptodsl-llvm-cache

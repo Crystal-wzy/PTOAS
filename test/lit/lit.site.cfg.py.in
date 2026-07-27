@@ -21,8 +21,6 @@ config.mlir_lib_dir = "@MLIR_LIB_DIR@"
 config.python_executable = "@Python3_EXECUTABLE@"
 config.enable_bindings_python = "@PTO_ENABLE_PYTHON_BINDING@" == "ON"
 config.ptoas_python_dir = path(r"@CMAKE_BINARY_DIR@/python")
-config.mlir_python_package_dir = lit_config.substitute(
-    path(r"@MLIR_PYTHON_PACKAGE_DIR@"))
 config.ptoir_src_root = "@CMAKE_SOURCE_DIR@"
 config.ptoir_obj_root = "@CMAKE_BINARY_DIR@"
 config.pto_enable_vfsim_costmodel = "@PTO_ENABLE_VFSIM_COSTMODEL@" == "ON"

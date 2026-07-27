@@ -26,15 +26,15 @@ def _resolve_wrapper_path(argv0: str | None = None) -> Path:
 
 
 def _load_native_module():
-    from ptoas import _native
+    from ptoas import _core
 
-    return _native
+    return _core
 
 
 def _resolve_runtime_paths(native_module) -> tuple[Path, Path]:
     module_file = getattr(native_module, "__file__", None)
     if not module_file:
-        raise SystemExit("ptoas._native does not expose a module file")
+        raise SystemExit("ptoas._core does not expose a module file")
 
     package_root = Path(module_file).resolve().parent
     python_root = package_root.parent

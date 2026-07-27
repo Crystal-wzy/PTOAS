@@ -41,7 +41,6 @@ export PTO_INSTALL_DIR="${PTO_INSTALL_DIR:-${PTO_SOURCE_DIR}/install}"
 export PTO_ISA_PATH="${PTO_ISA_PATH:-${WORKSPACE_DIR}/pto-isa}"
 export ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-${HOME}/cann}"
 
-export MLIR_PYTHON_ROOT="${MLIR_PYTHON_ROOT:-${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core}"
 if [[ -z "${PTOAS_PYTHON_SITE:-}" ]]; then
 	PTOAS_PYTHON_SITE="$(
 		PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 - <<'PY' 2>/dev/null || true
@@ -57,7 +56,6 @@ export PTOAS_PYTHON_SITE
 export PTO_PYTHON_ROOT="${PTO_PYTHON_ROOT:-${PTO_INSTALL_DIR}}"
 export PTO_PYTHON_BUILD_ROOT="${PTO_PYTHON_BUILD_ROOT:-${PTO_SOURCE_DIR}/build/python}"
 export PTODSL_PYTHON_ROOT="${PTODSL_PYTHON_ROOT:-${PTO_SOURCE_DIR}/ptodsl}"
-export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
 export PTOAS_FLAGS="${PTOAS_FLAGS:-}"
 export PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-${PTO_SOURCE_DIR}/build/output}"
 
@@ -110,13 +108,12 @@ _ptoas_run_legacy_smoke_test() {
 	echo "test set_env: OK"
 }
 
-# Prefer the in-tree PTO Python overlay plus LLVM's full MLIR package first.
-# The install prefix may only contain the PTO overlay fragments, and when it is
-# placed ahead of mlir_core it can shadow the real MLIR Python bindings.
+# PTOAS stages a complete MLIR + PTO package in its build and install trees.
+# Prefer the build tree for active development, while retaining install-tree
+# fallbacks for scripts that consume a direct CMake installation.
 _ptoas_prepend_path PYTHONPATH "${PTO_INSTALL_DIR}"
 _ptoas_prepend_path PYTHONPATH "${PTO_PYTHON_ROOT}"
 _ptoas_prepend_path PYTHONPATH "${PTOAS_PYTHON_SITE}"
-_ptoas_prepend_path PYTHONPATH "${MLIR_PYTHON_ROOT}"
 _ptoas_prepend_path PYTHONPATH "${PTO_PYTHON_BUILD_ROOT}"
 _ptoas_prepend_path PYTHONPATH "${PTODSL_PYTHON_ROOT}"
 

@@ -149,9 +149,9 @@ cp -R "${PTOAS_PACKAGE_SRC_DIR}" "${PTOAS_PACKAGE_DIST_DIR}"
 cp "$PTOAS_BIN" "${PTOAS_DIST_DIR}/bin/ptoas"
 chmod +x "${PTOAS_DIST_DIR}/bin/ptoas"
 
-PTOAS_NATIVE_MODULE="$(find "${PTOAS_PACKAGE_DIST_DIR}" -maxdepth 1 -type f -name '_native*.so' -print -quit)"
+PTOAS_NATIVE_MODULE="$(find "${PTOAS_PACKAGE_DIST_DIR}" -maxdepth 1 -type f -name '_core*.so' -print -quit)"
 if [ -z "${PTOAS_NATIVE_MODULE}" ]; then
-  echo "Error: packaged ptoas._native extension not found" >&2
+  echo "Error: packaged ptoas._core extension not found" >&2
   exit 1
 fi
 

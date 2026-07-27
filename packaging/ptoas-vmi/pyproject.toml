@@ -12,7 +12,7 @@
 # name required by package indexes without a custom build backend.
 
 [build-system]
-requires = ["scikit-build-core>=0.12.2,<2", "pybind11<3"]
+requires = ["scikit-build-core>=0.12.2,<2", "pybind11<3", "nanobind>=2.4"]
 build-backend = "scikit_build_core.build"
 
 [project]

@@ -12,7 +12,7 @@
 # a persistent CMake build tree.
 
 [build-system]
-requires = ["scikit-build-core>=0.12.2,<2", "pybind11<3"]
+requires = ["scikit-build-core>=0.12.2,<2", "pybind11<3", "nanobind>=2.4"]
 build-backend = "scikit_build_core.build"
 
 [project]

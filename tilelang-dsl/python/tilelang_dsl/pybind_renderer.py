@@ -14,16 +14,15 @@ direct MLIR IR construction using Python bindings instead of text emission.
 Phase 2 implementation: core framework with basic stmt/expr rendering.
 
 Dependencies:
-    - mlir.ir: MLIR Python bindings from LLVM build
+    - mlir.ir: MLIR Python bindings assembled by the PTOAS build
     - mlir.dialects.func, arith, scf: Standard MLIR dialects
     - mlir.dialects.pto: PTO dialect bindings from PTOAS build
 
-To use this module, ensure PYTHONPATH includes:
-    1. LLVM MLIR Python package: $LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
-    2. PTOAS Python bindings: $PTOAS_BUILD_DIR/python
+To use this module from a build tree, ensure PYTHONPATH includes:
+    $PTOAS_BUILD_DIR/python
 
 Example:
-    export PYTHONPATH="$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core:$PTOAS_BUILD_DIR/python"
+    export PYTHONPATH="$PTOAS_BUILD_DIR/python"
 """
 
 from __future__ import annotations
@@ -67,8 +66,8 @@ def _ensure_mlir_bindings() -> None:
     except ImportError as exc:
         raise ImportError(
             "MLIR Python bindings not found. Please ensure PYTHONPATH includes "
-            "the MLIR Python package from your LLVM build. "
-            "Example: export PYTHONPATH=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core "
+            "the Python package assembled by your PTOAS build. "
+            "Example: export PYTHONPATH=$PTOAS_BUILD_DIR/python "
             "See README.md for build instructions."
         ) from exc
 

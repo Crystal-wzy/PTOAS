@@ -8,6 +8,8 @@
 
 #include "ptoas.h"
 
+#include "PTOModule.h"
+
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 
@@ -31,7 +33,9 @@ int runPTOASFromPython(const std::vector<std::string> &arguments) {
 
 } // namespace
 
-PYBIND11_MODULE(_native, module) {
-  module.doc() = "Native PTOAS command-line entrypoint";
+PYBIND11_MODULE(_core, module) {
+  module.doc() = "PTOAS compiler and PTO dialect native bindings";
+  py::module_::import("mlir.ir");
+  mlir::pto::python::populatePTODialectBindings(module);
   module.def("main", &runPTOASFromPython, py::arg("argv"));
 }

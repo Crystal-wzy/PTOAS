@@ -226,7 +226,6 @@ export PTOAS_REPO="$PWD"
 export PTOAS_BUILD="$PTOAS_REPO/build-sim"
 export ASCEND_HOME_PATH=/path/to/cann
 export LLVM_BUILD_DIR=/path/to/vpto-llvm/build
-export MLIR_PYTHON_ROOT="$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core"
 export PYTHON_BIN=/path/to/python-with-torch-npu
 export PTO_PYTHON_BIN="$PYTHON_BIN"
 export PTOAS_ENV_SKIP_SMOKE_TEST=1
@@ -246,7 +245,6 @@ Check the simulator, LLVM, and Python prerequisites:
 command -v msprof
 test -d "$LLVM_BUILD_DIR/lib/cmake/llvm"
 test -d "$LLVM_BUILD_DIR/lib/cmake/mlir"
-test -d "$MLIR_PYTHON_ROOT"
 
 "$PYTHON_BIN" - <<'PY'
 import nanobind
@@ -277,27 +275,20 @@ PTOAS Python bindings must have the same Python ABI as the runtime Python that
 will run the ST cases:
 
 ```bash
-PYBIND11_CMAKE_DIR="$("$PYTHON_BIN" -m pybind11 --cmakedir)"
-NANOBIND_CMAKE_DIR="$("$PYTHON_BIN" -m nanobind --cmake_dir)"
-
 cmake -S "$PTOAS_REPO" -B "$PTOAS_BUILD" -G Ninja \
   -DLLVM_DIR="$LLVM_BUILD_DIR/lib/cmake/llvm" \
   -DMLIR_DIR="$LLVM_BUILD_DIR/lib/cmake/mlir" \
   -DPython3_EXECUTABLE="$PYTHON_BIN" \
   -DPython3_FIND_STRATEGY=LOCATION \
-  -Dpybind11_DIR="$PYBIND11_CMAKE_DIR" \
-  -Dnanobind_DIR="$NANOBIND_CMAKE_DIR" \
   -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-  -DMLIR_PYTHON_PACKAGE_DIR="$MLIR_PYTHON_ROOT" \
   -DPTO_ENABLE_PYTHON_BINDING=ON \
-  -DPTOAS_ENABLE_WERROR=OFF \
   -DBUILD_TESTING=ON
 ```
 
 Build the compiler and PTO Python bindings:
 
 ```bash
-ninja -C "$PTOAS_BUILD" ptoas PTOPythonModules
+ninja -C "$PTOAS_BUILD" ptoas PTOAS_Python
 ```
 
 Export the runtime lookup paths. `PTOAS_BIN` is useful, but PTODSL native build
@@ -306,7 +297,7 @@ also resolves `ptoas` through `PATH`, so keep the freshly built binary first:
 ```bash
 export PTOAS_BIN="$PTOAS_BUILD/tools/ptoas/ptoas"
 export PATH="$PTOAS_BUILD/tools/ptoas:$PATH"
-export PYTHONPATH="$PTOAS_BUILD/python:$PTOAS_REPO/ptodsl:$MLIR_PYTHON_ROOT:${PYTHONPATH:-}"
+export PYTHONPATH="$PTOAS_BUILD/python:$PTOAS_REPO/ptodsl:${PYTHONPATH:-}"
 export LD_LIBRARY_PATH="$LLVM_BUILD_DIR/lib:$PTOAS_BUILD/lib:${LD_LIBRARY_PATH:-}"
 ```
 
@@ -365,7 +356,6 @@ Example path layout:
 ```bash
 export ASCEND_HOME_PATH=/opt/ascend/cann
 export LLVM_BUILD_DIR=/opt/vpto-llvm/build
-export MLIR_PYTHON_ROOT="$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core"
 export PYTHON_BIN=/opt/ptodsl-runtime/bin/python
 ```
 
@@ -379,5 +369,5 @@ Common failures:
 - `No TileLib ST cases discovered`: pass the case root through
   `scripts/sim_dsl.sh ... run_tilelib_st.py -- test/tilelib-st/a5`, keeping
   the `--` separator.
-- Stale compiler behavior: rebuild `ptoas PTOPythonModules`, put
+- Stale compiler behavior: rebuild `ptoas PTOAS_Python`, put
   `$PTOAS_BUILD/tools/ptoas` first in `PATH`, and verify `$PTOAS_BIN --version`.

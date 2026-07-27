@@ -18,7 +18,7 @@ Can run without pytest:
     python3 tests/backend/test_e2e_pybind_backend.py
 
 Environment setup (optional for PybindBackend):
-    export PYTHONPATH=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core:$PTOAS_BUILD_DIR/python
+    export PYTHONPATH=$PTOAS_BUILD_DIR/python
 """
 
 import sys

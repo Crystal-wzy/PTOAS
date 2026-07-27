@@ -19,7 +19,7 @@ from ptoas import _cli
 class PTOASCLITests(unittest.TestCase):
     def _make_native_module(self, package_root: Path):
         return SimpleNamespace(
-            __file__=str(package_root / "_native.fake.so"),
+            __file__=str(package_root / "_core.fake.so"),
             main=mock.Mock(return_value=0),
         )
 

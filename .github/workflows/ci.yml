@@ -104,7 +104,6 @@ jobs:
       PTO_BUILD_DIR: ${{ github.workspace }}/build-assert
       PTO_INSTALL_DIR: ${{ github.workspace }}/install-assert
       PTOAS_VENV: ${{ github.workspace }}/.venv-ptoas-assert
-      MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core
       LLVM_CACHE_FLAVOR: llvm21-assert-shared-mlirpy-hardening-v1
     steps:
       - name: Checkout
@@ -251,11 +250,9 @@ jobs:
             -DPython3_EXECUTABLE="${cmake4_venv}/bin/python" \
             -DPython3_FIND_STRATEGY=LOCATION \
             -Dpybind11_DIR="$("${cmake4_venv}/bin/python" -m pybind11 --cmakedir)" \
+            -Dnanobind_DIR="$("${cmake4_venv}/bin/python" -m nanobind --cmake_dir)" \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-            -DMLIR_PYTHON_PACKAGE_DIR="${MLIR_PYTHONPATH}" \
             -DPTO_ENABLE_PYTHON_BINDING=ON \
-            -DPTOAS_VALIDATE_CMAKE4_FETCHCONTENT_COMPAT=ON \
-            -DPTOAS_ENABLE_WERROR=OFF \
             -DBUILD_TESTING=ON \
             -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
             -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \

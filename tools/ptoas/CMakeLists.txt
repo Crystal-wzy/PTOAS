@@ -16,18 +16,37 @@ set(PTOAS_RUNTIME_SOURCES
 
 set(PTOAS_WRAPPER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/ptoas_wrapper.py")
 set(PTOAS_WRAPPER_BINARY "${CMAKE_CURRENT_BINARY_DIR}/ptoas")
+set(PTOAS_INSTALL_WRAPPER_BINARY "${CMAKE_CURRENT_BINARY_DIR}/ptoas-install")
 
+set(PTOAS_WRAPPER_PYTHON_ROOT_MODE "absolute")
+set(PTOAS_WRAPPER_PYTHON_ROOT "${CMAKE_BINARY_DIR}/python")
 configure_file(
   "${PTOAS_WRAPPER_SOURCE}"
   "${PTOAS_WRAPPER_BINARY}"
   @ONLY
 )
-file(CHMOD "${PTOAS_WRAPPER_BINARY}"
-  PERMISSIONS
-    OWNER_READ OWNER_WRITE OWNER_EXECUTE
-    GROUP_READ GROUP_EXECUTE
-    WORLD_READ WORLD_EXECUTE
+
+# CMake install prefixes may be overridden at install time. Resolve the
+# installed package relative to bin/ptoas instead of baking in the configure
+# prefix.
+set(PTOAS_WRAPPER_PYTHON_ROOT_MODE "wrapper-relative")
+set(PTOAS_WRAPPER_PYTHON_ROOT "..")
+configure_file(
+  "${PTOAS_WRAPPER_SOURCE}"
+  "${PTOAS_INSTALL_WRAPPER_BINARY}"
+  @ONLY
 )
+
+foreach(_ptoas_wrapper IN ITEMS
+    "${PTOAS_WRAPPER_BINARY}"
+    "${PTOAS_INSTALL_WRAPPER_BINARY}")
+  file(CHMOD "${_ptoas_wrapper}"
+    PERMISSIONS
+      OWNER_READ OWNER_WRITE OWNER_EXECUTE
+      GROUP_READ GROUP_EXECUTE
+      WORLD_READ WORLD_EXECUTE
+  )
+endforeach()
 
 function(ptoas_configure_runtime_target target_name)
   target_compile_definitions(${target_name} PRIVATE
@@ -82,65 +101,77 @@ add_library(ptoas_runtime_objects OBJECT ${PTOAS_RUNTIME_SOURCES})
 llvm_update_compile_flags(ptoas_runtime_objects)
 ptoas_configure_runtime_target(ptoas_runtime_objects)
 
-# Build the normal Python extension used by wheel, build-tree, install-tree,
-# and Python-based standalone distributions. Linking the object library pulls
-# in the driver implementation and propagates its native link dependencies.
-pybind11_add_module(ptoas_runtime MODULE NativeModule.cpp)
-target_link_libraries(ptoas_runtime PRIVATE ptoas_runtime_objects)
-set_target_properties(ptoas_runtime PROPERTIES
-  OUTPUT_NAME "_native"
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/python-module"
-  # Keep the external LLVM/MLIR build discoverable for build-tree and
-  # editable Python installs. Release wheels are subsequently repaired by
-  # auditwheel, which replaces this machine-local path with wheel-local
-  # dependencies and a relative RPATH.
-  BUILD_RPATH "${PTO_LLVM_BUILD_LIBRARY_DIR}"
-  INSTALL_RPATH "${PTO_LLVM_BUILD_LIBRARY_DIR}"
+# Build the single PTOAS-owned Python extension. It contains both the compiler
+# driver and PTO dialect bindings, while linking MLIR's shared common CAPI so
+# Python-created MLIR objects and the compiler use the same MLIR runtime.
+set(PTOAS_BUILD_PYTHON_PACKAGE_DIR "${CMAKE_BINARY_DIR}/python/ptoas")
+add_mlir_python_extension(PTOASPythonCore _core
+  INSTALL_COMPONENT PTOAS_Python
+  INSTALL_DIR ptoas
+  OUTPUT_DIRECTORY "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}"
+  PYTHON_BINDINGS_LIBRARY pybind11
+  SOURCES
+    NativeModule.cpp
+    "${CMAKE_SOURCE_DIR}/lib/Bindings/Python/PTOModule.cpp"
+  LINK_LIBS
+    ptoas_runtime_objects
+    PTOCAPI
+    PTOASPythonCAPI
+)
+target_include_directories(PTOASPythonCore PRIVATE
+  "${CMAKE_SOURCE_DIR}/lib/Bindings/Python"
+)
+mlir_python_setup_extension_rpath(PTOASPythonCore)
+
+if(APPLE)
+  set_property(TARGET PTOASPythonCore PROPERTY INSTALL_RPATH
+    "@loader_path;@loader_path/../mlir/_mlir_libs")
+elseif(UNIX)
+  set_property(TARGET PTOASPythonCore PROPERTY INSTALL_RPATH
+    "$ORIGIN;$ORIGIN/../mlir/_mlir_libs")
+endif()
+
+declare_mlir_python_sources(PTOASRuntimePythonSources
+  ROOT_DIR "${CMAKE_SOURCE_DIR}/ptodsl/ptoas"
+  SOURCES_GLOB "*.py"
+)
+add_mlir_python_sources_target(PTOASRuntimePythonSourcesStage
+  OUTPUT_DIRECTORY "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}"
+  SOURCES_TARGETS PTOASRuntimePythonSources
 )
 
-set(PTOAS_BUILD_PYTHON_PACKAGE_DIR "${CMAKE_BINARY_DIR}/python/ptoas")
-add_custom_target(PTOASPythonPackage ALL
-  COMMAND ${CMAKE_COMMAND} -E remove_directory
-          "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_SOURCE_DIR}/ptodsl/ptoas"
-          "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "$<TARGET_FILE:ptoas_runtime>"
-          "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}/$<TARGET_FILE_NAME:ptoas_runtime>"
-  COMMAND ${CMAKE_COMMAND} -E make_directory
-          "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}/_runtime/share/ptoas"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_SOURCE_DIR}/lib/TileOps"
-          "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}/_runtime/share/ptoas/TileOps"
-  COMMAND ${CMAKE_COMMAND} -E remove_directory
-          "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}/_runtime/share/ptoas/TileOps/__pycache__"
-  DEPENDS ptoas_runtime
-  COMMENT "Staging the ptoas Python package"
-  VERBATIM
+declare_mlir_python_sources(PTOASTileOpsPythonSources
+  ROOT_DIR "${CMAKE_SOURCE_DIR}/lib/TileOps"
+  SOURCES_GLOB "*.py"
+)
+add_mlir_python_sources_target(PTOASTileOpsPythonSourcesStage
+  OUTPUT_DIRECTORY
+  "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}/_runtime/share/ptoas/TileOps"
+  SOURCES_TARGETS PTOASTileOpsPythonSources
+)
+
+add_custom_target(PTOASPythonPackage ALL)
+add_dependencies(PTOASPythonPackage
+  PTOASPythonCore
+  PTOAS_Python
+  PTOASRuntimePythonSourcesStage
+  PTOASTileOpsPythonSourcesStage
 )
 if(TARGET PTODSLPackage)
   add_dependencies(PTOASPythonPackage PTODSLPackage)
 endif()
-
-# Keep the historical aggregate target name for existing developer commands;
-# the actual runtime payload now lives in the staged Python package.
-add_custom_target(ptoas_runtime_staging ALL
-  DEPENDS PTOASPythonPackage
-)
-
-if(TARGET ptoas_runtime_deps)
-  add_dependencies(ptoas_runtime_deps ptoas_runtime_staging)
+if(TARGET TileLangDSLPackage)
+  add_dependencies(PTOASPythonPackage TileLangDSLPackage)
 endif()
 
-install(PROGRAMS "${PTOAS_WRAPPER_BINARY}"
-  DESTINATION bin
-  COMPONENT PTOAS_Runtime
-)
+if(TARGET ptoas_runtime_deps)
+  add_dependencies(ptoas_runtime_deps PTOASPythonPackage)
+endif()
 
-install(TARGETS ptoas_runtime
-  LIBRARY DESTINATION ptoas
-  COMPONENT PTOAS_Python
+install(PROGRAMS "${PTOAS_INSTALL_WRAPPER_BINARY}"
+  DESTINATION bin
+  RENAME ptoas
+  COMPONENT PTOAS_Runtime
 )
 
 install(
