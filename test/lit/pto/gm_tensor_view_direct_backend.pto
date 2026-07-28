@@ -71,13 +71,15 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 // EMITC-LABEL: gm_tensor_view_direct_backend(__gm__ float*
 // EMITC: pto::Shape<1, 1, 1, -1, -1>
 // EMITC: pto::Stride<-1, -1, -1, -1, -1>
-// EMITC: PTOAS__GLOBAL_TENSOR_GET_STRIDE
+// EMITC-NOT: PTOAS__GLOBAL_TENSOR_GET_STRIDE
 // EMITC: TLOAD(
 // EMITC-NOT: memref
 // EMITC-LABEL: gm_tensor_view_control_flow(
 // EMITC: if (
-// EMITC: PTOAS__GLOBAL_TENSOR_GET_SHAPE
-// EMITC: PTOAS__GLOBAL_TENSOR_GET_STRIDE
+// EMITC-NOT: PTOAS__GLOBAL_TENSOR_GET_SHAPE
+// EMITC-NOT: PTOAS__GLOBAL_TENSOR_GET_STRIDE
+// EMITC: .GetShape(static_cast<int>(
+// EMITC: .GetStride(static_cast<int>(
 // EMITC: TLOAD(
 
 // VPTO-LABEL: func.func @gm_tensor_view_direct_backend

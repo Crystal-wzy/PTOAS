@@ -7942,7 +7942,7 @@ static Value makeViewIndexConstant(ConversionPatternRewriter &rewriter,
 
 static Value getRuntimeGlobalTensorMetadata(
     ConversionPatternRewriter &rewriter, Location loc, Value tensor,
-    Value logicalDim, int64_t rank, StringRef helper) {
+    Value logicalDim, int64_t rank, bool isStride) {
   Value dim = castViewIndexToEmitC(rewriter, loc, logicalDim);
   int64_t shift = 5 - rank;
   if (shift != 0) {
@@ -7951,10 +7951,17 @@ static Value getRuntimeGlobalTensorMetadata(
                                     makeViewIndexConstant(rewriter, loc, shift))
               .getResult();
   }
-  return rewriter
-      .create<emitc::CallOpaqueOp>(loc, dim.getType(), helper, ArrayAttr{},
-                                   ArrayAttr{}, ValueRange{tensor, dim})
-      .getResult(0);
+  Value resultSlot = rewriter
+                         .create<emitc::VariableOp>(
+                             loc, getEmitCVariableResultType(dim.getType()),
+                             emitc::OpaqueAttr::get(rewriter.getContext(), ""))
+                         .getResult();
+  StringRef method = isStride ? StringRef("GetStride") : StringRef("GetShape");
+  rewriter.create<emitc::VerbatimOp>(
+      loc, "{} = {}." + method.str() + "(static_cast<int>({}));",
+      ValueRange{resultSlot, tensor, dim});
+  return rewriter.create<emitc::LoadOp>(loc, dim.getType(), resultSlot)
+      .getResult();
 }
 
 static FailureOr<Value> buildRuntimeGlobalTensor(
@@ -8050,9 +8057,7 @@ struct PTOGetTensorViewMetadataToEmitC : public OpConversionPattern<OpTy> {
 
     Value result = getRuntimeGlobalTensorMetadata(
         rewriter, op.getLoc(), peelUnrealized(adaptor.getTensorView()),
-        adaptor.getDimIndex(), rank,
-        IsStride ? "PTOAS__GLOBAL_TENSOR_GET_STRIDE"
-                 : "PTOAS__GLOBAL_TENSOR_GET_SHAPE");
+        adaptor.getDimIndex(), rank, IsStride);
     rewriter.replaceOp(op, result);
     return success();
   }
@@ -8109,11 +8114,24 @@ struct PTOPartitionViewToEmitC
     Value source = peelUnrealized(adaptor.getSource());
     SmallVector<Value, 5> sourceStrides;
     sourceStrides.reserve(sourceType.getRank());
-    for (int64_t dim = 0; dim < sourceType.getRank(); ++dim) {
-      Value logicalDim = makeViewIndexConstant(rewriter, op.getLoc(), dim);
-      sourceStrides.push_back(getRuntimeGlobalTensorMetadata(
-          rewriter, op.getLoc(), source, logicalDim, sourceType.getRank(),
-          "PTOAS__GLOBAL_TENSOR_GET_STRIDE"));
+    if (auto makeView = op.getSource().getDefiningOp<pto::MakeTensorViewOp>()) {
+      if (makeView.getStrides().size() !=
+          static_cast<size_t>(sourceType.getRank()))
+        return rewriter.notifyMatchFailure(op, "source stride rank mismatch");
+      for (Value stride : makeView.getStrides()) {
+        Value mapped = rewriter.getRemappedValue(stride);
+        if (!mapped)
+          return rewriter.notifyMatchFailure(op, "source stride is not remapped");
+        sourceStrides.push_back(castViewIndexToEmitC(rewriter, op.getLoc(),
+                                                     mapped));
+      }
+    } else {
+      for (int64_t dim = 0; dim < sourceType.getRank(); ++dim) {
+        Value logicalDim = makeViewIndexConstant(rewriter, op.getLoc(), dim);
+        sourceStrides.push_back(getRuntimeGlobalTensorMetadata(
+            rewriter, op.getLoc(), source, logicalDim, sourceType.getRank(),
+            /*isStride=*/true));
+      }
     }
 
     Value linearOffset = makeViewIndexConstant(rewriter, op.getLoc(), 0);
@@ -13602,6 +13620,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
                PTOGetTensorViewMetadataToEmitC<pto::GetTensorViewDimOp, false>,
                PTOGetTensorViewMetadataToEmitC<pto::GetTensorViewStrideOp,
                                                 true>>(typeConverter, ctx);
+  patterns.add<PTOPartitionViewStaticToEmitC>(typeConverter, ctx,
+                                              PatternBenefit(2));
   patterns.add<PTODeclareEventIdArrayToEmitC>(typeConverter, ctx);
   patterns.add<PTOEventIdArrayGetToEmitC>(typeConverter, ctx);
   patterns.add<PTOEventIdArraySetToEmitC>(typeConverter, ctx);
@@ -13784,18 +13804,6 @@ template <typename Tensor>
 static AICORE inline auto PTOAS__GLOBAL_TENSOR_DATA(Tensor &tensor)
     -> decltype(tensor.data()) {
   return tensor.data();
-}
-
-template <typename Tensor>
-static AICORE inline int64_t PTOAS__GLOBAL_TENSOR_GET_SHAPE(Tensor &tensor,
-                                                            int64_t dim) {
-  return tensor.GetShape(static_cast<int>(dim));
-}
-
-template <typename Tensor>
-static AICORE inline int64_t PTOAS__GLOBAL_TENSOR_GET_STRIDE(Tensor &tensor,
-                                                             int64_t dim) {
-  return tensor.GetStride(static_cast<int>(dim));
 }
 )cpp"));
         }
