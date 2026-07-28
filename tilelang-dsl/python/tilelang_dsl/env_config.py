@@ -84,7 +84,10 @@ def print_environment_help() -> None:
     print()
     print("After setup, verify with:")
     print("  python3 -c 'from ptoas.mlir import ir; print(\"MLIR bindings OK\")'")
-    print("  python3 -c 'from pto.dialects import pto; print(\"PTO dialect OK\")'")
+    print(
+        "  python3 -c 'from ptoas.mlir.dialects import pto; "
+        "print(\"PTO dialect OK\")'"
+    )
     print()
     print("=" * 60)
 

@@ -68,18 +68,13 @@ class LoweringResult:
     ) -> "_ods_ir.Module":
         """Parse MLIR text into a structured Module.
 
-        Registers all required dialects (func, arith, scf, pto) before parsing.
+        The PTOAS MLIR site initializer registers the bundled upstream dialects.
+        Register the project-owned PTO dialect explicitly before parsing.
         """
         from ptoas.mlir import ir as _ods_ir
-        from ptoas.mlir.dialects import func as _func_dialect
-        from ptoas.mlir.dialects import arith as _arith_dialect
-        from ptoas.mlir.dialects import scf as _scf_dialect
-        from pto.dialects import pto as _pto_dialect
+        from ptoas.mlir.dialects import pto as _pto_dialect
 
         ctx = context if context is not None else _ods_ir.Context()
-        _func_dialect.register_dialect(ctx)
-        _arith_dialect.register_dialect(ctx)
-        _scf_dialect.register_dialect(ctx)
         _pto_dialect.register_dialect(ctx, load=True)
 
         return _ods_ir.Module.parse(text, ctx)

@@ -88,12 +88,10 @@ jobs:
 
       - name: Resolve PTOAS distribution version
         run: |
-          VMI_PROJECT_METADATA="$(cd packaging/ptoas-vmi && python -m scikit_build_core.build project-table)"
-          VMI_PROJECT_VERSION="$(printf '%s\n' "${VMI_PROJECT_METADATA}" | python -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
           if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
             case "${GITHUB_REF_NAME}" in
               vmi-v*)
-                EXPECTED_RELEASE_VERSION="${VMI_PROJECT_VERSION}"
+                EXPECTED_RELEASE_VERSION="$(python packaging/ptoas-vmi/prepare_source.py --print-version)"
                 PTOAS_VERSION="${GITHUB_REF_NAME#vmi-v}"
                 PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"
                 PTOAS_PYTHON_PACKAGE_NAME="ptoas-vmi"
@@ -120,7 +118,7 @@ jobs:
               exit 1
             fi
           elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${{ inputs.release_kind }}" = "vmi" ]; then
-            PTOAS_VERSION="${VMI_PROJECT_VERSION}"
+            PTOAS_VERSION="$(python packaging/ptoas-vmi/prepare_source.py --print-version)"
             PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"
             PTOAS_PYTHON_PACKAGE_NAME="ptoas-vmi"
           elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
@@ -142,7 +140,6 @@ jobs:
       - name: Validate PEP 517 project metadata
         run: |
           python -m scikit_build_core.build project-table
-          (cd packaging/ptoas-vmi && python -m scikit_build_core.build project-table)
 
       - name: Set build directories
         run: |
@@ -220,7 +217,9 @@ jobs:
           CMAKE_BUILD_PARALLEL_LEVEL: "2"
         run: |
           if [ "${PTOAS_PYTHON_PACKAGE_NAME}" = "ptoas-vmi" ]; then
-            PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/packaging/ptoas-vmi"
+            PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/.work/ptoas-vmi-source"
+            python packaging/ptoas-vmi/prepare_source.py \
+              --output-dir "${PTOAS_WHEEL_SOURCE_DIR}"
           else
             PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}"
           fi

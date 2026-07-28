@@ -63,11 +63,22 @@ backend. Project metadata and the console entry point live in `pyproject.toml`;
 wheel tags, metadata, RECORD generation, CMake configure/build/install, and
 editable redirects are owned by the backend rather than repository scripts.
 
-The main `pyproject.toml` has the static distribution name `ptoas`.
-`packaging/ptoas-vmi/pyproject.toml` is a second static PEP 621 project for the
-mutually exclusive `ptoas-vmi` distribution. Both projects build the same CMake
-source and install the same `ptoas` import package. This keeps project names
-standards-compliant because PEP 621 does not permit a dynamic `project.name`.
+The top-level `pyproject.toml` is the single canonical project configuration.
+For the mutually exclusive `ptoas-vmi` distribution,
+`packaging/ptoas-vmi/prepare_source.py` is the single staging entry point. It
+exports every tracked file from one Git revision and applies
+`pyproject.toml.patch`; the wheel is built directly from that tree. The patch
+changes only the distribution name, static VMI version, description, CLI label,
+and sdist inclusion mode; all CMake and Python package paths remain rooted in
+the staged source tree. The checkout's top-level metadata is never modified.
+
+Git owns source selection instead of a hand-maintained directory list.
+scikit-build-core then owns PEP 517 metadata and wheel assembly. If an sdist is
+requested independently, manual inclusion makes the backend include the complete
+tracked snapshot without applying `.gitignore` a second time.
+Submodule contents and untracked/generated working-tree files are intentionally
+outside this source-distribution contract. Ordinary gates and releases do not
+generate or publish a VMI sdist.
 
 CMake's `PTOAS_Python` install component contains only the generated/native
 wheel payload. Python source packages are declared through

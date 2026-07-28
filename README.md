@@ -179,7 +179,10 @@ from ptoas.mlir.dialects import pto as mlir_pto
 >   `import ptodsl` 可用。
 > - release tag 约定：`ptoas-vX.Y` 发布主工具链，`vmi-vA.B.C` 发布
 >   `ptoas-vmi` distribution。创建 VMI release tag 前，应通过发布 PR 将
->   `packaging/ptoas-vmi/pyproject.toml` 中的版本更新为相同的 `A.B.C`。
+>   `packaging/ptoas-vmi/pyproject.toml.patch` 中的版本更新为相同的 `A.B.C`。
+>   VMI 发布流程会从当前 Git revision 导出完整源码快照，只在 staging tree
+>   中应用该 metadata patch，再直接从 staging tree 构建 wheel；不会修改工作区
+>   根目录的 `pyproject.toml`，也不会在普通门禁或 release 中生成、发布 sdist。
 
 ---
 
