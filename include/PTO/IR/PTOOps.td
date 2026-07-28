@@ -3133,6 +3133,8 @@ def MGatherOp : PTO_TOp<"mgather", [
       return isA5Target() ? ::mlir::pto::PIPE::PIPE_V
                           : ::mlir::pto::PIPE::PIPE_MTE2;
     }
+    ::mlir::Value getSource() { return getMem(); }
+    ::mlir::Value getDestination() { return getDst(); }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
@@ -3311,6 +3313,8 @@ def MScatterOp : PTO_TOp<"mscatter", [
       return isA5Target() ? ::mlir::pto::PIPE::PIPE_V
                           : ::mlir::pto::PIPE::PIPE_MTE3;
     }
+    ::mlir::Value getSource() { return getSrc(); }
+    ::mlir::Value getDestination() { return getMem(); }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getMemMutable(); }
   }];
 }

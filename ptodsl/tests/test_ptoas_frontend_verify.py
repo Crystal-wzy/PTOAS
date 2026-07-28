@@ -479,11 +479,11 @@ def main() -> None:
     expect(
         "func.func public @scale_row_kernel_module__ptodsl_" in example_vpto_child
         and 'pto.visibility = "external"' in example_vpto_child
-        and "pto.kernel_kind = #pto.kernel_kind<vector>" in example_vpto_child
+        and "pto.kernel_kind" not in example_vpto_child
         and "pto.section.vector {" not in example_vpto_child
         and "pto.mte_gm_ub" in example_vpto_child
         and "pto.vmuls" in example_vpto_child,
-        "mixed_backend_kernel_module.py VPTO child should expose one explicit vector kernel-module definition without a legacy inline section",
+        "mixed_backend_kernel_module.py VPTO child should defer vector inference without a legacy inline section",
     )
 
     example_frontend_texts = run_ptoas_frontend_verify(

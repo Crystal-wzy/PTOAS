@@ -306,7 +306,8 @@ def TileBufAddrOp : PTO_Op<"tile_buf_addr", [Pure]> {
   }];
 }
 
-def VecScopeOp : PTO_Op<"vecscope", [SingleBlock, NoTerminator]> {
+def VecScopeOp : PTO_Op<"vecscope", [SingleBlock, NoTerminator,
+                                      VectorMicroOpInterface]> {
   let summary = "Structured region container for one VPTO vector scope";
   let description = [{
     `pto.vecscope` marks a structured vector-scope interval without overloading
@@ -321,7 +322,8 @@ def VecScopeOp : PTO_Op<"vecscope", [SingleBlock, NoTerminator]> {
 }
 
 def StrictVecScopeOp : PTO_Op<"strict_vecscope", [SingleBlock, NoTerminator,
-                                                  IsolatedFromAbove]> {
+                                                   IsolatedFromAbove,
+                                                   VectorMicroOpInterface]> {
   let summary = "Structured VPTO vector scope with explicit captures only";
   let description = [{
     `pto.strict_vecscope` is the strict form of `pto.vecscope`. Values used by
@@ -1077,6 +1079,7 @@ def PTO_CopyUbufToUbufOp : PTO_MteOp<"copy_ubuf_to_ubuf"> {
 }
 
 def PTO_CopyCbufToUbufOp : PTO_MteOp<"copy_cbuf_to_ubuf", [
+    CubeMicroOpInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -1101,6 +1104,7 @@ def PTO_CopyCbufToUbufOp : PTO_MteOp<"copy_cbuf_to_ubuf", [
 }
 
 def PTO_CopyUbufToCbufOp : PTO_MteOp<"copy_ubuf_to_cbuf", [
+    CubeMicroOpInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -1150,6 +1154,7 @@ def PTO_MteUbUbOp : PTO_MteOp<"mte_ub_ub", [
 }
 
 def PTO_MteUbL1Op : PTO_MteOp<"mte_ub_l1", [
+    CubeMicroOpInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -2832,6 +2837,7 @@ def PTO_MteGmL1Op : PTO_MteOp<"mte_gm_l1", [
 }
 
 def PTO_MteL1UbOp : PTO_MteOp<"mte_l1_ub", [
+    CubeMicroOpInterface,
     AttrSizedOperandSegments,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {

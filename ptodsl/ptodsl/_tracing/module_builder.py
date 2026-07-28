@@ -30,7 +30,7 @@ class KernelModuleSpec:
 
     function_name: str
     target_arch: str
-    kernel_kind: str
+    kernel_kind: str | None
     kernel_kind_explicit: bool = False
     backend: str = "vpto"
     entry: bool = True
