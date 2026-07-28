@@ -9206,8 +9206,11 @@ frontend/framework generated IR. The detailed design document is:
 - `nosplit` is an optional compile-time boolean attribute on
   `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe`.
 - `split` is a compile-time attribute, not a runtime SSA operand.
-- `split = 0/1/2` corresponds to `TILE_NO_SPLIT`, `TILE_UP_DOWN`, and
-  `TILE_LEFT_RIGHT`.
+- `split = 0/1/2/3/4` corresponds to `TILE_NO_SPLIT`, `TILE_UP_DOWN`,
+  `TILE_LEFT_RIGHT`, `TILE_UP_DOWN_ODD`, and `TILE_LEFT_RIGHT_ODD`.
+- `TILE_UP_DOWN_ODD` splits an odd valid-row count so AIV0 receives
+  `ceil(valid_rows / 2)` rows and AIV1 receives `floor(valid_rows / 2)` rows.
+  `TILE_LEFT_RIGHT_ODD` applies the same rule to valid columns.
 - `pto.tpop_from_aic` and `pto.tpop_from_aiv` are result-valued frontend ops.
 - Pipe entries support two forms:
   - tile entry: `!pto.tile_buf<...>` or the equivalent local memref after view
@@ -9228,17 +9231,19 @@ frontend/framework generated IR. The detailed design document is:
 - For global entries, the matched initialize op's `gm_slot_tensor` describes
   one FIFO slot entry, not the full multi-slot FIFO buffer. Its dtype, shape,
   stride, and layout must match the `tensor_view` returned by `talloc` /
-  `tpop` and form the pto-isa `GlobalData` template argument. `TILE_UP_DOWN` and
-  `TILE_LEFT_RIGHT` split modes derive sub-core GM address offsets from that
-  single-slot descriptor's static rows, columns, and element dtype.
+  `tpop` and form the pto-isa `GlobalData` template argument. `TILE_UP_DOWN`,
+  `TILE_LEFT_RIGHT`, `TILE_UP_DOWN_ODD`, and `TILE_LEFT_RIGHT_ODD` split modes
+  derive each sub-core's GM view from the single-slot descriptor and the tile's
+  valid shape.
 - If a global-entry result op does not carry explicit stride/layout metadata,
   PTOAS treats it as a row-major contiguous GM view. Non-contiguous cases must
   preserve stride/layout through the producing op metadata, the source view, or
   the lowered GM memref layout.
-- A single logical pipe cannot mix `split = 0` with `split = 1` / `2`.
+- A single logical pipe cannot mix `split = 0` with `split = 1` / `2` / `3` /
+  `4`.
   `nosplit = true` requires all bound data-transfer ops to use `split = 0`;
-  `nosplit = false` requires all bound data-transfer ops to use `split = 1`
-  or `split = 2`.
+  `nosplit = false` requires all bound data-transfer ops to use `split = 1`,
+  `2`, `3`, or `4`.
 - Multiple logical pipes are allowed in one function.
 - A frontend logical pipe is uniquely identified by `function + id + direction`.
 - When `dir_mask = 1` or `2`, one `id` denotes one single-direction logical
@@ -9431,7 +9436,7 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - If `nosplit = true`, all frontend data-transfer ops bound to the same logical
   pipe must use `split = 0`
 - If `nosplit = false`, all frontend data-transfer ops bound to the same
-  logical pipe must use `split = 1` or `split = 2`
+  logical pipe must use `split = 1`, `2`, `3`, or `4`
 
 ##### `pto.aiv_initialize_pipe` - Frontend Vector Pipe Initialization
 
@@ -9474,7 +9479,7 @@ pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - If `nosplit = true`, all frontend data-transfer ops bound to the same logical
   pipe must use `split = 0`
 - If `nosplit = false`, all frontend data-transfer ops bound to the same
-  logical pipe must use `split = 1` or `split = 2`
+  logical pipe must use `split = 1`, `2`, `3`, or `4`
 
 **Basic Example: GlobalTensor Pipe Entry Without Reserve/Import**
 

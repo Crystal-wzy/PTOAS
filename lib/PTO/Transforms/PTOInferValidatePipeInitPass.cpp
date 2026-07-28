@@ -171,7 +171,8 @@ resolveNoSplitComponent(ArrayRef<PipeInitInfo *> component, OpBuilder &builder) 
   for (PipeInitInfo *info : component) {
     if (info->usage == PipeSplitUsage::Mixed) {
       return info->op->emitOpError(
-          "cannot mix 'split = 0' with 'split = 1' or 'split = 2' on the "
+          "cannot mix 'split = 0' with 'split = 1', 'split = 2', "
+          "'split = 3', or 'split = 4' on the "
           "same logical pipe");
     }
 
@@ -202,7 +203,7 @@ resolveNoSplitComponent(ArrayRef<PipeInitInfo *> component, OpBuilder &builder) 
       if (*info->explicitNoSplit) {
         return info->op->emitOpError(
             "explicit 'nosplit = true' conflicts with downstream users that "
-            "require split = 1 or split = 2");
+            "require split = 1, 2, 3, or 4");
       }
       return info->op->emitOpError(
           "explicit 'nosplit = false' conflicts with downstream users that "

@@ -1,0 +1,84 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+//
+// Verifies that odd valid-shape split modes survive frontend pipe lowering and
+// select the matching PTO-ISA template arguments for both TPUSH and TPOP.
+//
+// RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=A5
+
+module {
+  func.func @cube_kernel(%full_rows: index, %full_cols: index)
+      attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c16 = arith.constant 16 : index
+
+    %up_down_import = pto.import_reserved_buffer {
+      name = "up_down_fifo",
+      peer_func = @vector_kernel
+    } -> i32
+    %left_right_import = pto.import_reserved_buffer {
+      name = "left_right_fifo",
+      peer_func = @vector_kernel
+    } -> i32
+
+    pto.aic_initialize_pipe {id = 3, dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %up_down_import : i32)
+    pto.aic_initialize_pipe {id = 4, dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %left_right_import : i32)
+
+    %up_down_tile = pto.alloc_tile valid_row = %full_rows valid_col = %c16
+      : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=?, v_col=?, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+    %left_right_tile = pto.alloc_tile valid_row = %c16 valid_col = %full_cols
+      : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=?, v_col=?, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+
+    pto.tpush_to_aiv(%up_down_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=?, v_col=?, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {id = 3, split = 3}
+    pto.tpush_to_aiv(%left_right_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=?, v_col=?, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {id = 4, split = 4}
+    return
+  }
+
+  func.func @vector_kernel(%half_rows: index, %half_cols: index)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c16 = arith.constant 16 : index
+
+    %up_down_local = pto.reserve_buffer {
+      name = "up_down_fifo",
+      size = 8192,
+      location = #pto.address_space<vec>,
+      auto = true
+    } -> i32
+    %left_right_local = pto.reserve_buffer {
+      name = "left_right_fifo",
+      size = 8192,
+      location = #pto.address_space<vec>,
+      auto = true
+    } -> i32
+
+    pto.aiv_initialize_pipe {id = 3, dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %up_down_local : i32)
+    pto.aiv_initialize_pipe {id = 4, dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %left_right_local : i32)
+
+    %up_down_tile = pto.tpop_from_aic(%half_rows, %c16) {id = 3, split = 3}
+      -> !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tfree_from_aic {id = 3, split = 3}
+
+    %left_right_tile = pto.tpop_from_aic(%c16, %half_cols) {id = 4, split = 4}
+      -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=8, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tfree_from_aic {id = 4, split = 4}
+    return
+  }
+}
+
+// A5-LABEL: AICORE void cube_kernel(
+// A5: TPUSH<{{.*}}TileSplitAxis::TILE_UP_DOWN_ODD>(
+// A5: TPUSH<{{.*}}TileSplitAxis::TILE_LEFT_RIGHT_ODD>(
+
+// A5-LABEL: AICORE void vector_kernel(
+// A5: TPOP<{{.*}}TileSplitAxis::TILE_UP_DOWN_ODD>(
+// A5: TFREE<{{.*}}TileSplitAxis::TILE_UP_DOWN_ODD>(
+// A5: TPOP<{{.*}}TileSplitAxis::TILE_LEFT_RIGHT_ODD>(
+// A5: TFREE<{{.*}}TileSplitAxis::TILE_LEFT_RIGHT_ODD>(

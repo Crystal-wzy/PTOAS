@@ -1114,6 +1114,10 @@ static FailureOr<std::string> getTileSplitToken(int64_t split) {
     return std::string("TileSplitAxis::TILE_UP_DOWN");
   case 2:
     return std::string("TileSplitAxis::TILE_LEFT_RIGHT");
+  case 3:
+    return std::string("TileSplitAxis::TILE_UP_DOWN_ODD");
+  case 4:
+    return std::string("TileSplitAxis::TILE_LEFT_RIGHT_ODD");
   default:
     return failure();
   }

@@ -227,7 +227,7 @@ pto.tfree_from_aiv(%entry : !pto.tensor_view<...>) {id = 0, split = 0}
 
 以上前端数据传输接口中的 `id` 和 `split` 均为编译期常量属性，不是运行时 SSA operand。
 
-- 取值使用 `TileSplitAxis` 枚举语义：`0/1/2` 分别对应 `TILE_NO_SPLIT`、`TILE_UP_DOWN`、`TILE_LEFT_RIGHT`
+- 取值使用 `TileSplitAxis` 枚举语义：`0/1/2/3/4` 分别对应 `TILE_NO_SPLIT`、`TILE_UP_DOWN`、`TILE_LEFT_RIGHT`、`TILE_UP_DOWN_ODD`、`TILE_LEFT_RIGHT_ODD`
 - lowering 到 PTOAS 内部 IR 时，`split` 继续以属性形式保留
 - `global` entry 的 result type 和 matched initialize op 的 `gm_slot_tensor` metadata 是底层 `GlobalData` 模板实参的 IR 描述；其 element type、静态 shape 与 stride/layout 必须描述完整 FIFO slot。若 consumer 只加载 slot 的子区域，应先 pop 完整 slot descriptor，再由该 descriptor 派生更窄的 GM view。
 
@@ -421,6 +421,8 @@ handle。
 - `TILE_NO_SPLIT`
 - `TILE_UP_DOWN`
 - `TILE_LEFT_RIGHT`
+- `TILE_UP_DOWN_ODD`
+- `TILE_LEFT_RIGHT_ODD`
 
 在 PTOAS 设计中，`split` 的角色定义为：
 
@@ -442,7 +444,7 @@ handle。
 
 - 切分前完整 pipe entry 的字节数
 
-即使 `split` 为 `TILE_UP_DOWN` 或 `TILE_LEFT_RIGHT`，`SLOT_SIZE` 仍然表示未切分前的逻辑 pipe entry 总字节数。
+即使 `split` 为 `TILE_UP_DOWN`、`TILE_LEFT_RIGHT`、`TILE_UP_DOWN_ODD` 或 `TILE_LEFT_RIGHT_ODD`，`SLOT_SIZE` 仍然表示未切分前的逻辑 pipe entry 总字节数。
 
 `split` 只影响底层 `TALLOC/TPUSH/TPOP/TFREE` 的执行方式，不影响 `SLOT_SIZE` 的含义。
 
@@ -451,8 +453,10 @@ handle。
 - `TILE_NO_SPLIT`：不增加 sub-core offset
 - `TILE_UP_DOWN`：sub-core offset 为 `get_subblockid() * rows * cols * sizeof(dtype)`
 - `TILE_LEFT_RIGHT`：sub-core offset 为 `get_subblockid() * cols * sizeof(dtype)`
+- `TILE_UP_DOWN_ODD`：奇数有效行由 AIV0/AIV1 按 `ceil(rows / 2)` 与 `floor(rows / 2)` 切分
+- `TILE_LEFT_RIGHT_ODD`：奇数有效列由 AIV0/AIV1 按 `ceil(cols / 2)` 与 `floor(cols / 2)` 切分
 
-其中 `rows`、`cols` 与 `dtype` 来自 entry 对应底层 `GlobalData` 的静态 shape 与 `RawDType`。PTOAS IR 因此要求 `global` entry 的类型和 view metadata 描述完整 FIFO slot，而不是仅描述 consumer 最终要读取的子 tile。
+偶数切分模式中的 `rows`、`cols` 与 `dtype` 来自 entry 对应底层 `GlobalData` 的 shape 与 `RawDType`；奇数切分模式使用运行时 valid shape 决定两个子块的大小。PTOAS IR 因此要求 `global` entry 的类型和 view metadata 描述完整 FIFO slot，而不是仅描述 consumer 最终要读取的子 tile。
 
 ### 4.4 `SLOT_NUM` 规则
 
