@@ -9211,6 +9211,15 @@ frontend/framework generated IR. The detailed design document is:
 - `TILE_UP_DOWN_ODD` splits an odd valid-row count so AIV0 receives
   `ceil(valid_rows / 2)` rows and AIV1 receives `floor(valid_rows / 2)` rows.
   `TILE_LEFT_RIGHT_ODD` applies the same rule to valid columns.
+- Odd split modes are currently supported only by a unidirectional C2V
+  GM-backed tile pipe. The frontend initialize op must provide both
+  `gm_slot_tensor` and `c2v_consumer_buf`; local C2V, V2C, bidirectional, and
+  GlobalTensor-entry odd splits are rejected because the pinned pto-isa does
+  not implement those transfer paths.
+- For an odd C2V tile pop, AIV0 and AIV1 must pass different
+  `valid_row` / `valid_col` operands. The frontend must derive these operands
+  from `pto.get_subblock_idx`: AIV0 supplies the `ceil` half and AIV1 supplies
+  the `floor` half. PTO-ISA does not derive the two valid shapes automatically.
 - `pto.tpop_from_aic` and `pto.tpop_from_aiv` are result-valued frontend ops.
 - Pipe entries support two forms:
   - tile entry: `!pto.tile_buf<...>` or the equivalent local memref after view
@@ -9228,13 +9237,18 @@ frontend/framework generated IR. The detailed design document is:
   and may carry `slot_num`; `gm_slot_buffer`, `c2v_consumer_buf`,
   `v2c_consumer_buf`, `local_slot_num`, `pto.reserve_buffer`, and
   `pto.import_reserved_buffer` are not used.
+- A C2V GM-backed tile pipe instead carries both `gm_slot_tensor` and
+  `c2v_consumer_buf`. The GM tensor describes the complete FIFO slot, while
+  the consumer buffer supplies the local vector-tile staging area. This mixed
+  form is currently limited to `dir_mask = 1`.
 - For global entries, the matched initialize op's `gm_slot_tensor` describes
   one FIFO slot entry, not the full multi-slot FIFO buffer. Its dtype, shape,
   stride, and layout must match the `tensor_view` returned by `talloc` /
   `tpop` and form the pto-isa `GlobalData` template argument. `TILE_UP_DOWN`,
   `TILE_LEFT_RIGHT`, `TILE_UP_DOWN_ODD`, and `TILE_LEFT_RIGHT_ODD` split modes
-  derive each sub-core's GM view from the single-slot descriptor and the tile's
-  valid shape.
+  derive each sub-core's GM view from the single-slot descriptor and the
+  runtime tile valid shape. For odd modes, the two sub-cores' valid shapes must
+  be the explicit `ceil` and `floor` halves described above.
 - If a global-entry result op does not carry explicit stride/layout metadata,
   PTOAS treats it as a row-major contiguous GM view. Non-contiguous cases must
   preserve stride/layout through the producing op metadata, the source view, or
@@ -9401,12 +9415,13 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - `gm_slot_buffer`: optional GM pointer (`!pto.ptr<T>`), used by A2/A3 GM FIFO
   paths that also use a local consumer FIFO buffer
 - `gm_slot_tensor`: optional single-slot entry descriptor
-  (`!pto.tensor_view<...>`), required by global-only GM FIFO. Its type describes
-  the `tensor_view` returned by `talloc` / `tpop`. This descriptor is retained
-  in IR for entry type validation; EmitC lowers the `TPipe` constructor
-  argument to only the GM FIFO start address
+  (`!pto.tensor_view<...>`), required by global-only GM FIFO and by the A5
+  C2V GM-backed tile path. For a global entry, its type describes the
+  `tensor_view` returned by `talloc` / `tpop`. This descriptor is retained in
+  IR for entry type validation; EmitC lowers the `TPipe` constructor argument
+  to only the GM FIFO start address
 - `c2v_consumer_buf`: optional C2V consumer local base address; omitted for
-  global-only GM FIFO
+  global-only GM FIFO, but required when `gm_slot_tensor` backs a C2V tile pipe
 - `v2c_consumer_buf`: optional V2C consumer local base address; omitted for
   global-only GM FIFO
 
@@ -9420,13 +9435,14 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - If `slot_num` is present, it must be greater than `0`
 - If `local_slot_num` is present, it must be greater than `0` and no greater
   than the effective `slot_num`
-- On A5, `local_slot_num` must be omitted; A5 frontend pipes lower to
-  `pto.initialize_l2l_pipe`, which does not use a local FIFO slot-count
-  template parameter. Its consumer-side `pto.reserve_buffer.size` should be
-  `slot_size * effective_slot_num`
+- On A5, `local_slot_num` must be omitted. A local-only frontend pipe lowers to
+  `pto.initialize_l2l_pipe`; a C2V pipe carrying both `gm_slot_tensor` and
+  `c2v_consumer_buf` lowers to `pto.initialize_l2g2l_pipe`
 - A global-only GM FIFO initialize carries only `gm_slot_tensor`; it must not
   carry `gm_slot_buffer`, `local_slot_num`, `c2v_consumer_buf`, or
   `v2c_consumer_buf`; it may carry `slot_num`
+- A GM-backed tile initialize may combine `gm_slot_tensor` only with
+  `c2v_consumer_buf`, and currently requires `dir_mask = 1`
 - For global-only GM FIFO, `slot_size` must match the byte size of
   `gm_slot_tensor`
 - Global-entry `talloc` / `tpush` / `tpop` / `tfree` entry types must match the

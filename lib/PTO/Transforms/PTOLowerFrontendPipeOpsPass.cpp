@@ -163,17 +163,26 @@ static FailureOr<Value> createFrontendGlobalTensorPipe(InitOpT initOp,
                                                        IRRewriter &rewriter,
                                                        Type pipeTy,
                                                        int8_t dirMask,
-                                                       int32_t slotNum) {
+                                                       int32_t slotNum,
+                                                       Value localAddr = Value{},
+                                                       Value peerLocalAddr =
+                                                           Value{}) {
   Location loc = initOp.getLoc();
   auto dirAttr = rewriter.getI8IntegerAttr(dirMask);
   auto slotSizeAttr = rewriter.getI32IntegerAttr(initOp.getSlotSize());
   auto slotNumAttr = rewriter.getI32IntegerAttr(slotNum);
   auto noSplitAttr = initOp.getNosplitAttr();
   auto accPushEpilogueAttr = initOp.getAccPushEpilogueAttr();
+  IntegerAttr localSlotNumAttr;
+  if (localAddr) {
+    localSlotNumAttr = initOp.getLocalSlotNumAttr();
+    if (!localSlotNumAttr)
+      localSlotNumAttr = rewriter.getI32IntegerAttr(slotNum);
+  }
   auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
-      loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, IntegerAttr{},
+      loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
       IntegerAttr{}, noSplitAttr, accPushEpilogueAttr, initOp.getGmSlotTensor(),
-      Value{}, Value{});
+      localAddr, peerLocalAddr);
   propagateFrontendIdAttr(initOp, pipe.getOperation(), rewriter);
   propagateFixpipePeerKeyAttrs(initOp, pipe.getOperation(), rewriter);
   return pipe.getPipe();
@@ -232,7 +241,8 @@ lowerSingleDirectionFrontendInit(InitOpT initOp, IRRewriter &rewriter,
   int32_t slotNum = getFrontendSlotNum(initOp);
   auto pipeOr = initOp.getGmSlotTensor()
                     ? createFrontendGlobalTensorPipe(initOp, rewriter, pipeTy,
-                                                     dirMask, slotNum)
+                                                     dirMask, slotNum,
+                                                     localAddr)
                     : createFrontendLocalPipe(initOp, rewriter, arch, pipeTy,
                                               dirMask, slotNum, localAddr);
   if (failed(pipeOr))
@@ -260,7 +270,8 @@ lowerBidirectionalFrontendInit(InitOpT initOp, IRRewriter &rewriter,
   auto pipeOr = initOp.getGmSlotTensor()
                     ? createFrontendGlobalTensorPipe(
                           initOp, rewriter, pipeTy, kBidirectionalDirMask,
-                          slotNum)
+                          slotNum, initOp.getC2vConsumerBuf(),
+                          initOp.getV2cConsumerBuf())
                     : createFrontendLocalPipe(initOp, rewriter, arch, pipeTy,
                                               kBidirectionalDirMask, slotNum,
                                               initOp.getC2vConsumerBuf(),

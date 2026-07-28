@@ -424,6 +424,11 @@ handle。
 - `TILE_UP_DOWN_ODD`
 - `TILE_LEFT_RIGHT_ODD`
 
+当前 odd 模式仅允许单向 C2V 的 GM-backed tile pipe。前端 initialize 必须同时提供
+`gm_slot_tensor` 和 `c2v_consumer_buf`，lowering 后对应带 local consumer buffer 的
+`pto.initialize_l2g2l_pipe`。local C2V、V2C、双向 pipe 以及 GlobalTensor entry
+暂不允许 odd 模式，因为固定版本的 pto-isa 尚未实现这些数据传输/offset 路径。
+
 在 PTOAS 设计中，`split` 的角色定义为：
 
 - `split` 是 `talloc/tpush/tpop/tfree` 的逐指令执行模式
@@ -456,7 +461,11 @@ handle。
 - `TILE_UP_DOWN_ODD`：奇数有效行由 AIV0/AIV1 按 `ceil(rows / 2)` 与 `floor(rows / 2)` 切分
 - `TILE_LEFT_RIGHT_ODD`：奇数有效列由 AIV0/AIV1 按 `ceil(cols / 2)` 与 `floor(cols / 2)` 切分
 
-偶数切分模式中的 `rows`、`cols` 与 `dtype` 来自 entry 对应底层 `GlobalData` 的 shape 与 `RawDType`；奇数切分模式使用运行时 valid shape 决定两个子块的大小。PTOAS IR 因此要求 `global` entry 的类型和 view metadata 描述完整 FIFO slot，而不是仅描述 consumer 最终要读取的子 tile。
+GM tile 路径中的偶数和奇数切分模式都使用运行时 valid shape 计算 offset 与
+row stride。odd 模式不会自动推导两个子核的 valid shape：前端必须根据
+`pto.get_subblock_idx` 为 AIV0 传入 `ceil` 半块、为 AIV1 传入 `floor` 半块，
+并把不同的 `valid_row` / `valid_col` operand 传给 `tpop`。描述 GM slot 的
+metadata 仍必须覆盖切分前的完整 FIFO slot。
 
 ### 4.4 `SLOT_NUM` 规则
 
