@@ -52,11 +52,12 @@
 //   pge  → create_mask(N lanes)
 //   plt  → create_mask(min(rem, L))
 //
-// Category C5 — vector-scalar ops, one-step to legacy (6 ops):
-//   vadds/vmuls/vmaxs/vmins/vshls/vshrs
+// Category C5 — vector-scalar ops, one-step to legacy (5 ops):
+//   vadds/vmaxs/vmins/vshls/vshrs
 //     → broadcast scalar → legacy binary
 //   vshrs selects shrui for unsigned/signless elements and shrsi for
 //   explicitly signed elements.
+//   vmuls is kept unified for direct VMI-to-VPTO lowering.
 //
 // Category C3 — unified load/store (2 ops, dispatch by dist_mode/group):
 //   vload → load / deinterleave_load / group_load
@@ -81,8 +82,8 @@
 //   vprelu  → maxf + minf + mulf + addf
 //   Category C7/C8/C9 bypass mask/pmode synthesis here and skip pmode="merge".
 //
-// Category D — no legacy equivalent (explicitly skipped, 5 ops):
-//   vintlv vdintlv vselr vgatherb vmull
+// Category D — no legacy equivalent (explicitly skipped, 6 ops):
+//   vmuls vintlv vdintlv vselr vgatherb vmull
 //
 //===----------------------------------------------------------------------===//
 
@@ -740,7 +741,7 @@ static LogicalResult lowerPge(VMIPgeOp op, OpBuilder &builder) {
 // Category C5 helpers: vector-scalar ops (one-step to legacy)
 //===----------------------------------------------------------------------===//
 
-/// Lower a unified vector-scalar op (vadds, vmuls, ...) to a legacy chain:
+/// Lower a unified vector-scalar op (vadds, vmaxs, ...) to a legacy chain:
 ///   %brc  = vmi.broadcast %scalar
 ///   %raw  = legacy.op %src, %brc
 template <typename VecScalarOp>
@@ -1165,8 +1166,7 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
         // Category C4
         isa<VMIPsetOp, VMIPgeOp, VMIPltOp>(op) ||
         // Category C5
-        isa<VMIAddSOp, VMIMulSOp, VMIMaxSOp, VMIMinSOp, VMIShlSOp,
-            VMIShrSOp>(op) ||
+        isa<VMIAddSOp, VMIMaxSOp, VMIMinSOp, VMIShlSOp, VMIShrSOp>(op) ||
         // Category C6 — unified reduce (partial coverage)
         isa<VMIvcaddOp, VMIvcmaxOp, VMIvcminOp>(op) ||
         // Category C7 — fused multiply-add family → legacy fma
@@ -1178,10 +1178,10 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
       worklist.push_back(op);
 
     // Category D — no legacy equivalent (require direct VMIToVPTO lowering):
-    //   plt, vintlv, vdintlv, vselr, vgatherb, vmull
+    //   plt, vmuls, vintlv, vdintlv, vselr, vgatherb, vmull
     // These are intentionally NOT added to the worklist — they flow through
     // to VMIToVPTO which must provide direct 1:N lowering patterns.
-    if (isa<VMIVintlvOp, VMIVdintlvOp, VMIVselrOp,
+    if (isa<VMIMulSOp, VMIVintlvOp, VMIVdintlvOp, VMIVselrOp,
             VMIVgatherbOp, VMIVmullOp>(op)) {
       op->emitRemark("VMI unified op has no legacy equivalent — "
                      "requires direct VMIToVPTO 1:N lowering");
@@ -1316,17 +1316,6 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
         if (isFloatType(elemType))
           return builder.create<VMIAddFOp>(loc, ty, lhs, rhs).getResult();
         return builder.create<VMIAddIOp>(loc, ty, lhs, rhs).getResult();
-      };
-      (void)lowerVecScalar(vop, builder, createLegacy);
-      continue;
-    }
-
-    if (auto vop = dyn_cast<VMIMulSOp>(op)) {
-      Type elemType = getVMIElementType(vop.getSrc());
-      auto createLegacy = [&](Location loc, Type ty, Value lhs, Value rhs) -> Value {
-        if (isFloatType(elemType))
-          return builder.create<VMIMulFOp>(loc, ty, lhs, rhs).getResult();
-        return builder.create<VMIMulIOp>(loc, ty, lhs, rhs).getResult();
       };
       (void)lowerVecScalar(vop, builder, createLegacy);
       continue;
