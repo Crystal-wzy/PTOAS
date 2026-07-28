@@ -2951,6 +2951,8 @@ def public_sync_surface_probe():
     pto.wait_cross_flag(pto.Pipe.FIX, 0)
     pto.wait_intra_flag(pto.Pipe.V, dynamic_event)
     pto.wait_intra_flag(pto.Pipe.FIX, 20)
+    pto.wait_intra_flag(pto.Pipe.MTE3, dynamic_event)
+    pto.wait_intra_flag(pto.Pipe.MTE3, 31)
 
 
 @pto.jit(target="a5")
@@ -6320,6 +6322,8 @@ def main() -> None:
     expect("pto.sync.set <PIPE_FIX>, 4" in sync_surface_text, "set_intra_flag(Pipe.FIX, 4) should lower physical event ids through pto.sync.set")
     expect("pto.sync.wait <PIPE_V>, %c3" in sync_surface_text, "wait_intra_flag(Pipe.V, dynamic_event) should lower dynamic event ids through pto.sync.wait")
     expect("pto.sync.wait <PIPE_FIX>, 20" in sync_surface_text, "wait_intra_flag(Pipe.FIX, 20) should lower physical event ids through pto.sync.wait")
+    expect("pto.sync.wait <PIPE_MTE3>, %c3" in sync_surface_text, "wait_intra_flag(Pipe.MTE3, dynamic_event) should lower dynamic event ids through pto.sync.wait")
+    expect("pto.sync.wait <PIPE_MTE3>, 31" in sync_surface_text, "wait_intra_flag(Pipe.MTE3, 31) should lower the static physical event id through pto.sync.wait")
     expect(data_movement_surface_text.count("pto.mte_gm_ub") == 2, "public grouped GM->UB wrappers should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in data_movement_surface_text, "public grouped UB->GM wrapper should lower to pto.mte_ub_gm")
     expect(
