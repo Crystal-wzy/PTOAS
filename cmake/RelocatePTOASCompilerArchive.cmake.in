@@ -60,6 +60,33 @@ if(NOT _ptoas_generated_native_files)
 endif()
 
 file(MAKE_DIRECTORY "${_ptoas_external_lib_root}")
+
+# CMake's DIRECTORIES argument to GET_RUNTIME_DEPENDENCIES has no effect on
+# Apple platforms, so it cannot resolve LLVM's @rpath dependencies from an
+# external build tree.  Let delocate perform both dependency discovery and
+# Mach-O install-name relocation, just as it does for the macOS wheel.
+if(APPLE)
+  find_program(_ptoas_delocate_path NAMES delocate-path REQUIRED)
+  set(_ptoas_dyld_library_path "@LLVM_BUILD_LIBRARY_DIR@")
+  if(DEFINED ENV{DYLD_LIBRARY_PATH}
+      AND NOT "$ENV{DYLD_LIBRARY_PATH}" STREQUAL "")
+    string(APPEND _ptoas_dyld_library_path ":$ENV{DYLD_LIBRARY_PATH}")
+  endif()
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env
+            "DYLD_LIBRARY_PATH=${_ptoas_dyld_library_path}"
+            "${_ptoas_delocate_path}"
+            --dylibs-only
+            --lib-path "${_ptoas_external_lib_root}"
+            "${_ptoas_package_root}"
+    RESULT_VARIABLE _ptoas_delocate_result
+    COMMAND_ECHO STDOUT)
+  if(NOT _ptoas_delocate_result EQUAL 0)
+    message(FATAL_ERROR "delocate-path failed for PTOAS compiler archive")
+  endif()
+  return()
+endif()
+
 set(_ptoas_dependency_search_dirs
   "${_ptoas_mlir_lib_root}"
   "${_ptoas_archive_root}/lib"
@@ -130,19 +157,7 @@ foreach(_ptoas_dependency IN LISTS _ptoas_resolved_dependencies)
     FOLLOW_SYMLINK_CHAIN)
 endforeach()
 
-if(APPLE)
-  find_program(_ptoas_delocate_path NAMES delocate-path REQUIRED)
-  execute_process(
-    COMMAND "${_ptoas_delocate_path}"
-            --dylibs-only
-            --lib-path "${_ptoas_external_lib_root}"
-            "${_ptoas_package_root}"
-    RESULT_VARIABLE _ptoas_delocate_result
-    COMMAND_ECHO STDOUT)
-  if(NOT _ptoas_delocate_result EQUAL 0)
-    message(FATAL_ERROR "delocate-path failed for PTOAS compiler archive")
-  endif()
-elseif(UNIX)
+if(UNIX)
   find_program(_ptoas_patchelf NAMES patchelf REQUIRED)
 
   function(_ptoas_origin_relative_rpath _ptoas_output _ptoas_from _ptoas_to)
