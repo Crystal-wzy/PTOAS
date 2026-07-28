@@ -7,6 +7,8 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """Table-driven selection and render coverage for the PTODSL TileLib catalog."""
 
+import ast
+from pathlib import Path
 import unittest
 
 import ptodsl.tilelib as tilelib
@@ -475,6 +477,29 @@ class TileLibCatalogTest(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.assertFalse(hasattr(tilelib, name))
+
+    def test_declared_a5_template_ops_are_loadable(self):
+        import TileOps
+        import TileOps.a5 as tileops_a5
+
+        declared_ops = set()
+        for path in Path(tileops_a5.__file__).parent.glob("*.py"):
+            if path.name.startswith("_") or path.name == "__init__.py":
+                continue
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "tile_template"
+                ):
+                    continue
+                for keyword in node.keywords:
+                    if keyword.arg == "op" and isinstance(keyword.value, ast.Constant):
+                        declared_ops.add(keyword.value.value)
+
+        missing = sorted(op for op in declared_ops if not TileOps.load_template(op, "a5"))
+        self.assertEqual(missing, [])
 
     def test_each_catalog_entry_selects_and_renders(self):
         for op, entry in CATALOG.items():
