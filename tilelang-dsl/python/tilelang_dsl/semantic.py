@@ -1608,8 +1608,9 @@ class _SemanticAnalyzer:
             offsets_type = self._require_vreg_expr(offsets, "pto.vscatter offsets")
             if not is_integer_dtype(offsets_type.element_dtype):
                 raise TypeError("pto.vscatter offsets must use an integer vector type in TileLang DSL v1")
-            if integer_bitwidth(offsets_type.element_dtype) != 32:
-                raise TypeError("pto.vscatter currently requires i32 offset vectors in TileLang DSL v1")
+            offsets_bw = integer_bitwidth(offsets_type.element_dtype)
+            if offsets_bw not in (16, 32):
+                raise TypeError("pto.vscatter requires i16 or i32 offset vectors in TileLang DSL v1")
             if value_type.lanes != offsets_type.lanes:
                 raise TypeError("pto.vscatter value and offsets must use the same lane count in TileLang DSL v1")
             self._require_matching_vector_pointer(value_type, destination.type, "pto.vscatter")

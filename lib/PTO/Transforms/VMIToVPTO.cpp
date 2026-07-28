@@ -2053,15 +2053,24 @@ checkSupportedScatterShape(VMIScatterOp op, std::string *reason) {
     return fail("requires !pto.ptr destination because pto.vscatter is "
                 "pointer-only");
 
-  if (pto::getPTOStorageElemBitWidth(valueType.getElementType()) != 32)
-    return fail("currently requires 32-bit value element type so physical "
-                "index and value lane counts match pto.vscatter");
+  unsigned valueBits =
+      pto::getPTOStorageElemBitWidth(valueType.getElementType());
   auto indexElementType = dyn_cast<IntegerType>(indicesType.getElementType());
-  if (!indexElementType || indexElementType.getWidth() != 32 ||
-      indexElementType.isSigned())
-    return fail("requires signless or unsigned 32-bit indices");
-  if (maskType.getGranularity() != "b32")
-    return fail("requires b32 mask granularity");
+  if (!indexElementType || indexElementType.isSigned())
+    return fail("requires signless or unsigned integer indices");
+  bool isB8Scatter = valueBits == 8 && indexElementType.isUnsigned() &&
+                     indexElementType.getWidth() == 16 &&
+                     maskType.getGranularity() == "b16";
+  bool isB16Scatter = valueBits == 16 && indexElementType.isUnsigned() &&
+                      indexElementType.getWidth() == 16 &&
+                      maskType.getGranularity() == "b16";
+  bool isB32Scatter = valueBits == 32 && indexElementType.getWidth() == 32 &&
+                      maskType.getGranularity() == "b32";
+  if (!isB8Scatter && !isB16Scatter && !isB32Scatter)
+    return fail("requires either 32-bit values with 32-bit indices and b32 "
+                "mask, 16-bit values with unsigned 16-bit indices and b16 "
+                "mask, or 8-bit values with unsigned 16-bit indices and b16 "
+                "mask");
 
   FailureOr<int64_t> valueArity = getVMIPhysicalArity(valueType);
   FailureOr<int64_t> indicesArity = getVMIPhysicalArity(indicesType);

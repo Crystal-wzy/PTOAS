@@ -3838,6 +3838,10 @@ static FailureOr<StringRef> buildVscatterCallee(MLIRContext *context,
   return buildLaneTypedCallee(context, valueType, "vscatter", ".v300");
 }
 
+static FailureOr<Type> getVscatterOffsetsCarrierType(Type offsetsType) {
+  return offsetsType;
+}
+
 static FailureOr<StringRef> buildVaxpyCallee(MLIRContext *context,
                                              Type resultType) {
   return buildLaneTypedCallee(context, resultType, "vaxpy", ".m");
@@ -8148,9 +8152,14 @@ public:
     if (failed(calleeName))
       return rewriter.notifyMatchFailure(op, "unsupported vscatter signature");
 
+    FailureOr<Type> offsetsCarrierType = getVscatterOffsetsCarrierType(
+        adaptor.getOffsets().getType());
+    if (failed(offsetsCarrierType))
+      return rewriter.notifyMatchFailure(op, "unsupported vscatter offsets carrier");
+
     auto funcType = rewriter.getFunctionType(
         TypeRange{adaptor.getValue().getType(), adaptor.getDestination().getType(),
-                  adaptor.getOffsets().getType(), adaptor.getMask().getType()},
+                  *offsetsCarrierType, adaptor.getMask().getType()},
         TypeRange{});
     rewriter.create<func::CallOp>(
         op.getLoc(), *calleeName, TypeRange{},
