@@ -4512,15 +4512,28 @@ static Value castToGMBytePointer(ConversionPatternRewriter &rewriter,
   return rewriter.create<emitc::CastOp>(loc, targetTy, value).getResult();
 }
 
-static Value materializeTensorViewDataPointer(
+static Value materializeGlobalTensorDataPointer(
     ConversionPatternRewriter &rewriter, Location loc, Value value,
     Type sourceType) {
-  auto tvTy = dyn_cast<pto::TensorViewType>(sourceType);
-  if (!tvTy)
+  Type loweredType = value.getType();
+  if (auto lvalueTy = dyn_cast<emitc::LValueType>(loweredType))
+    loweredType = lvalueTy.getValueType();
+  if (!isEmitCGlobalTensorLikeType(loweredType))
+    return value;
+
+  Type elemType;
+  if (auto tvTy = dyn_cast<pto::TensorViewType>(sourceType))
+    elemType = tvTy.getElementType();
+  else if (auto partitionTy =
+               dyn_cast<pto::PartitionTensorViewType>(sourceType))
+    elemType = partitionTy.getElementType();
+  else if (auto memrefTy = dyn_cast<MemRefType>(sourceType))
+    elemType = memrefTy.getElementType();
+  else
     return value;
 
   auto *ctx = rewriter.getContext();
-  std::string elemTypeStr = getElemTypeStringForGT(tvTy.getElementType());
+  std::string elemTypeStr = getElemTypeStringForGT(elemType);
   auto ptrTy = emitc::PointerType::get(
       emitc::OpaqueType::get(ctx, "__gm__ " + elemTypeStr));
   return rewriter
@@ -7022,6 +7035,8 @@ struct PTOCmoCacheInvalidToEmitC
       return rewriter.notifyMatchFailure(op, "unsupported CMO invalidate space");
     if (op.getAddr()) {
       Value addr = peelUnrealized(adaptor.getAddr());
+      addr = materializeGlobalTensorDataPointer(
+          rewriter, op.getLoc(), addr, op.getAddr().getType());
       emitInvalidateGmCacheSingleLine(rewriter, op.getLoc(), addr);
     } else {
       emitInvalidateGmCacheAll(rewriter, op.getLoc());
@@ -7195,7 +7210,7 @@ struct PTOInitializeL2G2LPipeToEmitC
         cast<Type>(getTypeConverter()->convertType(op.getPipe().getType()));
 
     Value gmAddr = peelUnrealized(adaptor.getGmAddr());
-    gmAddr = materializeTensorViewDataPointer(
+    gmAddr = materializeGlobalTensorDataPointer(
         rewriter, op.getLoc(), gmAddr, op.getGmAddr().getType());
     Value localAddr =
         op.getLocalAddr() ? peelUnrealized(adaptor.getLocalAddr()) : Value();
@@ -14608,8 +14623,14 @@ struct EmitPTOManualPass
             needsEventIdArrayHelper = true;
           if (isa<mlir::pto::TRandomOp>(op))
             needsTRandomHelper = true;
-          if (isa<mlir::pto::PartitionViewOp>(op))
-            needsGlobalTensorDataHelper = true;
+          if (auto cmo = dyn_cast<mlir::pto::CmoCacheInvalidOp>(op)) {
+            if (cmo.getAddr())
+              needsGlobalTensorDataHelper = true;
+          }
+          if (auto init = dyn_cast<mlir::pto::InitializeL2G2LPipeOp>(op)) {
+            if (isa<mlir::pto::TensorViewType>(init.getGmAddr().getType()))
+              needsGlobalTensorDataHelper = true;
+          }
           if (isa<mlir::pto::BuildAsyncSessionOp, mlir::pto::TPutAsyncOp,
                   mlir::pto::TGetAsyncOp, mlir::pto::TPrefetchAsyncOp,
                   mlir::pto::WaitAsyncEventOp, mlir::pto::TestAsyncEventOp,
@@ -14719,15 +14740,6 @@ static AICORE inline void ptoas_auto_sync_tail(
     break;
   }
 }
-
-#if defined(__CPU_SIM) || defined(__CCE_AICORE__) || defined(__COSTMODEL)
-template <typename Element, typename Shape, typename Stride,
-          pto::Layout TensorLayout>
-static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(
-    pto::GlobalTensor<Element, Shape, Stride, TensorLayout> &tensor) {
-  dcci((__gm__ void*)tensor.data(), cache_line_t::SINGLE_CACHE_LINE);
-}
-#endif
 
 template <typename Ptr>
 static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
