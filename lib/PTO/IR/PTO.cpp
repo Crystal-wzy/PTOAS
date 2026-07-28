@@ -15236,6 +15236,24 @@ static LogicalResult verifySplitAttr(Operation *op, int64_t split) {
   return success();
 }
 
+static bool isOddSplit(int64_t split) {
+  return split == 3 || split == 4;
+}
+
+static bool isInsideCubeKernelOrSection(Operation *op) {
+  if (isInsideSectionCube(op))
+    return true;
+  auto kernelKind = getEnclosingFunctionKernelKind(op);
+  return kernelKind && *kernelKind == FunctionKernelKind::Cube;
+}
+
+static bool isInsideVectorKernelOrSection(Operation *op) {
+  if (isInsideSectionVector(op))
+    return true;
+  auto kernelKind = getEnclosingFunctionKernelKind(op);
+  return kernelKind && *kernelKind == FunctionKernelKind::Vector;
+}
+
 static LogicalResult verifyFrontendKernelKind(Operation *op,
                                               FunctionKernelKind expected,
                                               StringRef kernelName) {
@@ -15595,16 +15613,27 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
   bool hasC2vConsumerBuf = static_cast<bool>(op.getC2vConsumerBuf());
   bool hasV2cConsumerBuf = static_cast<bool>(op.getV2cConsumerBuf());
   if (hasGlobalSlotTensor) {
-    if (hasGmSlotBuffer || hasC2vConsumerBuf || hasV2cConsumerBuf) {
+    if (hasGmSlotBuffer) {
       return op.emitOpError(
-          "globaltensor pipe init expects only 'gm_slot_tensor' and no "
-          "'gm_slot_buffer', 'c2v_consumer_buf', or 'v2c_consumer_buf'");
+          "'gm_slot_tensor' cannot be combined with 'gm_slot_buffer'");
     }
-    if (op.getLocalSlotNumAttr())
+    if ((hasC2vConsumerBuf || hasV2cConsumerBuf) &&
+        (dirMask != 1 || !hasC2vConsumerBuf || hasV2cConsumerBuf)) {
       return op.emitOpError(
-          "globaltensor pipe init does not use 'local_slot_num'");
-    return verifyFrontendGlobalSlotTensor(
-        op.getOperation(), op.getGmSlotTensor(), dirMask, op.getSlotSize());
+          "GM-backed tile pipe init currently supports only dir_mask = 1 "
+          "with 'gm_slot_tensor' and 'c2v_consumer_buf'");
+    }
+    if (!hasC2vConsumerBuf && !hasV2cConsumerBuf) {
+      if (op.getLocalSlotNumAttr())
+        return op.emitOpError(
+            "globaltensor pipe init does not use 'local_slot_num'");
+      return verifyFrontendGlobalSlotTensor(
+          op.getOperation(), op.getGmSlotTensor(), dirMask, op.getSlotSize());
+    }
+    if (failed(verifyFrontendGlobalSlotTensor(
+            op.getOperation(), op.getGmSlotTensor(), dirMask,
+            op.getSlotSize())))
+      return failure();
   }
 
   if (!hasC2vConsumerBuf && !hasV2cConsumerBuf) {
@@ -16077,12 +16106,90 @@ static LogicalResult verifyFrontendSplitOp(Operation *op,
                                            FunctionKernelKind expected,
                                            StringRef kernelName,
                                            int32_t id,
-                                           int64_t split) {
+                                           int64_t split,
+                                           bool expectC2V) {
   if (failed(verifyFrontendKernelKind(op, expected, kernelName)))
     return failure();
   if (id < 0)
     return op->emitOpError("expects 'id' to be non-negative");
-  return verifySplitAttr(op, split);
+  if (failed(verifySplitAttr(op, split)))
+    return failure();
+  if (!isOddSplit(split))
+    return success();
+  if (!expectC2V) {
+    return op->emitOpError(
+        "supports odd split modes (split = 3 or 4) only for C2V "
+        "GM-backed tile pipes");
+  }
+
+  auto funcOp = op->getParentOfType<func::FuncOp>();
+  if (!funcOp)
+    return op->emitOpError("must be nested under a func.func");
+  auto initOr = lookupFrontendInitOpById(op, funcOp, id);
+  if (failed(initOr))
+    return failure();
+
+  auto supportsOddC2V = [&](auto init) {
+    PTOArch arch = getTargetArch(op);
+    bool hasSupportedGmBacking =
+        static_cast<bool>(init.getGmSlotTensor()) ||
+        (arch != PTOArch::A5 && static_cast<bool>(init.getGmSlotBuffer()));
+    return init.getDirMask() == 1 && hasSupportedGmBacking &&
+           static_cast<bool>(init.getC2vConsumerBuf());
+  };
+
+  bool supported = false;
+  if (auto aic = dyn_cast<AicInitializePipeOp>(*initOr))
+    supported = supportsOddC2V(aic);
+  else
+    supported = supportsOddC2V(cast<AivInitializePipeOp>(*initOr));
+  if (!supported) {
+    return op->emitOpError(
+        "supports odd split modes (split = 3 or 4) only for a "
+        "unidirectional C2V GM-backed tile pipe with both GM slot and "
+        "C2V consumer buffers");
+  }
+  return success();
+}
+
+static LogicalResult verifyOddSplitTileEntry(Operation *op, int64_t split,
+                                             Type entryTy) {
+  if (isOddSplit(split) && isa<TensorViewType>(entryTy)) {
+    return op->emitOpError(
+        "supports odd split modes (split = 3 or 4) only for tile entries; "
+        "the pinned pto-isa does not implement odd GlobalTensor offsets");
+  }
+  return success();
+}
+
+static LogicalResult verifyC2VProducerSplitParity(Operation *op, int64_t split,
+                                                  Type entryTy) {
+  if (split == 0)
+    return success();
+
+  ArrayRef<int64_t> shape;
+  if (auto tileTy = dyn_cast<TileBufType>(entryTy))
+    shape = tileTy.getValidShape();
+  else if (auto viewTy = dyn_cast<TensorViewType>(entryTy))
+    shape = viewTy.getShape();
+  else
+    return success();
+  if (shape.size() != 2)
+    return success();
+
+  bool splitRows = split == 1 || split == 3;
+  int64_t axisSize = shape[splitRows ? 0 : 1];
+  if (axisSize == ShapedType::kDynamic)
+    return success();
+
+  bool expectOdd = isOddSplit(split);
+  if ((axisSize % 2 != 0) != expectOdd) {
+    return op->emitOpError()
+           << "expects a statically " << (expectOdd ? "odd" : "even")
+           << " valid-" << (splitRows ? "row" : "column")
+           << " count for split = " << split;
+  }
+  return success();
 }
 
 static LogicalResult verifyAivSubblockIdOperand(Operation *op,
@@ -16207,10 +16314,13 @@ static LogicalResult verifyFrontendPopOp(FrontendPopOpT op,
                                          bool expectC2V) {
   if (failed(verifyFrontendSplitOp(op.getOperation(), expected, kernelName,
                                    op.getId(),
-                                   op.getSplit())))
+                                   op.getSplit(), expectC2V)))
     return failure();
   if (failed(verifyFrontendDataOpDirection(op.getOperation(), op.getId(),
                                            expectC2V)))
+    return failure();
+  if (failed(verifyOddSplitTileEntry(op.getOperation(), op.getSplit(),
+                                     op.getTile().getType())))
     return failure();
   if (failed(verifyFrontendTensorEntryMatchesInit(op.getOperation(), op.getId(),
                                                   op.getTile().getType())))
@@ -16221,6 +16331,12 @@ static LogicalResult verifyFrontendPopOp(FrontendPopOpT op,
   if (hasValidRow != hasValidCol)
     return op.emitOpError(
         "expects valid_row and valid_col operands to be provided together");
+  if (isOddSplit(op.getSplit()) && !hasValidRow &&
+      !isa<TensorViewType>(op.getTile().getType())) {
+    return op.emitOpError(
+        "expects odd C2V split tpop to provide per-sub-core valid_row and "
+        "valid_col operands");
+  }
   if (!hasValidRow)
     return success();
 
@@ -16515,6 +16631,26 @@ static LogicalResult verifyPipeHandleProducer(Operation *op, Value pipeHandle) {
     return op->emitOpError(
         "pipe_handle must be produced by pto.initialize_l2l_pipe or "
         "pto.initialize_l2g2l_pipe");
+  }
+  return success();
+}
+
+static LogicalResult verifyInternalOddSplitSupport(Operation *op,
+                                                   Value pipeHandle,
+                                                   int64_t split,
+                                                   bool producerSide) {
+  if (!isOddSplit(split))
+    return success();
+
+  bool isC2VSide = producerSide ? isInsideCubeKernelOrSection(op)
+                                : isInsideVectorKernelOrSection(op);
+  auto initOp = pipeHandle.getDefiningOp<InitializeL2G2LPipeOp>();
+  if (!isC2VSide || !initOp || initOp.getDirMask() != 1 ||
+      !initOp.getLocalAddr()) {
+    return op->emitOpError(
+        "supports odd split modes (split = 3 or 4) only for a "
+        "unidirectional C2V pto.initialize_l2g2l_pipe with a local "
+        "consumer buffer");
   }
   return success();
 }
@@ -17279,7 +17415,8 @@ LogicalResult TAllocToAivOp::verify() {
   if (failed(verifyNoUnpublishedFixpipeFrontendAttrs(getOperation())))
     return failure();
   if (failed(verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Cube,
-                                   "cube", getId(), getSplit())))
+                                   "cube", getId(), getSplit(),
+                                   /*expectC2V=*/true)))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
                                            /*expectC2V=*/true)))
@@ -17302,6 +17439,9 @@ LogicalResult TAllocToAivOp::verify() {
     }
   }
 
+  if (failed(verifyOddSplitTileEntry(getOperation(), getSplit(),
+                                     getEntry().getType())))
+    return failure();
   return verifyFrontendTensorEntryMatchesInit(getOperation(), getId(),
                                               getEntry().getType());
 }
@@ -17310,7 +17450,8 @@ LogicalResult TAllocToAicOp::verify() {
   if (failed(verifyNoUnpublishedFixpipeFrontendAttrs(getOperation())))
     return failure();
   if (failed(verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Vector,
-                                   "vector", getId(), getSplit())))
+                                   "vector", getId(), getSplit(),
+                                   /*expectC2V=*/false)))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
                                            /*expectC2V=*/false)))
@@ -17323,13 +17464,20 @@ LogicalResult TPushToAivOp::verify() {
   if (failed(verifyNoUnpublishedFixpipeFrontendAttrs(getOperation())))
     return failure();
   if (failed(verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Cube,
-                                   "cube", getId(), getSplit())))
+                                   "cube", getId(), getSplit(),
+                                   /*expectC2V=*/true)))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
                                            /*expectC2V=*/true)))
     return failure();
   if (failed(verifyFrontendTensorEntryMatchesInit(getOperation(), getId(),
                                               getTile().getType())))
+    return failure();
+  if (failed(verifyOddSplitTileEntry(getOperation(), getSplit(),
+                                     getTile().getType())))
+    return failure();
+  if (failed(verifyC2VProducerSplitParity(getOperation(), getSplit(),
+                                          getTile().getType())))
     return failure();
 
   // Fixpipe validation
@@ -17450,7 +17598,8 @@ LogicalResult TPushToAicOp::verify() {
   if (failed(verifyNoUnpublishedFixpipeFrontendAttrs(getOperation())))
     return failure();
   if (failed(verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Vector,
-                                   "vector", getId(), getSplit())))
+                                   "vector", getId(), getSplit(),
+                                   /*expectC2V=*/false)))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
                                            /*expectC2V=*/false)))
@@ -17485,7 +17634,8 @@ LogicalResult TFreeFromAicOp::verify() {
   if (failed(verifyNoUnpublishedFixpipeFrontendAttrs(getOperation())))
     return failure();
   if (failed(verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Vector,
-                                   "vector", getId(), getSplit())))
+                                   "vector", getId(), getSplit(),
+                                   /*expectC2V=*/true)))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
                                            /*expectC2V=*/true)))
@@ -17508,6 +17658,10 @@ LogicalResult TFreeFromAicOp::verify() {
     }
   }
 
+  if (getEntry() &&
+      failed(verifyOddSplitTileEntry(getOperation(), getSplit(),
+                                     getEntry().getType())))
+    return failure();
   if (getEntry())
     return verifyFrontendTensorEntryMatchesInit(getOperation(), getId(),
                                                 getEntry().getType());
@@ -17518,7 +17672,8 @@ LogicalResult TFreeFromAivOp::verify() {
   if (failed(verifyNoUnpublishedFixpipeFrontendAttrs(getOperation())))
     return failure();
   if (failed(verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Cube,
-                                   "cube", getId(), getSplit())))
+                                   "cube", getId(), getSplit(),
+                                   /*expectC2V=*/false)))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
                                            /*expectC2V=*/false)))
@@ -17541,6 +17696,10 @@ LogicalResult TFreeFromAivOp::verify() {
     }
   }
 
+  if (getEntry() &&
+      failed(verifyOddSplitTileEntry(getOperation(), getSplit(),
+                                     getEntry().getType())))
+    return failure();
   if (getEntry())
     return verifyFrontendTensorEntryMatchesInit(getOperation(), getId(),
                                                 getEntry().getType());
@@ -17722,6 +17881,16 @@ LogicalResult TPushOp::verify() {
     return failure();
   if (failed(verifySplitAttr(getOperation(), getSplit())))
     return failure();
+  if (failed(verifyInternalOddSplitSupport(
+          getOperation(), getPipeHandle(), getSplit(),
+          /*producerSide=*/true)))
+    return failure();
+  if (failed(verifyOddSplitTileEntry(getOperation(), getSplit(),
+                                     getTile().getType())))
+    return failure();
+  if (failed(verifyC2VProducerSplitParity(getOperation(), getSplit(),
+                                          getTile().getType())))
+    return failure();
   if (failed(verifyAivSubblockIdOperand(getOperation(), getAivSubblockid(),
                                         getSplit(), getTile().getType())))
     return failure();
@@ -17739,10 +17908,19 @@ LogicalResult TAllocOp::verify() {
     return emitOpError("must be inside pto.section.cube/vector or a kernel_kind function");
   if (failed(verifyPipeHandleProducer(getOperation(), getPipeHandle())))
     return failure();
+  if (failed(verifySplitAttr(getOperation(), getSplit())))
+    return failure();
+  if (failed(verifyInternalOddSplitSupport(
+          getOperation(), getPipeHandle(), getSplit(),
+          /*producerSide=*/true)))
+    return failure();
+  if (failed(verifyOddSplitTileEntry(getOperation(), getSplit(),
+                                     getEntry().getType())))
+    return failure();
   if (failed(verifyTensorEntryMatchesInternalPipeInit(
           getOperation(), getPipeHandle(), getEntry().getType())))
     return failure();
-  return verifySplitAttr(getOperation(), getSplit());
+  return success();
 }
 
 LogicalResult TPopOp::verify() {
@@ -17751,6 +17929,13 @@ LogicalResult TPopOp::verify() {
   if (failed(verifyPipeHandleProducer(getOperation(), getPipeHandle())))
     return failure();
   if (failed(verifySplitAttr(getOperation(), getSplit())))
+    return failure();
+  if (failed(verifyInternalOddSplitSupport(
+          getOperation(), getPipeHandle(), getSplit(),
+          /*producerSide=*/false)))
+    return failure();
+  if (failed(verifyOddSplitTileEntry(getOperation(), getSplit(),
+                                     getTile().getType())))
     return failure();
   if (failed(verifyAivSubblockIdOperand(getOperation(), getAivSubblockid(),
                                         getSplit(), getTile().getType())))
@@ -17770,11 +17955,21 @@ LogicalResult TFreeOp::verify() {
     return emitOpError("must be inside pto.section.cube/vector or a kernel_kind function");
   if (failed(verifyPipeHandleProducer(getOperation(), getPipeHandle())))
     return failure();
+  if (failed(verifySplitAttr(getOperation(), getSplit())))
+    return failure();
+  if (failed(verifyInternalOddSplitSupport(
+          getOperation(), getPipeHandle(), getSplit(),
+          /*producerSide=*/false)))
+    return failure();
+  if (getEntry() &&
+      failed(verifyOddSplitTileEntry(getOperation(), getSplit(),
+                                     getEntry().getType())))
+    return failure();
   if (getEntry() &&
       failed(verifyTensorEntryMatchesInternalPipeInit(
           getOperation(), getPipeHandle(), getEntry().getType())))
     return failure();
-  return verifySplitAttr(getOperation(), getSplit());
+  return success();
 }
 
 ParseResult TFreeOp::parse(OpAsmParser &parser, OperationState &result) {
