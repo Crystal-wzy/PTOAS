@@ -7986,12 +7986,27 @@ static FailureOr<Value> buildRuntimeGlobalTensor(
   SmallVector<Value, 5> strideValues;
   for (int64_t dim = 0; dim < shift; ++dim) {
     shapeValues.push_back(makeViewIndexConstant(rewriter, loc, 1));
-    strideValues.push_back(makeViewIndexConstant(rewriter, loc, 1));
   }
   for (Value value : runtimeShape)
     shapeValues.push_back(castViewIndexToEmitC(rewriter, loc, value));
-  for (Value value : runtimeStrides)
-    strideValues.push_back(castViewIndexToEmitC(rewriter, loc, value));
+
+  strideValues.resize(5);
+  for (auto [index, value] : llvm::enumerate(runtimeStrides))
+    strideValues[shift + static_cast<int64_t>(index)] =
+        castViewIndexToEmitC(rewriter, loc, value);
+  if (shift == 5) {
+    for (int64_t dim = 0; dim < 5; ++dim)
+      strideValues[dim] = makeViewIndexConstant(rewriter, loc, 1);
+  } else {
+    for (int64_t dim = shift - 1; dim >= 0; --dim) {
+      strideValues[dim] =
+          rewriter
+              .create<emitc::MulOp>(loc, strideValues[dim + 1].getType(),
+                                    shapeValues[dim + 1],
+                                    strideValues[dim + 1])
+              .getResult();
+    }
+  }
 
   Value shape = rewriter
                     .create<emitc::CallOpaqueOp>(

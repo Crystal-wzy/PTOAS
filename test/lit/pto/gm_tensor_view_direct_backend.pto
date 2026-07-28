@@ -34,6 +34,27 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
     return
   }
 
+  func.func @gm_tensor_view_rank1_direct_backend(
+      %base: !pto.ptr<f32, gm>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    %c0_i64 = arith.constant 0 : i64
+    %view = pto.make_tensor_view %base, shape = [%c128],
+      strides = [%c1] : !pto.tensor_view<128xf32>
+    %part = pto.partition_view %view, offsets = [%c0],
+      sizes = [%c128]
+      : !pto.tensor_view<128xf32> -> !pto.partition_tensor_view<128xf32>
+    %tile = pto.alloc_tile addr = %c0_i64
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tload ins(%part : !pto.partition_tensor_view<128xf32>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128,
+                                         v_row=1, v_col=128, blayout=row_major,
+                                         slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+
   func.func @gm_tensor_view_control_flow(
       %base: !pto.ptr<f32, gm>, %alternate: !pto.ptr<f32, gm>, %cond: i1,
       %rows: index, %cols: index, %row_stride: index) {
@@ -74,6 +95,11 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 // EMITC-NOT: PTOAS__GLOBAL_TENSOR_GET_STRIDE
 // EMITC: TLOAD(
 // EMITC-NOT: memref
+// EMITC-LABEL: gm_tensor_view_rank1_direct_backend(__gm__ float*
+// EMITC: pto::Shape<1, 1, 1, 1, 128>
+// EMITC: pto::Stride<128, 128, 128, 128, 1>
+// EMITC-NOT: PTOAS__GLOBAL_TENSOR_GET_STRIDE
+// EMITC: TLOAD(
 // EMITC-LABEL: gm_tensor_view_control_flow(
 // EMITC: if (
 // EMITC-NOT: PTOAS__GLOBAL_TENSOR_GET_SHAPE
@@ -87,6 +113,10 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 // VPTO-NOT: pto.partition_view
 // VPTO-NOT: pto.get_tensor_view_dim
 // VPTO-NOT: pto.get_tensor_view_stride
+// VPTO: pto.copy_gm_to_ubuf
+// VPTO-LABEL: func.func @gm_tensor_view_rank1_direct_backend
+// VPTO-NOT: pto.make_tensor_view
+// VPTO-NOT: pto.partition_view
 // VPTO: pto.copy_gm_to_ubuf
 // VPTO-LABEL: func.func @gm_tensor_view_control_flow
 // VPTO-NOT: pto.make_tensor_view
