@@ -732,9 +732,9 @@ class _VMINamespace:
             )
         return _call_value("vbrc", result_type, raw_value, group=group, loc=loc, ip=ip)
 
-    vcadd = staticmethod(lambda source, mask, *, group=None, pmode=None, reassoc=_UNSPECIFIED, loc=None, ip=None: _emit_reduce("vcadd", source, mask, group=group, pmode=pmode, reassoc=reassoc, loc=loc, ip=ip))
-    vcmax = staticmethod(lambda source, mask, *, group=None, pmode=None, loc=None, ip=None: _emit_reduce("vcmax", source, mask, group=group, pmode=pmode, loc=loc, ip=ip))
-    vcmin = staticmethod(lambda source, mask, *, group=None, pmode=None, loc=None, ip=None: _emit_reduce("vcmin", source, mask, group=group, pmode=pmode, loc=loc, ip=ip))
+    vcadd = staticmethod(lambda source, mask, *, group=1, pmode=None, reassoc=_UNSPECIFIED, loc=None, ip=None: _emit_reduce("vcadd", source, mask, group=1 if group is None else group, pmode=pmode, reassoc=reassoc, loc=loc, ip=ip))
+    vcmax = staticmethod(lambda source, mask, *, group=1, pmode=None, loc=None, ip=None: _emit_reduce("vcmax", source, mask, group=1 if group is None else group, pmode=pmode, loc=loc, ip=ip))
+    vcmin = staticmethod(lambda source, mask, *, group=1, pmode=None, loc=None, ip=None: _emit_reduce("vcmin", source, mask, group=1 if group is None else group, pmode=pmode, loc=loc, ip=ip))
 
     @staticmethod
     def vcvt(

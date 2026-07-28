@@ -2615,8 +2615,11 @@ def vmi_wrapper_dispatch_probe():
     selected = pto.vmi.vsel(pred, scaled, expanded)
     shuffled = pto.vmi.vselr(selected, idx)
     total = pto.vmi.vcadd(shuffled, mask, reassoc=False)
+    explicit_total = pto.vmi.vcadd(shuffled, mask, group=1, reassoc=False)
     peak = pto.vmi.vcmax(shuffled, mask)
+    explicit_peak = pto.vmi.vcmax(shuffled, mask, group=1)
     floor = pto.vmi.vcmin(shuffled, mask)
+    explicit_floor = pto.vmi.vcmin(shuffled, mask, group=1)
     group_peak = pto.vmi.vcmax(shuffled, group_mask, group=8)
     gather = pto.vmi.vgather(src_ptr, idx, mask)
     gatherb = pto.vmi.vgatherb(src_ptr, idx, mask)
@@ -2636,8 +2639,11 @@ def vmi_wrapper_dispatch_probe():
 
     _ = group_mask
     _ = total
+    _ = explicit_total
     _ = peak
+    _ = explicit_peak
     _ = floor
+    _ = explicit_floor
     _ = group_peak
     _ = gather
     _ = gatherb
@@ -6400,6 +6406,15 @@ def main() -> None:
             op_name in vmi_wrapper_dispatch_text,
             f"representative {op_name} wrapper dispatch should emit the matching generated VMI op",
         )
+    for op_name, expected_count in (("vcadd", 2), ("vcmax", 3), ("vcmin", 2)):
+        expect(
+            vmi_wrapper_dispatch_text.count(f"pto.vmi.{op_name}") == expected_count,
+            f"pto.vmi.{op_name} should emit both omitted-group and explicit-group probes",
+        )
+    expect(
+        vmi_wrapper_dispatch_text.count("group = 1") >= 6,
+        "VMI reductions should make the omitted group equivalent to group=1",
+    )
     expect(
         vmi_wrapper_dispatch_text.count("pto.vmi.vload") == 7,
         "vmi wrapper dispatch probe should lower seven explicit VMI loads",
