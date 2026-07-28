@@ -1370,6 +1370,52 @@ def ast_runtime_for_static_slot_carry_probe(cols: pto.i32):
     _ = total
 
 
+_STATIC_SLOT_GLOBAL_INDEX = 2
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_static_slot_global_index_probe(cols: pto.i32):
+    zero = pto.const(0, dtype=pto.index)
+    accs = [zero for _ in pto.static_range(4)]
+
+    for c in range(cols):
+        accs[_STATIC_SLOT_GLOBAL_INDEX] = accs[_STATIC_SLOT_GLOBAL_INDEX] + c
+
+    total = zero
+    for h in pto.static_range(4):
+        total = total + accs[h]
+    _ = total
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_static_slot_binop_index_probe(cols: pto.i32):
+    zero = pto.const(0, dtype=pto.index)
+    accs = [zero for _ in pto.static_range(5)]
+
+    for c in range(cols):
+        for h in pto.static_range(4):
+            accs[h + 1] = accs[h + 1] + c
+
+    total = zero
+    for h in pto.static_range(5):
+        total = total + accs[h]
+    _ = total
+
+
+@pto.jit(target="a5")
+def ast_runtime_for_static_slot_constexpr_index_probe(cols: pto.i32, *, SLOT: pto.const_expr = 2):
+    zero = pto.const(0, dtype=pto.index)
+    accs = [zero for _ in pto.static_range(4)]
+
+    for c in range(cols):
+        accs[SLOT] = accs[SLOT] + c
+
+    total = zero
+    for h in pto.static_range(4):
+        total = total + accs[h]
+    _ = total
+
+
 @pto.jit(target="a5")
 def ast_runtime_for_dynamic_slot_store_error_probe(cols: pto.i32):
     zero = pto.const(0, dtype=pto.index)
@@ -3260,6 +3306,17 @@ def vdup_surface_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def vecscope_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    zero = pto.const(0)
+    with pto.vecscope():
+        mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+        vec_f32 = pto.vlds(ub_f32, zero)
+        pto.vsts(vec_f32, ub_f32, zero, mask32_full)
+
+
+@pto.jit(target="a5", mode="explicit")
 def vdup_surface_invalid_scalar_position_probe():
     mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
     _ = pto.vdup(pto.f32(0), mask32_full, pto.PositionMode.HIGHEST)
@@ -3429,6 +3486,12 @@ def auto_mode_explicit_surface_violation_probe():
     gm_src = pto.castptr(zero_u64, pto.ptr(pto.f16, "gm"))
     ub_dst = pto.castptr(zero_u64, pto.ptr(pto.f16, "ub"))
     pto.mte_gm_ub(gm_src, ub_dst, 0, 256, nburst=(8, 256, 256))
+
+
+@pto.jit(target="a5")
+def auto_mode_vecscope_violation_probe():
+    with pto.vecscope():
+        pass
 
 
 @pto.jit(target="a5")
@@ -3609,7 +3672,7 @@ def main() -> None:
     expect(not hasattr(pto, "get_buf_dyn"), "pto.get_buf_dyn should not remain on the public pto namespace")
     expect(not hasattr(pto, "rls_buf_dyn"), "pto.rls_buf_dyn should not remain on the public pto namespace")
     expect(not hasattr(pto, "tile_buf_type"), "pto.tile_buf_type should not remain on the public pto namespace")
-    expect(not hasattr(pto, "vecscope"), "pto.vecscope should not remain on the public pto namespace")
+    expect(hasattr(pto, "vecscope"), "pto.vecscope should be exported from the public pto namespace")
     expect(not hasattr(pto, "as_ptr"), "pto.as_ptr should not remain on the public pto namespace")
     expect(not hasattr(pto, "vbrc_load"), "pto.vbrc_load should not remain on the public pto namespace")
     expect(not hasattr(pto, "vsts_1pt"), "pto.vsts_1pt should not remain on the public pto namespace")
@@ -3625,10 +3688,9 @@ def main() -> None:
         "pto.tile_buf_type is not a supported PTODSL public interface" in str(removed_tile_buf_type),
         "removed pto.tile_buf_type should diagnose the authored alloc_tile replacement",
     )
-    removed_vecscope = expect_raises(AttributeError, lambda: getattr(pto, "vecscope"))
     expect(
-        "pto.vecscope is not a supported PTODSL public interface" in str(removed_vecscope),
-        "removed pto.vecscope should diagnose the public SIMD replacements",
+        callable(pto.vecscope),
+        "pto.vecscope should expose the public vecscope context manager",
     )
     removed_as_ptr = expect_raises(AttributeError, lambda: getattr(pto, "as_ptr"))
     expect(
@@ -4729,6 +4791,23 @@ def main() -> None:
         __file__ in str(auto_mode_violation),
         "auto-mode DMA violation should preserve the authored source file",
     )
+    auto_mode_vecscope_violation = expect_raises(
+        RuntimeError,
+        auto_mode_vecscope_violation_probe.compile,
+        '@pto.jit(mode="explicit")',
+    )
+    expect(
+        "auto-mode contract violation" in str(auto_mode_vecscope_violation),
+        "auto-mode vecscope use should be diagnosed as an auto-mode contract violation",
+    )
+    expect(
+        "pto.vecscope()" in str(auto_mode_vecscope_violation),
+        "auto-mode vecscope violation should identify the explicit-only surface",
+    )
+    expect(
+        "auto_mode_vecscope_violation_probe" in str(auto_mode_vecscope_violation),
+        "auto-mode vecscope violation should identify the authored kernel name",
+    )
     merged_cross_mode_text = str(pto.merge_jit_modules(host_vec_copy.compile(), host_vec_copy_explicit.compile()))
     expect_parse_roundtrip_and_verify(merged_cross_mode_text, "merged cross-mode PTODSL container")
     expect(
@@ -5505,6 +5584,35 @@ def main() -> None:
         and "scf.yield" in ast_runtime_for_static_slot_carry_text,
         "static subscript slot carry should lower through scf.for iter_args",
     )
+    ast_runtime_for_static_slot_global_index_text = ast_runtime_for_static_slot_global_index_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_static_slot_global_index_text,
+        "AST-rewritten runtime for global static subscript slot carry specialization",
+    )
+    expect(
+        ast_runtime_for_static_slot_global_index_text.count("scf.for") == 1,
+        "module-global static slot indices should lower through the authored runtime loop",
+    )
+    ast_runtime_for_static_slot_binop_index_text = ast_runtime_for_static_slot_binop_index_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_static_slot_binop_index_text,
+        "AST-rewritten runtime for BinOp static subscript slot carry specialization",
+    )
+    expect(
+        ast_runtime_for_static_slot_binop_index_text.count("scf.for") == 1,
+        "BinOp static slot indices should lower through the authored runtime loop",
+    )
+    ast_runtime_for_static_slot_constexpr_index_text = (
+        ast_runtime_for_static_slot_constexpr_index_probe.compile(SLOT=2).mlir_text()
+    )
+    expect_parse_roundtrip_and_verify(
+        ast_runtime_for_static_slot_constexpr_index_text,
+        "AST-rewritten runtime for constexpr static subscript slot carry specialization",
+    )
+    expect(
+        ast_runtime_for_static_slot_constexpr_index_text.count("scf.for") == 1,
+        "constexpr static slot indices should lower through the authored runtime loop",
+    )
     expect_raises(
         PTODSLAstRewriteError,
         lambda: ast_runtime_for_dynamic_slot_store_error_probe.compile(),
@@ -6051,6 +6159,8 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(low_precision_vcvt_surface_text, "low-precision vcvt surface specialization")
     vdup_surface_text = vdup_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vdup_surface_text, "public vdup surface specialization")
+    vecscope_surface_text = vecscope_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vecscope_surface_text, "public vecscope surface specialization")
     vmulscvt_surface_text = vmulscvt_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vmulscvt_surface_text, "public vmulscvt surface specialization")
     vmula_surface_text = vmula_surface_probe.compile().mlir_text()
@@ -6390,6 +6500,9 @@ def main() -> None:
     expect("f32, !pto.mask<b32> -> !pto.vreg<64xf32>" in vdup_surface_text, "vdup(scalar_f32, mask_b32) should infer an f32 vector result type")
     expect(vdup_surface_text.count('position = "LOWEST"') >= 1, "vdup(vec, mask) should default position to LOWEST")
     expect('position = "HIGHEST"' in vdup_surface_text, "vdup(vec, mask, PositionMode.HIGHEST) should preserve the authored position")
+    expect(vecscope_surface_text.count("pto.vecscope") == 1, "pto.vecscope() should lower exactly one vecscope region")
+    expect("pto.vlds" in vecscope_surface_text, "public vecscope body should allow vector loads")
+    expect("pto.vsts" in vecscope_surface_text, "public vecscope body should allow vector stores")
     expect("pto.vmulscvt" in vmulscvt_surface_text, "vmulscvt(...) should lower to pto.vmulscvt")
     expect('\"A\"' in vmulscvt_surface_text, "vmulscvt(..., rnd=VcvtRoundMode.A) should preserve the authored round token")
     expect('\"EVEN\"' in vmulscvt_surface_text, "vmulscvt(..., part=PartMode.EVEN) should preserve the authored part token")

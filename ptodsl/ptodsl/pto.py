@@ -152,6 +152,7 @@ from ._ops import (             # noqa: F401
 
 # ── Control flow ──────────────────────────────────────────────────────────────
 from ._control_flow import (    # noqa: F401
+    vecscope,
     for_, if_, yield_,
     static_range,
     LoopHandle, BranchHandle,
@@ -184,6 +185,6 @@ PAT = MaskPattern
 
 
 def __getattr__(name):
-    if name in {"ukernel", "tile_buf_type", "vecscope", "as_ptr", "vbrc_load", "vsts_1pt", "constexpr", "copy_ubuf_to_ubuf", "tensor_spec", "TensorSpec"}:
+    if name in {"ukernel", "tile_buf_type", "as_ptr", "vbrc_load", "vsts_1pt", "constexpr", "copy_ubuf_to_ubuf", "tensor_spec", "TensorSpec"}:
         raise unsupported_public_surface_error(name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
