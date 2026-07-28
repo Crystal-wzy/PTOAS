@@ -37,6 +37,16 @@ module attributes {"pto.target_arch" = "a3"} {
              outs(%dst : !pto.tile_buf<vec, 16x16xf16>)
     return
   }
+
+  func.func @inplace_forbid_alias_tcvt() {
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 16x16xbf16>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 16x16xf32>
+
+    pto.tcvt ins(%src {rmode = #pto<round_mode ROUND>}
+                 : !pto.tile_buf<vec, 16x16xbf16>)
+             outs(%dst : !pto.tile_buf<vec, 16x16xf32>)
+    return
+  }
 }
 
 // CHECK-LABEL: func.func @inplace_forbid_alias_ttrans
@@ -56,4 +66,9 @@ module attributes {"pto.target_arch" = "a3"} {
 // CHECK: pto.alloc_tile addr = %[[B1024]]
 // CHECK: pto.alloc_tile addr = %[[B1536]]
 // CHECK: pto.alloc_tile addr = %[[B512]]
+// CHECK-LABEL: func.func @inplace_forbid_alias_tcvt
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i64
+// CHECK-DAG: %[[C512:.*]] = arith.constant 512 : i64
+// CHECK: pto.alloc_tile addr = %[[C0]]
+// CHECK: pto.alloc_tile addr = %[[C512]]
 // CHECK-NOT: memref.alloc

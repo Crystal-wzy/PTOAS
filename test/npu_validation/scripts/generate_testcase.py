@@ -1554,6 +1554,7 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names, seed_in
         Handles common PTOAS patterns like:
           v1
           v1 + (expr)
+          (v1 + expr0) + expr1
           reinterpret_cast<__gm__ float*>(v1 + expr)
           (__gm__ float*)(v1 + expr)
         """
@@ -1573,6 +1574,22 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names, seed_in
             m = re.match(r"^\(\s*[\w:<> ]+\*\s*\)\s*(.+)$", expr)
             if m:
                 expr = _strip_enclosing_parens(m.group(1).strip())
+
+        plus_terms = _split_top_level(expr, "+")
+        if len(plus_terms) > 1:
+            for idx, term in enumerate(plus_terms):
+                param, off0 = resolve_param_and_offset_expr(term)
+                if not param or off0 is None:
+                    continue
+                offset = off0
+                for other_idx, other_term in enumerate(plus_terms):
+                    if other_idx == idx:
+                        continue
+                    off_val = _safe_eval_int_expr(other_term, int_max)
+                    if off_val is None:
+                        continue
+                    offset += max(off_val, 0)
+                return param, offset
 
         m = re.match(r"^(\w+)\s*\+\s*(.+)$", expr)
         if m:

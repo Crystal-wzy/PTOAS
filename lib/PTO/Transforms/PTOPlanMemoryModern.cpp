@@ -243,7 +243,7 @@ static InplacePolicy getInplacePolicy(Operation *op) {
                 "pto.tsort32",    "pto.ttrans",          "pto.trowargmax",
                 "pto.trowargmin", "pto.trowmax",         "pto.trowmin",
                 "pto.trowprod",   "pto.trowsum",         "pto.tcolargmax",
-                "pto.tcolargmin", "pto.txors",
+                "pto.tcolargmin", "pto.tcvt",            "pto.txors",
             });
 
   if (name == "pto.tsel") {

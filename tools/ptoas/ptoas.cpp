@@ -1992,11 +1992,20 @@ static bool rewriteMarkerCallToSubscript(std::string &cpp, llvm::StringRef marke
       cpp, marker, [&](const ParsedMarkerCall &call) -> std::optional<std::string> {
         if (call.args.size() != expectedNumArgs)
           return std::nullopt;
+        std::string replacement;
+        replacement.reserve(call.args[0].size() + call.args[1].size() + 8 +
+                            (isStore ? call.args[2].size() : 0));
+        replacement.push_back('(');
+        replacement.append(call.args[0].str());
+        replacement.push_back(')');
+        replacement.push_back('[');
+        replacement.append(call.args[1].str());
+        replacement.push_back(']');
         if (isStore) {
-          return (call.args[0] + "[" + call.args[1] + "] = " + call.args[2])
-              .str();
+          replacement.append(" = ");
+          replacement.append(call.args[2].str());
         }
-        return (call.args[0] + "[" + call.args[1] + "]").str();
+        return replacement;
       });
 }
 
