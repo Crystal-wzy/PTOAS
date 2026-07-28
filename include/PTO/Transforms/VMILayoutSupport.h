@@ -111,6 +111,14 @@ enum class VMIGroupBlockClass {
   FullPartMultiple,
 };
 
+struct VMIGroupStoreLayoutFact {
+  VMILayoutAttr valueLayout;
+  VMIGroupBlockClass blockClass = VMIGroupBlockClass::OneBlock;
+  int64_t groupSize = 0;
+  int64_t lanesPerPart = 0;
+  int64_t vcgBlockElems = 0;
+};
+
 struct VMIGroupReduceLayoutFact {
   VMIGroupBlockClass blockClass = VMIGroupBlockClass::OneBlock;
   VMILayoutAttr sourceLayout;
@@ -310,6 +318,25 @@ public:
   FailureOr<VMIGroupSlotLayoutFact>
   getGroupStoreLayoutFact(VMIVRegType valueType, int64_t numGroups,
                           std::string *reason = nullptr) const;
+
+  FailureOr<VMIGroupStoreLayoutFact>
+  getGroupStoreLayoutFact(VMIGroupStoreOp op, VMIVRegType valueType,
+                          std::string *reason = nullptr) const;
+
+  FailureOr<SmallVector<VMIGroupStoreLayoutFact, 4>>
+  getGroupStoreLayoutFactsForLayout(VMIGroupStoreOp op,
+                                    VMIVRegType valueType,
+                                    VMILayoutAttr layout,
+                                    std::string *reason = nullptr) const;
+
+  FailureOr<VMIGroupStoreLayoutFact>
+  getPreferredGroupStoreLayoutFact(VMIGroupStoreOp op, VMIVRegType valueType,
+                                   std::string *reason = nullptr) const;
+
+  FailureOr<VMIGroupStoreLayoutFact>
+  getHighPriorityGroupStoreLayoutFact(VMIGroupStoreOp op,
+                                      VMIVRegType valueType,
+                                      std::string *reason = nullptr) const;
 
   FailureOr<VMIGroupReduceLayoutFact>
   getPreferredGroupReduceLayoutFact(VMIVRegType sourceType, int64_t numGroups,
