@@ -804,12 +804,12 @@ jobs:
           probe_ptodsl_python() {
             "${PTO_DSL_ST_PYTHON_BIN}" - <<'PY'
           import sys
-          import mlir.ir  # noqa: F401
+          import ptoas.mlir.ir  # noqa: F401
           from ptodsl import pto  # noqa: F401
-          from mlir.dialects import pto as _pto  # noqa: F401
+          from ptoas.mlir.dialects import pto as _pto  # noqa: F401
 
           print(sys.executable)
-          print("ptodsl/mlir import ok")
+          print("ptodsl/ptoas.mlir import ok")
           PY
           }
 
