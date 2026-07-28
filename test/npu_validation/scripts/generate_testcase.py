@@ -729,6 +729,20 @@ def _detect_output_pointer_params(text: str, pointer_param_names):
         text,
     ):
         gt_to_expr.setdefault(match.group(1), match.group(2).strip())
+    for match in re.finditer(
+        r"\b(?:pto::)?GlobalTensor<[^;\n]*>\s+(\w+)\s*=\s*(?:pto::)?GlobalTensor<[^;\n]*>\s*\(([^;]*)\);",
+        text,
+    ):
+        args = _split_cpp_args(match.group(2))
+        if args:
+            gt_to_expr.setdefault(match.group(1), args[0].strip())
+    for match in re.finditer(
+        r"\b(\w+)\s*=\s*(?:pto::)?GlobalTensor<[^;\n]*>\s*\(([^;]*)\);",
+        text,
+    ):
+        args = _split_cpp_args(match.group(2))
+        if args:
+            gt_to_expr.setdefault(match.group(1), args[0].strip())
     for match in re.finditer(r"\b(\w+)\s+(\w+)\s*=\s*\1\s*\(([^,]+?)\s*,", text):
         gt_to_expr.setdefault(match.group(2), match.group(3).strip())
 
@@ -746,6 +760,25 @@ def _detect_output_pointer_params(text: str, pointer_param_names):
         ptr_to_param[match.group(1)] = match.group(2)
     for match in re.finditer(r"\b(\w+)\s*=\s*\(__gm__\s+[\w:<>]+\s*\*\)\s*(\w+)\b", text):
         ptr_to_param.setdefault(match.group(1), match.group(2))
+
+    for match in re.finditer(
+        r"__gm__\s+[\w:<>]+\s*\*\s*(\w+)\s*=\s*PTOAS__GLOBAL_TENSOR_DATA\(\s*(\w+)\s*\);",
+        text,
+    ):
+        alias, tensor = match.group(1), match.group(2)
+        expr = gt_to_expr.get(tensor)
+        param = _resolve_pointer_param_from_expr(expr, pointer_param_names, ptr_to_param, ptr_to_base)
+        if param:
+            ptr_to_param[alias] = param
+    for match in re.finditer(
+        r"\b(\w+)\s*=\s*PTOAS__GLOBAL_TENSOR_DATA\(\s*(\w+)\s*\);",
+        text,
+    ):
+        alias, tensor = match.group(1), match.group(2)
+        expr = gt_to_expr.get(tensor)
+        param = _resolve_pointer_param_from_expr(expr, pointer_param_names, ptr_to_param, ptr_to_base)
+        if param:
+            ptr_to_param[alias] = param
 
     outputs = []
     for gt in tstore_gts:
@@ -1235,8 +1268,12 @@ def _required_elements_for_shape_stride(shape_dims, stride_dims) -> Optional[int
         stride = stride_dims[i]
         if not isinstance(dim, int) or not isinstance(stride, int):
             return None
-        if dim <= 0:
+        if dim < 0:
+            return None
+        if dim <= 1:
             continue
+        if stride < 0:
+            return None
         req += (dim - 1) * stride
     return max(req, 1)
 
@@ -1573,28 +1610,35 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names, seed_in
         if dims:
             stride_aliases[m.group(1)] = dims
 
-    # New tile-native EmitC may materialize dynamic GM views as:
-    #   pto::Shape<1, 1, 1, -1, -1> s = pto::Shape<...>(..., rows, cols);
-    #   pto::Stride<-1, ...>        t = pto::Stride<...>(..., rowStride, 1);
-    # The template carries `-1` placeholders, while the constructor arguments
-    # carry the concrete validation footprint.
-    shape_objects = {}
-    for m in re.finditer(
-        r"\b(?:pto::)?Shape<[^;\n]*>\s+(\w+)\s*=\s*(?:pto::)?Shape<[^;\n]*>\s*\(([^;]*)\);",
-        kernel_text,
-    ):
-        dims = eval_int_arg_list(m.group(2))
-        if dims:
-            shape_objects[m.group(1)] = dims
+    def collect_shape_or_stride_objects(kind: str):
+        # New tile-native EmitC may materialize dynamic GM views as either:
+        #   pto::Shape<..., -1, -1> s = pto::Shape<...>(..., rows, cols);
+        # or declare-at-top form:
+        #   pto::Shape<..., -1, -1> s;
+        #   s = pto::Shape<...>(..., rows, cols);
+        # The template carries `-1` placeholders, while constructor arguments
+        # carry the concrete validation footprint.
+        objects = {}
+        ctor_pat = rf"(?:pto::)?{kind}<([^;\n]*)>\s*\(([^;]*)\)"
+        init_pat = rf"\b(?:pto::)?{kind}<[^;\n]*>\s+(\w+)\s*=\s*{ctor_pat}\s*;"
+        for m in re.finditer(init_pat, kernel_text):
+            dims = eval_int_arg_list(m.group(3))
+            if not dims:
+                dims = _parse_int_list(m.group(2))
+            if dims:
+                objects[m.group(1)] = dims
 
-    stride_objects = {}
-    for m in re.finditer(
-        r"\b(?:pto::)?Stride<[^;\n]*>\s+(\w+)\s*=\s*(?:pto::)?Stride<[^;\n]*>\s*\(([^;]*)\);",
-        kernel_text,
-    ):
-        dims = eval_int_arg_list(m.group(2))
-        if dims:
-            stride_objects[m.group(1)] = dims
+        assign_pat = rf"\b(\w+)\s*=\s*{ctor_pat}\s*;"
+        for m in re.finditer(assign_pat, kernel_text):
+            dims = eval_int_arg_list(m.group(3))
+            if not dims:
+                dims = _parse_int_list(m.group(2))
+            if dims:
+                objects[m.group(1)] = dims
+        return objects
+
+    shape_objects = collect_shape_or_stride_objects("Shape")
+    stride_objects = collect_shape_or_stride_objects("Stride")
 
     # Map GT_* alias -> (shape_alias, stride_alias)
     gt_alias_to_shape_stride = {}
