@@ -111,9 +111,9 @@ module {
 // CHECK: get_subblockid
 // CHECK: TPOP<TPipe<0, Direction::DIR_C2V, 262144, 8, 8, true>, GlobalTensor<float, pto::Shape<1, 1, 4, 128, 128>, pto::Stride<65536, 65536, 16384, 128, 1>, pto::Layout::ND>, TileSplitAxis::TILE_NO_SPLIT>
 // CHECK: for (
-// CHECK: GlobalTensor<float, pto::Shape<1, 1, 4, 16, 128>, pto::Stride<-1, -1, -1, -1, -1>, pto::Layout::ND>
+// CHECK: GlobalTensor<float, pto::Shape<1, 1, 4, 16, 128>, pto::Stride<65536, 65536, 16384, 128, 1>, pto::Layout::ND>
 // CHECK: TLOAD
 // CHECK: TADDS
-// CHECK: GlobalTensor<float, pto::Shape<1, 1, 4, 16, 128>, pto::Stride<-1, -1, -1, -1, -1>, pto::Layout::ND>
+// CHECK: GlobalTensor<float, pto::Shape<1, 1, 4, 16, 128>, pto::Stride<512, 512, 128, 512, 1>, pto::Layout::ND>
 // CHECK: TSTORE
 // CHECK: TFREE<TPipe<0, Direction::DIR_C2V, 262144, 8, 8, true>, GlobalTensor<float, pto::Shape<1, 1, 4, 128, 128>, pto::Stride<65536, 65536, 16384, 128, 1>, pto::Layout::ND>, TileSplitAxis::TILE_NO_SPLIT>
