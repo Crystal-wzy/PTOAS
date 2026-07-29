@@ -30,6 +30,7 @@ jobs:
       pull-requests: read
     env:
       SOFT_TIMEOUT_MINUTES: ${{ vars.CI_SIM_SOFT_TIMEOUT_MINUTES || '90' }}
+      PR_CONTEXT_DIR: pr-context
     steps:
       # workflow_run executes this workflow from the default branch, so this
       # checkout never runs a script supplied by the pull request.
@@ -50,16 +51,13 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Update slow CI warning
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          python3 .github/scripts/ci_sim_duration_warning.py
-          --repo "${{ github.repository }}"
-          --run-id "${{ github.event.workflow_run.id }}"
-          --run-head-sha "${{ github.event.workflow_run.head_sha }}"
-          --run-url "${{ github.event.workflow_run.html_url }}"
-          --soft-timeout-minutes "${SOFT_TIMEOUT_MINUTES}"
-          --pr-context-dir pr-context
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          retries: 3
+          script: |
+            const observeRun = require('./.github/scripts/ci_sim_duration_warning.js');
+            core.info(await observeRun({github, context}));
 
   rerun-self-hosted-git-failure:
     if: >-
