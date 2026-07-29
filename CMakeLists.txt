@@ -78,7 +78,7 @@ endfunction()
 
 ptoas_preseed_compilers_from_llvm_cache()
 
-project(ptoas VERSION 0.54)
+project(ptoas VERSION 0.55)
 set(PTOAS_VMI_VERSION "0.1.4")
 
 option(PTOAS_VALIDATE_CMAKE4_FETCHCONTENT_COMPAT
