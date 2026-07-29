@@ -35,6 +35,8 @@ namespace {
 
 enum class DmaArch { A2A3, A5 };
 
+constexpr uint64_t kMxScaleAddressShift = 4;
+
 static DmaArch getDmaArch(ModuleOp mod) {
   if (!mod)
     return DmaArch::A2A3;
@@ -275,6 +277,21 @@ static Value materializeAccStoreClipPayload(Value value, Type destinationElement
 static Value getI64Constant(Location loc, PatternRewriter &rewriter,
                             uint64_t value) {
   return rewriter.create<arith::ConstantIntOp>(loc, value, 64);
+}
+
+static Value deriveMxScaleDestination(Value dataDestination,
+                                      PatternRewriter &rewriter,
+                                      Location loc) {
+  auto ptrType = dyn_cast<pto::PtrType>(dataDestination.getType());
+  if (!ptrType)
+    return {};
+
+  Value dataAddress = rewriter.create<pto::CastPtrOp>(
+      loc, rewriter.getI64Type(), dataDestination);
+  Value scaleAddress = rewriter.create<arith::ShRUIOp>(
+      loc, dataAddress,
+      getI64Constant(loc, rewriter, kMxScaleAddressShift));
+  return rewriter.create<pto::CastPtrOp>(loc, ptrType, scaleAddress);
 }
 
 static Value buildAccStoreOptionalEnumValue(Location loc,
@@ -1548,6 +1565,10 @@ struct ExpandLeftLoadMxPattern : public OpRewritePattern<pto::MteL1L0aMxOp> {
       return rewriter.notifyMatchFailure(op, "expected typed L1 source");
     if (!destination)
       return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
+    destination = deriveMxScaleDestination(destination, rewriter, loc);
+    if (!destination)
+      return rewriter.notifyMatchFailure(
+          op, "failed to derive MX scale destination pointer");
 
     FailureOr<LoadCbufToMxControl> control =
         deriveLoadCbufToCaMxControl(loc, op.getM(), op.getK(),
@@ -1581,6 +1602,10 @@ struct ExpandRightLoadMxPattern : public OpRewritePattern<pto::MteL1L0bMxOp> {
       return rewriter.notifyMatchFailure(op, "expected typed L1 source");
     if (!destination)
       return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
+    destination = deriveMxScaleDestination(destination, rewriter, loc);
+    if (!destination)
+      return rewriter.notifyMatchFailure(
+          op, "failed to derive MX scale destination pointer");
     FailureOr<LoadCbufToMxControl> control =
         deriveLoadCbufToCbMxControl(loc, op.getK(), op.getN(),
                                     sourceType.getElementType(),
