@@ -248,6 +248,15 @@ if(BUILD_TESTING)
       LABELS "PTO"
       ENVIRONMENT "${_pto_python_test_env}"
     )
+    add_test(
+      NAME pto_low_precision_types
+      COMMAND "${Python3_EXECUTABLE}" -S
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/python/low_precision_types.py"
+    )
+    set_tests_properties(pto_low_precision_types PROPERTIES
+      LABELS "PTO"
+      ENVIRONMENT "${_pto_python_test_env}"
+    )
   endif()
   add_subdirectory(tools/ptobc/tests)
 endif()

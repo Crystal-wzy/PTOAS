@@ -51,6 +51,8 @@ AsyncSessionType = _pto_mod.AsyncSessionType
 AsyncEventType = _pto_mod.AsyncEventType
 PrefetchAsyncContextType = _export_optional_cext_symbol("PrefetchAsyncContextType")
 HiF8Type = _pto_mod.HiF8Type
+HiF8x2Type = _pto_mod.HiF8x2Type
+F8E8M0Type = _pto_mod.F8E8M0Type
 F4E1M2x2Type = _pto_mod.F4E1M2x2Type
 F4E2M1x2Type = _pto_mod.F4E2M1x2Type
 TensorViewType = _pto_mod.TensorViewType
@@ -229,6 +231,8 @@ __all__ = [
     "AsyncSessionType",
     "AsyncEventType",
     "HiF8Type",
+    "HiF8x2Type",
+    "F8E8M0Type",
     "F4E1M2x2Type",
     "F4E2M1x2Type",
     "TensorViewType",
