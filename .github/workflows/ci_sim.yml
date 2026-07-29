@@ -702,7 +702,7 @@ jobs:
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
           PTOAS_BIN="${PTOAS_BIN}" \
           bash test/tilelang_st/script/run_ci.sh -r sim -v a5 \
-            --build-jobs 8 --jobs 64 --smoke \
+            --build-jobs 32 --jobs 64 --smoke \
             2>&1 | tee "${TILELANG_DSL_WORKSPACE}/run_ci.log"
 
       - name: Restore PTODSL LLVM build cache
