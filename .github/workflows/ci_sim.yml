@@ -699,7 +699,6 @@ jobs:
           set -euo pipefail
           mkdir -p "${TILELANG_DSL_WORKSPACE}"
           export LLVM_BUILD_DIR="${LLVM_DIR}"
-          export MLIR_PYTHON_ROOT="${MLIR_PYTHONPATH}"
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
           PTOAS_BIN="${PTOAS_BIN}" \
           bash test/tilelang_st/script/run_ci.sh -r sim -v a5 --jobs 64 --smoke \

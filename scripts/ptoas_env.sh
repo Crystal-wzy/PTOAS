@@ -53,8 +53,6 @@ PY
 	)"
 fi
 export PTOAS_PYTHON_SITE
-export PTO_PYTHON_ROOT="${PTO_PYTHON_ROOT:-${PTO_INSTALL_DIR}}"
-export PTO_PYTHON_BUILD_ROOT="${PTO_PYTHON_BUILD_ROOT:-${PTO_SOURCE_DIR}/build/python}"
 export PTODSL_PYTHON_ROOT="${PTODSL_PYTHON_ROOT:-${PTO_SOURCE_DIR}/ptodsl}"
 export PTOAS_FLAGS="${PTOAS_FLAGS:-}"
 export PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-${PTO_SOURCE_DIR}/build/output}"
@@ -112,9 +110,8 @@ _ptoas_run_legacy_smoke_test() {
 # Prefer the build tree for active development, while retaining install-tree
 # fallbacks for scripts that consume a direct CMake installation.
 _ptoas_prepend_path PYTHONPATH "${PTO_INSTALL_DIR}"
-_ptoas_prepend_path PYTHONPATH "${PTO_PYTHON_ROOT}"
 _ptoas_prepend_path PYTHONPATH "${PTOAS_PYTHON_SITE}"
-_ptoas_prepend_path PYTHONPATH "${PTO_PYTHON_BUILD_ROOT}"
+_ptoas_prepend_path PYTHONPATH "${PTO_SOURCE_DIR}/build/python"
 _ptoas_prepend_path PYTHONPATH "${PTODSL_PYTHON_ROOT}"
 
 _ptoas_prepend_path LD_LIBRARY_PATH "${LLVM_BUILD_DIR}/lib"

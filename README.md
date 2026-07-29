@@ -204,8 +204,7 @@ from ptoas.mlir.dialects import pto as mlir_pto
 # --- 运行时变量配置 (基于之前定义的路径) ---
 
 # 1. Python Path: PTOAS 的 build/install tree 已包含统一的 MLIR + PTO package
-export PTO_PYTHON_ROOT=$PTO_INSTALL_DIR
-export PYTHONPATH=$PTO_PYTHON_ROOT:$PYTHONPATH
+export PYTHONPATH=$PTO_INSTALL_DIR:$PTO_SOURCE_DIR/build/python:$PYTHONPATH
 
 # 2. Library Path: 确保能加载 LLVM 和 PTO 的动态库
 export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
