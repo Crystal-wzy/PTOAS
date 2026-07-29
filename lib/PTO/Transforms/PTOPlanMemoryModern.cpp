@@ -116,6 +116,11 @@ static bool isPlannableLocalSpace(std::optional<AddressSpace> space) {
   return space && *space != AddressSpace::GM && *space != AddressSpace::Zero;
 }
 
+static bool isCubeLocalSpace(AddressSpace space) {
+  return space == AddressSpace::MAT || space == AddressSpace::LEFT ||
+         space == AddressSpace::RIGHT || space == AddressSpace::ACC;
+}
+
 static bool isNameIn(StringRef name, ArrayRef<StringRef> names) {
   return llvm::is_contained(names, name);
 }
@@ -1405,8 +1410,9 @@ LogicalResult mlir::pto::runModernPlanMemory(func::FuncOp func,
     SmallVector<RootInfo *> &roots = entry.second;
     MemSpec spec = getMemSpec(getTargetArch(func), space);
 
+    bool sizeFirstForSpace = orderBySize && !isCubeLocalSpace(space);
     llvm::stable_sort(roots, [&](const RootInfo *lhs, const RootInfo *rhs) {
-      if (orderBySize && lhs->totalBytes != rhs->totalBytes)
+      if (sizeFirstForSpace && lhs->totalBytes != rhs->totalBytes)
         return lhs->totalBytes > rhs->totalBytes;
       if (lhs->allocIndex != rhs->allocIndex)
         return lhs->allocIndex < rhs->allocIndex;

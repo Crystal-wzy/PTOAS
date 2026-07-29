@@ -706,6 +706,8 @@ freshAddressBonus   = 1
 
 容量压力仍优先于性能 hint：若 fresh group 会让剩余 local 空间低于 planner 的保守 reserve，则必须选择合法 reuse group，避免为了展开 hot scratch 造成后续 root overflow。
 
+Cube 相关 local space（`MAT` / `LEFT` / `RIGHT` / `ACC`）不使用 largest-first 排序，即使用户显式选择 modern planner 默认的 `orderBySize`。这些空间的性能更依赖计算流附近的 L1/L0A/L0B/ACC 地址规律；把大 tile 全部提前规划会打散 `TLOAD -> TEXTRACT -> TMATMUL` 周边的 operand 地址模式，可能触发不利 bank pattern。`VEC` 仍保留 largest-first，因为 VEC scratch 的主要风险通常是容量压力和跨 PIPE_V/MTE 热点复用，而不是 cube operand 的固定 L0 bank 节奏。
+
 ### 6. prefill_c4_state_update 类场景
 
 典型退化模式：
