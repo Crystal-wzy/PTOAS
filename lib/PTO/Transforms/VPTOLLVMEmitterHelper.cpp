@@ -382,6 +382,17 @@ queryDefaultTargetAttrs(const VPTOEmissionOptions &options,
 
 } // namespace
 
+Value encodeMxDestAddr(ConversionPatternRewriter &rewriter, Location loc,
+                       Value destination) {
+  constexpr uint64_t kMxDestinationAddressUnitBytes = 16;
+  Type i64Type = rewriter.getI64Type();
+  Value destinationAddress =
+      rewriter.create<LLVM::PtrToIntOp>(loc, i64Type, destination);
+  Value addressUnit = rewriter.create<arith::ConstantOp>(
+      loc, rewriter.getI64IntegerAttr(kMxDestinationAddressUnitBytes));
+  return rewriter.create<LLVM::UDivOp>(loc, destinationAddress, addressUnit);
+}
+
 void materializeVecScopeCarrierLoops(ModuleOp module) {
   MLIRContext *ctx = module.getContext();
   (void)ctx->getOrLoadDialect<arith::ArithDialect>();

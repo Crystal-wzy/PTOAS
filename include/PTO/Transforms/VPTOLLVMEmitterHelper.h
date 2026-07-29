@@ -11,4 +11,16 @@
 
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 
+namespace mlir {
+class ConversionPatternRewriter;
+}
+
+namespace mlir::pto {
+
+/// Encode a real L0 byte pointer for the LOAD.MX destination ABI.
+Value encodeMxDestAddr(ConversionPatternRewriter &rewriter, Location loc,
+                       Value destination);
+
+} // namespace mlir::pto
+
 #endif // MLIR_DIALECT_PTO_TRANSFORMS_VPTOLLVMEMITTERHELPER_H

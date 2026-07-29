@@ -1394,6 +1394,8 @@ def PTO_LoadCbufToCaMxOp : PTO_MteOp<"load_cbuf_to_ca_mx"> {
 
   let results = (outs);
 
+  let hasVerifier = 1;
+
   let assemblyFormat = [{
     $source `,` $destination `,` $x_start_position `,` $y_start_position `,`
     $x_step `,` $y_step `,` $src_stride `,` $dst_stride attr-dict `:`
@@ -1416,6 +1418,8 @@ def PTO_LoadCbufToCbMxOp : PTO_MteOp<"load_cbuf_to_cb_mx"> {
   );
 
   let results = (outs);
+
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `,` $destination `,` $x_start_position `,` $y_start_position `,`

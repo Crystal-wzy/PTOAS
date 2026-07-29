@@ -25,7 +25,7 @@ from ._diagnostics import unsupported_public_surface_error
 # ── Types ─────────────────────────────────────────────────────────────────────
 from ._types import (           # noqa: F401
     float32, float16, bf16,
-    f8e4m3, f8e5m2, hif8, f4e1m2x2, f4e2m1x2,
+    f8e4m3, f8e5m2, f8e8m0, hif8, f4e1m2x2, f4e2m1x2,
     f16x2, bf16x2, f32x2,
     f8e4m3x2, f8e4m3x4, f8e4m3x8,
     f8e5m2x2, f8e5m2x4, f8e5m2x8, hif8x2,
@@ -127,6 +127,7 @@ from ._ops import (             # noqa: F401
     set_atomic_f32, set_atomic_f16, set_atomic_bf16,
     set_atomic_s32, set_atomic_s16, set_atomic_s8,
     mte_l1_l0a, mte_l1_l0b, mte_l1_l0a_mx, mte_l1_l0b_mx,
+    load_cbuf_to_ca_mx, load_cbuf_to_cb_mx,
     mte_l0c_l1, mte_l0c_gm, mte_l0c_ub,
     mad, mad_acc, mad_bias, mad_mx, mad_mx_acc, mad_mx_bias,
     get_block_idx, get_block_num, get_subblock_idx, get_subblock_num,

@@ -5244,6 +5244,54 @@ def mte_l1_l0b_mx(
     )
 
 
+@_explicit_mode_only("pto.load_cbuf_to_ca_mx(...)")
+def load_cbuf_to_ca_mx(
+    source,
+    destination,
+    x_start,
+    y_start,
+    x_step,
+    y_step,
+    src_stride,
+    dst_stride,
+):
+    """``pto.load_cbuf_to_ca_mx`` - explicit-control L1-to-L0A MX scale load."""
+    _pto.LoadCbufToCaMxOp(
+        unwrap_surface_value(source),
+        unwrap_surface_value(destination),
+        _coerce_i64(x_start, context="load_cbuf_to_ca_mx x_start"),
+        _coerce_i64(y_start, context="load_cbuf_to_ca_mx y_start"),
+        _coerce_i64(x_step, context="load_cbuf_to_ca_mx x_step"),
+        _coerce_i64(y_step, context="load_cbuf_to_ca_mx y_step"),
+        _coerce_i64(src_stride, context="load_cbuf_to_ca_mx src_stride"),
+        _coerce_i64(dst_stride, context="load_cbuf_to_ca_mx dst_stride"),
+    )
+
+
+@_explicit_mode_only("pto.load_cbuf_to_cb_mx(...)")
+def load_cbuf_to_cb_mx(
+    source,
+    destination,
+    x_start,
+    y_start,
+    x_step,
+    y_step,
+    src_stride,
+    dst_stride,
+):
+    """``pto.load_cbuf_to_cb_mx`` - explicit-control L1-to-L0B MX scale load."""
+    _pto.LoadCbufToCbMxOp(
+        unwrap_surface_value(source),
+        unwrap_surface_value(destination),
+        _coerce_i64(x_start, context="load_cbuf_to_cb_mx x_start"),
+        _coerce_i64(y_start, context="load_cbuf_to_cb_mx y_start"),
+        _coerce_i64(x_step, context="load_cbuf_to_cb_mx x_step"),
+        _coerce_i64(y_step, context="load_cbuf_to_cb_mx y_step"),
+        _coerce_i64(src_stride, context="load_cbuf_to_cb_mx src_stride"),
+        _coerce_i64(dst_stride, context="load_cbuf_to_cb_mx dst_stride"),
+    )
+
+
 @_explicit_mode_only("pto.mte_l0c_l1(...)")
 def mte_l0c_l1(
     source,
@@ -6359,6 +6407,7 @@ __all__ = [
     "set_atomic_f32", "set_atomic_f16", "set_atomic_bf16",
     "set_atomic_s32", "set_atomic_s16", "set_atomic_s8",
     "mte_l1_l0a", "mte_l1_l0b", "mte_l1_l0a_mx", "mte_l1_l0b_mx",
+    "load_cbuf_to_ca_mx", "load_cbuf_to_cb_mx",
     "mte_l0c_l1", "mte_l0c_gm", "mte_l0c_ub",
     "mad", "mad_acc", "mad_bias", "mad_mx", "mad_mx_acc", "mad_mx_bias",
     "get_block_idx", "get_block_num", "get_subblock_idx", "get_subblock_num",

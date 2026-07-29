@@ -3159,6 +3159,19 @@ def public_data_movement_surface_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def explicit_mx_scale_staging_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    stage1_u64 = pto.const(32768, dtype=pto.ui64)
+    a_scale_l1 = pto.castptr(zero_u64, pto.ptr(pto.f8e8m0, "mat"))
+    b_scale_l1 = pto.castptr(zero_u64, pto.ptr(pto.f8e8m0, "mat"))
+    a_stage1_l0 = pto.castptr(stage1_u64, pto.ptr(pto.f8e4m3, "left"))
+    b_stage1_l0 = pto.castptr(stage1_u64, pto.ptr(pto.f8e4m3, "right"))
+
+    pto.load_cbuf_to_ca_mx(a_scale_l1, a_stage1_l0, 3, 5, 16, 2, 8, 2)
+    pto.load_cbuf_to_cb_mx(b_scale_l1, b_stage1_l0, 3, 5, 16, 2, 8, 2)
+
+
+@pto.jit(target="a5", mode="explicit")
 def fixed_width_integer_specialization_probe():
     zero_u64 = pto.const(0, dtype=pto.ui64)
     gm_src = pto.castptr(zero_u64, pto.ptr(pto.f16, "gm"))
@@ -3912,6 +3925,10 @@ def main() -> None:
             "pto.f8e5m2x8 should resolve to vector<8xf8E5M2>",
         )
         expect(
+            str(pto.f8e8m0.resolve()) == "!pto.f8E8M0",
+            "pto.f8e8m0 should resolve to the public E8M0 scale type",
+        )
+        expect(
             "hif8" in str(pto.hif8.resolve()),
             "pto.hif8 should resolve to the public HiF8 type",
         )
@@ -3965,6 +3982,10 @@ def main() -> None:
             "low-precision pointer types should be valid for device storage",
         )
         expect(
+            "!pto.ptr<!pto.f8E8M0, l1>" == str(pto.ptr(pto.f8e8m0, "mat").resolve()),
+            "f8e8m0 pointers should be valid for L1 scale storage",
+        )
+        expect(
             str(pto.vreg_type(256, pto.f8e4m3).resolve()) == "!pto.vreg<256xf8E4M3FN>",
             "low-precision vreg types should be valid for vector micro-ops",
         )
@@ -3976,6 +3997,11 @@ def main() -> None:
         expect_raises(
             TypeError,
             lambda: pto.f8e4m3(1.0),
+            "unsupported eager constructor target type",
+        )
+        expect_raises(
+            TypeError,
+            lambda: pto.f8e8m0(1.0),
             "unsupported eager constructor target type",
         )
 
@@ -6196,6 +6222,11 @@ def main() -> None:
 
     public_surface_text = public_surface_exports_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(public_surface_text, "public surface export specialization")
+    explicit_mx_scale_staging_text = explicit_mx_scale_staging_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        explicit_mx_scale_staging_text,
+        "explicit MX scale staging specialization",
+    )
     acc_store_pre_quant_text = acc_store_pre_quant_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(acc_store_pre_quant_text, "acc-store pre_quant public mode specialization")
     expect(
@@ -6633,6 +6664,19 @@ def main() -> None:
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
     expect("pto.mte_l1_l0a_mx" in public_surface_text, "mte_l1_l0a_mx(...) should lower to pto.mte_l1_l0a_mx")
     expect("pto.mte_l1_l0b_mx" in public_surface_text, "mte_l1_l0b_mx(...) should lower to pto.mte_l1_l0b_mx")
+    expect(
+        explicit_mx_scale_staging_text.count("!pto.ptr<!pto.f8E8M0, l1>") >= 2,
+        "explicit MX staging should preserve E8M0 L1 source pointers",
+    )
+    for op_name in ("load_cbuf_to_ca_mx", "load_cbuf_to_cb_mx"):
+        expect(
+            re.search(
+                rf"pto\.{op_name} %\d+, %\d+, %c3_i64(?:_\d+)?, %c5_i64(?:_\d+)?, "
+                r"%c16_i64(?:_\d+)?, %c2_i64(?:_\d+)?, %c8_i64(?:_\d+)?, %c2_i64(?:_\d+)",
+                explicit_mx_scale_staging_text,
+            ) is not None,
+            f"{op_name}(...) should preserve every explicit MX control operand",
+        )
     expect("pto.tmatmul.mx" in public_surface_text, "pto.tile.matmul_mx should lower to pto.tmatmul.mx")
     expect("pto.tmatmul.mx.acc" in public_surface_text, "pto.tile.matmul_mx_acc should lower to pto.tmatmul.mx.acc")
     expect("pto.tmatmul.mx.bias" in public_surface_text, "pto.tile.matmul_mx_bias should lower to pto.tmatmul.mx.bias")

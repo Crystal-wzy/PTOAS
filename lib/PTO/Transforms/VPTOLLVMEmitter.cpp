@@ -9,7 +9,7 @@
 // https://discourse.llvm.org/t/matchandrewrite-hiding-virtual-functions/84933/8
 #pragma GCC diagnostic ignored "-Woverloaded-virtual"
 
-#include "PTO/Transforms/VPTOLLVMEmitter.h"
+#include "PTO/Transforms/VPTOLLVMEmitterHelper.h"
 
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOTypeUtils.h"
@@ -6091,7 +6091,7 @@ public:
       return rewriter.notifyMatchFailure(op,
                                          "failed to pack load_cbuf_to_ca_mx config");
     auto i64Ty = rewriter.getI64Type();
-    Value dstAddr = rewriter.create<LLVM::PtrToIntOp>(op.getLoc(), i64Ty, *dst);
+    Value dstAddr = encodeMxDestAddr(rewriter, op.getLoc(), *dst);
 
     StringRef calleeName = buildLoadCbufToCaMxCallee(op.getContext());
     auto funcType = rewriter.getFunctionType(
@@ -6156,7 +6156,7 @@ public:
       return rewriter.notifyMatchFailure(op,
                                          "failed to pack load_cbuf_to_cb_mx config");
     auto i64Ty = rewriter.getI64Type();
-    Value dstAddr = rewriter.create<LLVM::PtrToIntOp>(op.getLoc(), i64Ty, *dst);
+    Value dstAddr = encodeMxDestAddr(rewriter, op.getLoc(), *dst);
 
     StringRef calleeName = buildLoadCbufToCbMxCallee(op.getContext());
     auto funcType = rewriter.getFunctionType(

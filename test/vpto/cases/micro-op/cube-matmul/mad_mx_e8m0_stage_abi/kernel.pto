@@ -1,0 +1,104 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Address ABI probe for MX scale staging. The stage-1 L0 destinations are real
+// byte addresses (32768), not pre-divided pseudo-pointers.
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cube>} {
+  func.func @mad_mx_e8m0_stage_abi_kernel(
+      %a_gm: !pto.ptr<f8E4M3FN, gm>,
+      %b_gm: !pto.ptr<f8E4M3FN, gm>,
+      %a_scale_gm: !pto.ptr<ui16, gm>,
+      %b_scale_gm: !pto.ptr<ui16, gm>,
+      %c_gm: !pto.ptr<f32, gm>) attributes {pto.kernel} {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c8_i64 = arith.constant 8 : i64
+    %c16_i64 = arith.constant 16 : i64
+    %c128_i64 = arith.constant 128 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c256_i64 = arith.constant 256 : i64
+    %c32768_i64 = arith.constant 32768 : i64
+    %c65536_i64 = arith.constant 65536 : i64
+    %c98304_i64 = arith.constant 98304 : i64
+    %c131072_i64 = arith.constant 131072 : i64
+    %c135168_i64 = arith.constant 135168 : i64
+
+    %l1_a_data = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, l1>
+    %l1_b_data = pto.castptr %c65536_i64 : i64 -> !pto.ptr<f8E4M3FN, l1>
+    %l1_a_scale_storage = pto.castptr %c131072_i64 : i64 -> !pto.ptr<ui16, l1>
+    %l1_b_scale_storage = pto.castptr %c135168_i64 : i64 -> !pto.ptr<ui16, l1>
+    %l1_a_scale = pto.castptr %c131072_i64 : i64 -> !pto.ptr<!pto.f8E8M0, l1>
+    %l1_b_scale = pto.castptr %c135168_i64 : i64 -> !pto.ptr<!pto.f8E8M0, l1>
+    %l1_a_data_stage1 = pto.castptr %c32768_i64 : i64 -> !pto.ptr<f8E4M3FN, l1>
+    %l1_b_data_stage1 = pto.castptr %c98304_i64 : i64 -> !pto.ptr<f8E4M3FN, l1>
+
+    %l0a_stage0 = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, l0a>
+    %l0b_stage0 = pto.castptr %c0_i64 : i64 -> !pto.ptr<f8E4M3FN, l0b>
+    %l0a_stage1 = pto.castptr %c32768_i64 : i64 -> !pto.ptr<f8E4M3FN, l0a>
+    %l0b_stage1 = pto.castptr %c32768_i64 : i64 -> !pto.ptr<f8E4M3FN, l0b>
+    %l0c = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, l0c>
+
+    pto.mte_gm_l1 %a_gm, %l1_a_data, %c65536_i64
+      nburst(%c1_i64, %c0_i64, %c0_i64)
+      : !pto.ptr<f8E4M3FN, gm>, !pto.ptr<f8E4M3FN, l1>, i64, i64, i64, i64
+    pto.mte_gm_l1 %b_gm, %l1_b_data, %c65536_i64
+      nburst(%c1_i64, %c0_i64, %c0_i64)
+      : !pto.ptr<f8E4M3FN, gm>, !pto.ptr<f8E4M3FN, l1>, i64, i64, i64, i64
+    pto.mte_gm_l1 %a_scale_gm, %l1_a_scale_storage, %c4096_i64
+      nburst(%c1_i64, %c0_i64, %c0_i64)
+      : !pto.ptr<ui16, gm>, !pto.ptr<ui16, l1>, i64, i64, i64, i64
+    pto.mte_gm_l1 %b_scale_gm, %l1_b_scale_storage, %c4096_i64
+      nburst(%c1_i64, %c0_i64, %c0_i64)
+      : !pto.ptr<ui16, gm>, !pto.ptr<ui16, l1>, i64, i64, i64, i64
+
+    pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
+
+    pto.mte_l1_l0a %l1_a_data, %l0a_stage0, %c256_i64, %c128_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f8E4M3FN, l1>, !pto.ptr<f8E4M3FN, l0a>, i64, i64, i64, i64
+    pto.mte_l1_l0b %l1_b_data, %l0b_stage0, %c128_i64, %c256_i64, %c0_i64, %c0_i64 {transpose = true}
+      : !pto.ptr<f8E4M3FN, l1>, !pto.ptr<f8E4M3FN, l0b>, i64, i64, i64, i64
+    pto.load_cbuf_to_ca_mx %l1_a_scale, %l0a_stage0, %c0_i64, %c0_i64,
+      %c16_i64, %c2_i64, %c8_i64, %c2_i64
+      : !pto.ptr<!pto.f8E8M0, l1>, !pto.ptr<f8E4M3FN, l0a>, i64, i64, i64, i64, i64, i64
+    pto.load_cbuf_to_cb_mx %l1_b_scale, %l0b_stage0, %c0_i64, %c0_i64,
+      %c16_i64, %c2_i64, %c8_i64, %c2_i64
+      : !pto.ptr<!pto.f8E8M0, l1>, !pto.ptr<f8E4M3FN, l0b>, i64, i64, i64, i64, i64, i64
+    pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
+    pto.mad_mx %l0a_stage0, %l0b_stage0, %l0c, %c256_i64, %c256_i64, %c128_i64
+      disable_gemv sat
+      : !pto.ptr<f8E4M3FN, l0a>, !pto.ptr<f8E4M3FN, l0b>, !pto.ptr<f32, l0c>, i64, i64, i64
+    pto.barrier #pto.pipe<PIPE_ALL>
+
+    pto.mte_l1_l0a %l1_a_data_stage1, %l0a_stage1, %c256_i64, %c128_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f8E4M3FN, l1>, !pto.ptr<f8E4M3FN, l0a>, i64, i64, i64, i64
+    pto.mte_l1_l0b %l1_b_data_stage1, %l0b_stage1, %c128_i64, %c256_i64, %c0_i64, %c0_i64 {transpose = true}
+      : !pto.ptr<f8E4M3FN, l1>, !pto.ptr<f8E4M3FN, l0b>, i64, i64, i64, i64
+    pto.load_cbuf_to_ca_mx %l1_a_scale, %l0a_stage1, %c0_i64, %c2_i64,
+      %c16_i64, %c2_i64, %c8_i64, %c2_i64
+      : !pto.ptr<!pto.f8E8M0, l1>, !pto.ptr<f8E4M3FN, l0a>, i64, i64, i64, i64, i64, i64
+    pto.load_cbuf_to_cb_mx %l1_b_scale, %l0b_stage1, %c0_i64, %c2_i64,
+      %c16_i64, %c2_i64, %c8_i64, %c2_i64
+      : !pto.ptr<!pto.f8E8M0, l1>, !pto.ptr<f8E4M3FN, l0b>, i64, i64, i64, i64, i64, i64
+    pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID1"]
+    pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID1"]
+    pto.mad_mx_acc %l0a_stage1, %l0b_stage1, %l0c, %c256_i64, %c256_i64, %c128_i64
+      disable_gemv sat
+      : !pto.ptr<f8E4M3FN, l0a>, !pto.ptr<f8E4M3FN, l0b>, !pto.ptr<f32, l0c>, i64, i64, i64
+
+    pto.set_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
+    pto.wait_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
+    pto.mte_l0c_gm %l0c, %c_gm, %c256_i64, %c256_i64, %c256_i64, %c256_i64,
+      %c0_i64, %c0_i64, nz2nd
+      : !pto.ptr<f32, l0c>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
+    pto.barrier #pto.pipe<PIPE_ALL>
+    return
+  }
+}

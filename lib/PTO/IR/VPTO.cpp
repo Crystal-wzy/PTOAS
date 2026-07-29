@@ -7670,19 +7670,45 @@ void MteL0cL1Op::print(OpAsmPrinter &printer) {
       getLoop3DstStride());
 }
 
-template <typename OpTy>
-static LogicalResult verifyCubeBridgeLoadStart(OpTy op) {
+static LogicalResult verifyCubeBridgeLoadStart(Operation *op, Value firstStart,
+                                               StringRef firstName,
+                                               Value secondStart,
+                                               StringRef secondName) {
   auto checkNonNegativeConst = [&](Value value, StringRef name) -> LogicalResult {
     APInt intValue;
     if (matchPattern(value, m_ConstantInt(&intValue)) && intValue.isNegative())
-      return op.emitOpError() << name << " must be non-negative";
+      return op->emitOpError() << name << " must be non-negative";
     return success();
   };
 
-  if (failed(checkNonNegativeConst(op.getStartRow(), "start_row")) ||
-      failed(checkNonNegativeConst(op.getStartCol(), "start_col")))
+  if (failed(checkNonNegativeConst(firstStart, firstName)) ||
+      failed(checkNonNegativeConst(secondStart, secondName)))
     return failure();
   return success();
+}
+
+template <typename OpTy>
+static LogicalResult verifyCubeBridgeLoadStart(OpTy op) {
+  return verifyCubeBridgeLoadStart(op.getOperation(), op.getStartRow(),
+                                   "start_row", op.getStartCol(), "start_col");
+}
+
+static LogicalResult verifyMxDestinationAlignment(Operation *op,
+                                                  Value destination) {
+  constexpr int64_t kMxDestinationAddressUnitBytes = 16;
+  auto pointerCast = destination.getDefiningOp<CastPtrOp>();
+  if (!pointerCast || !isa<IntegerType>(pointerCast.getInput().getType()))
+    return success();
+
+  std::optional<int64_t> address =
+      mlir::getConstantIntValue(pointerCast.getInput());
+  if (!address || (*address % kMxDestinationAddressUnitBytes) == 0)
+    return success();
+
+  return op->emitOpError()
+         << "requires a constant pto.castptr destination address aligned to "
+         << kMxDestinationAddressUnitBytes << " bytes for LOAD.MX, got "
+         << *address;
 }
 
 LogicalResult MteL0cL1Op::verify() {
@@ -7726,6 +7752,26 @@ LogicalResult MteL1L0bMxOp::verify() {
   if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT")))
     return failure();
   return verifyCubeBridgeLoadStart(*this);
+}
+
+LogicalResult LoadCbufToCaMxOp::verify() {
+  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT")))
+    return failure();
+  if (failed(verifyCubeBridgeLoadStart(
+          getOperation(), getXStartPosition(), "x_start_position",
+          getYStartPosition(), "y_start_position")))
+    return failure();
+  return verifyMxDestinationAlignment(getOperation(), getDestination());
+}
+
+LogicalResult LoadCbufToCbMxOp::verify() {
+  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT")))
+    return failure();
+  if (failed(verifyCubeBridgeLoadStart(
+          getOperation(), getXStartPosition(), "x_start_position",
+          getYStartPosition(), "y_start_position")))
+    return failure();
+  return verifyMxDestinationAlignment(getOperation(), getDestination());
 }
 
 void MteL1L0aOp::getEffects(

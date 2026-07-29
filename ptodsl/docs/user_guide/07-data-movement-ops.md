@@ -984,6 +984,24 @@ Cube compute step; it does not issue those transfers itself.
 
 **Description**: MX-mode variants of `mte_l1_l0a` and `mte_l1_l0b` for MX-capable dtypes. Parameters match their non-MX counterparts.
 
+#### `pto.load_cbuf_to_ca_mx(source: PtrType, destination: PtrType, x_start: int, y_start: int, x_step: int, y_step: int, src_stride: int, dst_stride: int) -> None`
+#### `pto.load_cbuf_to_cb_mx(source: PtrType, destination: PtrType, x_start: int, y_start: int, x_step: int, y_step: int, src_stride: int, dst_stride: int) -> None`
+
+**Description**: Explicit-control MX scale loads from L1 to L0A or L0B. These operations are for cases where the MX traversal controls must not be derived from a matrix shape. They preserve every supplied control value in the emitted PTO operation.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `source` | `PtrType` (L1) | MX scale source pointer. `pto.f8e8m0` is supported as a storage element type. |
+| `destination` | `PtrType` (L0A or L0B) | Real staged L0 destination pointer. Pass the actual L0 address; do not divide or otherwise encode it in PTODSL. |
+| `x_start` | `int` | MX load x start position. |
+| `y_start` | `int` | MX load y start position. |
+| `x_step` | `int` | MX load x traversal step. |
+| `y_step` | `int` | MX load y traversal step. |
+| `src_stride` | `int` | MX load source stride. |
+| `dst_stride` | `int` | MX load destination stride. |
+
+**Returns**: None (side-effect operation).
+
 ---
 
 ### Bias and factor loading
