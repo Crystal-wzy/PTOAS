@@ -17,6 +17,26 @@ from ptodsl._runtime import native_build, toolchain
 
 
 class RuntimeToolchainTest(unittest.TestCase):
+    def test_include_flag_skips_inaccessible_directory(self):
+        flags = []
+        inaccessible = Path("/inaccessible/include")
+        error = PermissionError(13, "Permission denied", str(inaccessible))
+
+        with mock.patch.object(Path, "is_dir", side_effect=error):
+            toolchain._append_include_flag(flags, inaccessible)
+
+        self.assertEqual(flags, [])
+
+    def test_include_flag_adds_accessible_directory_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            include_dir = Path(temp_dir)
+            flags = []
+
+            toolchain._append_include_flag(flags, include_dir)
+            toolchain._append_include_flag(flags, include_dir)
+
+            self.assertEqual(flags, [f"-I{include_dir}"])
+
     def test_a2_a3_use_c220_aicore_arch(self):
         self.assertEqual(
             toolchain.aicore_arch_for_kernel_kind("vector", "a3"), "dav-c220-vec"
