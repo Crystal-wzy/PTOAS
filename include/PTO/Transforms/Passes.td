@@ -345,7 +345,7 @@ def PTONormalizeUncoveredTileSections
 
     This pass is the shared entry point for inferred-section normalization:
     explicit sections remain in place, while uncovered top-level segments that
-    contain tile operations are identified for later wrapping.
+    contain section-relevant operations are identified for later wrapping.
   }];
 
   let constructor = "mlir::pto::createPTONormalizeUncoveredTileSectionsPass()";

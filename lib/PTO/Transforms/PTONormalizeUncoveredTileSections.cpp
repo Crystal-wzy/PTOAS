@@ -814,12 +814,12 @@ static LogicalResult
 emitSegmentInferenceError(func::FuncOp funcOp,
                           const UncoveredTopLevelSegment &segment) {
   InFlightDiagnostic diag =
-      funcOp.emitOpError("contains an uncovered top-level TileOp segment whose "
+      funcOp.emitOpError("contains an uncovered top-level op segment whose "
                          "section kind cannot be inferred uniquely");
   if (segment.vectorTileOpCount && segment.cubeTileOpCount) {
-    diag << "; saw both vector-like and cube-like TileOps in the same segment";
+    diag << "; saw both vector-like and cube-like ops in the same segment";
   } else if (!segment.ambiguousTileOps.empty()) {
-    diag << "; ambiguous TileOp(s): ";
+    diag << "; ambiguous op(s): ";
     for (size_t i = 0, e = segment.ambiguousTileOps.size(); i < e && i < 3;
          ++i) {
       if (i)
@@ -828,6 +828,8 @@ emitSegmentInferenceError(func::FuncOp funcOp,
            << '\'';
     }
   }
+  diag << "; wrap the ambiguous region in pto.section.cube or "
+          "pto.section.vector to specify its physical section explicitly";
   return failure();
 }
 
@@ -835,13 +837,13 @@ static LogicalResult
 emitResidualUncoveredTileSegmentError(func::FuncOp funcOp,
                                       const UncoveredTopLevelSegment &segment) {
   InFlightDiagnostic diag = funcOp.emitOpError(
-      "still contains an uncovered top-level TileOp segment after section "
+      "still contains an uncovered top-level op segment after section "
       "normalization");
   if (segment.containsNestedExplicitSection) {
     diag << "; a top-level op mixes nested explicit pto.section.* with sibling "
-            "TileOps outside those sections";
+            "ops outside those sections";
   }
-  diag << "; first uncovered TileOp segment starts at '"
+  diag << "; first uncovered op segment starts at '"
        << (segment.firstTileCarrierOp ? segment.firstTileCarrierOp
                                       : segment.firstOp)
               ->getName()
