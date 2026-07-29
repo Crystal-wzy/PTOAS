@@ -115,7 +115,7 @@ def get_testcase_work_dir(testcase):
     return os.path.join("build", "testcase", testcase)
 
 
-def build_project(run_mode, soc_version, testcase, ptoas_bin):
+def build_project(run_mode, soc_version, testcase, ptoas_bin, build_jobs=None):
     build_dir = "build"
     if os.path.exists(build_dir):
         print(f"clean build: {build_dir}")
@@ -140,8 +140,8 @@ def build_project(run_mode, soc_version, testcase, ptoas_bin):
             text=True,
         )
 
-        cpu_count = os.cpu_count() or 4
-        make_cmd = ["make", "VERBOSE=1", "-j", str(cpu_count)]
+        build_jobs = build_jobs or os.cpu_count() or 4
+        make_cmd = ["make", "VERBOSE=1", "-j", str(build_jobs)]
         result = subprocess.run(
             make_cmd,
             cwd=build_dir,
@@ -272,8 +272,13 @@ def main():
                         help="Skip build (requires prior build)")
     parser.add_argument("--target-dir", required=False,
                         help="TileLang ST target directory. Defaults to npu/<soc>/src/st.")
+    parser.add_argument("--build-jobs", type=int, default=None,
+                        help="Maximum parallel jobs for the shared CMake build.")
 
     args = parser.parse_args()
+
+    if args.build_jobs is not None and args.build_jobs < 1:
+        parser.error("--build-jobs must be >= 1")
 
     if args.soc_version == "a5":
         default_soc_version = "Ascend950PR_9599"
@@ -312,7 +317,13 @@ def main():
         set_env_variables(args.run_mode, default_soc_version)
 
         if not args.without_build:
-            build_project(args.run_mode, default_soc_version, testcase, ptoas_bin)
+            build_project(
+                args.run_mode,
+                default_soc_version,
+                testcase,
+                ptoas_bin,
+                args.build_jobs,
+            )
 
         # gen golden → run binary → compare
         run_gen_data(testcase, args.case)
