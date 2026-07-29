@@ -178,11 +178,11 @@ jobs:
           git fetch --depth 1 origin "${{ steps.llvm-source.outputs.sha }}"
           git checkout --force "${{ steps.llvm-source.outputs.sha }}"
 
-      - name: Warn when default-branch cache is missing for PR/release runs
-        if: steps.cache-llvm.outputs.cache-hit != 'true' && (github.event_name == 'pull_request' || github.event_name == 'release')
+      - name: Warn when default-branch cache is missing for release runs
+        if: steps.cache-llvm.outputs.cache-hit != 'true' && github.event_name == 'release'
         run: |
-          echo "LLVM cache miss while running on PR/release."
-          echo "PR/release runs are cache-consumers only and should reuse cache generated on the default branch."
+          echo "LLVM cache miss while running on release."
+          echo "Release runs are cache-consumers only and should reuse cache generated on the default branch."
           echo "Please run this workflow on the default branch first to populate cache key:"
           echo "llvm-${{ steps.llvm-source.outputs.sha }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-${{ env.LLVM_CACHE_FLAVOR }}"
 
@@ -205,8 +205,8 @@ jobs:
 
       # Upload cache immediately after the build step to avoid later steps polluting the release build tree.
       - name: Save LLVM cache
-        # Allow cache writes except for PR/release runs to avoid duplicated tag/merge caches.
-        if: steps.cache-llvm.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && github.event_name != 'release'
+        # PR caches accelerate later commits and reruns, while release runs remain cache consumers only.
+        if: steps.cache-llvm.outputs.cache-hit != 'true' && github.event_name != 'release'
         uses: actions/cache/save@v4
         with:
           path: /llvm-workspace/llvm-project/build-release
