@@ -18,6 +18,8 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include <limits>
+#include <tuple>
 
 using namespace mlir;
 using namespace mlir::pto;
@@ -52,6 +54,15 @@ struct RootInfo {
 
 using RootList = SmallVector<Value, 4>;
 
+struct OpAccess {
+  Operation *op = nullptr;
+  PIPE pipe = PIPE::PIPE_ALL;
+  unsigned opIndex = 0;
+  bool inLoop = false;
+  RootList reads;
+  RootList writes;
+};
+
 struct ConflictFacts {
   DenseMap<Value, RootList> forbidAlias;
   DenseSet<Value> loadDerivedRoots;
@@ -59,6 +70,7 @@ struct ConflictFacts {
   DenseMap<Value, SmallVector<unsigned>> tpopConsumerWriteIndices;
   DenseMap<Value, RootList> branchExclusiveRoots;
   DenseSet<Value> loopCarriedRoots;
+  SmallVector<OpAccess> opAccesses;
   bool targetHazardEnabled = false;
 };
 
@@ -319,6 +331,10 @@ static bool hasReadEffectOnValue(Operation *op, Value value) {
       return true;
   }
   return false;
+}
+
+static bool isInsideLoop(Operation *op) {
+  return op->getParentOfType<scf::ForOp>() != nullptr;
 }
 
 static ValueRange getDpsInits(Operation *op) {
@@ -620,6 +636,45 @@ struct PlannerAnalysis {
     recordTpopConsumerRoots(op, dpsInits, opIndex);
   }
 
+  void appendAccessRoots(RootList &dst, Value value) {
+    for (Value root : getRoots(value))
+      appendUniqueRoot(dst, root);
+  }
+
+  void recordOpAccess(Operation *op, ValueRange dpsInits) {
+    auto pipeOp = dyn_cast<pto::OpPipeInterface>(op);
+    auto memEffect = dyn_cast<MemoryEffectOpInterface>(op);
+    if (!pipeOp || !memEffect)
+      return;
+
+    OpAccess access;
+    access.op = op;
+    access.pipe = pipeOp.getPipe();
+    access.opIndex = facts.opAccesses.size();
+    access.inLoop = isInsideLoop(op);
+
+    SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 8> effects;
+    memEffect.getEffects(effects);
+    for (const auto &effect : effects) {
+      Value value = effect.getValue();
+      if (!value)
+        continue;
+      if (isa<MemoryEffects::Read>(effect.getEffect()))
+        appendAccessRoots(access.reads, value);
+      if (isa<MemoryEffects::Write>(effect.getEffect()))
+        appendAccessRoots(access.writes, value);
+    }
+
+    // Some PTO tile ops expose DPS destinations through the project-specific
+    // interface even when a future op forgets to model MemoryEffects. Keep the
+    // performance side table conservative by treating DPS inits as writes.
+    for (Value init : dpsInits)
+      appendAccessRoots(access.writes, init);
+
+    if (!access.reads.empty() || !access.writes.empty())
+      facts.opAccesses.push_back(std::move(access));
+  }
+
   void recordSplitTpopDerivedValue(Operation *op) {
     if (!facts.targetHazardEnabled)
       return;
@@ -794,6 +849,7 @@ struct PlannerAnalysis {
         recordSplitTpopDerivedValue(op);
         recordDpsTargetHazardFacts(op, index);
         recordDpsInplaceConflicts(op);
+        recordOpAccess(op, dpsInits);
       }
     }
   }
@@ -867,6 +923,185 @@ static bool canJoinReuseGroup(const RootInfo &info, const ReuseGroup &group,
       return false;
   }
   return true;
+}
+
+static bool containsRoot(ArrayRef<Value> roots, Value root) {
+  return llvm::is_contained(roots, root);
+}
+
+static bool accessesRoot(const OpAccess &access, Value root) {
+  return containsRoot(access.reads, root) || containsRoot(access.writes, root);
+}
+
+static bool accessPairHasMemoryDependency(const OpAccess &lhs,
+                                          const OpAccess &rhs, Value lhsRoot,
+                                          Value rhsRoot) {
+  auto depends = [&](Value writtenRoot, Value otherRoot) {
+    return containsRoot(lhs.writes, writtenRoot) &&
+           (containsRoot(rhs.reads, otherRoot) ||
+            containsRoot(rhs.writes, otherRoot));
+  };
+  auto reverseDepends = [&](Value readRoot, Value writtenRoot) {
+    return containsRoot(lhs.reads, readRoot) &&
+           containsRoot(rhs.writes, writtenRoot);
+  };
+
+  return depends(lhsRoot, rhsRoot) || depends(rhsRoot, lhsRoot) ||
+         reverseDepends(lhsRoot, rhsRoot) ||
+         reverseDepends(rhsRoot, lhsRoot);
+}
+
+static bool isNearNeighbor(const OpAccess &lhs, const OpAccess &rhs,
+                           unsigned lookahead) {
+  unsigned lhsIndex = lhs.opIndex;
+  unsigned rhsIndex = rhs.opIndex;
+  unsigned distance = lhsIndex > rhsIndex ? lhsIndex - rhsIndex
+                                          : rhsIndex - lhsIndex;
+  return distance > 0 && distance <= lookahead;
+}
+
+static uint64_t loopWeightedPenalty(uint64_t penalty, const OpAccess &lhs,
+                                    const OpAccess &rhs) {
+  constexpr uint64_t kLoopWeight = 4;
+  return (lhs.inLoop || rhs.inLoop) ? penalty * kLoopWeight : penalty;
+}
+
+static uint64_t getRootPairReuseCost(Value lhsRoot, Value rhsRoot,
+                                     const ConflictFacts &facts) {
+  if (lhsRoot == rhsRoot)
+    return 0;
+
+  constexpr unsigned kPipeVLookahead = 1;
+  constexpr unsigned kMteLookahead = 1;
+  constexpr uint64_t kPipeVOverlapPenalty = 10;
+  constexpr uint64_t kMte3ToMte2Penalty = 20;
+
+  uint64_t cost = 0;
+  for (const OpAccess &lhs : facts.opAccesses) {
+    if (!accessesRoot(lhs, lhsRoot) && !accessesRoot(lhs, rhsRoot))
+      continue;
+
+    for (const OpAccess &rhs : facts.opAccesses) {
+      if (lhs.opIndex >= rhs.opIndex)
+        continue;
+      if (!accessesRoot(rhs, lhsRoot) && !accessesRoot(rhs, rhsRoot))
+        continue;
+
+      if (lhs.pipe == PIPE::PIPE_V && rhs.pipe == PIPE::PIPE_V &&
+          isNearNeighbor(lhs, rhs, kPipeVLookahead) &&
+          accessPairHasMemoryDependency(lhs, rhs, lhsRoot, rhsRoot)) {
+        cost += loopWeightedPenalty(kPipeVOverlapPenalty, lhs, rhs);
+      }
+
+      if (lhs.pipe == PIPE::PIPE_MTE3 && rhs.pipe == PIPE::PIPE_MTE2 &&
+          isNearNeighbor(lhs, rhs, kMteLookahead)) {
+        bool storeSourceThenLoadDst =
+            (containsRoot(lhs.reads, lhsRoot) &&
+             containsRoot(rhs.writes, rhsRoot)) ||
+            (containsRoot(lhs.reads, rhsRoot) &&
+             containsRoot(rhs.writes, lhsRoot));
+        if (storeSourceThenLoadDst)
+          cost += loopWeightedPenalty(kMte3ToMte2Penalty, lhs, rhs);
+      }
+    }
+  }
+  return cost;
+}
+
+static uint64_t getGroupReuseCost(const RootInfo &info,
+                                  const ReuseGroup &group,
+                                  const ConflictFacts &facts) {
+  uint64_t cost = 0;
+  for (const RootInfo *member : group.members)
+    cost += getRootPairReuseCost(info.root, member->root, facts);
+  return cost;
+}
+
+static uint64_t getProjectedPackedBytes(ArrayRef<ReuseGroup> groups,
+                                        const RootInfo &info,
+                                        std::optional<unsigned> joinGroup) {
+  uint64_t cursor = 0;
+  for (auto [index, group] : llvm::enumerate(groups)) {
+    uint64_t sizeBytes = group.sizeBytes;
+    uint64_t alignmentBytes = group.alignmentBytes;
+    if (joinGroup && *joinGroup == index) {
+      sizeBytes = std::max(sizeBytes, info.totalBytes);
+      alignmentBytes = std::max(alignmentBytes, info.alignmentBytes);
+    }
+    cursor = alignUp(cursor, alignmentBytes);
+    cursor += sizeBytes;
+  }
+
+  if (!joinGroup) {
+    cursor = alignUp(cursor, info.alignmentBytes);
+    cursor += info.totalBytes;
+  }
+  return cursor;
+}
+
+static ReuseGroup *chooseReuseGroupByCost(
+    RootInfo &info, SmallVectorImpl<ReuseGroup> &groups,
+    const PlannerAnalysis &analysis, const MemSpec &spec) {
+  ReuseGroup *bestGroup = nullptr;
+  uint64_t bestCost = std::numeric_limits<uint64_t>::max();
+  uint64_t bestProjectedBytes = std::numeric_limits<uint64_t>::max();
+  unsigned bestOrder = std::numeric_limits<unsigned>::max();
+  bool bestFits = false;
+
+  for (auto [index, group] : llvm::enumerate(groups)) {
+    if (!canJoinReuseGroup(info, group, analysis))
+      continue;
+
+    uint64_t projectedBytes =
+        getProjectedPackedBytes(groups, info, static_cast<unsigned>(index));
+    bool fits = projectedBytes <= spec.capacityBytes;
+    uint64_t cost = getGroupReuseCost(info, group, analysis.facts);
+    if ((!bestGroup && !bestFits) || (fits != bestFits && fits) ||
+        (fits == bestFits &&
+         std::tie(cost, projectedBytes, index) <
+             std::tie(bestCost, bestProjectedBytes, bestOrder))) {
+      bestGroup = &group;
+      bestCost = cost;
+      bestProjectedBytes = projectedBytes;
+      bestOrder = static_cast<unsigned>(index);
+      bestFits = fits;
+    }
+  }
+
+  uint64_t freshProjectedBytes = getProjectedPackedBytes(groups, info,
+                                                         std::nullopt);
+  bool freshFits = freshProjectedBytes <= spec.capacityBytes;
+  uint64_t freshSlack =
+      freshFits ? spec.capacityBytes - freshProjectedBytes : 0;
+  uint64_t pressureReserve =
+      std::max(info.totalBytes, info.alignmentBytes);
+  // Fresh groups are not free: cost 1 lets true zero-cost reuse keep the old
+  // compact layout, while still avoiding positive-cost PIPE/MTE co-location
+  // when local capacity is available.
+  uint64_t freshCost = groups.empty() ? 0 : 1;
+  unsigned freshOrder = groups.size();
+  if (!bestGroup)
+    return nullptr;
+
+  // The cost model is a performance hint, not a correctness gate. When local
+  // memory is already tight, do not let a fresh address outrank a legal reuse
+  // group; future roots may still need the remaining tail bytes.
+  if (bestFits && freshFits && freshSlack < pressureReserve)
+    return bestGroup;
+
+  auto isBetter = [](bool lhsFits, uint64_t lhsCost, uint64_t lhsBytes,
+                     unsigned lhsOrder, bool rhsFits, uint64_t rhsCost,
+                     uint64_t rhsBytes, unsigned rhsOrder) {
+    if (lhsFits != rhsFits)
+      return lhsFits;
+    return std::tie(lhsCost, lhsBytes, lhsOrder) <
+           std::tie(rhsCost, rhsBytes, rhsOrder);
+  };
+
+  if (isBetter(freshFits, freshCost, freshProjectedBytes, freshOrder, bestFits,
+               bestCost, bestProjectedBytes, bestOrder))
+    return nullptr;
+  return bestGroup;
 }
 
 static SmallVector<uint64_t> buildSlotOffsets(uint64_t base, uint64_t slotBytes,
@@ -1096,14 +1331,8 @@ LogicalResult mlir::pto::runModernPlanMemory(func::FuncOp func,
     SmallVector<ReuseGroup> groups;
     uint64_t scopeRequiredBytes = 0;
     for (RootInfo *info : roots) {
-      ReuseGroup *chosen = nullptr;
-      for (ReuseGroup &group : groups) {
-        if (canJoinReuseGroup(*info, group, analysis)) {
-          chosen = &group;
-          break;
-        }
-      }
-
+      ReuseGroup *chosen =
+          chooseReuseGroupByCost(*info, groups, analysis, spec);
       if (!chosen) {
         ReuseGroup group;
         group.space = space;

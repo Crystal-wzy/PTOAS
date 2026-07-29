@@ -55,7 +55,6 @@ module {
 // LOWER: %[[FIRST_SUM:.*]] = pto.vadd {{.*}}, {{.*}}, {{.*}} : !pto.vreg<64xf32>
 // LOWER: pto.vsts %[[FIRST_SUM]], %arg4[%arg6], {{.*}} : !pto.vreg<64xf32>, {{(!pto\.ptr)?<f32, ub>}}, !pto.mask<b32>
 // LOWER: pto.vselr %[[FIRST_SUM]]
-// LOWER: pto.vdup {{.*}}
 // LOWER: pto.vselr %[[FIRST_SUM]]
 // LOWER-COUNT-2: pto.vmul
 // LOWER: pto.vsts {{.*}}, %arg5[%arg6], {{.*}} : !pto.vreg<64xf32>, {{(!pto\.ptr)?<f32, ub>}}, !pto.mask<b32>

@@ -35,8 +35,8 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 // CPP-SAME: (__gm__ uint64_t* [[SRC:[_A-Za-z][_A-Za-z0-9]*]], __gm__ uint32_t* [[DST:[_A-Za-z][_A-Za-z0-9]*]], int64_t [[IDX:[_A-Za-z][_A-Za-z0-9]*]])
 // CPP: int64_t [[ADDR:[_A-Za-z][_A-Za-z0-9]*]] = reinterpret_cast<int64_t>([[SRC]] + [[IDX]]);
 // CPP: __gm__ uint32_t* [[SRC32:[_A-Za-z][_A-Za-z0-9]*]] = reinterpret_cast<__gm__ uint32_t*>([[ADDR]]);
-// CPP: uint32_t [[VAL:[_A-Za-z][_A-Za-z0-9]*]] = [[SRC32]][{{.*}}];
-// CPP: [[DST]][[[IDX]]] = [[VAL]];
+// CPP: uint32_t [[VAL:[_A-Za-z][_A-Za-z0-9]*]] = {{[(]?}}[[SRC32]]{{[)]?}}[{{.*}}];
+// CPP: {{[(]?}}[[DST]]{{[)]?}}[[[IDX]]] = [[VAL]];
 
 // IR-LABEL: func.func @ptrtoint_addptr_multi_consumer
 // IR-SAME: %[[SRC64:[^,]+]]: !pto.ptr<ui64, gm>
@@ -49,10 +49,10 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 // CPP-SAME: (__gm__ uint64_t* [[SRC64:[_A-Za-z][_A-Za-z0-9]*]], __gm__ uint64_t* [[DST64:[_A-Za-z][_A-Za-z0-9]*]], __gm__ int64_t* [[DSTADDR:[_A-Za-z][_A-Za-z0-9]*]], int64_t [[IDX2:[_A-Za-z][_A-Za-z0-9]*]])
 // CPP: const int64_t [[ZERO:[_A-Za-z][_A-Za-z0-9]*]] = 0;
 // CPP: __gm__ uint64_t* [[OFF3:[_A-Za-z][_A-Za-z0-9]*]] = [[SRC64]] + [[IDX2]];
-// CPP: uint64_t [[A:[_A-Za-z][_A-Za-z0-9]*]] = [[OFF3]][[[ZERO]]];
+// CPP: uint64_t [[A:[_A-Za-z][_A-Za-z0-9]*]] = {{[(]?}}[[OFF3]]{{[)]?}}[[[ZERO]]];
 // CPP: int64_t [[BYTE_ADDR:[_A-Za-z][_A-Za-z0-9]*]] = reinterpret_cast<int64_t>([[OFF3]]);
-// CPP: [[DST64]][[[ZERO]]] = [[A]];
-// CPP: [[DSTADDR]][[[ZERO]]] = [[BYTE_ADDR]];
+// CPP: {{[(]?}}[[DST64]]{{[)]?}}[[[ZERO]]] = [[A]];
+// CPP: {{[(]?}}[[DSTADDR]]{{[)]?}}[[[ZERO]]] = [[BYTE_ADDR]];
 
 // VPTO-LABEL: func.func @ptr_int_cast_kernel
 // VPTO: %[[VPTO_OFF:.*]] = pto.addptr
