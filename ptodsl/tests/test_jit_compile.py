@@ -889,6 +889,7 @@ def simt_memory_atomic_probe(
     idx = scalar.index_cast(pto.get_tid_x())
     value = pto.ldg(gm, idx, l1cache="cache", l2cache="nmfv")
     pto.stg(value, gm, idx, l1cache="uncache", l2cache="wtsred")
+    pto.stg(1, gm, idx)
 
     old = pto.atomic_add(gm, value, l2cache="nmfv", signedness="signed")
     pto.atomic_exch(gm, value, signedness="signed")
@@ -903,6 +904,24 @@ def simt_memory_atomic_probe(
     pto.syncthreads()
     pto.threadfence()
     pto.threadfence_block()
+
+
+@pto.simt
+def simt_fp8_ext_ldg_stg_probe(
+    gm_f8e4x4: pto.ptr(pto.f8e4m3x4, "gm"),
+    gm_f8e4x8: pto.ptr(pto.f8e4m3x8, "gm"),
+    gm_f8e5x4: pto.ptr(pto.f8e5m2x4, "gm"),
+    gm_f8e5x8: pto.ptr(pto.f8e5m2x8, "gm"),
+):
+    idx = scalar.index_cast(pto.get_tid_x())
+    v_f8e4x4 = pto.ldg(gm_f8e4x4, idx)
+    v_f8e4x8 = pto.ldg(gm_f8e4x8, idx)
+    v_f8e5x4 = pto.ldg(gm_f8e5x4, idx)
+    v_f8e5x8 = pto.ldg(gm_f8e5x8, idx)
+    pto.stg(v_f8e4x4, gm_f8e4x4, idx)
+    pto.stg(v_f8e4x8, gm_f8e4x8, idx)
+    pto.stg(v_f8e5x4, gm_f8e5x4, idx)
+    pto.stg(v_f8e5x8, gm_f8e5x8, idx)
 
 
 @pto.simt
@@ -1073,11 +1092,23 @@ def simt_resource_attr_launch_probe(*, TRACE_TOKEN: pto.const_expr = 0):
 @pto.jit(target="a5")
 def simt_full_surface_probe(
     gm: pto.ptr(pto.i32, "gm"),
+    gm_f8e4x4: pto.ptr(pto.f8e4m3x4, "gm"),
+    gm_f8e4x8: pto.ptr(pto.f8e4m3x8, "gm"),
+    gm_f8e5x4: pto.ptr(pto.f8e5m2x4, "gm"),
+    gm_f8e5x8: pto.ptr(pto.f8e5m2x8, "gm"),
     *,
     TRACE_TOKEN: pto.const_expr = 0,
 ):
     pto.simt_launch(simt_collective_math_probe, dims=(32, 1, 1))
     pto.simt_launch(simt_memory_atomic_probe, gm, dims=(32, 1, 1))
+    pto.simt_launch(
+        simt_fp8_ext_ldg_stg_probe,
+        gm_f8e4x4,
+        gm_f8e4x8,
+        gm_f8e5x4,
+        gm_f8e5x8,
+        dims=(32, 1, 1),
+    )
     pto.simt_launch(simt_keep_stage, dims=(32, 1, 1))
     pto.simt_launch(simt_resume_stage, gm, dims=(32, 1, 1))
 
@@ -3517,8 +3548,15 @@ class _FakeTensor:
 def main() -> None:
     expected_public_exports = [
         "f8e4m3",
+        "f8e4m3x2",
+        "f8e4m3x4",
+        "f8e4m3x8",
         "f8e5m2",
+        "f8e5m2x2",
+        "f8e5m2x4",
+        "f8e5m2x8",
         "hif8",
+        "hif8x2",
         "f4e1m2x2",
         "f4e2m1x2",
         "si8",
@@ -3837,6 +3875,22 @@ def main() -> None:
         expect(
             str(pto.f8e4m3.resolve()) == "f8E4M3FN",
             "pto.f8e4m3 should resolve to the public E4M3 float8 type",
+        )
+        expect(
+            str(pto.f8e4m3x4.resolve()) == "vector<4xf8E4M3FN>",
+            "pto.f8e4m3x4 should resolve to vector<4xf8E4M3FN>",
+        )
+        expect(
+            str(pto.f8e4m3x8.resolve()) == "vector<8xf8E4M3FN>",
+            "pto.f8e4m3x8 should resolve to vector<8xf8E4M3FN>",
+        )
+        expect(
+            str(pto.f8e5m2x4.resolve()) == "vector<4xf8E5M2>",
+            "pto.f8e5m2x4 should resolve to vector<4xf8E5M2>",
+        )
+        expect(
+            str(pto.f8e5m2x8.resolve()) == "vector<8xf8E5M2>",
+            "pto.f8e5m2x8 should resolve to vector<8xf8E5M2>",
         )
         expect(
             "hif8" in str(pto.hif8.resolve()),
@@ -5363,6 +5417,20 @@ def main() -> None:
         "pto.resume",
     ):
         expect(op_name in simt_full_text, f"full SIMT surface should contain {op_name}")
+    for fp8_vec in (
+        "vector<4xf8E4M3FN>",
+        "vector<8xf8E4M3FN>",
+        "vector<4xf8E5M2>",
+        "vector<8xf8E5M2>",
+    ):
+        expect(
+            f"!pto.ptr<{fp8_vec}, gm>" in simt_full_text,
+            f"SIMT FP8 extension should preserve !pto.ptr<{fp8_vec}, gm>",
+        )
+        expect(
+            f"!pto.ptr<{fp8_vec}, gm>, {fp8_vec}" in simt_full_text,
+            f"SIMT FP8 extension stg should accept exact {fp8_vec} payload",
+        )
 
     expect_raises(
         TypeError,
