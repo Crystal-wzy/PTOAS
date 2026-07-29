@@ -199,3 +199,39 @@ latest `main` 全量测试中的 35 个失败 case 可粗略归类如下。
 | `models/deepseek/v4/prefill_compressor_ratio4.py` | 318.92 | 6035.98 | 337.10 | 8167.12 | +5.70% | +35.31% |
 | `models/deepseek/v4/prefill_indexer_compressor.py` | 369.26 | 3792.46 | 458.26 | 3817.62 | +24.10% | +0.66% |
 | `models/qwen3/32b/qwen3_32b_decode.py` | 2156.82 | 53562.68 | 2127.18 | 53170.68 | -1.37% | -0.73% |
+
+### `prefill_compressor_ratio4.py` cube local order 复测
+
+针对 `models/deepseek/v4/prefill_compressor_ratio4.py`，额外在同一张 A3 卡（device 1）上复测了最新 `feature_memplan` 的正式策略：
+
+- Round 1：latest `main` / `ptoas 0.52` / legacy memplan / level2。
+- Formal latest：latest `feature_memplan` / `ptoas 0.54` / modern memplan / level2。
+- Formal latest 中，cube local space（`MAT` / `LEFT` / `RIGHT` / `ACC`）不执行 `order-by-size`，保持 IR/alloc order；`VEC` 仍使用 modern 默认 size-first。
+- 复测采用交替执行，避免单次设备状态波动误导结论。
+
+原始结果目录：
+
+- Round 1：`/home/zhongxuan/fangrui/prefill_c4_one/20260729_013031_round1`
+- Formal latest：`/home/zhongxuan/fangrui/prefill_c4_one/20260729_013104_formal`
+- Round 1：`/home/zhongxuan/fangrui/prefill_c4_one/20260729_013142_round1`
+- Formal latest：`/home/zhongxuan/fangrui/prefill_c4_one/20260729_013204_formal`
+- Round 1：`/home/zhongxuan/fangrui/prefill_c4_one/20260729_013226_round1`
+- Formal latest：`/home/zhongxuan/fangrui/prefill_c4_one/20260729_013246_formal`
+
+| 配置 | total makespan(us) | total exec sum(us) | `prefill_c4_kv_score_proj` makespan(us) | `prefill_c4_kv_score_proj` exec sum(us) |
+|---|---:|---:|---:|---:|
+| Round 1 #1 | 340.60 | 7258.26 | 239.88 | 4754.72 |
+| Formal latest #1 | 325.14 | 7195.88 | 229.24 | 4824.98 |
+| Round 1 #2 | 352.64 | 6922.44 | 231.10 | 4828.64 |
+| Formal latest #2 | 323.50 | 5846.52 | 199.54 | 3855.12 |
+| Round 1 #3 | 328.62 | 6090.46 | 200.42 | 3945.02 |
+| Formal latest #3 | 340.00 | 6405.66 | 212.56 | 4226.78 |
+
+| 指标 | Round 1 中位数 | Formal latest 中位数 | 中位数变化 | Round 1 均值 | Formal latest 均值 | 均值变化 |
+|---|---:|---:|---:|---:|---:|---:|
+| total makespan | 340.60 | 325.14 | -4.54% | 340.62 | 329.55 | -3.25% |
+| total exec sum | 6922.44 | 6405.66 | -7.46% | 6757.05 | 6482.69 | -4.06% |
+| `prefill_c4_kv_score_proj` makespan | 231.10 | 212.56 | -8.02% | 223.80 | 213.78 | -4.48% |
+| `prefill_c4_kv_score_proj` exec sum | 4754.72 | 4226.78 | -11.10% | 4509.46 | 4302.29 | -4.59% |
+
+结论：同卡多次复测后，cube local space 不执行 `order-by-size` 的 formal latest 没有稳定劣化；按中位数和均值看，total AICore 时间与 `prefill_c4_kv_score_proj` 时间均略优于 Round 1。上方全量表中的 `prefill_compressor_ratio4.py` 单次 Round 3 `exec sum=8167.12us` 更像设备状态或单次采样波动，不应作为该策略的性能结论。
