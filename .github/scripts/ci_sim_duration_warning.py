@@ -20,7 +20,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -28,6 +28,7 @@ COMMENT_MARKER = "<!-- ci-sim-duration-warning -->"
 RESOLVED_PREFIX = "Resolved:"
 BOT_LOGIN = "github-actions[bot]"
 JOB_NAME = "vpto-sim-validation"
+SLOW_LABEL = "ci-slow"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
@@ -84,6 +85,9 @@ class GitHubClient:
 
     def patch(self, path: str, payload: Dict[str, Any]) -> Any:
         return self.request("PATCH", path, payload=payload)[0]
+
+    def delete(self, path: str) -> Any:
+        return self.request("DELETE", path)[0]
 
     def list_all(self, path: str) -> List[Any]:
         items: List[Any] = []
@@ -175,6 +179,7 @@ def observe_run(client: GitHubClient, config: RunConfig) -> str:
     current_head_sha = pull["head"]["sha"]
     if context_head_sha != config.run_head_sha or current_head_sha != config.run_head_sha:
         return f"Workflow run {config.run_id} is stale for PR #{pr_number}; skipping duration warning."
+    has_slow_label = any(label.get("name") == SLOW_LABEL for label in pull.get("labels", []))
 
     jobs_response = client.get(
         f"repos/{config.repo}/actions/runs/{config.run_id}/jobs",
@@ -208,21 +213,45 @@ def observe_run(client: GitHubClient, config: RunConfig) -> str:
     if elapsed_seconds > config.soft_timeout_minutes * 60:
         body = _warning_body(pull["user"]["login"], elapsed, budget, job.get("conclusion", "unknown"), config.run_url)
         if config.dry_run:
-            return f"Dry run: would {'update' if existing else 'create'} slow CI warning on PR #{pr_number}.\n{body}"
+            label_action = "keep" if has_slow_label else "add"
+            return (
+                f"Dry run: would {label_action} {SLOW_LABEL} and "
+                f"{'update' if existing else 'create'} slow CI warning on PR #{pr_number}.\n{body}"
+            )
+        if not has_slow_label:
+            client.post(f"repos/{config.repo}/issues/{pr_number}/labels", {"labels": [SLOW_LABEL]})
         if existing:
             client.patch(f"repos/{config.repo}/issues/comments/{existing['id']}", {"body": body})
-            return f"Updated slow CI warning on PR #{pr_number}."
-        client.post(f"repos/{config.repo}/issues/{pr_number}/comments", {"body": body})
-        return f"Created slow CI warning on PR #{pr_number}."
+            comment_action = "Updated"
+        else:
+            client.post(f"repos/{config.repo}/issues/{pr_number}/comments", {"body": body})
+            comment_action = "Created"
+        label_action = "Kept" if has_slow_label else "Applied"
+        return f"{label_action} {SLOW_LABEL}; {comment_action.lower()} slow CI warning on PR #{pr_number}."
 
-    if existing:
-        if RESOLVED_PREFIX in existing.get("body", ""):
-            return f"CI runtime {elapsed} remains within the {budget} budget."
+    comment_needs_resolution = bool(existing and RESOLVED_PREFIX not in existing.get("body", ""))
+    if config.dry_run and (has_slow_label or comment_needs_resolution):
+        actions = []
+        if has_slow_label:
+            actions.append(f"remove {SLOW_LABEL}")
+        if comment_needs_resolution:
+            actions.append("resolve slow CI warning")
         body = _resolved_body(elapsed, budget, config.run_url)
-        if config.dry_run:
-            return f"Dry run: would resolve slow CI warning on PR #{pr_number}.\n{body}"
+        return f"Dry run: would {' and '.join(actions)} on PR #{pr_number}.\n{body}"
+
+    actions = []
+    if has_slow_label:
+        encoded_label = quote(SLOW_LABEL, safe="")
+        client.delete(f"repos/{config.repo}/issues/{pr_number}/labels/{encoded_label}")
+        actions.append(f"Removed {SLOW_LABEL}")
+    if comment_needs_resolution:
+        body = _resolved_body(elapsed, budget, config.run_url)
         client.patch(f"repos/{config.repo}/issues/comments/{existing['id']}", {"body": body})
-        return f"Resolved slow CI warning on PR #{pr_number}."
+        actions.append("resolved slow CI warning")
+    if actions:
+        return f"{'; '.join(actions)} on PR #{pr_number}."
+    if existing:
+        return f"CI runtime {elapsed} remains within the {budget} budget."
     return f"CI runtime {elapsed} is within the {budget} budget."
 
 
