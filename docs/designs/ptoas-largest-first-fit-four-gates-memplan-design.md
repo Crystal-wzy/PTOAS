@@ -676,6 +676,12 @@ reuseCost(candidate):
   if creates MTE3-store-source -> MTE2-load-dst co-location:
     cost += mte3ToMte2Penalty
 
+  if joins a hot loop scratch root into an already hot reuse group:
+    cost += hotClusterPenalty + rootHotness
+
+  if the candidate implies exact co-location for hot UB/L1 roots:
+    cost += sameBankRiskPenalty
+
   if conflict is inside a loop body:
     cost *= loopWeight
 
@@ -688,11 +694,17 @@ reuseCost(candidate):
 ```text
 pipeVOverlapPenalty = 10
 mte3ToMte2Penalty   = 20
+hotClusterPenalty   = 6
+sameBankRiskPenalty = 4
 loopWeight          = 4
 freshAddressBonus   = 1
 ```
 
 这些权重只决定多个可行 candidate 的选择顺序，不改变 safety gate。若没有任何低 cost candidate，planner 仍可选择高 cost candidate 并保持正确性。
+
+`hotClusterPenalty` 使用 root 的访问统计，而不是硬编码 op 名称。一个 root 若在 loop 内被 PIPE_V/MTE 访问、在 loop 内有多次 read/write，或即使没有显式 `scf.for` 但存在多次 PIPE_V/MTE local 访问，就视为 hot scratch。后者覆盖 PTODSL 通过 task/block 并行表达重复工作的 kernel。把 hot root 继续并入已有 hot group 虽然可能语义安全，但容易把多个高频阶段压到同一小段 UB/L1 地址，导致同步分析保守化、bank/cache 热点或流水 overlap 窗口缩小。`sameBankRiskPenalty` 首版只建模最强信号：candidate reuse 会让两个 hot root 精确同址，因此一定落入同一 bank pattern；后续若 planner 在 materialize 前具备精确 offset/stride interval，可扩展为 `offset % bankModulo` 的更细判断。
+
+容量压力仍优先于性能 hint：若 fresh group 会让剩余 local 空间低于 planner 的保守 reserve，则必须选择合法 reuse group，避免为了展开 hot scratch 造成后续 root overflow。
 
 ### 6. prefill_c4_state_update 类场景
 

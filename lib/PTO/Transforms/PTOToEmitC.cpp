@@ -8029,6 +8029,59 @@ static FailureOr<Value> buildRuntimeGlobalTensor(
       .getResult(0);
 }
 
+static bool isDeadPureEmitCValueOp(Operation *op) {
+  if (op->getNumResults() == 0)
+    return false;
+  if (!llvm::all_of(op->getResults(),
+                    [](Value result) { return result.use_empty(); }))
+    return false;
+
+  if (auto call = dyn_cast<emitc::CallOpaqueOp>(op)) {
+    StringRef callee = call.getCallee();
+    return callee.starts_with("pto::Shape<") ||
+           callee.starts_with("pto::Stride<") ||
+           callee.starts_with("GlobalTensor<");
+  }
+
+  return isa<emitc::AddOp, emitc::MulOp, emitc::CastOp, emitc::ConstantOp>(op);
+}
+
+static void eraseDeadPureEmitCValueOps(ModuleOp module) {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    SmallVector<Operation *> deadOps;
+    module.walk([&](Operation *op) {
+      if (isDeadPureEmitCValueOp(op))
+        deadOps.push_back(op);
+    });
+    for (Operation *op : llvm::reverse(deadOps)) {
+      op->erase();
+      changed = true;
+    }
+  }
+}
+
+static bool partitionViewHasStaticResultShape(pto::PartitionViewOp op) {
+  auto srcTy = dyn_cast<pto::TensorViewType>(op.getSource().getType());
+  auto resTy = dyn_cast<pto::PartitionTensorViewType>(op.getResult().getType());
+  if (!srcTy || !resTy)
+    return false;
+  if (op.getOffsets().size() != static_cast<size_t>(srcTy.getRank()) ||
+      op.getSizes().size() != static_cast<size_t>(srcTy.getRank()))
+    return false;
+
+  for (auto [idx, value] : llvm::enumerate(op.getSizes())) {
+    auto cst = getStaticIndexLikeValue(value);
+    if (!cst)
+      return false;
+    int64_t resultDim = resTy.getShape()[idx];
+    if (resultDim != ShapedType::kDynamic && resultDim != *cst)
+      return false;
+  }
+  return true;
+}
+
 struct PTOMakeTensorViewToEmitC
     : public OpConversionPattern<mlir::pto::MakeTensorViewOp> {
   using OpConversionPattern<mlir::pto::MakeTensorViewOp>::OpConversionPattern;
@@ -8036,6 +8089,11 @@ struct PTOMakeTensorViewToEmitC
   LogicalResult matchAndRewrite(mlir::pto::MakeTensorViewOp op,
                                 OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
+    if (op->use_empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     auto resultType = dyn_cast<pto::TensorViewType>(op.getResult().getType());
     if (!resultType)
       return rewriter.notifyMatchFailure(op, "expected tensor_view result");
@@ -8211,16 +8269,9 @@ struct PTOPartitionViewStaticToEmitC
         op.getSizes().size() != static_cast<size_t>(srcTy.getRank()))
       return rewriter.notifyMatchFailure(op, "rank mismatch");
 
-    for (auto [idx, value] : llvm::enumerate(op.getSizes())) {
-      auto cst = getStaticIndexLikeValue(value);
-      if (!cst)
-        return rewriter.notifyMatchFailure(
-            op, "globaltensor partition_view requires static sizes");
-      int64_t resultDim = resTy.getShape()[idx];
-      if (resultDim != ShapedType::kDynamic && resultDim != *cst)
-        return rewriter.notifyMatchFailure(
-            op, "partition_view static size does not match result type");
-    }
+    if (!partitionViewHasStaticResultShape(op))
+      return rewriter.notifyMatchFailure(
+          op, "globaltensor partition_view requires static result shape");
 
     SmallVector<int64_t> srcStrides;
     if (failed(getStaticTensorViewStrides(op.getSource(), adaptor.getSource(),
@@ -8250,12 +8301,22 @@ struct PTOPartitionViewStaticToEmitC
     std::string elemTypeStr = getElemTypeStringForGT(srcTy.getElementType());
     auto ptrTy = emitc::PointerType::get(
         emitc::OpaqueType::get(ctx, "__gm__ " + elemTypeStr));
-    Value src = peelUnrealized(adaptor.getSource());
-    auto data = rewriter
-                    .create<emitc::CallOpaqueOp>(
-                        op.getLoc(), ptrTy, "PTOAS__GLOBAL_TENSOR_DATA",
-                        ArrayAttr{}, ArrayAttr{}, ValueRange{src})
-                    .getResult(0);
+    Value data;
+    if (auto makeView = op.getSource().getDefiningOp<pto::MakeTensorViewOp>()) {
+      data = peelUnrealized(rewriter.getRemappedValue(makeView.getPtr()));
+      if (!data)
+        return rewriter.notifyMatchFailure(op, "source ptr is not remapped");
+      if (data.getType() != ptrTy)
+        data = rewriter.create<emitc::CastOp>(op.getLoc(), ptrTy, data)
+                   .getResult();
+    } else {
+      Value src = peelUnrealized(adaptor.getSource());
+      data = rewriter
+                 .create<emitc::CallOpaqueOp>(
+                     op.getLoc(), ptrTy, "PTOAS__GLOBAL_TENSOR_DATA",
+                     ArrayAttr{}, ArrayAttr{}, ValueRange{src})
+                 .getResult(0);
+    }
     Value ptr = data;
     if (!dynamicOffsetTerms.empty()) {
       Type indexTy = emitc::OpaqueType::get(ctx, "int64_t");
@@ -14024,6 +14085,16 @@ static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
       return signalPassFailure();
     }
 
+    {
+      SmallVector<pto::MakeTensorViewOp> deadStaticMakeViews;
+      mop.walk([&](pto::MakeTensorViewOp op) {
+        if (op->use_empty())
+          deadStaticMakeViews.push_back(op);
+      });
+      for (pto::MakeTensorViewOp op : deadStaticMakeViews)
+        op.erase();
+    }
+
     // =========================================================================
     // 5. [终极清理] 
     // 顺序至关重要：
@@ -14213,6 +14284,8 @@ static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
         callOp.erase();
       }
     }
+
+    eraseDeadPureEmitCValueOps(mop);
 
     // --- Step B: 修复 Loop 归纳变量 (IV) ---
     // 此时 emitc.for 的 operand 已经是 int32 了，我们检查 IV 是否匹配，不匹配则修正

@@ -49,6 +49,11 @@ struct RootInfo {
   unsigned stableOrder = 0;
   bool hasWriter = false;
   bool hasUseBeforeFirstWrite = false;
+  unsigned accessCount = 0;
+  unsigned writeAccessCount = 0;
+  unsigned loopAccessCount = 0;
+  unsigned pipeVAccessCount = 0;
+  unsigned mteAccessCount = 0;
   SmallVector<uint64_t> offsets;
 };
 
@@ -641,6 +646,25 @@ struct PlannerAnalysis {
       appendUniqueRoot(dst, root);
   }
 
+  void recordRootAccessStats(ArrayRef<Value> accessRoots, PIPE pipe,
+                             bool isWrite, bool inLoop) {
+    for (Value root : accessRoots) {
+      auto found = rootIndexByValue.find(root);
+      if (found == rootIndexByValue.end())
+        continue;
+      RootInfo &info = roots[found->second];
+      ++info.accessCount;
+      if (isWrite)
+        ++info.writeAccessCount;
+      if (inLoop)
+        ++info.loopAccessCount;
+      if (pipe == PIPE::PIPE_V)
+        ++info.pipeVAccessCount;
+      if (pipe == PIPE::PIPE_MTE2 || pipe == PIPE::PIPE_MTE3)
+        ++info.mteAccessCount;
+    }
+  }
+
   void recordOpAccess(Operation *op, ValueRange dpsInits) {
     auto pipeOp = dyn_cast<pto::OpPipeInterface>(op);
     auto memEffect = dyn_cast<MemoryEffectOpInterface>(op);
@@ -671,8 +695,13 @@ struct PlannerAnalysis {
     for (Value init : dpsInits)
       appendAccessRoots(access.writes, init);
 
-    if (!access.reads.empty() || !access.writes.empty())
+    if (!access.reads.empty() || !access.writes.empty()) {
+      recordRootAccessStats(access.reads, access.pipe, /*isWrite=*/false,
+                            access.inLoop);
+      recordRootAccessStats(access.writes, access.pipe, /*isWrite=*/true,
+                            access.inLoop);
       facts.opAccesses.push_back(std::move(access));
+    }
   }
 
   void recordSplitTpopDerivedValue(Operation *op) {
@@ -1017,6 +1046,61 @@ static uint64_t getGroupReuseCost(const RootInfo &info,
   return cost;
 }
 
+static bool isHotRoot(const RootInfo &info) {
+  if (info.loopAccessCount > 0 &&
+      (info.accessCount >= 2 || info.pipeVAccessCount > 0 ||
+       info.mteAccessCount > 0))
+    return true;
+
+  // Some PTODSL kernels express repeated work through task/block parallelism
+  // rather than an explicit scf.for in PTO IR. Repeated local accesses on
+  // PIPE_V/MTE are still hot enough that over-clustering can hurt scheduling.
+  return info.accessCount >= 2 &&
+         (info.pipeVAccessCount > 0 || info.mteAccessCount > 0);
+}
+
+static uint64_t getRootHotness(const RootInfo &info) {
+  uint64_t hotness = info.accessCount;
+  hotness += static_cast<uint64_t>(info.loopAccessCount) * 2;
+  hotness += static_cast<uint64_t>(info.writeAccessCount);
+  hotness += static_cast<uint64_t>(info.pipeVAccessCount) * 2;
+  hotness += static_cast<uint64_t>(info.mteAccessCount) * 2;
+  return hotness;
+}
+
+static uint64_t getHotClusterReuseCost(const RootInfo &info,
+                                       const ReuseGroup &group) {
+  if (!isHotRoot(info))
+    return 0;
+
+  constexpr uint64_t kHotClusterPenalty = 6;
+  constexpr uint64_t kLoopHotClusterPenalty = 12;
+  constexpr uint64_t kBankConflictPenalty = 4;
+  constexpr uint64_t kBankConflictModuloBytes = 8192;
+
+  uint64_t cost = 0;
+  uint64_t infoHotness = getRootHotness(info);
+  for (const RootInfo *member : group.members) {
+    if (!isHotRoot(*member))
+      continue;
+
+    uint64_t pairHotness =
+        std::min<uint64_t>(infoHotness, getRootHotness(*member));
+    cost += kHotClusterPenalty + pairHotness;
+    if (info.loopAccessCount > 0 && member->loopAccessCount > 0)
+      cost += kLoopHotClusterPenalty;
+
+    // Exact co-location is the strongest possible same-bank signal. The
+    // planner does not materialize final byte intervals yet, so only model the
+    // bank pattern that is known for a reuse candidate: the new root would
+    // start at the same offset as every member in this group.
+    if (info.alignmentBytes <= kBankConflictModuloBytes &&
+        member->alignmentBytes <= kBankConflictModuloBytes)
+      cost += kBankConflictPenalty;
+  }
+  return cost;
+}
+
 static uint64_t getProjectedPackedBytes(ArrayRef<ReuseGroup> groups,
                                         const RootInfo &info,
                                         std::optional<unsigned> joinGroup) {
@@ -1055,7 +1139,8 @@ static ReuseGroup *chooseReuseGroupByCost(
     uint64_t projectedBytes =
         getProjectedPackedBytes(groups, info, static_cast<unsigned>(index));
     bool fits = projectedBytes <= spec.capacityBytes;
-    uint64_t cost = getGroupReuseCost(info, group, analysis.facts);
+    uint64_t cost = getGroupReuseCost(info, group, analysis.facts) +
+                    getHotClusterReuseCost(info, group);
     if ((!bestGroup && !bestFits) || (fits != bestFits && fits) ||
         (fits == bestFits &&
          std::tie(cost, projectedBytes, index) <
