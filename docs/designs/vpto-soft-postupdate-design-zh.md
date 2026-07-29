@@ -214,12 +214,13 @@ decomposeLinear(Value v, BlockArgument blockArg) -> {coeff, StrideExpr increment
   v = subi(a, b)         → {ca - cb, Sub(ia, ib)}
   v = muli(a, b)（一侧不含 blockArg 且为常量 k）→ {c * k, Mul(i, Const(k))}
   v = addptr(ptr, offset) → {c_ptr, Add(i_ptr, Leaf(offset))}
-  v = index_cast(a)       → {ca, Cast(op, ia)}
+  v = index_cast(a)       → cast 可安全穿过时 {ca, Cast(op, ia)}，否则 unknown
   其他                    → unknown（放弃）
   结果按 v 缓存
 
 getIterArgIncrement(Value v, ForOp forOp) -> {status, StrideExpr}:
-  沿 v 的定义链回溯，穿过 index_cast（记录类型转换）、addi/subi/addptr
+  沿 v 的定义链回溯，穿过可安全传递 delta 的 index_cast（记录类型转换）、
+  addi/subi/addptr
   与循环不变量的组合（跳过偏移），直到找到 iter_arg BlockArgument。
   对该 iter_arg 的 yield 操作数调用 decomposeLinear：
     coeff == 1            → {Ok, 路径上收集的类型转换套用于 increment}
@@ -228,6 +229,8 @@ getIterArgIncrement(Value v, ForOp forOp) -> {status, StrideExpr}:
 ```
 
 三态返回是必要的：`NotIterArg` 表示该操作数与累加器无关，应回退 delta 路径；`Failed` 表示确实是 iter_arg 但增量无法分解，此时必须整体放弃——把未知增量当作 0 会静默算错地址。
+
+累加器路径和 delta 路径对 cast 使用同一安全条件：非缩窄 cast 可以保留；缩窄 cast 只有在能证明不会改变循环 delta 时才能穿过。特别地，若 strideOperand 是由 index 类型 iter_arg 缩窄得到的 i16，当前 pass 无法证明该 iter_arg 的完整运行时值域，因此返回 `Failed`，避免在 iter_arg 越过 65535 时仍错误地产生固定 i16 post-update stride。
 
 ```
 baseIncr = getIterArgIncrement(desc.base, forOp)      // NotIterArg → 回退 delta
@@ -268,7 +271,7 @@ scf.for %iv = %c0 to %c16 step %c1
 | `v = arith.addi(a, b)` | `delta(a) + delta(b)` |
 | `v = arith.subi(a, b)` | `delta(a) - delta(b)` |
 | `v = arith.muli(a, b)`，其中一个循环不变 | `invariant * delta(other)` |
-| `v = arith.index_castui(a)` 或 `arith.index_cast(a)` | `delta(a)` |
+| `v = arith.index_castui(a)` 或 `arith.index_cast(a)` | cast 不缩窄时为 `cast(delta(a))`；缩窄时仅在能证明不发生截断时成立，否则为 `unknown` |
 | 其他 | `unknown`（放弃） |
 
 ```
@@ -277,7 +280,7 @@ stride_new = (elemBytes/unitBytes)·delta(base) + delta(strideOperand)   // 见 
 
 `stride_new` 须为循环不变量，`(elemBytes/unitBytes)·delta(base)` 须为精确整数缩放（见 4.2.1 约束）。
 
-**正确性：** delta 表中的操作构成仿射函数的封闭运算集合。定义链仅由这些操作构成时，delta 计算不会遗漏。遇到表外操作时保守放弃。
+**正确性：** delta 表中的操作构成仿射函数的封闭运算集合。定义链仅由这些操作构成时，delta 计算不会遗漏。遇到表外操作时保守放弃。cast 需要额外满足值域条件：非缩窄 cast 保留在 `StrideExpr` 中；缩窄 cast 只有在输入循环不变，或输入就是 IV 且常量 lower/upper/step 能证明所有 IV 值均落在目标整数范围内时才穿过。否则 `delta(cast(x))` 可能在截断回绕点突变，分析返回 `unknown`。
 
 delta 分析同样是纯符号的：表中每一行返回 `StrideExpr`，结果按 `Value` 缓存。
 
@@ -295,9 +298,9 @@ delta 分析同样是纯符号的：表中每一行返回 `StrideExpr`，结果�
 
 4. **stride_new 为零时跳过。** 地址不前进，post-update 无收益。常量折叠使各项相消、合成结果恒为零的情形（如 base 每轮 +8、strideOperand 每轮 −8）同样能被识别。
 
-5. **类型一致性。** stride 表达式各子项须归结为同一类型，否则放弃，以免构造出 `arith.addi(index, i32)` 这类非法 op。`Const` 项不参与该约束——其类型在物化时按上下文决定。
+5. **类型一致性与目标类型精确性。** stride 表达式各子项须归结为同一类型，否则放弃，以免构造出 `arith.addi(index, i32)` 这类非法 op。非常量表达式的结果类型还必须与 op 的 strideOperand 类型一致；不能通过消除 cast 或改用窄类型算术来强行匹配。`Const` 项不参与子项类型约束，其类型在物化时直接采用 strideOperand 类型。
 
-   此外，各 `Const` 项的数值须能被目标类型表示。`stride_new` 对块步长指令是窄整数（i16），超出范围的 stride 会构造出非法常量，因此在物化前一并检查并放弃。
+   此外，各 `Const` 项的数值须能被目标类型表示。`stride_new` 对块步长指令是窄整数（i16），超出范围的 stride 会构造出非法常量，因此在物化前一并检查并放弃。动态宽结果若没有完整值域证明，同样保守放弃。
 
 6. **操作数可用性（支配性）。** stride 表达式的每个叶子须在候选 op 处可用：循环不变量、block argument、或定义点早于候选 op。若叶子定义在候选 op **之后**，仅当其定义链全部为 pure op 时克隆到候选 op 之前（克隆保留原结果序号，多结果 op 亦正确）；否则放弃。该检查以只读方式先行完成，克隆发生在物化阶段。
 
@@ -381,6 +384,10 @@ step = combineStride(deltaBase, deltaStride, elemBytes, unitBytes)
 
 `step` 始终以该 op 的 strideOperand 单位表示。单位换算和精确缩放直接复用 4.2.1 与 4.2.5 的规则，不能证明精确换算时放弃该相邻关系。
 
+单位可精确换算并不等于 `step` 可安全写入 strideOperand 的目标类型。顺序路径在分析和物化时保留原表达式中的 `index_cast` / `index_castui`，不会为了匹配目标类型而消除 cast、再用较窄的输入类型重新计算外层算术。常量 `step` 仍按目标类型的可表示范围检查；对于结果类型宽于目标类型的动态表达式，当前 pass 不做值域证明，因此保守放弃该 `SequentialRun`。
+
+例如 `%k: i16` 经 `arith.index_castui` 零扩展为 index 后，若相邻 f32 地址差为 `16 * zext(%k)` 个元素，则 block step 是 `2 * zext(%k)`。当 `%k = 40000` 时原 step 为 80000；若先消除 cast 并在 i16 中计算 `2 * %k`，结果会回绕成 14464，改变访问地址。因此这种宽动态 step 不会改写为 i16 `repeat_stride`。
+
 为比较两个非常量 `step` 是否相同，将 `StrideExpr` 按加减、常量乘法进行展平和常量折叠，得到规范化仿射形式“常量 + Σ(系数 × SSA 叶子)”。这里的“仿射”是相对于 SSA 叶子而言，并不要求叶子本身是原始输入的仿射函数。相同叶子按 Value 同一性合并，系数为零的项删除。两个 step 的规范化形式完全相同，才视为固定公差；不支持的非仿射运算保守地作为叶子，仅在复用同一 SSA 值时才能匹配。两个独立计算但语义上可能相等的非仿射结果是不同 Value，pass 不尝试证明它们等价。
 
 例如 `%s` 由 `arith.select` 产生，虽然该运算不属于上述仿射语法，但下面三个 offset 的相邻 step 都可规范化为同一个 opaque leaf `%s`，因此仍能形成 `SequentialRun`：
@@ -434,7 +441,7 @@ pto.vsts %x, %other[%c0], %mask : ...
 
 1. **op 尚未处于 Post-Update 形式。** 循环路径已经改写的 op 自动排除。
 2. **地址可归一到同一 rootBase。** 只穿过 `pto.addptr`；其他指针变换不猜测别名关系。
-3. **step 可精确换算且非零。** 复用 4.2.5 的单位、常量折叠和目标类型可表示性检查。
+3. **step 可精确换算、可按目标类型精确物化且非零。** 复用 4.2.5 的单位与常量折叠规则；常量必须能由目标类型表示，动态表达式必须在保留全部 cast 后与 strideOperand 类型一致。结果类型更宽且没有值域证明时放弃，禁止通过消除 cast 把外层算术降到窄类型。
 4. **step 在 `SequentialRun` 头部可用。** 复用 4.2.5 的叶子可用性检查；定义在 `SequentialRun` 头部之后的 pure 定义链（包括产生 opaque leaf 的非仿射运算）可克隆到头部之前，含副作用、不可安全提前或无法支配的定义使该 `SequentialRun` 放弃。
 5. **整条 `SequentialRun` 先分析、后物化。** 所有候选通过检查后才创建常量、`pto.addptr` 或新 op，拒绝 `SequentialRun` 不留下残余 IR。
 
@@ -520,12 +527,12 @@ def VPTOSoftPostUpdate : Pass<"vpto-soft-postupdate", "ModuleOp"> {
 ### ~~Step 3：顺序路径~~（已完成）
 
 16. ~~抽取循环与顺序路径共享的 helper：精确 elemBytes/unitBytes 换算、`combineStride`、初始指针计算和 post-update op 泛型构造。~~
-17. ~~实现 base 归一化：沿 `pto.addptr` 得到 `(rootBase, baseOffset)`；复用 `StrideExpr` 构造规则，并增加仿射规范化、相等比较和按系数精确缩放，使两条路径都支持 `8*k` 一类可证明整除的非常量表达式。~~
+17. ~~实现 base 归一化：沿 `pto.addptr` 得到 `(rootBase, baseOffset)`；复用 `StrideExpr` 构造规则，并增加仿射规范化、相等比较和按系数精确缩放，使两条路径都能证明 `8*k` 一类非常量表达式的单位整除性；顺序路径仅在保留 cast 后能按目标 stride 类型精确物化时改写。~~
 18. ~~调整驱动为两阶段：先内到外完成全部循环路径，再重新收集所有 block（包括 `scf.for` body）和剩余非 Post-Update op。~~
 19. ~~实现有序分桶与线性 `SequentialRun` 检测：按 `(op 类型, rootBase)` 分桶，允许不同桶物理交错；接受的 `SequentialRun` 互不重叠，被拒 `SequentialRun` 从 `end - 1` 保留一个尾候选重试。~~
 20. ~~复用循环路径的类型、精确换算、可用性和 pure 克隆检查，在整条 `SequentialRun` 通过后物化 step 并链式改写。~~
 21. ~~更新 `Passes.td` 中 pass 描述，使其同时覆盖循环递推和 block 内顺序访问。~~
-22. ~~添加 `test/lit/vpto` 回归测试：固定 base 常量序列、变化 base 与 offset 抵消、非常量仿射 step、Block 类 `8*k` 精确缩放、for-body 循环路径未命中后转顺序路径、不同桶交错、多个最大 `SequentialRun`、公差破坏、零步长及无法精确换算的负向用例。~~
+22. ~~添加 `test/lit/vpto` 回归测试：固定 base 常量序列、变化 base 与 offset 抵消、非常量仿射 step、Block 类 `8*k` 单位精确缩放及宽动态结果无法安全写入 i16 的负向用例、for-body 循环路径未命中后转顺序路径、不同桶交错、多个最大 `SequentialRun`、公差破坏、零步长及无法精确换算的负向用例。~~
 
 ### Step 4：扩展指令覆盖
 

@@ -253,7 +253,7 @@ static StrideExprRef makeCast(Operation *castOp, StrideExprRef a) {
 
 // A canonical affine view of StrideExpr used for exact division and symbolic
 // equality. Cast expressions are kept as typed atoms so materialization can
-// still clone or eliminate the cast according to the final operand type.
+// preserve them and reject a final operand type that would require narrowing.
 struct AffineTerm {
   StrideExprRef atom;
   int64_t coeff;
@@ -454,6 +454,8 @@ struct LinearDecomp {
 
 using DecompCache = DenseMap<Value, std::optional<LinearDecomp>>;
 
+static bool castPreservesLoopDelta(Operation *castOp, scf::ForOp forOp);
+
 // Decompose `v` into blockArg * coeff + increment by recursing through
 // addi/subi/muli/index_cast/addptr chains.  Pure: builds only StrideExprs.
 // `cache` is scoped to one decomposition (a single `blockArg`).
@@ -519,13 +521,15 @@ static std::optional<LinearDecomp> decomposeLinear(Value v,
                      makeMul(withBA.increment, makeConst(*constMul))});
   }
 
-  // v = index_cast(a) → {ca, cast(ia)}
+  // v = index_cast(a) → {ca, cast(ia)} when the cast preserves loop delta
   if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(defOp)) {
     auto d = decomposeLinear(defOp->getOperand(0), blockArg, forOp, cache);
     if (!d)
       return record(std::nullopt);
     if (d->coeff == 0)
       return record(LinearDecomp{0, makeLeaf(v)});
+    if (!castPreservesLoopDelta(defOp, forOp))
+      return record(std::nullopt);
     return record(LinearDecomp{d->coeff, makeCast(defOp, d->increment)});
   }
 
@@ -557,9 +561,10 @@ struct StrideResult {
 
 // Trace `v` back to an iter_arg BlockArgument of `forOp`, then decompose
 // the yield expression to extract the per-iteration increment. Walks through
-// index_cast (type-changing), addi/subi with loop-invariant offset, and
-// addptr with loop-invariant offset. Type casts along the path are applied
-// to the increment so its type matches v's context.  Pure: creates no IR.
+// delta-preserving index_cast (type-changing), addi/subi with loop-invariant
+// offset, and addptr with loop-invariant offset. Type casts along the path are
+// applied to the increment so its type matches v's context. Pure: creates no
+// IR.
 static StrideResult getIterArgIncrement(Value v, scf::ForOp forOp) {
   SmallVector<Operation *> casts;
   Value current = v;
@@ -590,6 +595,8 @@ static StrideResult getIterArgIncrement(Value v, scf::ForOp forOp) {
       return {StrideStatus::NotIterArg, nullptr};
 
     if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(defOp)) {
+      if (!castPreservesLoopDelta(defOp, forOp))
+        return {StrideStatus::Failed, nullptr};
       casts.push_back(defOp);
       current = defOp->getOperand(0);
       continue;
@@ -631,6 +638,45 @@ static StrideResult getIterArgIncrement(Value v, scf::ForOp forOp) {
 // Cached delta results.  A cached null expr means "delta is unknown"; absence
 // from the map means "not computed yet".
 using DeltaCache = DenseMap<Value, StrideExprRef>;
+
+static unsigned integerLikeBitWidth(Type type) {
+  if (type.isIndex())
+    return 64;
+  return cast<IntegerType>(type).getWidth();
+}
+
+// A narrowing index cast does not generally commute with delta: once the
+// source crosses the destination range, delta(cast(x)) is not cast(delta(x)).
+// Accept only the cases for which this pass can prove that delta(cast(x)) == cast(delta(x))
+// The IV proof is intentionally limited to constant positive loops;
+// all other dynamic narrowing is rejected conservatively.
+static bool castPreservesLoopDelta(Operation *castOp, scf::ForOp forOp) {
+  Value input = castOp->getOperand(0);
+  unsigned inputWidth = integerLikeBitWidth(input.getType());
+  unsigned resultWidth = integerLikeBitWidth(castOp->getResult(0).getType());
+  if (resultWidth >= inputWidth)
+    return true;
+
+  if (forOp.isDefinedOutsideOfLoop(input))
+    return true; // Both the cast value and its delta (zero) are invariant.
+  if (input != forOp.getInductionVar())
+    return false;
+
+  auto lower = getConstantIntValue(forOp.getLowerBound());
+  auto upper = getConstantIntValue(forOp.getUpperBound());
+  auto step = getConstantIntValue(forOp.getStep());
+  if (!lower || !upper || !step || *step <= 0)
+    return false;
+  if (*lower >= *upper)
+    return true; // Empty loop.
+
+  int64_t maxIV = *upper - 1;
+  if (isa<arith::IndexCastUIOp>(castOp))
+    return *lower >= 0 &&
+           llvm::isUIntN(resultWidth, static_cast<uint64_t>(*lower)) &&
+           llvm::isUIntN(resultWidth, static_cast<uint64_t>(maxIV));
+  return llvm::isIntN(resultWidth, *lower) && llvm::isIntN(resultWidth, maxIV);
+}
 
 // Compute the per-iteration delta of value `v` within `forOp`.
 // Returns a loop-invariant symbolic delta, or null if unknown.  Pure.
@@ -709,11 +755,14 @@ static StrideExprRef computeDelta(Value v, scf::ForOp forOp,
     return record(nullptr);
   }
 
-  // arith.index_castui / arith.index_cast: delta = delta(input)
-  if (auto castOp = dyn_cast<arith::IndexCastUIOp>(defOp))
-    return record(computeDelta(castOp.getIn(), forOp, cache));
-  if (auto castOp = dyn_cast<arith::IndexCastOp>(defOp))
-    return record(computeDelta(castOp.getIn(), forOp, cache));
+  // Preserve value-preserving casts in the symbolic delta. Narrowing casts are
+  // accepted only when castPreservesLoopDelta proves they cannot truncate.
+  if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(defOp)) {
+    if (!castPreservesLoopDelta(defOp, forOp))
+      return record(nullptr);
+    StrideExprRef inputDelta = computeDelta(defOp->getOperand(0), forOp, cache);
+    return record(inputDelta ? makeCast(defOp, inputDelta) : nullptr);
+  }
 
   return record(nullptr);
 }
@@ -1102,9 +1151,12 @@ static Value materialize(const StrideExprRef &e, Type wantType, Location loc,
   llvm_unreachable("unhandled StrideExpr kind");
 }
 
-// Sequential runs use the operand type fixed by the op definition. A cast may
-// be omitted when materializing back to its input type; this is what lets a
-// block-stride derived from `8 * index_cast(%i16)` become `%i16`.
+// Sequential runs use the operand type fixed by the op definition. Preserve
+// every cast in the analyzed expression: dropping a widening cast and
+// materializing the surrounding arithmetic in its input type can introduce
+// overflow that was absent from the original address calculation. Without a
+// range proof, a dynamic expression whose result type differs from the stride
+// operand type is conservatively rejected.
 static bool canMaterializeAs(const StrideExprRef &e, Type wantType) {
   switch (e->kind) {
   case StrideExpr::Kind::Const:
@@ -1114,8 +1166,6 @@ static bool canMaterializeAs(const StrideExprRef &e, Type wantType) {
   case StrideExpr::Kind::Cast: {
     Type inputType = e->castOp->getOperand(0).getType();
     Type resultType = e->castOp->getResult(0).getType();
-    if (wantType == inputType)
-      return canMaterializeAs(e->lhs, inputType);
     return wantType == resultType && canMaterializeAs(e->lhs, inputType);
   }
   case StrideExpr::Kind::Add:
@@ -1212,8 +1262,6 @@ static Value materializeSequential(const StrideExprRef &e, Type wantType,
     return e->leaf;
   case StrideExpr::Kind::Cast: {
     Type inputType = e->castOp->getOperand(0).getType();
-    if (wantType == inputType)
-      return materializeSequential(e->lhs, inputType, loc, builder);
     Value input = materializeSequential(e->lhs, inputType, loc, builder);
     Operation *cloned = builder.clone(*e->castOp);
     cloned->setOperand(0, input);
@@ -1749,12 +1797,15 @@ private:
       if (!total)
         continue;
 
-      // Reject expressions whose subterms demand conflicting types.
-      Type strideType;
-      if (!exprType(total, strideType))
+      // Reject expressions whose subterms demand conflicting types, or whose
+      // dynamic result cannot be materialized exactly as the op's declared
+      // stride operand type.
+      Type exprResultType;
+      if (!exprType(total, exprResultType))
         continue;
-      if (!strideType)
-        strideType = strideOperand.getType();
+      Type strideType = strideOperand.getType();
+      if (exprResultType && exprResultType != strideType)
+        continue;
 
       // Reject strides whose constants do not fit the target operand type.
       if (!constantsFitType(total, strideType))

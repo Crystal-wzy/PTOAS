@@ -8,13 +8,15 @@
 
 // RUN: ptoas --pto-backend=vpto --pto-arch=a5 --enable-vpto-soft-postupdate --emit-vpto %s -o - | FileCheck %s
 
-// For f32, a base delta of 8*k elements is exactly k 32-byte blocks. The
-// index_cast is eliminated when the symbolic step is materialized as i16.
-// CHECK-LABEL: func.func @sequential_vsstb_affine_block
-// CHECK-SAME: ({{.*}}, {{.*}}, [[K:%[a-zA-Z0-9_]+]]: i16
-// CHECK: pto.vsstb {{.*}}, {{%.*}}, %c2_i16, [[K]], {{.*}} -> !pto.ptr<f32,
-// CHECK: pto.vsstb {{.*}}, %{{.*}}, %c2_i16, [[K]], {{.*}} -> !pto.ptr<f32,
-// CHECK: pto.vsstb {{.*}}, %{{.*}}, %c2_i16, [[K]], {{.*}} -> !pto.ptr<f32,
+// For f32, a base delta of 16*k elements is exactly 2*k 32-byte blocks.
+// However, the address offsets are computed after zero-extending k to index.
+// Materializing 2*k directly in i16 would wrap for k = 40000, changing the
+// block step from 80000 to 14464. Without a range proof the run is rejected,
+// and all three stores remain in their original non-post-update form.
+// CHECK-LABEL: func.func @sequential_vsstb_wide_dynamic_stride
+// CHECK: {{^ *}}pto.vsstb {{.*}} : {{.*}}!pto.mask<b32>{{ *$}}
+// CHECK: {{^ *}}pto.vsstb {{.*}} : {{.*}}!pto.mask<b32>{{ *$}}
+// CHECK: {{^ *}}pto.vsstb {{.*}} : {{.*}}!pto.mask<b32>{{ *$}}
 
 // Four f32 elements are only half a block, so the conversion is inexact and
 // all three stores remain in their original non-post-update form.
@@ -24,15 +26,15 @@
 // CHECK: {{^ *}}pto.vsstb {{.*}} : {{.*}}!pto.mask<b32>{{ *$}}
 
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
-  func.func @sequential_vsstb_affine_block(%src: !pto.ptr<f32, ub>, %dst: !pto.ptr<f32, ub>, %k: i16) attributes {pto.kernel} {
+  func.func @sequential_vsstb_wide_dynamic_stride(%src: !pto.ptr<f32, ub>, %dst: !pto.ptr<f32, ub>, %k: i16) attributes {pto.kernel} {
     %c0 = arith.constant 0 : index
     %c0_i16 = arith.constant 0 : i16
     %c2_i16 = arith.constant 2 : i16
     %k_idx = arith.index_castui %k : i16 to index
-    %c8 = arith.constant 8 : index
     %c16 = arith.constant 16 : index
-    %off1 = arith.muli %k_idx, %c8 : index
-    %off2 = arith.muli %k_idx, %c16 : index
+    %c32 = arith.constant 32 : index
+    %off1 = arith.muli %k_idx, %c16 : index
+    %off2 = arith.muli %k_idx, %c32 : index
     %base1 = pto.addptr %dst, %off1 : !pto.ptr<f32, ub> -> !pto.ptr<f32, ub>
     %base2 = pto.addptr %dst, %off2 : !pto.ptr<f32, ub> -> !pto.ptr<f32, ub>
     pto.vecscope {
