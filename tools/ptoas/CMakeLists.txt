@@ -169,9 +169,6 @@ add_dependencies(PTOASPythonPackage
 if(TARGET PTODSLPackage)
   add_dependencies(PTOASPythonPackage PTODSLPackage)
 endif()
-if(TARGET TileLangDSLPackage)
-  add_dependencies(PTOASPythonPackage TileLangDSLPackage)
-endif()
 
 if(TARGET ptoas_runtime_deps)
   add_dependencies(ptoas_runtime_deps PTOASPythonPackage)

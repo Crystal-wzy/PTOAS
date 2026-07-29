@@ -18,7 +18,7 @@ diff --git a/pyproject.toml b/pyproject.toml
  editable.mode = "redirect"
 +sdist.inclusion-mode = "manual"
  install.components = ["PTOAS_Python"]
-@@ -53,7 +54,3 @@ tilelang_dsl = "tilelang-dsl/python/tilelang_dsl"
+@@ -52,8 +53,4 @@ ptoas = "ptodsl/ptoas"
  [tool.scikit-build.cmake.define]
  PTOAS_RELEASE_VERSION_OVERRIDE = { env = "PTOAS_RELEASE_VERSION_OVERRIDE", default = "" }
 -

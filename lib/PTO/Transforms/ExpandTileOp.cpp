@@ -740,9 +740,6 @@ static std::optional<SpecKey> buildSpecKey(Operation *op) {
 struct ExpandState {
   std::vector<OwningOpRef<ModuleOp>> parsedModules;  // Keep parsed modules alive
 
-  std::string tilelangPath;
-  std::string tilelangPkgPath;
-  std::string tileLibBackend;
   std::string tileLibPkgPath;
   std::string daemonHelperModule;
   std::string pythonExe;
@@ -1117,236 +1114,35 @@ func::FuncOp ExpandState::invokeTileLibDaemon(const SpecKey &key,
 func::FuncOp ExpandState::invokeTileLib(const SpecKey &key,
                                         Operation *tileOp, ModuleOp mod,
                                         MLIRContext *ctx) {
-  // Try daemon first if daemon socket path is provided.
-  if (!daemonSocketPath.empty()) {
-    std::string candidateId;
-    if (tileLibBackend == "ptodsl") {
-      auto candidates =
-          tileOp->getAttrOfType<ArrayAttr>(kCandidatesAttr);
-      if (!candidates || candidates.empty()) {
-        tileOp->emitError(
-            "ExpandTileOp requires at least one template candidate");
-        return nullptr;
-      }
-
-      auto selected = dyn_cast<DictionaryAttr>(candidates[0]);
-      if (!selected) {
-        tileOp->emitError(
-            "ExpandTileOp candidate 0 must be a dictionary");
-        return nullptr;
-      }
-      auto selectedName = selected.getAs<StringAttr>("name");
-      if (!selectedName) {
-        tileOp->emitError(
-            "ExpandTileOp candidate 0 requires a string name");
-        return nullptr;
-      }
-      candidateId = selectedName.getValue().str();
-    }
-
-    func::FuncOp daemonResult =
-        invokeTileLibDaemon(key, candidateId, mod, ctx);
-    if (daemonResult)
-      return daemonResult;
-    if (tileLibBackend == "ptodsl") {
-      llvm::errs()
-          << "ExpandTileOp: PTODSL daemon RPC failed; refusing to fall back "
-             "to TileLang\n";
-      return nullptr;
-    }
-    llvm::errs() << "ExpandTileOp: daemon RPC failed, falling back to legacy "
-                    "TileLang subprocess mode\n";
-  }
-
-  if (tileLibBackend == "ptodsl") {
+  if (daemonSocketPath.empty()) {
     llvm::errs() << "ExpandTileOp: PTODSL backend requires its daemon\n";
     return nullptr;
   }
 
-  // 1. Locate the Python executable.
-  auto pythonPath = pto::resolvePythonExecutable(pythonExe);
-  if (!pythonPath) {
-    llvm::errs() << "ExpandTileOp: cannot find '" << pythonExe << "'\n";
+  auto candidates = tileOp->getAttrOfType<ArrayAttr>(kCandidatesAttr);
+  if (!candidates || candidates.empty()) {
+    tileOp->emitError("ExpandTileOp requires at least one template candidate");
     return nullptr;
   }
 
-  // 2. Build operand schema JSON for mixed tile/scalar specialization.
-  std::string operandSpecsJson = buildOperandSpecsJson(key);
-  std::string contextAttrsJson = buildContextAttrsJson(key);
-  if (key.targetArch.empty()) {
-    llvm::errs() << "ExpandTileOp: missing pto.target_arch module attribute\n";
+  auto selected = dyn_cast<DictionaryAttr>(candidates[0]);
+  if (!selected) {
+    tileOp->emitError("ExpandTileOp candidate 0 must be a dictionary");
+    return nullptr;
+  }
+  auto selectedName = selected.getAs<StringAttr>("name");
+  if (!selectedName) {
+    tileOp->emitError("ExpandTileOp candidate 0 requires a string name");
     return nullptr;
   }
 
-  // 3. Create temp file for stdout redirect.
-  SmallString<128> tmpPath;
-  int tmpFD;
-  if (auto ec = llvm::sys::fs::createTemporaryFile("tilelang_expand", "mlir",
-                                                     tmpFD, tmpPath)) {
-    llvm::errs() << "ExpandTileOp: cannot create temp file: "
-                 << ec.message() << "\n";
-    return nullptr;
-  }
-  ::close(tmpFD);
+  func::FuncOp daemonResult =
+      invokeTileLibDaemon(key, selectedName.getValue(), mod, ctx);
+  if (daemonResult)
+    return daemonResult;
 
-  // 4. Build command args.
-  std::string opName = "pto." + key.opName;
-  SmallVector<StringRef> args = {
-      *pythonPath, "-m", "tilelang_dsl.expand_helper",
-      "--template-dir", tilelangPath,
-      "--target",       key.targetArch,
-      "--op",           opName,
-      "--operand-specs", operandSpecsJson,
-  };
-  if (!key.contextAttrs.empty()) {
-    args.push_back("--context-attrs");
-    args.push_back(contextAttrsJson);
-  }
-
-  // 5. Set up environment with PYTHONPATH.
-  std::optional<StringRef> redirects[] = {std::nullopt, StringRef(tmpPath),
-                                          std::nullopt};
-
-  SmallVector<StringRef> envp;
-  std::string pythonPathEnv;
-  std::vector<std::string> envStorage;
-  bool hasPythonPath = !tilelangPkgPath.empty();
-  if (hasPythonPath) {
-    const char *existingPath = ::getenv("PYTHONPATH");
-    pythonPathEnv = "PYTHONPATH=" + tilelangPkgPath;
-    if (existingPath && existingPath[0] != '\0') {
-      pythonPathEnv += ":";
-      pythonPathEnv += existingPath;
-    }
-    for (char **e = environ; *e; ++e) {
-      StringRef entry(*e);
-      if (entry.starts_with("PYTHONPATH="))
-        continue;
-      envStorage.push_back(std::string(entry));
-    }
-    envStorage.push_back(pythonPathEnv);
-    for (auto &s : envStorage)
-      envp.push_back(s);
-  }
-
-  // 6. Execute.
-  std::string errMsg;
-  int rc = llvm::sys::ExecuteAndWait(
-      *pythonPath, args,
-      hasPythonPath ? std::optional<ArrayRef<StringRef>>(envp) : std::nullopt,
-      redirects, /*secondsToWait=*/30, /*memoryLimit=*/0, &errMsg);
-
-  if (rc != 0) {
-    std::string cmd;
-    llvm::raw_string_ostream os(cmd);
-    bool first = true;
-    auto appendToken = [&](StringRef token) {
-      if (!first)
-        os << ' ';
-      first = false;
-      llvm::sys::printArg(os, token, /*Quote=*/true);
-    };
-    if (hasPythonPath) {
-      appendToken("env");
-      appendToken(pythonPathEnv);
-    }
-    for (StringRef arg : args)
-      appendToken(arg);
-    os.flush();
-
-    llvm::errs() << "ExpandTileOp: tilelang DSL helper failed (rc=" << rc
-                 << "): " << errMsg << "\n";
-    llvm::errs() << "ExpandTileOp: run: " << cmd << "\n";
-    llvm::sys::fs::remove(tmpPath);
-    return nullptr;
-  }
-
-  // 7. Read the generated MLIR.
-  auto bufOrErr = llvm::MemoryBuffer::getFile(tmpPath);
-  llvm::sys::fs::remove(tmpPath);
-  if (!bufOrErr) {
-    llvm::errs() << "ExpandTileOp: cannot read DSL output\n";
-    return nullptr;
-  }
-  StringRef mlirText = (*bufOrErr)->getBuffer();
-  if (mlirText.empty()) {
-    llvm::errs() << "ExpandTileOp: empty DSL output\n";
-    return nullptr;
-  }
-
-  // 8. Parse the MLIR text.
-  auto parsedMod = parseSourceString<ModuleOp>(mlirText, ctx);
-  if (!parsedMod) {
-    llvm::errs() << "ExpandTileOp: failed to parse DSL output\n";
-    return nullptr;
-  }
-
-  // 9. Clone the generated function set into the target module. The TileLang
-  // output may include private inline helper funcs referenced by the entry.
-  SmallVector<func::FuncOp, 4> parsedFuncs;
-  for (auto fn : parsedMod->getOps<func::FuncOp>())
-    parsedFuncs.push_back(fn);
-  if (parsedFuncs.empty()) {
-    llvm::errs() << "ExpandTileOp: no func.func in DSL output\n";
-    return nullptr;
-  }
-  OpBuilder builder(ctx);
-  builder.setInsertionPointToEnd(mod.getBody());
-  SmallVector<func::FuncOp, 4> clonedFuncs;
-  llvm::StringMap<std::string> renamedSymbols;
-
-  std::string uniqueName = buildUniqueFunctionBaseName(key);
-
-  // Check if function already exists in module (deduplication)
-  SymbolTable targetSymTable(mod);
-  if (auto existingFunc = targetSymTable.lookup(uniqueName)) {
-    // Function already exists, return it directly (avoid redefinition)
-    llvm::errs() << "ExpandTileOp: reuse existing function @" << uniqueName << "\n";
-    return cast<func::FuncOp>(existingFunc);
-  }
-
-  std::vector<std::string> newNameStorage;
-  for (auto [index, fn] : llvm::enumerate(parsedFuncs)) {
-    IRMapping mapping;
-    auto cloned = cast<func::FuncOp>(builder.clone(*fn, mapping));
-    std::string newName;
-    if (index == 0) {
-      newName = uniqueName;
-      cloned.setVisibility(SymbolTable::Visibility::Private);
-    } else {
-      newName = uniqueName + "__" + std::string(fn.getSymName());
-    }
-    newNameStorage.push_back(newName);
-    renamedSymbols[fn.getSymName()] = newNameStorage.back();
-    cloned.setName(newNameStorage.back());
-    clonedFuncs.push_back(cloned);
-  }
-
-  for (func::FuncOp fn : clonedFuncs) {
-    fn.walk([&](func::CallOp call) {
-      StringRef callee = call.getCallee();
-      if (callee.empty())
-        return;
-      auto renameIt = renamedSymbols.find(callee);
-      if (renameIt == renamedSymbols.end())
-        return;
-      call.setCallee(renameIt->second);
-    });
-  }
-
-  auto cloned = clonedFuncs.front();
-  // The pto.tilelang.instance attribute should already be set by the
-  // TileLang DSL frontend in the generated MLIR. Verify it exists.
-  if (!cloned->hasAttr("pto.tilelang.instance")) {
-    llvm::errs() << "ExpandTileOp: warning: DSL output function @"
-                 << cloned.getSymName()
-                 << " missing pto.tilelang.instance attribute\n";
-  }
-
-  // Keep the parsed module alive.
-  parsedModules.push_back(std::move(parsedMod));
-
-  return cloned;
+  llvm::errs() << "ExpandTileOp: PTODSL daemon RPC failed\n";
+  return nullptr;
 }
 
 // ============================================================================
@@ -1412,30 +1208,20 @@ void ExpandTileOpPass::runOnOperation() {
   ModuleOp mod = getOperation();
   MLIRContext *ctx = &getContext();
 
-  if (tileLibBackend != "tilelang" && tileLibBackend != "ptodsl") {
+  if (tileLibBackend != "ptodsl") {
     mod.emitError("ExpandTileOp received unsupported tile-lib-backend '" +
                   std::string(tileLibBackend) + "'");
     signalPassFailure();
     return;
   }
 
-  if (tileLibBackend == "tilelang" && tilelangPath.empty()) {
-    mod.emitError(
-        "ExpandTileOp requires a non-empty tilelang-path on the VPTO backend");
-    signalPassFailure();
-    return;
-  }
-
-  if (tileLibBackend == "ptodsl" && daemonSocketPath.empty()) {
+  if (daemonSocketPath.empty()) {
     mod.emitError("ExpandTileOp requires a running PTODSL TileLib daemon");
     signalPassFailure();
     return;
   }
 
   ExpandState state;
-  state.tilelangPath = std::string(tilelangPath);
-  state.tilelangPkgPath = std::string(tilelangPkgPath);
-  state.tileLibBackend = std::string(tileLibBackend);
   state.tileLibPkgPath = std::string(tileLibPkgPath);
   state.daemonHelperModule = std::string(daemonHelperModule);
   state.pythonExe = std::string(pythonExe);

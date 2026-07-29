@@ -251,7 +251,6 @@ if(BUILD_TESTING)
   foreach(_target IN ITEMS
       PTOAS_Python
       PTODSLPackage
-      TileLangDSLPackage
       ptoas_runtime_deps
       ptobc)
     if(TARGET ${_target})

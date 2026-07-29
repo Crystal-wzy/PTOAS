@@ -48,7 +48,6 @@ install.components = ["PTOAS_Python"]
 [tool.scikit-build.wheel.packages]
 ptodsl = "ptodsl/ptodsl"
 ptoas = "ptodsl/ptoas"
-tilelang_dsl = "tilelang-dsl/python/tilelang_dsl"
 
 [tool.scikit-build.cmake.define]
 PTOAS_RELEASE_VERSION_OVERRIDE = { env = "PTOAS_RELEASE_VERSION_OVERRIDE", default = "" }

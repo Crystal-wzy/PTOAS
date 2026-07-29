@@ -47,12 +47,10 @@ class PTOASCLITests(unittest.TestCase):
         native_module.main.assert_called_once_with(
             [
                 str(wrapper.resolve()),
-                "--tilelang-path",
-                str(tileops_dir.resolve()),
-                "--tilelang-pkg-path",
-                str(package_root.parent.resolve()),
                 "--ptodsl-pkg-path",
                 str(package_root.parent.resolve()),
+                "--tileops-pkg-path",
+                str(tileops_dir.parent.resolve()),
                 "--version",
             ]
         )
@@ -71,10 +69,9 @@ class PTOASCLITests(unittest.TestCase):
             wrapper.write_text("", encoding="utf-8")
             native_module = self._make_native_module(package_root)
             arguments = [
-                "--tilelang-path=/custom/tileops",
-                "--tilelang-pkg-path",
-                "/custom/tilelang",
                 "--ptodsl-pkg-path=/custom/ptodsl",
+                "--tileops-pkg-path",
+                "/custom/tileops",
                 "--version",
             ]
 

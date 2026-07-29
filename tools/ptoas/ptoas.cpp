@@ -494,8 +494,6 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
                                                            char **argv) {
   pto::ExpandTileOpOptions expandOpts;
   expandOpts.pythonExe = resolveTileLibPythonExe();
-  expandOpts.tilelangPath.clear();
-  expandOpts.tilelangPkgPath.clear();
   std::string resolvedPtodslPkgPath = ptodslPkgPath;
   std::string resolvedTileOpsPkgPath = tileopsPkgPath;
 

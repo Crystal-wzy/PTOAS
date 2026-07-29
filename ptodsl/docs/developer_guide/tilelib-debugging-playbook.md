@@ -125,19 +125,12 @@ Recommended sequence:
    shape, not only the logical valid shape.
 4. Decide whether computation is wrong or only writeback/readback layout is
    wrong.
-5. Compare TileLangDSL and PTODSL emitted VPTO for the same case.
-6. Dump after `ExpandTileOp` to see whether the divergence entered during
+5. Dump after `ExpandTileOp` to see whether the divergence entered during
    template expansion or later lowering.
 
-Compiler-only comparison:
+Compiler-only dump:
 
 ```bash
-build-llvm21/tools/ptoas/ptoas \
-  --pto-arch=a5 --pto-backend=vpto --emit-vpto \
-  --tile-lib-backend=tilelang --enable-insert-sync \
-  test/tilelang_st/npu/a5/src/st/testcase/<tileop>/<tileop>.pto \
-  -o /tmp/<tileop>_tilelang.vpto
-
 build-llvm21/tools/ptoas/ptoas \
   --pto-arch=a5 --pto-backend=vpto --emit-vpto \
   --tile-lib-backend=ptodsl --enable-insert-sync \

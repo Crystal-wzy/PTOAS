@@ -353,7 +353,6 @@ jobs:
           test -f "$TEST_DIR/extracted/ptoas/_cli.py"
           test -f "$TEST_DIR/extracted/ptoas/mlir/ir.py"
           test -f "$TEST_DIR/extracted/ptodsl/__init__.py"
-          test -f "$TEST_DIR/extracted/tilelang_dsl/__init__.py"
           test -d "$TEST_DIR/extracted/share/ptoas/TileOps"
           test "$(cat "$TEST_DIR/extracted/.ptoas-python-version")" = "3.11"
           compgen -G "$TEST_DIR/extracted/ptoas/_core*.so" >/dev/null
