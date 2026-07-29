@@ -223,7 +223,7 @@ cd $PTO_SOURCE_DIR/test/samples/MatMul/
 python3 ./tmatmulk.py > ./tmatmulk.pto
 
 # Run ptoas tests
-$PTO_SOURCE_DIR/build/tools/ptoas/ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
+ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
 ```
 
 ### 4.4 On-Board Validation

@@ -192,26 +192,13 @@ from ptoas.mlir.dialects import pto as mlir_pto
 完成安装，那么 `import ptodsl` / `from ptoas.mlir.dialects import pto` / `ptoas`
 都不应再依赖手动设置 `PYTHONPATH`。
 
-下面这组环境变量主要用于**直接消费 build/install tree** 的场景，例如：
-
-- 不走 pip 安装，直接调试 CMake install 输出
-- 调试 `ptoas` CLI、动态库搜索路径或 build-tree Python package
-- 复用仓库脚本做 compile-only / simulator / sample 生成
-
-您可以将以下命令添加到 `.bashrc` 或启动脚本中。
+需要 CANN、Bisheng、simulator 或 NPU 时，在完成 PTOAS 安装后再加载
+CANN 自带的环境脚本。PTOAS 的 Python 包和 CLI 仍由当前 pip 环境提供，
+不需要手工添加 build/install tree 到 `PYTHONPATH` 或 `PATH`。
 
 ```bash
-# --- 运行时变量配置 (基于之前定义的路径) ---
-
-# 1. Python Path: PTOAS 的 build/install tree 已包含统一的 MLIR + PTO package
-export PYTHONPATH=$PTO_INSTALL_DIR:$PTO_SOURCE_DIR/build/python:$PYTHONPATH
-
-# 2. Library Path: 确保能加载 LLVM 和 PTO 的动态库
-export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
-
-# 3. PATH: 将 ptoas / ptobc 添加到命令行路径
-export PATH=$PTO_SOURCE_DIR/build-llvm21/tools/ptoas:$PTO_SOURCE_DIR/build-llvm21/tools/ptobc:$PATH
-
+source "${ASCEND_HOME_PATH}/bin/setenv.bash"
+ptoas --version
 ```
 
 ---
@@ -272,7 +259,7 @@ cd $PTO_SOURCE_DIR/test/samples/MatMul/
 python3 ./tmatmulk.py > ./tmatmulk.pto
 
 # 运行ptoas 测试
-$PTO_SOURCE_DIR/build/tools/ptoas/ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
+ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
 ```
 
 ### 5.4 上板验证

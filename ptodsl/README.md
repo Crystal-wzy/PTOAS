@@ -73,13 +73,13 @@ Artifact boundary:
 - `ptoas` wheel: PTODSL-capable Python distribution
 - `ptoas-bin-*.tar.gz`: compiler-only artifact, does **not** imply `import ptodsl`
 
-If you are working from a source checkout and want the repository helper
-scripts (`scripts/sim_dsl.sh`, sample runners, direct CLI debugging) to pick up
-the local build/install tree, you may still source:
+For source development, install the checkout into the active Python environment.
+The editable install retains an incremental CMake build tree without requiring
+manual `PYTHONPATH` or build-tree wrapper setup:
 
 ```bash
 cd $PTOAS_REPO_ROOT
-source scripts/ptoas_env.sh
+LLVM_BUILD_DIR=/path/to/llvm/build ./quick_install.sh
 ```
 
 ---
@@ -135,7 +135,6 @@ Set up the environment in each new shell:
 ```bash
 cd $PTOAS_REPO_ROOT
 pip install -e . --no-build-isolation
-source scripts/ptoas_env.sh
 source "${ASCEND_HOME_PATH}/bin/setenv.bash"
 ```
 

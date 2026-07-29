@@ -122,9 +122,8 @@ ninja -C build install
 ### 3.3 跑样例生成链路
 
 ```bash
-export PYTHONPATH="$PWD/install:$PWD/build/python:${PYTHONPATH:-}"
-export LD_LIBRARY_PATH="$LLVM_DIR/lib:$PTO_INSTALL_DIR/lib:${LD_LIBRARY_PATH:-}"
-export PTOAS_BIN=$PWD/build/tools/ptoas/ptoas
+LLVM_BUILD_DIR="$LLVM_DIR" ./quick_install.sh
+export PTOAS_BIN="$(command -v ptoas)"
 
 bash test/samples/runop.sh --enablebc all
 ```

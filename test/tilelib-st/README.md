@@ -228,7 +228,6 @@ export ASCEND_HOME_PATH=/path/to/cann
 export LLVM_BUILD_DIR=/path/to/vpto-llvm/build
 export PYTHON_BIN=/path/to/python-with-torch-npu
 export PTO_PYTHON_BIN="$PYTHON_BIN"
-export PTOAS_ENV_SKIP_SMOKE_TEST=1
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 ```
 

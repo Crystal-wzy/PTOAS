@@ -49,21 +49,18 @@ def _normalize_case_filters(case_filters):
 
 
 def find_ptoas_bin():
-    """Locate the ptoas binary by walking up from this script to the repo root."""
+    """Locate the ptoas entry point from an override or the active environment."""
     env_bin = os.environ.get("PTOAS_BIN")
-    if env_bin and os.path.isfile(env_bin):
-        return os.path.abspath(env_bin)
+    if env_bin:
+        resolved = shutil.which(env_bin)
+        if resolved:
+            return os.path.abspath(resolved)
+        if os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
+            return os.path.abspath(env_bin)
+        return None
 
-    search_dir = os.path.dirname(os.path.abspath(__file__))
-    for _ in range(8):
-        candidate = os.path.join(search_dir, "build", "tools", "ptoas", "ptoas")
-        if os.path.isfile(candidate):
-            return os.path.abspath(candidate)
-        parent = os.path.dirname(search_dir)
-        if parent == search_dir:
-            break
-        search_dir = parent
-    return None
+    resolved = shutil.which("ptoas")
+    return os.path.abspath(resolved) if resolved else None
 
 
 def set_env_variables(run_mode, soc_version):
