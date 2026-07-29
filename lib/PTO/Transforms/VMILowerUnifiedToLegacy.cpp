@@ -40,6 +40,9 @@
 //   vload  → dispatch by dist_mode/group/block_stride to
 //            load / deinterleave_load / group_broadcast_load{num_groups=1} / ...
 //   vstore → dispatch to store / masked_store / interleave_store / group_store / ...
+//   A full-active continuous store of a compact reduction result is normalized
+//   to a unit-stride group_store.  A full reduction is one logical group, so
+//   its producer is normalized to group=1 before legacy lowering.
 //   Skipped: dist_mode "unpack" (physical widening, no legacy equivalent).
 //
 // Category C4 — static mask creation (3 ops):
@@ -318,6 +321,35 @@ static bool isAllActiveSeed(Value seed) {
         return ia.getInt() >= maskTy.getElementCount();
   }
   return false;
+}
+
+/// Prepare a direct reduction result for a unit-stride group store.
+///
+/// Explicit grouped reductions already produce one scalar per group.  A full
+/// reduction has the same semantics as a one-group reduction; when the store
+/// is its only consumer, attach group=1 so the producer and store share the
+/// existing group-slot lowering.  The one-use condition avoids changing the
+/// representation expected by unrelated consumers.
+static bool prepareReductionForUnitStrideGroupStore(Value value,
+                                                    int64_t numGroups,
+                                                    OpBuilder &builder) {
+  Operation *producer = value.getDefiningOp();
+  if (!producer || !isa<VMIvcaddOp, VMIvcmaxOp, VMIvcminOp>(producer))
+    return false;
+
+  if (auto group = producer->getAttrOfType<IntegerAttr>("group"))
+    return group.getInt() == numGroups;
+
+  if (numGroups != 1 || !value.hasOneUse())
+    return false;
+
+  auto valueType = cast<VMIVRegType>(value.getType());
+  if (VMILayoutAttr layout = valueType.getLayoutAttr())
+    if (!layout.isGroupSlots() || layout.getNumGroups() != 1)
+      return false;
+
+  producer->setAttr("group", builder.getI64IntegerAttr(1));
+  return true;
 }
 
 /// Lower vcmp to cmpf/cmpi + mask_and.
@@ -645,6 +677,32 @@ static LogicalResult lowerVStore(VMIvStoreOp op, OpBuilder &builder) {
     if (values.empty())
       return failure();
     Value mask = op.getMask().empty() ? Value() : op.getMask().front();
+    auto valueType = cast<VMIVRegType>(values[0].getType());
+    int64_t numGroups = valueType.getElementCount();
+
+    // A compact reduction result contains one scalar per logical group.  A
+    // continuous store of those scalars is therefore a group_store with unit
+    // row stride, which lets the legacy lowering select point-store modes.
+    // Keep masked stores unchanged unless their mask is provably all-active:
+    // group_store writes every group and cannot preserve dynamic predication.
+    bool allActive = !mask || isAllActiveSeed(mask);
+    bool compact = numGroups > 0 && numGroups <= 8;
+
+    // Do not replace an explicitly assigned, incompatible representation;
+    // layout assignment will choose group slots when the type is unassigned.
+    bool layoutCompatible =
+        !valueType.getLayoutAttr() ||
+        (valueType.getLayoutAttr().isGroupSlots() &&
+         valueType.getLayoutAttr().getNumGroups() == numGroups);
+    if (compact && allActive && layoutCompatible &&
+        prepareReductionForUnitStrideGroupStore(values[0], numGroups,
+                                                builder)) {
+      Value unitStride = builder.create<arith::ConstantIndexOp>(loc, 1);
+      builder.create<VMIGroupStoreOp>(loc, values[0], dest, offset, unitStride,
+                                      builder.getI64IntegerAttr(numGroups));
+      op->erase();
+      return success();
+    }
     if (mask) {
       // Masked store path.
       builder.create<VMIMaskedStoreOp>(loc, values[0], dest, offset, mask);
@@ -1188,6 +1246,9 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
     }
   });
 
+  // Process consumers before producers.  Besides avoiding stale producer
+  // uses, this lets a compact reduction-result vstore normalize a full
+  // reduction to group=1 before the reduction itself is lowered.
   for (Operation *op : llvm::reverse(worklist)) {
     if (!op->getBlock())
       continue;
