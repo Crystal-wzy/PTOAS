@@ -10,9 +10,8 @@ name: Build Wheel (macOS)
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
+    tags-ignore:
+      - '**'
   # Nightly build & publish (UTC time, offset from Linux workflow).
   schedule:
     - cron: "40 17 * * *"
