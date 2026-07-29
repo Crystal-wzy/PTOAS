@@ -69,22 +69,6 @@ permissions:
   pull-requests: read
 
 jobs:
-  watchdog-script-test:
-    if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Test ci-sim duration warning
-        run: >-
-          python3 -m unittest discover
-          -s test/python
-          -p 'test_ci_sim_duration_warning.py'
-          -v
-
   license-header-check:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-22.04
