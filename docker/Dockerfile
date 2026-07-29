@@ -70,10 +70,10 @@ RUN pip install /wheelhouse/ptoas*.whl
 
 # test the installed wheel contract without adjusting $PYTHONPATH
 WORKDIR /test
-RUN bash "$PTO_SOURCE_DIR/docker/test_wheel_imports.sh"
+RUN PTO_TEST_WHEEL_PATH="/wheelhouse/ptoas*.whl" \
+    bash "$PTO_SOURCE_DIR/docker/test_wheel_imports.sh"
 
-# test ptoas cli
-ENV PATH=$PTO_BUILD_DIR/tools/ptoas:$PATH
+# test the wheel-provided ptoas cli
 RUN which ptoas
 
 WORKDIR $PTO_SOURCE_DIR/test/samples/MatMul/
