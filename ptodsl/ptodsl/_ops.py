@@ -1012,7 +1012,12 @@ def vgatherb(buf, offsets, mask, result_vreg_type=None):
 
 
 def vscatter(value, destination, offsets, mask):
-    """``pto.vscatter`` – indexed scatter to UB."""
+    """Scatter b8/b16/b32 values to UB using width-matched integer offsets.
+
+    The b8 form consumes 128 offsets and stores the 128 even-numbered bytes of
+    its 256-lane value vector. The b16 and b32 forms consume one offset per
+    value lane.
+    """
     _pto.VscatterOp(
         unwrap_surface_value(value),
         unwrap_surface_value(destination),

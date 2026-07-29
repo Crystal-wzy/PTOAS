@@ -216,6 +216,7 @@ public:
 struct PlannedDecl {
   std::string name;
   FunctionType type;
+  bool writeOnlyDestination = false;
 };
 
 struct LoweringState {
@@ -8155,7 +8156,8 @@ public:
         op.getLoc(), *calleeName, TypeRange{},
         ValueRange{adaptor.getValue(), adaptor.getDestination(),
                    adaptor.getOffsets(), adaptor.getMask()});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
+    state.plannedDecls.push_back(
+        PlannedDecl{calleeName->str(), funcType, true});
     rewriter.eraseOp(op);
     return success();
   }
@@ -11847,6 +11849,16 @@ emitDeviceLLVMModule(ModuleOp deviceModule, StringRef kernelKind,
   }
 
   applyArtifactVisibilityLinkage(deviceModule, *llvmModule);
+  for (llvm::Function &func : *llvmModule) {
+    if (!func.getName().starts_with("llvm.hivm.vscatter."))
+      continue;
+    // Bisheng LLVM 15 verifies these intrinsic memory effects. Record them
+    // through the LLVM 21 API here; the dispatcher rewrites the new textual
+    // memory(...) spelling before handing the IR to Bisheng.
+    func.setOnlyAccessesArgMemory();
+    func.addFnAttr(llvm::Attribute::NoUnwind);
+    func.addFnAttr(llvm::Attribute::WriteOnly);
+  }
   applySimtEntryCallingConvention(*llvmModule, simtEntryNames);
   if (failed(attachAIVectorScopeMetadata(*llvmModule, diagOS)))
     return failure();
