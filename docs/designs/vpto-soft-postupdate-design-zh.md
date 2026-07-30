@@ -314,7 +314,22 @@ delta 分析同样是纯符号的：表中每一行返回 `StrideExpr`，结果�
 3. 新增指针类型的 `iter_arg`，初始值为 `init_ptr`。
 4. 创建 Post-Update op：将 `strideOperand` 替换为 `stride_new`，base 替换为 iter_arg 的 block argument。其余操作数（block_stride、mask、dist 等）不变。
 5. 将 `updated_base` 通过 `scf.yield` 传出。
-6. 交由 DCE 清除死代码。
+6. 对改写后的循环做 loop-aware liveness，删除已经被 Post-Update 指针链完全取代的旧 accumulator `iter_arg`、更新表达式、loop result 和 yield 操作数。
+
+第 6 步不能只依赖普通 DCE。旧 accumulator 即使没有真实用户，仍会形成
+`block argument → pure update → scf.yield → block argument` 的循环使用链，局部
+DCE 无法从这个环中找到 `use_empty()` 的起点。改写因此从以下根节点反向计算
+liveness：
+
+- 有副作用 op 的操作数；
+- 在循环外仍有用户的 `scf.for` result；
+- 保守保留 region op 自身的 operands，以及嵌套 region 捕获的值。
+
+当活跃值追溯到某个 `iter_arg` block argument 时，对应的 yield 值也加入
+liveness，直到跨 backedge 达到不动点。随后重建 `scf.for`，只复制活跃的
+`iter_arg` 及其纯定义链。若 accumulator 的最终 loop result 或循环内其他语义
+仍可观察，则该 accumulator 保留；只有完全被 Post-Update 地址链替代的递推
+才会删除。
 
 **vsstb/vsldb 的硬件语义补充：**
 

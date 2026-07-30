@@ -1350,6 +1350,133 @@ static Operation *createNormalOp(Operation *op, const PostUpdateOpInfo &info,
   return builder.create(state);
 }
 
+// Remove loop-carried recurrences that became dead after post-update rewrites.
+//
+// Ordinary DCE cannot break a recurrence such as
+//
+//   %next = arith.addi %iter_arg, %step
+//   scf.yield %next
+//
+// even when neither the iter_arg nor the loop result has a real user: the
+// block argument, update, and yield form a use cycle. Compute liveness from
+// side-effecting operations and externally used loop results, close it across
+// the loop backedge, then rebuild the loop with only live iter_args and pure
+// operations that feed live values.
+static scf::ForOp pruneDeadLoopCarriedValues(scf::ForOp forOp,
+                                             OpBuilder &builder) {
+  unsigned numIterArgs = forOp.getInitArgs().size();
+  if (numIterArgs == 0)
+    return forOp;
+
+  auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+  DenseSet<Value> liveValues;
+  SmallVector<Value> worklist;
+  SmallVector<bool> keepIterArg(numIterArgs, false);
+
+  auto markLive = [&](Value value) {
+    if (value && liveValues.insert(value).second)
+      worklist.push_back(value);
+  };
+
+  // A loop result used outside the loop keeps its corresponding backedge live.
+  for (auto [idx, result] : llvm::enumerate(forOp.getResults())) {
+    if (result.use_empty())
+      continue;
+    keepIterArg[idx] = true;
+    markLive(yieldOp.getOperand(idx));
+  }
+
+  // Side-effecting operations are liveness roots. Region-bearing operations
+  // are handled conservatively: keep their own operands and every value
+  // captured by a nested region, even when the nested computation is pure,
+  // rather than attempting a second control-flow-sensitive liveness analysis
+  // here.
+  for (Operation &op : forOp.getBody()->without_terminator()) {
+    if (!isPure(&op))
+      for (Value operand : op.getOperands())
+        markLive(operand);
+    if (op.getNumRegions() != 0) {
+      op.walk([&](Operation *nested) {
+        for (Value operand : nested->getOperands())
+          markLive(operand);
+      });
+    }
+  }
+
+  // Propagate liveness through pure def chains and across loop backedges.
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+      if (blockArg.getOwner() != forOp.getBody() ||
+          blockArg.getArgNumber() == 0)
+        continue;
+      unsigned idx = blockArg.getArgNumber() - 1;
+      if (!keepIterArg[idx]) {
+        keepIterArg[idx] = true;
+        markLive(yieldOp.getOperand(idx));
+      }
+      continue;
+    }
+
+    Operation *defOp = value.getDefiningOp();
+    if (!defOp || !forOp->isAncestor(defOp))
+      continue;
+    for (Value operand : defOp->getOperands())
+      markLive(operand);
+  }
+
+  if (llvm::all_of(keepIterArg, [](bool keep) { return keep; }))
+    return forOp;
+
+  SmallVector<Value> newInitArgs;
+  newInitArgs.reserve(numIterArgs);
+  for (auto [idx, init] : llvm::enumerate(forOp.getInitArgs()))
+    if (keepIterArg[idx])
+      newInitArgs.push_back(init);
+
+  builder.setInsertionPoint(forOp);
+  auto newForOp = builder.create<scf::ForOp>(
+      forOp.getLoc(), forOp.getLowerBound(), forOp.getUpperBound(),
+      forOp.getStep(), newInitArgs);
+  newForOp->setAttrs(forOp->getAttrs());
+
+  IRMapping mapping;
+  mapping.map(forOp.getInductionVar(), newForOp.getInductionVar());
+  unsigned newArgIdx = 0;
+  for (auto [idx, oldArg] : llvm::enumerate(forOp.getRegionIterArgs()))
+    if (keepIterArg[idx])
+      mapping.map(oldArg, newForOp.getRegionIterArgs()[newArgIdx++]);
+
+  builder.setInsertionPointToStart(newForOp.getBody());
+  for (Operation &op : forOp.getBody()->without_terminator()) {
+    bool hasLiveResult = llvm::any_of(op.getResults(), [&](Value result) {
+      return liveValues.contains(result);
+    });
+    if (!isPure(&op) || op.getNumRegions() != 0 || hasLiveResult)
+      builder.clone(op, mapping);
+  }
+
+  SmallVector<Value> newYields;
+  newYields.reserve(newInitArgs.size());
+  for (auto [idx, yielded] : llvm::enumerate(yieldOp.getOperands()))
+    if (keepIterArg[idx])
+      newYields.push_back(mapping.lookupOrDefault(yielded));
+  builder.setInsertionPointToEnd(newForOp.getBody());
+  builder.create<scf::YieldOp>(yieldOp.getLoc(), newYields);
+
+  unsigned newResultIdx = 0;
+  for (auto [idx, oldResult] : llvm::enumerate(forOp.getResults())) {
+    if (keepIterArg[idx]) {
+      oldResult.replaceAllUsesWith(newForOp.getResult(newResultIdx++));
+      continue;
+    }
+    assert(oldResult.use_empty() && "cannot drop a used scf.for result");
+  }
+
+  forOp.erase();
+  return newForOp;
+}
+
 // Apply post-update rewrites to a single scf.for.
 // Returns the new ForOp if any rewrites were applied, null otherwise.
 static scf::ForOp applyPostUpdateRewrites(scf::ForOp forOp,
@@ -1461,7 +1588,7 @@ static scf::ForOp applyPostUpdateRewrites(scf::ForOp forOp,
     forOp.getResult(i).replaceAllUsesWith(newForOp.getResult(i));
 
   forOp.erase();
-  return newForOp;
+  return pruneDeadLoopCarriedValues(newForOp, builder);
 }
 
 //===----------------------------------------------------------------------===//

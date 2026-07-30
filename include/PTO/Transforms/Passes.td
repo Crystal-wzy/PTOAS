@@ -1187,7 +1187,9 @@ def VPTOSoftPostUpdate
     profitability check predicts address-computation savings. For an accepted
     sequential run, all but the last operation form an updated_base pointer
     chain, while the last operation uses the current pointer in normal
-    zero-offset form.
+    zero-offset form. Loop-aware liveness removes software accumulator
+    recurrences made obsolete by new pointer chains while retaining
+    accumulators with observable uses.
   }];
   let constructor = "mlir::pto::createVPTOSoftPostUpdatePass()";
   let dependentDialects = ["mlir::func::FuncDialect",
