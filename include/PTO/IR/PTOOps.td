@@ -159,6 +159,7 @@ def CastPtrOp : PTO_Op<"castptr", [Pure]> {
     - integer -> !pto.ptr<elem, space>
     - !pto.ptr<elem, space> -> integer
     - !pto.ptr<srcElem, space> -> !pto.ptr<dstElem, space>
+    - memref<..., space> -> !pto.ptr<elem, space> (extract the aligned base ptr)
 
     Pointer-to-pointer casts must stay within the same PTO memory space. Cross
     space casts such as gm <-> ub are rejected by the verifier.

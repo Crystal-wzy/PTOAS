@@ -2752,16 +2752,29 @@ LogicalResult mlir::pto::CastPtrOp::verify() {
 
   auto inputPtrType = dyn_cast<mlir::pto::PtrType>(inputType);
   auto resultPtrType = dyn_cast<mlir::pto::PtrType>(resultType);
+  auto inputMemRefType = dyn_cast<BaseMemRefType>(inputType);
   bool inputIsInteger = isa<IntegerType>(inputType);
   bool resultIsInteger = isa<IntegerType>(resultType);
 
-  if (!inputPtrType && !inputIsInteger)
-    return emitOpError("input must be an integer or !pto.ptr<...>");
+  if (!inputPtrType && !inputMemRefType && !inputIsInteger)
+    return emitOpError("input must be an integer, memref, or !pto.ptr<...>");
   if (!resultPtrType && !resultIsInteger)
     return emitOpError("result must be an integer or !pto.ptr<...>");
 
   if (inputIsInteger && resultIsInteger)
     return emitOpError("integer-to-integer cast is not a ptr cast");
+
+  if (inputMemRefType && resultIsInteger)
+    return emitOpError("memref-to-integer cast is unsupported");
+
+  if (inputMemRefType && resultPtrType) {
+    auto memrefSpace = dyn_cast_or_null<mlir::pto::AddressSpaceAttr>(
+        inputMemRefType.getMemorySpace());
+    auto resultSpace = resultPtrType.getMemorySpace();
+    if (memrefSpace && memrefSpace != resultSpace)
+      return emitOpError(
+          "memref-to-ptr cast must stay within the same PTO memory space");
+  }
 
   if (inputPtrType && resultPtrType &&
       inputPtrType.getMemorySpace() != resultPtrType.getMemorySpace()) {

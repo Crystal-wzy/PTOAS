@@ -714,7 +714,37 @@ struct FoldTileBufIntrinsicsPass
       // Fold pto.tile_buf_addr by recovering the active materialized tile
       // handle contract:
       //   - pto.alloc_tile → cast the explicit addr to the requested pointer.
+      // Memref sources are a legacy compatibility seam. They are already
+      // materialized buffers, so keep them as identity markers or cast the
+      // base memref to the requested pointer type without re-entering the
+      // tile_buf handle path.
       for (auto addrOp : addrOps) {
+        if (auto srcMemrefType =
+                dyn_cast<MemRefType>(addrOp.getSrc().getType())) {
+          if (auto resultMemrefType =
+                  dyn_cast<MemRefType>(addrOp.getDst().getType())) {
+            if (srcMemrefType != resultMemrefType)
+              addrOp.getDst().setType(srcMemrefType);
+            addrOp.getDst().replaceAllUsesWith(addrOp.getSrc());
+            addrOp.erase();
+            continue;
+          }
+
+          if (auto resultPtrType =
+                  dyn_cast<pto::PtrType>(addrOp.getDst().getType())) {
+            builder.setInsertionPoint(addrOp);
+            Value replacement = builder.create<pto::CastPtrOp>(
+                addrOp.getLoc(), resultPtrType, addrOp.getSrc());
+            addrOp.getDst().replaceAllUsesWith(replacement);
+            addrOp.erase();
+            continue;
+          }
+
+          addrOp.emitError("FoldTileBufIntrinsics: tile_buf_addr result must "
+                           "be memref or !pto.ptr");
+          return signalPassFailure();
+        }
+
         // An SCF result/iter_arg is already a runtime-selected tile handle.
         // Keep tile_buf_addr attached to that handle; VPTO pointer
         // normalization converts it directly without choosing one branch's
@@ -925,8 +955,18 @@ struct FoldTileBufIntrinsicsPass
           return signalPassFailure();
 
         if (!resultPtrType) {
+          if (auto resultMemrefType =
+                  dyn_cast<MemRefType>(addrOp.getDst().getType())) {
+            Value base = chain->baseMemref;
+            if (base.getType() != resultMemrefType)
+              addrOp.getDst().setType(cast<MemRefType>(base.getType()));
+            addrOp.getDst().replaceAllUsesWith(base);
+            addrOp.erase();
+            continue;
+          }
           addrOp.emitError(
-              "FoldTileBufIntrinsics: tensor_view_addr result must be !pto.ptr");
+              "FoldTileBufIntrinsics: tensor_view_addr result must be memref "
+              "or !pto.ptr");
           return signalPassFailure();
         }
 
