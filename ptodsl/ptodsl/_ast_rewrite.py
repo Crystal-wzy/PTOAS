@@ -225,6 +225,14 @@ class _NameInfoVisitor(ast.NodeVisitor):
         self.visit(node.value)
         self.visit(node.target)
 
+    def visit_For(self, node):
+        self.visit(node.iter)
+        bound = _target_stores(node.target)
+        body_info = _name_info(node.body)
+        orelse_info = _name_info(node.orelse)
+        self.loads.update((body_info.loads | orelse_info.loads) - bound)
+        self.stores.update((body_info.stores | orelse_info.stores) - bound)
+
     def _visit_augassign_target_load(self, node):
         if isinstance(node, ast.Name):
             self.loads.add(node.id)
@@ -668,6 +676,14 @@ def _live_before_block(stmts, live_after) -> set[str]:
 
 
 def _live_before_stmt(stmt, live_after) -> set[str]:
+    if isinstance(stmt, (ast.With, ast.AsyncWith)):
+        context_loads = set()
+        bound = set()
+        for item in stmt.items:
+            context_loads |= _name_info(item.context_expr).loads
+            if item.optional_vars is not None:
+                bound |= _target_stores(item.optional_vars)
+        return context_loads | (_live_before_block(stmt.body, live_after) - bound)
     if isinstance(stmt, ast.If):
         test_info = _name_info(stmt.test)
         return (

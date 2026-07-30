@@ -1290,6 +1290,28 @@ def ast_runtime_for_probe(rows: pto.i32):
         pto.pipe_barrier(pto.Pipe.ALL)
 
 
+@pto.jit(target="a5", mode="explicit")
+def ast_nested_runtime_for_induction_scope_probe(rows: pto.i32):
+    for outer in range(rows):
+        _ = outer
+        with pto.vecscope():
+            for lane in range(4):
+                _ = lane
+                pto.mem_bar(pto.BarrierType.VST_VLD)
+
+
+@pto.jit(target="a5", mode="explicit")
+def ast_nested_runtime_for_local_temp_scope_probe(rows: pto.i32):
+    for outer in range(rows):
+        _ = outer
+        with pto.vecscope():
+            for row in range(4):
+                for col in range(2):
+                    ob = row + col
+                    _ = ob
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
 @pto.jit(target="a5")
 def ast_runtime_for_carry_probe(rows: pto.i32):
     one = pto.const(1, dtype=pto.i32)
@@ -5594,6 +5616,26 @@ def main() -> None:
     expect(
         ast_runtime_for_text.count("scf.for") == 1,
         "ast_rewrite=True Python range(...) should lower to one scf.for",
+    )
+
+    ast_nested_runtime_for_induction_scope_text = ast_nested_runtime_for_induction_scope_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_nested_runtime_for_induction_scope_text,
+        "AST-rewritten nested runtime induction scope specialization",
+    )
+    expect(
+        ast_nested_runtime_for_induction_scope_text.count("scf.for") == 2,
+        "nested runtime loop induction variables should remain local to their loops",
+    )
+
+    ast_nested_runtime_for_local_temp_scope_text = ast_nested_runtime_for_local_temp_scope_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_nested_runtime_for_local_temp_scope_text,
+        "AST-rewritten nested runtime local temp scope specialization",
+    )
+    expect(
+        ast_nested_runtime_for_local_temp_scope_text.count("scf.for") == 3,
+        "nested runtime loop temporaries consumed in-loop should not become live-outs",
     )
 
     ast_runtime_for_carry_text = ast_runtime_for_carry_probe.compile().mlir_text()
