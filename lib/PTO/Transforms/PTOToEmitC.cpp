@@ -4678,78 +4678,6 @@ static FailureOr<Value> buildAsyncScratchTileValue(
   return tile;
 }
 
-static FailureOr<Value> buildSyncAllWorkspaceTileValue(
-    ConversionPatternRewriter &rewriter, Location loc, Value originalWorkspace,
-    Value emittedWorkspace) {
-  Value workspace = peelUnrealized(emittedWorkspace);
-  if (auto opaqueTy = dyn_cast<emitc::OpaqueType>(workspace.getType())) {
-    StringRef typeStr = opaqueTy.getValue();
-    if (typeStr.contains("Tile<") || typeStr.contains("ConvTile<"))
-      return workspace;
-  }
-
-  auto memTy = dyn_cast<MemRefType>(originalWorkspace.getType());
-  if (!memTy)
-    return failure();
-  if (!memTy.hasStaticShape())
-    return failure();
-
-  ArrayRef<int64_t> rawShape = memTy.getShape();
-  if (rawShape.empty() || rawShape.size() > 2)
-    return failure();
-
-  int64_t rows = rawShape.size() == 1 ? 1 : rawShape[0];
-  int64_t cols = rawShape.size() == 1 ? rawShape[0] : rawShape[1];
-  SmallVector<int64_t, 2> shape{rows, cols};
-  SmallVector<int64_t, 2> validShape{rows, cols};
-
-  auto *ctx = rewriter.getContext();
-  pto::TileBufConfigAttr configAttr = pto::TileBufConfigAttr::getDefault(ctx);
-  if (auto bind = originalWorkspace.getDefiningOp<pto::BindTileOp>()) {
-    configAttr = bind.getConfig();
-  } else if (auto cast = originalWorkspace.getDefiningOp<pto::PointerCastOp>()) {
-    if (auto config = cast.getConfig())
-      configAttr = *config;
-  }
-
-  Attribute memorySpace = memTy.getMemorySpace();
-  if (!memorySpace)
-    return failure();
-
-  auto tileTy = pto::TileBufType::get(ctx, shape, memTy.getElementType(),
-                                      memorySpace, validShape, configAttr);
-  auto tileTypeString = getEmitCTileTypeString(tileTy);
-  if (!tileTypeString)
-    return failure();
-
-  auto tileEmitTy = emitc::OpaqueType::get(ctx, *tileTypeString);
-  Value tile = rewriter
-                   .create<emitc::VariableOp>(loc,
-                                              getEmitCVariableResultType(tileEmitTy),
-                                              emitc::OpaqueAttr::get(ctx, ""))
-                   .getResult();
-  tile = loadEmitCVariableIfNeeded(rewriter, loc, tile);
-
-  Value rawPtr = workspace;
-  auto u64Ty = emitc::OpaqueType::get(ctx, "uint64_t");
-  if (isSetFFTsPointerLikeType(rawPtr.getType())) {
-    auto rcU64 =
-        rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "uint64_t")});
-    rawPtr = rewriter
-                 .create<emitc::CallOpaqueOp>(loc, u64Ty, "reinterpret_cast",
-                                              ArrayAttr{}, rcU64,
-                                              ValueRange{rawPtr})
-                 .getResult(0);
-  } else if (rawPtr.getType() != u64Ty) {
-    rawPtr = rewriter.create<emitc::CastOp>(loc, u64Ty, rawPtr).getResult();
-  }
-
-  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "TASSIGN",
-                                       ArrayAttr{}, ArrayAttr{},
-                                       ValueRange{tile, rawPtr});
-  return tile;
-}
-
 //===----------------------------------------------------------------------===//
 // pto.pointer_cast lowering
 //===----------------------------------------------------------------------===
@@ -6147,9 +6075,12 @@ struct PTOSyncAllToEmitC : public OpConversionPattern<mlir::pto::SyncAllOp> {
                                          "failed to build gm_workspace GlobalTensor");
 
     auto i32Ty = emitc::OpaqueType::get(rewriter.getContext(), "int32_t");
-    Value usedCores = adaptor.getUsedCores()
-                          ? peelUnrealized(adaptor.getUsedCores())
-                          : makeEmitCIntConstant(rewriter, op.getLoc(), i32Ty, 0);
+    Value usedCores =
+        adaptor.getUsedCores()
+            ? peelUnrealized(adaptor.getUsedCores())
+            : rewriter
+                  .create<emitc::LiteralOp>(op.getLoc(), i32Ty, "int32_t{0}")
+                  .getResult();
     if (usedCores.getType() != i32Ty)
       usedCores = rewriter.create<emitc::CastOp>(op.getLoc(), i32Ty, usedCores)
                       .getResult();
@@ -6157,52 +6088,9 @@ struct PTOSyncAllToEmitC : public OpConversionPattern<mlir::pto::SyncAllOp> {
     std::string callee =
         "SYNCALL<SyncAllMode::Soft, " + coreTypeTok(coreType).str() + ">";
 
-    SmallVector<Value, 4> operands{*gmWorkspace};
-    switch (coreType) {
-    case pto::SyncCoreType::AIVOnly: {
-      FailureOr<Value> ubWorkspace =
-          buildSyncAllWorkspaceTileValue(rewriter, op.getLoc(),
-                                         op.getUbWorkspace(),
-                                         adaptor.getUbWorkspace());
-      if (failed(ubWorkspace))
-        return rewriter.notifyMatchFailure(
-            op, "failed to materialize ub_workspace tile");
-      operands.push_back(*ubWorkspace);
-      break;
-    }
-    case pto::SyncCoreType::AICOnly: {
-      FailureOr<Value> l1Workspace =
-          buildSyncAllWorkspaceTileValue(rewriter, op.getLoc(),
-                                         op.getL1Workspace(),
-                                         adaptor.getL1Workspace());
-      if (failed(l1Workspace))
-        return rewriter.notifyMatchFailure(
-            op, "failed to materialize l1_workspace tile");
-      operands.push_back(*l1Workspace);
-      break;
-    }
-    case pto::SyncCoreType::Mix: {
-      FailureOr<Value> ubWorkspace =
-          buildSyncAllWorkspaceTileValue(rewriter, op.getLoc(),
-                                         op.getUbWorkspace(),
-                                         adaptor.getUbWorkspace());
-      FailureOr<Value> l1Workspace =
-          buildSyncAllWorkspaceTileValue(rewriter, op.getLoc(),
-                                         op.getL1Workspace(),
-                                         adaptor.getL1Workspace());
-      if (failed(ubWorkspace) || failed(l1Workspace))
-        return rewriter.notifyMatchFailure(
-            op, "failed to materialize mixed syncall workspace tiles");
-      operands.push_back(*ubWorkspace);
-      operands.push_back(*l1Workspace);
-      break;
-    }
-    }
-
-    operands.push_back(usedCores);
     rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, callee,
                                          ArrayAttr{}, ArrayAttr{},
-                                         ValueRange(operands));
+                                         ValueRange{*gmWorkspace, usedCores});
     rewriter.eraseOp(op);
     return success();
   }

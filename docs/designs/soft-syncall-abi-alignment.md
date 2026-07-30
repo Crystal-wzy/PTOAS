@@ -1,6 +1,6 @@
 # Soft `SYNCALL` ABI 与 PTO-ISA f24 对齐设计
 
-- 状态：草案
+- 状态：已实现（Draft PR [PTOAS #1064](https://github.com/hw-native-sys/PTOAS/pull/1064)）
 - 跟踪 Issue：[PTOAS #1061](https://github.com/hw-native-sys/PTOAS/issues/1061)
 - PTO-ISA 变更：
   [`f24f7b736b689cc107b9eb2d362be6a7718fcc99`](https://github.com/hw-native-sys/pto-isa/commit/f24f7b736b689cc107b9eb2d362be6a7718fcc99)
@@ -83,7 +83,7 @@ SYNCALL<SyncAllMode::Soft, SyncCoreType::Mix>(
 
 ```tablegen
 let arguments = (ins
-  Optional<PTODpsType>:$gm_workspace,
+  Optional<PTOSyncAllGmWorkspaceType>:$gm_workspace,
   Optional<I32>:$used_cores,
   PTO_SyncAllModeAttr:$mode,
   PTO_SyncCoreTypeAttr:$core_type
@@ -91,7 +91,10 @@ let arguments = (ins
 ```
 
 `gm_workspace` 在 ODS 中仍声明为 Optional，从而让同一个 op 可以表达零 operand 的
-Hard 模式；verifier 再要求 Soft 模式必须提供它。
+Hard 模式；verifier 再要求 Soft 模式必须提供它。专用的
+`PTOSyncAllGmWorkspaceType` 将公开构造 API 限制为 `memref`、
+`tensor_view` 或 `partition_tensor_view`，元素类型、GM 地址空间和容量继续由
+verifier 提供精确诊断。
 
 新的 segment 布局如下：
 
@@ -454,12 +457,25 @@ PR 中应记录准确的 PTO-ISA SHA 和编译命令。推荐做定向 compile-o
 - 定向 Lit 测试全部通过。
 - 生成的 A5 C++ 可以使用所记录的 PTO-ISA f24 或后继 SHA 编译。
 
-## 12. 待评审决策
+## 12. 实施决策与验证结果
 
-开始实现前，请评审者确认：
+本 PR 按以下决策完成实现：
 
-1. PTOAS 与 PyPTO 是否可以原子切换。如果可以，使用直接 ABI 切换；否则批准保留
-   一版兼容窗口。
-2. 省略核数时，EmitC 输出是否必须在文本上严格为 `int32_t{0}`，还是只要求
-   value 类型为 `int32_t` 且值为零。
-3. 如果 f24 不是当前集成 pin，本 PR 的编译验证应使用哪个 PTO-ISA 后继 SHA。
+1. 采用第 8.1 节的直接 ABI 切换，不保留旧 UB/L1 operand 的兼容窗口。
+2. 省略核数时使用 `emitc.literal`，最终 C++ 第二个实参严格打印为
+   `int32_t{0}`，不生成中间局部变量。
+3. PTO-ISA 编译验证使用 Issue 指定的准确提交
+   `f24f7b736b689cc107b9eb2d362be6a7718fcc99`。
+
+已完成的验证：
+
+- LLVM 21 Release 配置下，TableGen、`PTO.cpp`、`PTOToEmitC.cpp` 和生成的
+  Python Binding 编译通过。
+- `syncall_emitc.pto`、`syncall_verify.pto`、`syncall_invalid.pto` 三个定向
+  Lit 测试全部通过。
+- `test/samples/runop.sh -t SyncAll` 通过，生成的 IR 和 C++ 不再包含只供
+  Soft `SYNCALL` 使用的 UB/L1 Tile 或 `TASSIGN`。
+- AIV-only、AIC-only、Mix 和省略 `used_cores` 的生成 C++ 已使用 PTO-ISA
+  f24 头文件完成语法编译。由于 f24 的 macOS CPU-Sim 头文件本身存在重复 ACL
+  stub 定义，验证仅对这些无关的 CPU-Sim stub 使用本地编译兼容处理；
+  `SYNCALL` 的公共声明和实现保持 f24 原样。

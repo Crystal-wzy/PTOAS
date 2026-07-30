@@ -40,6 +40,10 @@ def TensorOrMemref :
 def PTODpsType :
   AnyTypeOf<[AnyRankedTensor, AnyMemRef, PartitionTensorViewType, TileBufType]>;
 
+def PTOSyncAllGmWorkspaceType :
+  AnyTypeOf<[AnyMemRef, TensorViewType, PartitionTensorViewType],
+            "GM memref, tensor_view, or partition_tensor_view">;
+
 def PTOPipeEntryType :
   AnyTypeOf<[AnyRankedTensor, AnyMemRef, TensorViewType, TileBufType],
             "TensorView, TileBuf, Tensor, or MemRef">;
@@ -3157,19 +3161,16 @@ def SyncAllOp : PTO_Op<"syncall", [AttrSizedOperandSegments]> {
 
     Supported IR forms:
     - hard sync: no operands, `mode = hard`
-    - soft AIV-only sync: `gm_workspace`, `ub_workspace`, optional `used_cores`
-    - soft AIC-only sync: `gm_workspace`, `l1_workspace`, optional `used_cores`
-    - soft mixed sync: `gm_workspace`, `ub_workspace`, `l1_workspace`,
-      optional `used_cores`
+    - soft sync: `gm_workspace`, optional `used_cores`
 
-    The verifier mirrors the input-form constraints exposed by the public
-    `pto-isa` API.
+    The soft operand ABI is identical for AIV-only, AIC-only, and mixed
+    synchronization. The GM workspace must reserve at least 16 `i32` elements
+    (64 bytes), be zero-initialized before first use, and occupy an exclusive
+    cache line.
   }];
 
   let arguments = (ins
-    Optional<PTODpsType>:$gm_workspace,
-    Optional<PTODpsType>:$ub_workspace,
-    Optional<PTODpsType>:$l1_workspace,
+    Optional<PTOSyncAllGmWorkspaceType>:$gm_workspace,
     Optional<I32>:$used_cores,
     PTO_SyncAllModeAttr:$mode,
     PTO_SyncCoreTypeAttr:$core_type

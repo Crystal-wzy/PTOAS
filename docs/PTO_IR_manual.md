@@ -8913,17 +8913,13 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
 **Forms:**
 
 - Hard sync: no workspace operands
-- Soft AIV-only sync: `gm_workspace + ub_workspace [+ used_cores]`
-- Soft AIC-only sync: `gm_workspace + l1_workspace [+ used_cores]`
-- Soft mixed sync: `gm_workspace + ub_workspace + l1_workspace [+ used_cores]`
+- Soft sync: `gm_workspace [+ used_cores]`
 
 **Arguments:**
 
 | Name | Type | Description |
 |------|------|-------------|
-| `gm_workspace` | optional GM memref of `i32` | Global shared workspace used by soft mode |
-| `ub_workspace` | optional VEC tile/memref of `i32` | Vector-core local workspace for soft mode |
-| `l1_workspace` | optional MAT tile/memref of `i32` | Cube-core local workspace for soft mode |
+| `gm_workspace` | optional GM memref/tensor view of `i32` | Global shared workspace used by soft mode |
 | `used_cores` | optional `i32` | Explicit participant count for soft mode |
 | `mode` | `#pto.sync_all_mode<...>` | `hard` or `soft` |
 | `core_type` | `#pto.sync_core_type<...>` | `aiv_only`, `aic_only`, or `mix` |
@@ -8934,26 +8930,30 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
 
 - Hard mode requires no workspace operands and no `used_cores`.
 - Soft mode always requires `gm_workspace`.
-- Soft `aiv_only` requires `ub_workspace` and forbids `l1_workspace`.
-- Soft `aic_only` requires `l1_workspace` and forbids `ub_workspace`.
-- Soft `mix` requires both `ub_workspace` and `l1_workspace`.
-- `gm_workspace` must be a ranked GM memref of `i32`.
-- `ub_workspace` / `l1_workspace` must be rank-1 or rank-2 `i32` tile/memref values in `vec` / `mat` address space respectively.
-- These constraints intentionally mirror the corresponding PTO-ISA API parameter checks in `verify()`.
+- Soft `aiv_only`, `aic_only`, and `mix` use the same operand ABI.
+- `gm_workspace` must be a ranked GM memref, `!pto.tensor_view`, or
+  `!pto.partition_tensor_view` with `i32` elements.
+- When all dimensions are static, `gm_workspace` must contain at least 16
+  elements (64 bytes). Dynamic workspaces must provide at least that capacity
+  at runtime.
+- The workspace must occupy an exclusive 64-byte cache line and be
+  zero-initialized before its first `SYNCALL`. Alignment, aliasing, and
+  initialization are runtime responsibilities and cannot be proven by the
+  verifier.
+- Omitting `used_cores`, or passing zero, asks PTO-ISA to derive the participant
+  count from the launch configuration.
 
 **Basic Example:**
 
 ```mlir
-"pto.syncall"(%gm, %ub, %used) {
-  operandSegmentSizes = array<i32: 1, 1, 0, 1>,
+"pto.syncall"(%gm, %used) {
+  operandSegmentSizes = array<i32: 1, 1>,
   mode = #pto.sync_all_mode<soft>,
   core_type = #pto.sync_core_type<aiv_only>
-} : (memref<64xi32, #pto.address_space<gm>>,
-     memref<64xi32, #pto.address_space<vec>>,
-     i32) -> ()
+} : (memref<16xi32, #pto.address_space<gm>>, i32) -> ()
 
 "pto.syncall"() {
-  operandSegmentSizes = array<i32: 0, 0, 0, 0>,
+  operandSegmentSizes = array<i32: 0, 0>,
   mode = #pto.sync_all_mode<hard>,
   core_type = #pto.sync_core_type<mix>
 } : () -> ()
