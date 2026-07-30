@@ -133,13 +133,6 @@ LLVM_BUILD_DIR="$LLVM_BUILD_DIR" \
 PTO_BUILD_DIR="$PTO_SOURCE_DIR/build" \
   ./quick_install.sh
 
-# 3. 验证当前 shell 能找到安装后的命令
-command -v ptoas
-ptoas --version
-
-# 4. 后续可直接复用同一个 build tree
-ninja -C "$PTO_SOURCE_DIR/build" check-pto
-
 ```
 
 `quick_install.sh` 使用 editable install，并关闭 build isolation，避免把临时
@@ -147,12 +140,7 @@ ninja -C "$PTO_SOURCE_DIR/build" check-pto
 `PYTHON_BIN` 对应的当前环境中。激活上面创建的虚拟环境后，它的 `bin` 目录已经
 位于 `PATH` 中。
 
-如果明确选择不使用虚拟环境，并且 pip 将软件包安装到了用户目录，则还需要执行：
-
-```bash
-export PATH="$(python3 -m site --user-base)/bin:$PATH"
-hash -r
-```
+安装完成后，必须先按第 4 节配置运行环境，再执行 `ptoas` 或 `check-pto`。
 
 ### 3.4 Python 安装合同 (Python Distribution Contract)
 
@@ -218,6 +206,12 @@ command -v ptoas
 ptoas --version
 ```
 
+源码开发者完成上述配置后，可以复用安装时保留的 build tree 运行测试：
+
+```bash
+ninja -C "$PTO_SOURCE_DIR/build" check-pto
+```
+
 发布 wheel 自带运行时依赖，不使用外部 LLVM build tree 时无需设置上述
 `LD_LIBRARY_PATH`。无论哪种安装方式，都不需要手工拼接 `PYTHONPATH`。
 
@@ -230,12 +224,15 @@ source /usr/local/Ascend/cann/set_env.sh
 source /usr/local/Ascend/ascend-toolkit/latest/set_env.sh
 ```
 
-如果没有使用虚拟环境，请确认 Python 用户命令目录在 `PATH` 中：
+如果没有使用虚拟环境，并且 pip 将软件包安装到了用户目录，请在运行 `ptoas`
+之前先配置 `PATH`，然后同样设置上述 `LD_LIBRARY_PATH`：
 
 ```bash
 export PATH="$(python3 -m site --user-base)/bin:$PATH"
 hash -r
+export LD_LIBRARY_PATH="$LLVM_BUILD_DIR/lib:${LD_LIBRARY_PATH:-}"
 command -v ptoas
+ptoas --version
 ```
 
 ---

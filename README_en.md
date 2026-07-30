@@ -127,13 +127,6 @@ PYTHON_BIN="$PYTHON_BIN" \
 LLVM_BUILD_DIR="$LLVM_BUILD_DIR" \
 PTO_BUILD_DIR="$PTO_SOURCE_DIR/build" \
   ./quick_install.sh
-
-# 3. Verify that the current shell resolves the installed command.
-command -v ptoas
-ptoas --version
-
-# 4. Reuse the same build tree for subsequent test or development builds.
-ninja -C "$PTO_SOURCE_DIR/build" check-pto
 ```
 
 `quick_install.sh` uses an editable install with build isolation disabled so a
@@ -142,13 +135,8 @@ temporary build environment's pybind11 path is not persisted in
 owns `PYTHON_BIN`. Activating the virtual environment created above puts its
 `bin` directory on `PATH`.
 
-If you intentionally install outside a virtual environment and pip uses the
-user installation scheme, add its command directory to `PATH`:
-
-```bash
-export PATH="$(python3 -m site --user-base)/bin:$PATH"
-hash -r
-```
+After installation, configure the runtime environment in section 4 before
+running either `ptoas` or `check-pto`.
 
 ### 3.4 Step 3: Supported Python Install Flows
 
@@ -210,6 +198,13 @@ command -v ptoas
 ptoas --version
 ```
 
+Source developers can reuse the retained build tree after completing the
+runtime setup above:
+
+```bash
+ninja -C "$PTO_SOURCE_DIR/build" check-pto
+```
+
 Release wheels carry their runtime dependencies and do not require this
 `LD_LIBRARY_PATH` when no external LLVM build tree is used. Neither installation
 flow requires manually assembling `PYTHONPATH`.
@@ -223,13 +218,16 @@ source /usr/local/Ascend/cann/set_env.sh
 source /usr/local/Ascend/ascend-toolkit/latest/set_env.sh
 ```
 
-Without a virtual environment, make sure the Python user command directory is
-on `PATH`:
+Without a virtual environment, if pip uses the user installation scheme, set
+`PATH` before running `ptoas` and then configure the same `LD_LIBRARY_PATH`
+shown above:
 
 ```bash
 export PATH="$(python3 -m site --user-base)/bin:$PATH"
 hash -r
+export LD_LIBRARY_PATH="$LLVM_BUILD_DIR/lib:${LD_LIBRARY_PATH:-}"
 command -v ptoas
+ptoas --version
 ```
 
 ---
