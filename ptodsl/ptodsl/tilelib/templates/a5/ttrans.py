@@ -160,10 +160,9 @@ def template_ttrans_b32_colwise(src: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
 def template_ttrans_b16_colwise(src: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
     """dst[j,i] = src[i,j] for tall b16 tiles. Port of TTransB16ColWise (TTrans.hpp:111).
 
-    Note: only ColWise is supported for b16/b8 because pto.vscatter currently
-    requires 32-bit offsets (see pto-as VPTO.cpp VscatterOp::verify), while
-    b16/b8 data vectors need 16-bit offsets to match element count. Wide
-    (Rows<Cols) b16/b8 tiles are not covered by this template.
+    Only ColWise is implemented by this template. VPTO vscatter supports the
+    16-bit offsets needed by a future RowWise b16 template, but that template
+    has not yet been added.
     """
     dtype = dst.dtype
     valid_rows, valid_cols = src.valid_shape
@@ -210,8 +209,9 @@ def template_ttrans_b8_colwise(src: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
     b16 lane (C++ sregLower = elementsPerRepeat >> 1). vgather2 produces a
     128xi16 result (paired-pack) from the i8 source; mask is b16.
 
-    Note: only ColWise; RowWise needs vscatter which does not support 16-bit
-    offsets (see template_ttrans_b16_colwise docstring). This template is not
+    Only ColWise is implemented by this template. VPTO vscatter supports the
+    16-bit offsets and even-byte source convention needed by a future RowWise
+    b8 template, but that template has not yet been added. This template is not
     yet covered by the ST harness (b8 transpose hits a deeper emitc/intrinsic
     issue under investigation).
     """

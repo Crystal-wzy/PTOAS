@@ -893,6 +893,7 @@ class TScatterOp(_GeneratedTScatterOp):
         dst=_TSCATTER_UNSET,
         indexes=_TSCATTER_UNSET,
         maskPattern=_TSCATTER_UNSET,
+        axis=None,
         loc=None,
         ip=None,
     ):
@@ -964,6 +965,8 @@ class TScatterOp(_GeneratedTScatterOp):
             kwargs["indexes"] = indexes
         if maskPattern is not _TSCATTER_UNSET:
             kwargs["maskPattern"] = maskPattern
+        if axis is not None:
+            kwargs["axis"] = axis
         super().__init__(src, **kwargs, loc=loc, ip=ip)
 
 

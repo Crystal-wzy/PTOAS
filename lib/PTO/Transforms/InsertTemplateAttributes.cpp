@@ -516,6 +516,16 @@ static void appendOpContextAttrs(
       byte = byteAttr.getInt();
     attrs.emplace_back("byte", std::to_string(byte));
   }
+  if (auto tscatter = dyn_cast<pto::TScatterOp>(op)) {
+    if (auto maskPatternAttr = tscatter.getMaskPatternAttr()) {
+      attrs.emplace_back(
+          "mask_pattern",
+          stringifyMaskPattern(maskPatternAttr.getValue()).str());
+    }
+    if (auto axisAttr = tscatter.getAxisAttr()) {
+      attrs.emplace_back("axis_value", axisAttr.getValue().str());
+    }
+  }
   (void)(tryAppendPrecisionType<pto::TExpOp>(op, attrs) ||
          tryAppendPrecisionType<pto::TLogOp>(op, attrs) ||
          tryAppendPrecisionType<pto::TSqrtOp>(op, attrs) ||

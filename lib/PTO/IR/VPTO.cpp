@@ -6494,12 +6494,32 @@ LogicalResult VscatterOp::verify() {
   auto offsetsElemType = dyn_cast<IntegerType>(offsetsType.getElementType());
   if (!offsetsElemType)
     return emitOpError("offset vector must use integer element type");
-  if (offsetsElemType.getWidth() != 32)
-    return emitOpError("currently requires 32-bit offset vector elements");
-  if (offsetsType.getElementCount() != valueType.getElementCount())
-    return emitOpError("offset and value vectors must have the same element count");
-  if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
+  unsigned valueElemWidth = getPTOStorageElemBitWidth(valueType.getElementType());
+  if (valueElemWidth != 8 && valueElemWidth != 16 && valueElemWidth != 32)
+    return emitOpError("requires 8-, 16-, or 32-bit value elements");
+
+  unsigned expectedOffsetWidth = valueElemWidth == 32 ? 32 : 16;
+  if (offsetsElemType.getWidth() != expectedOffsetWidth)
+    return emitOpError() << "requires " << expectedOffsetWidth
+                         << "-bit offset vector elements for "
+                         << valueElemWidth << "-bit values";
+
+  int64_t expectedOffsetCount = valueElemWidth == 8
+                                    ? valueType.getElementCount() / 2
+                                    : valueType.getElementCount();
+  if (offsetsType.getElementCount() != expectedOffsetCount)
+    return emitOpError() << "requires " << expectedOffsetCount
+                         << " offsets for " << valueType.getElementCount()
+                         << "x" << valueElemWidth << "-bit values";
+
+  if (failed(verifyMaskTypeWithGranularityLike(
+          *this, getMask().getType(), "mask type",
+          valueElemWidth == 32 ? "b32" : "b16")))
     return failure();
+  auto destinationType = cast<PtrType>(getDestination().getType());
+  if (destinationType.getElementType() != valueType.getElementType())
+    return emitOpError(
+        "requires destination element type to match value element type");
   MemoryRole destinationRole = classifyMemoryRole(getDestination().getType());
   if (destinationRole == MemoryRole::GM)
     return emitOpError("requires a UB-backed destination");

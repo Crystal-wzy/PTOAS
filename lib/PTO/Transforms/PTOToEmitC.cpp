@@ -12021,13 +12021,21 @@ struct PTOScatterToEmitC : public OpConversionPattern<pto::TScatterOp> {
 
     if (auto mp = op.getMaskPatternAttr()) {
       auto *ctx = rewriter.getContext();
-      auto targs = rewriter.getArrayAttr({
-          emitc::OpaqueAttr::get(ctx, maskPatternTok(mp)),
-      });
+      SmallVector<Attribute, 2> targsList;
+      targsList.push_back(emitc::OpaqueAttr::get(ctx, maskPatternTok(mp)));
+      if (auto axisAttr = op.getAxisAttr()) {
+        StringRef axisVal = axisAttr.getValue();
+        std::string scatterAxis = (axisVal == "col")
+            ? "pto::ScatterAxis::SCATTER_COL"
+            : "pto::ScatterAxis::SCATTER_ROW";
+        targsList.push_back(emitc::OpaqueAttr::get(ctx, scatterAxis));
+      }
+      auto targs = rewriter.getArrayAttr(targsList);
+      SmallVector<Value, 2> operands{dst, src};
       rewriter.create<emitc::CallOpaqueOp>(
           loc, TypeRange{}, "TSCATTER",
           /*args=*/ArrayAttr{}, /*templateArgs=*/targs,
-          /*operands=*/ValueRange{dst, src});
+          /*operands=*/operands);
     } else {
       Value idx = peelUnrealized(adaptor.getIndexes());
       rewriter.create<emitc::CallOpaqueOp>(

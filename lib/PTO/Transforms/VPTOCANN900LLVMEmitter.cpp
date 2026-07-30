@@ -214,6 +214,7 @@ public:
 struct PlannedDecl {
   std::string name;
   FunctionType type;
+  bool writeOnlyDestination = false;
 };
 
 struct LoweringState {
@@ -3796,6 +3797,10 @@ static FailureOr<StringRef> buildVgatherbCallee(MLIRContext *context,
 static FailureOr<StringRef> buildVscatterCallee(MLIRContext *context,
                                                 Type valueType) {
   return buildLaneTypedCallee(context, valueType, "vscatter", ".v300");
+}
+
+static FailureOr<Type> getVscatterOffsetsCarrierType(Type offsetsType) {
+  return offsetsType;
 }
 
 static FailureOr<StringRef> buildVaxpyCallee(MLIRContext *context,
@@ -7548,15 +7553,21 @@ public:
     if (failed(calleeName))
       return rewriter.notifyMatchFailure(op, "unsupported vscatter signature");
 
+    FailureOr<Type> offsetsCarrierType = getVscatterOffsetsCarrierType(
+        adaptor.getOffsets().getType());
+    if (failed(offsetsCarrierType))
+      return rewriter.notifyMatchFailure(op, "unsupported vscatter offsets carrier");
+
     auto funcType = rewriter.getFunctionType(
         TypeRange{adaptor.getValue().getType(), adaptor.getDestination().getType(),
-                  adaptor.getOffsets().getType(), adaptor.getMask().getType()},
+                  *offsetsCarrierType, adaptor.getMask().getType()},
         TypeRange{});
     rewriter.create<func::CallOp>(
         op.getLoc(), *calleeName, TypeRange{},
         ValueRange{adaptor.getValue(), adaptor.getDestination(),
                    adaptor.getOffsets(), adaptor.getMask()});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
+    state.plannedDecls.push_back(
+        PlannedDecl{calleeName->str(), funcType, true});
     rewriter.eraseOp(op);
     return success();
   }
@@ -10991,6 +11002,16 @@ emitDeviceLLVMModule(ModuleOp deviceModule, StringRef kernelKind,
   }
 
   applyArtifactVisibilityLinkage(deviceModule, *llvmModule);
+  for (llvm::Function &func : *llvmModule) {
+    if (!func.getName().starts_with("llvm.hivm.vscatter."))
+      continue;
+    // Bisheng LLVM 15 verifies these intrinsic memory effects. Record them
+    // through the LLVM 21 API here; the dispatcher rewrites the new textual
+    // memory(...) spelling before handing the IR to Bisheng.
+    func.setOnlyAccessesArgMemory();
+    func.addFnAttr(llvm::Attribute::NoUnwind);
+    func.addFnAttr(llvm::Attribute::WriteOnly);
+  }
   applySimtEntryCallingConvention(*llvmModule, simtEntryNames);
   if (failed(attachAIVectorScopeMetadata(*llvmModule, diagOS)))
     return failure();

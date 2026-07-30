@@ -7631,14 +7631,28 @@ pto.tgatherb ins(%src, %offs : !pto.tile_buf<...>, !pto.tile_buf<...>)
 
 ---
 
-##### `pto.tscatter` - Scatter Rows
+##### `pto.tscatter` - Tile Scatter
 
-**Summary:** Scatters rows from a source tile into a destination tile using per-row indices.
+**Summary:** Scatters elements from a source tile into a destination tile. Two modes are supported: **index mode** (per-element column offsets) and **mask-pattern mode** (regular spacing controlled by a mask pattern and axis).
 
 **Semantics:**
 
+Index mode:
+
 ```
-dst[row_index[i], j] = src[i, j]
+dst[i, indexes[i, j]] = src[i, j]
+```
+
+Mask-pattern mode (axis = `"row"`):
+
+```
+dst[i, j * times + offset] = src[i, j]   // elements interleaved with zeros along columns
+```
+
+Mask-pattern mode (axis = `"col"`):
+
+```
+dst[i * stride + start, j] = src[i, j]   // elements placed at strided row positions
 ```
 
 **Arguments:**
@@ -7646,49 +7660,53 @@ dst[row_index[i], j] = src[i, j]
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile |
-| `indexes` | `pto.tile_buf` | Row index tile |
 | `dst` | `pto.tile_buf` | Destination tile |
+| `indexes` | `pto.tile_buf` (optional) | Index tile (index mode only) |
+| `axis` | `str` attr (optional) | Scatter direction: `"row"` or `"col"` (mask-pattern mode only) |
+| `maskPattern` | `pto.mask_pattern` attr (optional) | Spacing pattern: `P0101`, `P1010`, `P0001`, `P0010`, `P0100`, `P1000`, `P1111` (mask-pattern mode only) |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
 **Constraints & Verification:**
 
-- **Implementation checks (A2A3)**
+- **Common**
+  - Exactly one of `indexes` operand or `maskPattern` attribute must be provided.
+  - `axis` attribute must not be provided together with `indexes`.
+- **Index mode**
   - `dst`, `src`, and `indexes` must all use `loc=vec`.
   - `dst`/`src` element type must be one of: `i32`, `i16`, `i8`, `f16`, `f32`, `bf16`.
   - `indexes` element type must be one of: `i16`, `i32`.
   - No bounds checks are enforced on `indexes` values.
   - Valid bounds: `dst.valid_shape[i] <= dst.shape[i]`, `src.valid_shape[i] <= src.shape[i]`, and `indexes.valid_shape[i] <= indexes.shape[i]` for each dimension `i`.
   - `dst` and `src` must have the same element type.
+  - `dst.valid_shape[d] >= src.valid_shape[d]` for each dimension `d`.
   - When `dst` element size is 4 bytes, `indexes` element size must also be 4 bytes.
   - When `dst` element size is 2 bytes, `indexes` element size must also be 2 bytes.
   - When `dst` element size is 1 byte, `indexes` element size must be 2 bytes.
-- **Implementation checks (A5)**
-  - `dst`, `src`, and `indexes` must all use `loc=vec`.
+- **Mask-pattern mode**
+  - `dst` and `src` must use `loc=vec` and `row_major` blayout.
   - `dst`/`src` element type must be one of: `i32`, `i16`, `i8`, `f16`, `f32`, `bf16`.
-  - `indexes` element type must be one of: `i16`, `i32`.
-  - No bounds checks are enforced on `indexes` values.
-  - Valid bounds: `dst.valid_shape[i] <= dst.shape[i]`, `src.valid_shape[i] <= src.shape[i]`, and `indexes.valid_shape[i] <= indexes.shape[i]` for each dimension `i`.
   - `dst` and `src` must have the same element type.
-  - When `dst` element size is 4 bytes, `indexes` element size must also be 4 bytes.
-  - When `dst` element size is 2 bytes, `indexes` element size must also be 2 bytes.
-  - When `dst` element size is 1 byte, `indexes` element size must be 2 bytes.
+  - `axis` must be `"row"` or `"col"`.
+  - When `axis = "row"`: `dst.valid_rows == src.valid_rows` and `dst.valid_cols == src.valid_cols * times`.
+  - When `axis = "col"`: `dst.valid_cols == src.valid_cols` and `dst.valid_rows == src.valid_rows * times`.
+  - `times` is the mask expansion factor: `P1111`→1, `P0101`/`P1010`→2, `P0001`/`P0010`/`P0100`/`P1000`→4.
 
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
 
-**Basic Example:**
+**Index mode example:**
 
 ```mlir
 pto.tscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
             outs(%dst : !pto.tile_buf<...>)
 ```
 
-Mask form:
+**Mask-pattern mode example:**
 
 ```mlir
-pto.tscatter ins(%src, {maskPattern = #pto.mask_pattern<P0101>} : !pto.tile_buf<...>)
+pto.tscatter ins(%src, {maskPattern = #pto.mask_pattern<P0101>} : !pto.tile_buf<...>, "row")
             outs(%dst : !pto.tile_buf<...>)
 ```
 

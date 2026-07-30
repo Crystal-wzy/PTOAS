@@ -1062,7 +1062,7 @@ ParseResult mlir::pto::TScatterOp::parse(OpAsmParser &parser,
     if (parser.parseKeyword("maskPattern") || parser.parseEqual())
       return failure();
     Attribute rawMaskAttr;
-    if (parser.parseAttribute(rawMaskAttr) || parser.parseRBrace())
+    if (parser.parseAttribute(rawMaskAttr))
       return failure();
     auto mp = llvm::dyn_cast<mlir::pto::MaskPatternAttr>(rawMaskAttr);
     if (!mp)
@@ -1070,7 +1070,18 @@ ParseResult mlir::pto::TScatterOp::parse(OpAsmParser &parser,
                               "expected #pto.mask_pattern<Pxxxx> for maskPattern");
     result.addAttribute("maskPattern", mp);
     hasMask = true;
-    if (parser.parseColonType(srcTy) || parser.parseRParen())
+    if (parser.parseRBrace() || parser.parseColonType(srcTy))
+      return failure();
+    if (succeeded(parser.parseOptionalComma())) {
+      StringAttr axisAttr;
+      if (parser.parseAttribute(axisAttr))
+        return failure();
+      if (axisAttr.getValue() != "row" && axisAttr.getValue() != "col")
+        return parser.emitError(parser.getCurrentLocation(),
+                                "axis must be \"row\" or \"col\"");
+      result.addAttribute("axis", axisAttr);
+    }
+    if (parser.parseRParen())
       return failure();
   } else {
     if (parser.parseOperand(indexes))
@@ -1103,21 +1114,23 @@ ParseResult mlir::pto::TScatterOp::parse(OpAsmParser &parser,
       parser.resolveOperand(dst, dstTy, result.operands) ||
       (hasIndexes && parser.resolveOperand(indexes, idxTy, result.operands)))
     return failure();
+
   return success();
 }
 
 void mlir::pto::TScatterOp::print(OpAsmPrinter &p) {
   p << " ins(" << getSrc() << ", ";
   if (getMaskPatternAttr()) {
-    p << "{maskPattern = " << getMaskPatternAttr() << "} : "
-      << getSrc().getType();
+    p << "{maskPattern = " << getMaskPatternAttr() << "} : " << getSrc().getType();
+    if (auto axisAttr = getAxisAttr())
+      p << ", " << axisAttr;
   } else {
     p << getIndexes() << " : " << getSrc().getType() << ", "
       << getIndexes().getType();
   }
   p << ") outs(" << getDst() << " : " << getDst().getType() << ")";
   p.printOptionalAttrDict((*this)->getAttrs(),
-                          /*elidedAttrs=*/{"maskPattern"});
+                          /*elidedAttrs=*/{"maskPattern", "axis"});
 }
 
 namespace {
@@ -12409,6 +12422,9 @@ mlir::LogicalResult mlir::pto::TScatterOp::verify() {
     return emitOpError(
         "expects exactly one of indexes operand or maskPattern attribute");
   }
+  if (hasIndexes && getAxisAttr()) {
+    return emitOpError("axis attribute must not be provided with indexes operand");
+  }
 
   auto isAllowedDataElem = [&](mlir::Type t) -> bool {
     if (t.isF16() || t.isF32() || t.isBF16()) return true;
@@ -12437,9 +12453,9 @@ mlir::LogicalResult mlir::pto::TScatterOp::verify() {
     Type ts = getSrc().getType();
     Type ti = getIndexes().getType();
     Type td = getDst().getType();
-    if (failed(verifyVecTileStorage(*this, ts, "src")) ||
-        failed(verifyVecTileStorage(*this, ti, "indexes")) ||
-        failed(verifyVecTileStorage(*this, td, "dst")))
+    if (failed(verifyVecTileCommon(*this, ts, "src")) ||
+        failed(verifyVecTileCommon(*this, ti, "indexes")) ||
+        failed(verifyVecTileCommon(*this, td, "dst")))
       return failure();
 
     Type srcElem = getElemTy(ts), dstElem = getElemTy(td), idxElem = getElemTy(ti);
@@ -12463,6 +12479,21 @@ mlir::LogicalResult mlir::pto::TScatterOp::verify() {
     unsigned expectedIdxBytes = (dataBytes == 1) ? 2 : dataBytes;
     if (idxBytes != expectedIdxBytes)
       return emitOpError("expects indexes element size to match the documented scatter rule");
+
+    auto srcValid = getValidShapeVec(ts);
+    auto idxValid = getValidShapeVec(ti);
+    auto dstValid = getValidShapeVec(td);
+    if (srcValid.size() != 2 || idxValid.size() != 2 || dstValid.size() != 2)
+      return emitOpError("expects src, indexes and dst to have rank-2 valid_shape");
+
+    for (unsigned d = 0; d < 2; ++d) {
+      if (srcValid[d] != ShapedType::kDynamic && idxValid[d] != ShapedType::kDynamic &&
+          srcValid[d] != idxValid[d])
+        return emitOpError("expects src and indexes to have the same valid_shape");
+      if (srcValid[d] != ShapedType::kDynamic && dstValid[d] != ShapedType::kDynamic &&
+          dstValid[d] < srcValid[d])
+        return emitOpError("expects dst valid_shape to be >= src valid_shape");
+    }
     return mlir::success();
   };
 
@@ -12488,16 +12519,31 @@ mlir::LogicalResult mlir::pto::TScatterOp::verify() {
     if (srcValid.size() != 2 || dstValid.size() != 2)
       return emitOpError("expects src and dst to have rank-2 valid_shape");
 
+    auto axisAttr = getAxisAttr();
+    if (!axisAttr)
+      return emitOpError("expects mask-pattern tscatter to provide axis attribute");
+    StringRef axisVal = axisAttr.getValue();
     auto mp = getMaskPatternAttr();
     if (!mp)
       return emitOpError("expects mask-pattern tscatter to provide maskPattern");
     const unsigned times = getMaskScatterTimes(mp);
-    if (srcValid[0] != ShapedType::kDynamic && dstValid[0] != ShapedType::kDynamic &&
-        srcValid[0] != dstValid[0])
-      return emitOpError("expects src and dst to have the same valid rows");
-    if (srcValid[1] != ShapedType::kDynamic && dstValid[1] != ShapedType::kDynamic &&
-        srcValid[1] != static_cast<int64_t>(dstValid[1] * times))
-      return emitOpError("expects src valid cols to equal dst valid cols times the mask expansion factor");
+    if (axisVal == "row") {
+      if (srcValid[0] != ShapedType::kDynamic && dstValid[0] != ShapedType::kDynamic &&
+          dstValid[0] != srcValid[0])
+        return emitOpError("expects dst valid rows to equal src valid rows for row direction");
+      if (srcValid[1] != ShapedType::kDynamic && dstValid[1] != ShapedType::kDynamic &&
+          dstValid[1] != static_cast<int64_t>(srcValid[1] * times))
+        return emitOpError("expects dst valid cols to equal src valid cols times the mask expansion factor for row direction");
+    } else if (axisVal == "col") {
+      if (srcValid[1] != ShapedType::kDynamic && dstValid[1] != ShapedType::kDynamic &&
+          dstValid[1] != srcValid[1])
+        return emitOpError("expects dst valid cols to equal src valid cols for col direction");
+      if (srcValid[0] != ShapedType::kDynamic && dstValid[0] != ShapedType::kDynamic &&
+          dstValid[0] != static_cast<int64_t>(srcValid[0] * times))
+        return emitOpError("expects dst valid rows to equal src valid rows times the mask expansion factor for col direction");
+    } else {
+        return emitOpError("Invalid axis value, expected \"row\" or \"col\"");
+    }
 
     if (srcTB.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
         dstTB.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor))

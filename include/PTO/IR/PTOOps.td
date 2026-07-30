@@ -6630,6 +6630,7 @@ def TScatterOp: PTO_TOp<"tscatter", [
     PTODpsType:$src,
     PTODpsType:$dst,
     Optional<PTODpsType>:$indexes,
+    OptionalAttr<StrAttr>:$axis,
     OptionalAttr<PTO_MaskPatternAttr>:$maskPattern
   );
 
@@ -6641,6 +6642,7 @@ def TScatterOp: PTO_TOp<"tscatter", [
   let extraClassDeclaration = [{
     bool hasIndexForm() { return static_cast<bool>(getIndexes()); }
     bool hasMaskForm() { return static_cast<bool>(getMaskPatternAttr()); }
+    bool hasAxis() { return static_cast<bool>(getAxisAttr()); }
     ::mlir::pto::PIPE getPipe() {
       if (hasMaskForm())
         return ::mlir::pto::PIPE::PIPE_V;

@@ -1012,7 +1012,12 @@ def vgatherb(buf, offsets, mask, result_vreg_type=None):
 
 
 def vscatter(value, destination, offsets, mask):
-    """``pto.vscatter`` – indexed scatter to UB."""
+    """Scatter b8/b16/b32 values to UB using width-matched integer offsets.
+
+    The b8 form consumes 128 offsets and stores the 128 even-numbered bytes of
+    its 256-lane value vector. The b16 and b32 forms consume one offset per
+    value lane.
+    """
     _pto.VscatterOp(
         unwrap_surface_value(value),
         unwrap_surface_value(destination),
@@ -3788,6 +3793,23 @@ def tci(start, dst, *, tmp=None, descending=False):
     )
 
 
+def tscatter(src, dst, *, indexes=None, axis=None, mask_pattern=None):
+    """``pto.tscatter`` tile scatter wrapper."""
+    if indexes is not None and (axis is not None or mask_pattern is not None):
+        raise ValueError("indexes and axis/mask_pattern cannot be provided together")
+    if indexes is None and (axis is None or mask_pattern is None):
+        raise ValueError(f"non indexes mode must provide both axis and mask_pattern")
+    if axis is not None and axis not in ("row", "col"):
+        raise ValueError(f"axis must be 'row' or 'col', got {axis!r}")
+    _pto.tscatter(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+        indexes=None if indexes is None else unwrap_surface_value(indexes),
+        axis=None if axis is None else axis,
+        mask_pattern=None if mask_pattern is None else _tile_mask_pattern_attr(mask_pattern),
+    )
+
+
 def tsel(mask, src0, src1, dst, *, tmp=None):
     """``pto.tsel ins(mask, src0, src1, tmp) outs(dst)`` with synthesized scratch when omitted."""
     resolved_tmp = tmp if tmp is not None else _resolve_selection_tmp(dst, tmp, context="tsel")
@@ -6306,7 +6328,7 @@ __all__ = [
     "texpands", "treshape", "trowexpand", "tcolexpand",
     "trowexpandadd", "trowexpandsub", "trowexpandmul", "trowexpanddiv", "trowexpandmax", "trowexpandmin", "trowexpandexpdif",
     "tcolexpandadd", "tcolexpandsub", "tcolexpandmul", "tcolexpanddiv", "tcolexpandmax", "tcolexpandmin", "tcolexpandexpdif",
-    "tsort32", "tmrgsort", "tgather",
+    "tsort32", "tmrgsort", "tgather", "tscatter",
     "tsel", "tsels", "tcvt",
     "tnot", "tand", "tands", "tor", "tors", "txor", "txors", "tshl", "tshls", "tshr", "tshrs",
     "tpartadd", "tpartmul", "tpartmax", "tpartmin",

@@ -2213,9 +2213,11 @@ LogicalResult VMIScatterOp::verify() {
     return failure();
 
   auto indexElementType = dyn_cast<IntegerType>(indicesType.getElementType());
-  if (!indexElementType || indexElementType.getWidth() != 32 ||
-      indexElementType.isSigned())
-    return emitOpError("requires signless or unsigned 32-bit integer indices");
+  if (!indexElementType || indexElementType.isSigned() ||
+      (indexElementType.getWidth() != 32 &&
+       indexElementType.getWidth() != 16))
+    return emitOpError(
+        "requires signless or unsigned 16-bit or 32-bit integer indices");
 
   if (failed(verifyAllSameVRegShapeAndLayout(getOperation(),
                                              {valueType, indicesType},
@@ -3215,9 +3217,11 @@ LogicalResult VMIVscatterOp::verify() {
 
   auto indexElementType =
       dyn_cast<IntegerType>(offsetsType.getElementType());
-  if (!indexElementType || indexElementType.getWidth() != 32 ||
-      indexElementType.isSigned())
-    return emitOpError("requires signless or unsigned 32-bit integer offsets");
+  if (!indexElementType || indexElementType.isSigned() ||
+      (indexElementType.getWidth() != 32 &&
+       indexElementType.getWidth() != 16))
+    return emitOpError(
+        "requires signless or unsigned 16-bit or 32-bit integer offsets");
 
   if (failed(verifyAllSameVRegShapeAndLayout(getOperation(),
                                              {valueType, offsetsType},

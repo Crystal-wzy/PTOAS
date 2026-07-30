@@ -283,6 +283,79 @@ namespace.
 
 ---
 
+#### `pto.tile.scatter(src: Tile, dst: Tile, *, indexes: Tile | None = None, axis: str | None = None, mask_pattern: str | None = None) -> None`
+
+**Description**: Scatters elements from `src` into `dst`. Two modes are available:
+
+**Index mode** (pass `indexes`, omit `mask_pattern`): Each element `src[i, j]` is written to `dst` at the column offset specified by `indexes[i, j]`. The destination tile is zero-initialized before scattering. Uses `pto.vscatter` under the hood.
+
+**Mask-pattern mode** (pass `mask_pattern` and `axis`, omit `indexes`): Elements from `src` are scattered into `dst` with a regular spacing pattern controlled by `mask_pattern` and `axis`. The destination tile is zero-initialized before scattering.
+
+- `axis="row"`: source elements are scattered across columns within each row, interleaved with zeros according to the mask pattern.
+- `axis="col"`: source elements are scattered across rows within each column, placed at strided row positions.
+
+Supported mask patterns:
+
+| Pattern | Row semantics (elements placed at column multiples) | Column semantics (stride, start) |
+|---------|------------------------------------------------------|----------------------------------|
+| `P1111` | Direct copy (no interleaving) | Direct copy (stride=1, start=0) |
+| `P0101` | Every 2nd col, starting at 0 | stride=2, start=0 |
+| `P1010` | Every 2nd col, starting at 1 | stride=2, start=1 |
+| `P0001` | Every 4th col, starting at 0 | stride=4, start=0 |
+| `P0010` | Every 4th col, starting at 1 | stride=4, start=1 |
+| `P0100` | Every 4th col, starting at 2 | stride=4, start=2 |
+| `P1000` | Every 4th col, starting at 3 | stride=4, start=3 |
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `Tile` | Source tile containing data to scatter |
+| `dst` | `Tile` | Destination tile (zero-initialized, then receives scattered data) |
+| `indexes` | `Tile | None` | Index tile specifying per-element column offsets. dtype: `i16`/`ui16` for i8/ui8/i16/ui16/f16/bf16 data; `i32`/`ui32` for i32/ui32/f32 data (index mode) |
+| `axis` | `str | None` | Scatter direction: `"row"` or `"col"` (mask-pattern mode) |
+| `mask_pattern` | `str | None` | Spacing pattern: `"P1111"`, `"P0101"`, `"P1010"`, `"P0001"`, `"P0010"`, `"P0100"`, or `"P1000"` (mask-pattern mode) |
+
+**Returns**: None (writes to `dst`).
+
+**Constraints**:
+
+- A5 target only.
+- Supported element types: `i8`, `i16`, `i32`, `ui8`, `ui16`, `ui32`, `f16`, `bf16`, `f32`.
+- Index mode: `indexes` must have `i16`/`ui16` dtype when data dtype is i8/ui8/i16/ui16/f16/bf16, or `i32`/`ui32` dtype when data dtype is i32/ui32/f32, and the same shape as `src`.
+- Mask-pattern mode: exactly one of `axis` and `mask_pattern` must be provided together; `indexes` must not be set.
+- `dst` must use row-major layout in UB memory space.
+- Runs on `PIPE_V` (vector pipe).
+
+**Example** — index-mode scatter:
+
+```python
+src_tile = pto.alloc_tile(shape=[4, 32], dtype=pto.f32)
+dst_tile = pto.alloc_tile(shape=[4, 32], dtype=pto.f32)
+idx_tile = pto.alloc_tile(shape=[4, 32], dtype=pto.i32)
+pto.tile.scatter(src_tile, dst_tile, indexes=idx_tile)
+```
+
+**Example** — mask-pattern scatter along rows:
+
+```python
+src_tile = pto.alloc_tile(shape=[4, 32], dtype=pto.f16)
+dst_tile = pto.alloc_tile(shape=[4, 64], dtype=pto.f16)
+pto.tile.scatter(src_tile, dst_tile, axis="row", mask_pattern="P0101")
+```
+
+**Example** — mask-pattern scatter along columns:
+
+```python
+src_tile = pto.alloc_tile(shape=[4, 32], dtype=pto.f32)
+dst_tile = pto.alloc_tile(shape=[16, 32], dtype=pto.f32)
+pto.tile.scatter(src_tile, dst_tile, axis="col", mask_pattern="P0010")
+```
+
+The low-level alias `pto.tscatter` is also available when a kernel needs to bypass the `pto.tile` namespace.
+
+---
+
 ### 8.1.7 Broadcast and expansion
 
 Expansion ops take a narrow source (scalar, row vector, or column vector) and broadcast it to a full tile shape. They are useful for applying per-row or per-column coefficients to a tile.
@@ -1453,7 +1526,7 @@ pto.tile.store(dst_tile, out_view)
 | Activation | `tile.relu`, `tile.lrelu` |
 | Row reductions | `tile.rowsum`, `tile.rowmax`, `tile.rowmin`, `tile.rowprod`, `tile.rowargmax`, `tile.rowargmin` |
 | Column reductions | `tile.colsum`, `tile.colmax`, `tile.colmin`, `tile.colprod` |
-| Sort/gather | `tile.sort32`, `tile.mrgsort`, `tile.gather` |
+| Sort/gather/scatter | `tile.sort32`, `tile.mrgsort`, `tile.gather`, `tile.scatter` |
 | Broadcast | `tile.expands`, `tile.rowexpand`, `tile.colexpand` |
 | Row-expand arith | `tile.rowexpandadd`, `tile.rowexpandsub`, `tile.rowexpandmul`, `tile.rowexpanddiv`, `tile.rowexpandmax`, `tile.rowexpandmin`, `tile.rowexpandexpdif` |
 | Col-expand arith | `tile.colexpandadd`, `tile.colexpandsub`, `tile.colexpandmul`, `tile.colexpanddiv`, `tile.colexpandmax`, `tile.colexpandmin`, `tile.colexpandexpdif` |
