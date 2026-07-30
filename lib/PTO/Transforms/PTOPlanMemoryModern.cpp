@@ -189,8 +189,9 @@ static MemSpec getMemSpec(PTOArch arch, AddressSpace space) {
   case AddressSpace::ACC:
     return {arch == PTOArch::A5 ? 262144ull : 131072ull, 4096};
   case AddressSpace::BIAS:
+    return {65536ull, 256};
   case AddressSpace::SCALING:
-    return {524288ull, 256};
+    return {arch == PTOArch::A5 ? 253952ull : 196608ull, 256};
   case AddressSpace::GM:
   case AddressSpace::Zero:
     break;

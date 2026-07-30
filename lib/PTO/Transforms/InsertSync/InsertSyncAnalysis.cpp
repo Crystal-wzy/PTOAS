@@ -764,8 +764,8 @@ int InsertSyncAnalysis::GetEventIdNum(
     const DepBaseMemInfoPairVec &depBaseMemInfosVec) {
   // A back-edge dependency benefits from N dynamic event IDs whenever at
   // least one side is a multi-buffer access. We detect that from the
-  // BaseMemInfo's `baseAddresses` size, which `UpdateSlotMarkerAliasBufferInfo`
-  // populated:
+  // BaseMemInfo's `baseAddresses` size, which the translator and alias
+  // propagation keep aligned with the represented slot set:
   //   - kSingle / const-slot              : size == 1
   //   - dyn-slot (PTOIRTranslator default) : size == N (all slots, conservative)
   // For the alias to even reach this point both sides share a root, so the

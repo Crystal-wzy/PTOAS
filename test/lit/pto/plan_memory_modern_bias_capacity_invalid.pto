@@ -16,4 +16,4 @@ module {
   }
 }
 
-// CHECK: bias overflow, requires 8388608 bits while 4194304 bits available
+// CHECK: bias overflow, requires 8388608 bits while 524288 bits available
