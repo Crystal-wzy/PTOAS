@@ -2849,6 +2849,12 @@ static void prepareVPTOForEmission(PassManager &pm) {
       pto::createPTOUnrollSIMTForPass());
   kernelModulePM.addPass(createSCCPPass());
   kernelModulePM.addPass(createCanonicalizerPass());
+  kernelModulePM.addPass(createCSEPass());
+  kernelModulePM.addNestedPass<func::FuncOp>(
+      pto::createPTOAnalyzeSIMTPersistentFragmentPass());
+  kernelModulePM.addNestedPass<func::FuncOp>(
+      pto::createPTOMaterializeSIMTPersistentFragmentPass());
+  kernelModulePM.addPass(pto::createPTOOutlineSIMTSectionsPass());
   kernelModulePM.addPass(pto::createVPTOPtrNormalizePass());
   kernelModulePM.addPass(pto::createVPTOPtrCastCleanupPass());
   kernelModulePM.addPass(pto::createVPTONormalizeEquivalentVcvtPass());

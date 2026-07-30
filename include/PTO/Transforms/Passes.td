@@ -762,10 +762,12 @@ def PTOResolveBufferSelect : Pass<"pto-resolve-buffer-select", "ModuleOp"> {
 
 def PTOUnrollSIMTFor : Pass<"pto-unroll-simt-for", "func::FuncOp"> {
   let summary =
-      "Unroll explicitly annotated scf.for loops in pto.simt_entry functions";
+      "Unroll explicitly annotated scf.for loops in SIMT contexts";
   let description = [{
-    Walks functions with `pto.simt_entry` attribute and fully unrolls `scf.for`
-    loops that carry the `{pto.unroll = "full"}` attribute.
+    Walks functions with the `pto.simt_entry` attribute or inline
+    `pto.section.simt` regions and fully unrolls `scf.for` loops that carry the
+    `{pto.unroll = "full"}` attribute. Annotated loops outside an inline SIMT
+    section in an ordinary function are left unchanged.
 
     Only loops with constant lower bound, upper bound, and positive step are
     unrolled.  The annotation is opt-in: loops without the attribute are
@@ -813,6 +815,70 @@ def PTONarrowVPTOLoopCounters
     "mlir::scf::SCFDialect",
     "mlir::arith::ArithDialect",
     "mlir::pto::PTODialect"
+  ];
+}
+
+def PTOAnalyzeSIMTPersistentFragment
+    : Pass<"pto-analyze-simt-persistent-fragment", "func::FuncOp"> {
+  let summary = "Analyze SIMT persistent fragments without changing IR";
+  let description = [{
+    Validates persistent fragment definitions, access graphs, init/carry
+    sections, resident elements, and keep/resume slot assignments. This pass
+    is analysis-only; it does not insert or remove operations.
+  }];
+  let constructor =
+      "mlir::pto::createPTOAnalyzeSIMTPersistentFragmentPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::pto::PTODialect"
+  ];
+}
+
+def PTOMaterializeSIMTPersistentFragment
+    : Pass<"pto-materialize-simt-persistent-fragment", "func::FuncOp"> {
+  let summary =
+      "Materialize SIMT persistent fragments as keep/resume slot traffic";
+  let description = [{
+    Consumes `llvm.alloca` values marked with `pto.persistent` in a kernel body
+    before inline SIMT sections are outlined. The first implementation handles
+    single-block `pto.section.simt` bodies with scalar and fixed-width vector
+    LLVM load/store accesses through statically-resolved offsets. Vector
+    accesses are split into scalar lanes before the section-local state is
+    rewritten into `pto.resume` at entry and `pto.keep` at exit.
+
+    Unsupported persistent fragment shapes fail fast because the allocation is
+    only a lexical carrier for register-resident state, not real stack memory.
+  }];
+  let constructor =
+      "mlir::pto::createPTOMaterializeSIMTPersistentFragmentPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::pto::PTODialect",
+    "mlir::arith::ArithDialect"
+  ];
+}
+
+def PTOOutlineSIMTSections
+    : Pass<"pto-outline-simt-sections", "ModuleOp"> {
+  let summary =
+      "Outline inline pto.section.simt regions into pto.simt_entry functions";
+  let description = [{
+    Converts each inline `pto.section.simt` region into a private helper
+    function marked with `pto.simt_entry`, captures external SSA values as
+    helper arguments, and replaces the original section with a
+    `pto.simt_launch` using the section launch dimensions.
+
+    This is the late outline step used by TileLang/PTODSL style frontends that
+    keep SIMT code inline until PTOAS has had a chance to materialize
+    persistent SIMT fragments.
+  }];
+  let constructor = "mlir::pto::createPTOOutlineSIMTSectionsPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::pto::PTODialect",
+    "mlir::arith::ArithDialect"
   ];
 }
 

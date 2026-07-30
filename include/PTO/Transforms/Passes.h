@@ -91,6 +91,9 @@ LogicalResult validateIntToPtrUses(func::FuncOp func);
 
 std::unique_ptr<Pass> createPTOUnrollSIMTForPass();
 std::unique_ptr<Pass> createPTONarrowVPTOLoopCountersPass();
+std::unique_ptr<Pass> createPTOAnalyzeSIMTPersistentFragmentPass();
+std::unique_ptr<Pass> createPTOMaterializeSIMTPersistentFragmentPass();
+std::unique_ptr<Pass> createPTOOutlineSIMTSectionsPass();
 std::unique_ptr<Pass> createPTOInferVPTOVecScopePass();
 std::unique_ptr<Pass> createVPTOExpandWrapperOpsPass();
 std::unique_ptr<Pass> createVPTOSoftPostUpdatePass();
