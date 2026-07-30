@@ -13,6 +13,7 @@
 #include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/DenseSet.h"
@@ -345,7 +346,8 @@ static bool hasReadEffectOnValue(Operation *op, Value value) {
 }
 
 static bool isInsideLoop(Operation *op) {
-  return op->getParentOfType<scf::ForOp>() != nullptr;
+  return op->getParentOfType<scf::ForOp>() != nullptr ||
+         op->getParentOfType<scf::WhileOp>() != nullptr;
 }
 
 static ValueRange getDpsInits(Operation *op) {
@@ -383,6 +385,12 @@ struct PlannerAnalysis {
     if (roots.empty())
       return;
     valueToRoots[value] = roots;
+  }
+
+  void mergeRoots(Value value, const RootList &roots) {
+    if (roots.empty())
+      return;
+    setRoots(value, unionRoots(getRoots(value), roots));
   }
 
   void addRoot(Value value, Operation *defOp) {
@@ -509,6 +517,13 @@ struct PlannerAnalysis {
     if (llvm::any_of(sources, [&](Value source) {
           return isSplitTpopDerived(source);
         }))
+      splitTpopDerivedValues.insert(result);
+  }
+
+  void propagateSplitTpopDerivedFromRoots(Value result, Value source) {
+    if (!result || !source)
+      return;
+    if (isSplitTpopDerived(source))
       splitTpopDerivedValues.insert(result);
   }
 
@@ -739,6 +754,52 @@ struct PlannerAnalysis {
     }
   }
 
+  void mapRegionBranchValues(ValueRange sources, ValueRange destinations) {
+    for (auto [source, destination] : llvm::zip(sources, destinations)) {
+      mergeRoots(destination, getRoots(source));
+      propagateSplitTpopDerivedFromRoots(destination, source);
+    }
+  }
+
+  void seedRegionBranchEntryAliases(RegionBranchOpInterface branchOp) {
+    SmallVector<RegionSuccessor> successors;
+    branchOp.getSuccessorRegions(RegionBranchPoint::parent(), successors);
+    for (RegionSuccessor successor : successors) {
+      if (successor.isParent())
+        continue;
+      mapRegionBranchValues(branchOp.getEntrySuccessorOperands(successor),
+                            successor.getSuccessorInputs());
+    }
+  }
+
+  void finalizeRegionBranchAliasesFromRegion(RegionBranchOpInterface branchOp,
+                                             Region &region) {
+    if (region.empty())
+      return;
+
+    SmallVector<RegionSuccessor> successors;
+    branchOp.getSuccessorRegions(region, successors);
+    for (RegionSuccessor successor : successors) {
+      ValueRange destinations = successor.getSuccessorInputs();
+      if (destinations.empty())
+        continue;
+
+      for (Block &block : region) {
+        auto terminator =
+            dyn_cast<RegionBranchTerminatorOpInterface>(block.getTerminator());
+        if (!terminator)
+          continue;
+        mapRegionBranchValues(terminator.getSuccessorOperands(successor),
+                              destinations);
+      }
+    }
+  }
+
+  void finalizeRegionBranchAliases(RegionBranchOpInterface branchOp) {
+    for (Region &region : branchOp->getRegions())
+      finalizeRegionBranchAliasesFromRegion(branchOp, region);
+  }
+
   void finalizeForLoopLiveness(scf::ForOp forOp, unsigned loopStartIndex,
                                unsigned loopEndIndex) {
     // A root defined outside the loop and touched in the body remains live
@@ -772,6 +833,41 @@ struct PlannerAnalysis {
         info.allocIndex = std::min(info.allocIndex, loopStartIndex);
         info.freeIndex = std::max(info.freeIndex, loopEndIndex);
       }
+    }
+  }
+
+  void finalizeWhileLoopLiveness(scf::WhileOp whileOp, unsigned loopStartIndex,
+                                 unsigned loopEndIndex) {
+    // scf.while may carry tile roots through both before/after regions:
+    // init -> before args -> condition args -> after args -> yield -> before
+    // args. Keep every participating root live across the whole region branch
+    // cycle so a later linear operation in one region cannot reuse storage that
+    // a future iteration still reads.
+    RootList loopCarriedRoots;
+    for (Value init : whileOp.getInits())
+      loopCarriedRoots = unionRoots(loopCarriedRoots, getRoots(init));
+    for (Value result : whileOp.getResults())
+      loopCarriedRoots = unionRoots(loopCarriedRoots, getRoots(result));
+    for (Region &region : whileOp->getRegions()) {
+      for (Block &block : region) {
+        for (BlockArgument arg : block.getArguments())
+          loopCarriedRoots = unionRoots(loopCarriedRoots, getRoots(arg));
+        if (auto terminator = dyn_cast<RegionBranchTerminatorOpInterface>(
+                block.getTerminator())) {
+          for (Value operand : terminator->getOperands())
+            loopCarriedRoots = unionRoots(loopCarriedRoots, getRoots(operand));
+        }
+      }
+    }
+
+    for (Value root : loopCarriedRoots) {
+      auto found = rootIndexByValue.find(root);
+      if (found == rootIndexByValue.end())
+        continue;
+      facts.loopCarriedRoots.insert(root);
+      RootInfo &info = roots[found->second];
+      info.allocIndex = std::min(info.allocIndex, loopStartIndex);
+      info.freeIndex = std::max(info.freeIndex, loopEndIndex);
     }
   }
 
@@ -832,8 +928,8 @@ struct PlannerAnalysis {
           setRoots(reshape.getResult(), getRoots(reshape.getSrc()));
           propagateSplitTpopDerived(reshape.getResult(),
                                     ValueRange{reshape.getSrc()});
-        } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-          seedForIterArgAliases(forOp);
+        } else if (auto branchOp = dyn_cast<RegionBranchOpInterface>(op)) {
+          seedRegionBranchEntryAliases(branchOp);
         }
 
         ValueRange dpsInits = getDpsInits(op);
@@ -849,30 +945,35 @@ struct PlannerAnalysis {
           markWrite(init, index, /*pureOverwrite=*/!readsOldValue);
         }
 
-        for (Region &nested : op->getRegions()) {
-          walkRegion(nested);
-          if (failed)
-            return;
+        if (auto branchOp = dyn_cast<RegionBranchOpInterface>(op)) {
+          for (Region &nested : op->getRegions()) {
+            walkRegion(nested);
+            if (failed)
+              return;
+            finalizeRegionBranchAliasesFromRegion(branchOp, nested);
+          }
+        } else {
+          for (Region &nested : op->getRegions()) {
+            walkRegion(nested);
+            if (failed)
+              return;
+          }
         }
 
+        if (auto branchOp = dyn_cast<RegionBranchOpInterface>(op))
+          finalizeRegionBranchAliases(branchOp);
+
         if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
-          if (ifOp.getNumResults() != 0) {
-            auto thenYield =
-                cast<scf::YieldOp>(ifOp.thenBlock()->getTerminator());
-            auto elseYield =
-                cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
-            for (auto [result, thenVal, elseVal] :
-                 llvm::zip(ifOp.getResults(), thenYield.getResults(),
-                           elseYield.getResults())) {
-              setRoots(result,
-                       unionRoots(getRoots(thenVal), getRoots(elseVal)));
-            }
+          if (ifOp.getNumResults() != 0)
             recordIfBranchExclusivity(ifOp);
-          }
         } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
           unsigned loopEndIndex =
               linearOps.empty() ? index : linearOps.size() - 1;
           finalizeForLoopLiveness(forOp, index, loopEndIndex);
+        } else if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+          unsigned loopEndIndex =
+              linearOps.empty() ? index : linearOps.size() - 1;
+          finalizeWhileLoopLiveness(whileOp, index, loopEndIndex);
         } else if (auto fusionRegion = dyn_cast<pto::FusionRegionOp>(op)) {
           auto yieldOp = cast<pto::YieldOp>(
               fusionRegion.getBody().front().getTerminator());
