@@ -209,7 +209,7 @@ if(BUILD_TESTING)
   if(PTO_ENABLE_PYTHON_BINDING)
     get_filename_component(_pto_python_bin_dir "${Python3_EXECUTABLE}" DIRECTORY)
     set(_pto_python_test_pythonpath
-      "${CMAKE_BINARY_DIR}/python:$ENV{PYTHONPATH}"
+      "${CMAKE_BINARY_DIR}/python:${CMAKE_BINARY_DIR}/python/ptoas/_runtime/share/ptoas:${CMAKE_SOURCE_DIR}/lib:$ENV{PYTHONPATH}"
     )
     set(_pto_python_test_env
       "PYTHONPATH=${_pto_python_test_pythonpath}"
