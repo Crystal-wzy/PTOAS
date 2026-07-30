@@ -6,8 +6,6 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-import pytest
-
 from ptodsl import pto, scalar
 
 
@@ -54,5 +52,21 @@ def test_vector_float_cast_preserves_shape():
 
 
 def test_vector_float_cast_rejects_shape_mismatch():
-    with pytest.raises(TypeError, match="destination vector shape"):
+    try:
         vector_float_cast_shape_mismatch_probe.compile()
+    except TypeError as error:
+        assert "destination vector shape" in str(error)
+    else:
+        raise AssertionError(
+            "scalar.cast must reject a mismatched destination vector shape"
+        )
+
+
+def main():
+    test_scalar_float_cast()
+    test_vector_float_cast_preserves_shape()
+    test_vector_float_cast_rejects_shape_mismatch()
+    print("ptodsl_scalar_cast: PASS")
+
+if __name__ == "__main__":
+    main()
