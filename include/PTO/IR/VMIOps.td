@@ -39,9 +39,6 @@ def PTO_PhysicalVMIPartTypeConstraint : AnyTypeOf<
   [PTO_PhysicalVRegTypeConstraint, PTO_PhysicalMaskTypeConstraint],
   "PTO physical vector register or mask type">;
 
-def VMI_PtrOrMemRef :
-  AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
-
 class VMI_Op<string mnemonic, list<Trait> traits = []>
     : PTO_Op<"vmi." # mnemonic, traits>;
 
@@ -388,7 +385,7 @@ def VMICompressOp : VMI_Op<"compress"> {
 
 def VMICompressStoreOp : VMI_Op<"compress_store", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI store active source lanes contiguously according to a predicate mask";
-  let arguments = (ins VMI_VRegTypeConstraint:$value, VMI_PtrOrMemRef:$destination,
+  let arguments = (ins VMI_VRegTypeConstraint:$value, PtrOrMemRef:$destination,
                        Index:$offset, VMI_MaskTypeConstraint:$mask);
   let results = (outs);
   let hasVerifier = 1;
@@ -613,7 +610,7 @@ def VMIBitcastOp : VMI_Op<"bitcast", [Pure]> {
 
 def VMILoadOp : VMI_Op<"load", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI logical vector load";
-  let arguments = (ins VMI_PtrOrMemRef:$source, Index:$offset);
+  let arguments = (ins PtrOrMemRef:$source, Index:$offset);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
   let assemblyFormat = "$source `[` $offset `]` attr-dict `:` type($source) `->` type($result)";
@@ -621,7 +618,7 @@ def VMILoadOp : VMI_Op<"load", [DeclareOpInterfaceMethods<MemoryEffectsOpInterfa
 
 def VMIDeinterleaveLoadOp : VMI_Op<"deinterleave_load", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI two-way logical deinterleave load";
-  let arguments = (ins VMI_PtrOrMemRef:$source, Index:$offset);
+  let arguments = (ins PtrOrMemRef:$source, Index:$offset);
   let results = (outs VMI_VRegTypeConstraint:$low, VMI_VRegTypeConstraint:$high);
   let hasVerifier = 1;
   let assemblyFormat = "$source `[` $offset `]` attr-dict `:` type($source) `->` type($low) `,` type($high)";
@@ -629,7 +626,7 @@ def VMIDeinterleaveLoadOp : VMI_Op<"deinterleave_load", [DeclareOpInterfaceMetho
 
 def VMIGroupLoadOp : VMI_Op<"group_load", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI logical grouped vector load with a row stride between groups";
-  let arguments = (ins VMI_PtrOrMemRef:$source, Index:$offset, Index:$row_stride,
+  let arguments = (ins PtrOrMemRef:$source, Index:$offset, Index:$row_stride,
                        I64Attr:$num_groups);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
@@ -638,7 +635,7 @@ def VMIGroupLoadOp : VMI_Op<"group_load", [DeclareOpInterfaceMethods<MemoryEffec
 
 def VMIGroupSlotLoadOp : VMI_Op<"group_slot_load", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI load one scalar value per logical group into group slots";
-  let arguments = (ins VMI_PtrOrMemRef:$source, Index:$offset, Index:$source_group_stride,
+  let arguments = (ins PtrOrMemRef:$source, Index:$offset, Index:$source_group_stride,
                        I64Attr:$num_groups);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
@@ -647,7 +644,7 @@ def VMIGroupSlotLoadOp : VMI_Op<"group_slot_load", [DeclareOpInterfaceMethods<Me
 
 def VMIGroupBroadcastLoadOp : VMI_Op<"group_broadcast_load", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI load one scalar value per logical group and broadcast it to group lanes";
-  let arguments = (ins VMI_PtrOrMemRef:$source, Index:$offset, Index:$source_group_stride,
+  let arguments = (ins PtrOrMemRef:$source, Index:$offset, Index:$source_group_stride,
                        I64Attr:$num_groups);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
@@ -656,7 +653,7 @@ def VMIGroupBroadcastLoadOp : VMI_Op<"group_broadcast_load", [DeclareOpInterface
 
 def VMIStrideLoadOp : VMI_Op<"stride_load", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI block-strided vector load";
-  let arguments = (ins VMI_PtrOrMemRef:$source, Index:$offset,
+  let arguments = (ins PtrOrMemRef:$source, Index:$offset,
                        I16:$block_stride, I16:$repeat_stride,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs VMI_VRegTypeConstraint:$result);
@@ -666,7 +663,7 @@ def VMIStrideLoadOp : VMI_Op<"stride_load", [DeclareOpInterfaceMethods<MemoryEff
 
 def VMIMaskedLoadOp : VMI_Op<"masked_load", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI logical masked vector load with passthrough lanes";
-  let arguments = (ins VMI_PtrOrMemRef:$source, Index:$offset,
+  let arguments = (ins PtrOrMemRef:$source, Index:$offset,
                        VMI_MaskTypeConstraint:$mask,
                        VMI_VRegTypeConstraint:$passthru);
   let results = (outs VMI_VRegTypeConstraint:$result);
@@ -676,7 +673,7 @@ def VMIMaskedLoadOp : VMI_Op<"masked_load", [DeclareOpInterfaceMethods<MemoryEff
 
 def VMIGatherOp : VMI_Op<"gather", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI logical masked indexed gather with passthrough lanes";
-  let arguments = (ins VMI_PtrOrMemRef:$source,
+  let arguments = (ins PtrOrMemRef:$source,
                        VMI_VRegTypeConstraint:$indices,
                        VMI_MaskTypeConstraint:$mask,
                        VMI_VRegTypeConstraint:$passthru);
@@ -687,7 +684,7 @@ def VMIGatherOp : VMI_Op<"gather", [DeclareOpInterfaceMethods<MemoryEffectsOpInt
 
 def VMIExpandLoadOp : VMI_Op<"expand_load", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI load a dense active-lane stream into masked logical lanes";
-  let arguments = (ins VMI_PtrOrMemRef:$source, Index:$offset,
+  let arguments = (ins PtrOrMemRef:$source, Index:$offset,
                        VMI_MaskTypeConstraint:$mask,
                        VMI_VRegTypeConstraint:$passthru);
   let results = (outs VMI_VRegTypeConstraint:$result);
@@ -697,7 +694,7 @@ def VMIExpandLoadOp : VMI_Op<"expand_load", [DeclareOpInterfaceMethods<MemoryEff
 
 def VMIStoreOp : VMI_Op<"store", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI logical vector store";
-  let arguments = (ins VMI_VRegTypeConstraint:$value, VMI_PtrOrMemRef:$destination, Index:$offset);
+  let arguments = (ins VMI_VRegTypeConstraint:$value, PtrOrMemRef:$destination, Index:$offset);
   let results = (outs);
   let hasVerifier = 1;
   let assemblyFormat = "$value `,` $destination `[` $offset `]` attr-dict `:` type($value) `,` type($destination)";
@@ -706,7 +703,7 @@ def VMIStoreOp : VMI_Op<"store", [DeclareOpInterfaceMethods<MemoryEffectsOpInter
 def VMIInterleaveStoreOp : VMI_Op<"interleave_store", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI two-way logical interleave store";
   let arguments = (ins VMI_VRegTypeConstraint:$low, VMI_VRegTypeConstraint:$high,
-                       VMI_PtrOrMemRef:$destination, Index:$offset);
+                       PtrOrMemRef:$destination, Index:$offset);
   let results = (outs);
   let hasVerifier = 1;
   let assemblyFormat = "$low `,` $high `,` $destination `[` $offset `]` attr-dict `:` type($low) `,` type($high) `,` type($destination)";
@@ -714,7 +711,7 @@ def VMIInterleaveStoreOp : VMI_Op<"interleave_store", [DeclareOpInterfaceMethods
 
 def VMIGroupStoreOp : VMI_Op<"group_store", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI logical grouped vector store with a row stride between groups";
-  let arguments = (ins VMI_VRegTypeConstraint:$value, VMI_PtrOrMemRef:$destination,
+  let arguments = (ins VMI_VRegTypeConstraint:$value, PtrOrMemRef:$destination,
                        Index:$offset, Index:$row_stride, I64Attr:$num_groups);
   let results = (outs);
   let hasVerifier = 1;
@@ -723,7 +720,7 @@ def VMIGroupStoreOp : VMI_Op<"group_store", [DeclareOpInterfaceMethods<MemoryEff
 
 def VMIMaskedStoreOp : VMI_Op<"masked_store", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI logical masked vector store";
-  let arguments = (ins VMI_VRegTypeConstraint:$value, VMI_PtrOrMemRef:$destination,
+  let arguments = (ins VMI_VRegTypeConstraint:$value, PtrOrMemRef:$destination,
                        Index:$offset, VMI_MaskTypeConstraint:$mask);
   let results = (outs);
   let hasVerifier = 1;
@@ -732,7 +729,7 @@ def VMIMaskedStoreOp : VMI_Op<"masked_store", [DeclareOpInterfaceMethods<MemoryE
 
 def VMIStrideStoreOp : VMI_Op<"stride_store", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI block-strided vector store";
-  let arguments = (ins VMI_VRegTypeConstraint:$value, VMI_PtrOrMemRef:$destination,
+  let arguments = (ins VMI_VRegTypeConstraint:$value, PtrOrMemRef:$destination,
                        Index:$offset, I16:$block_stride, I16:$repeat_stride,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs);
@@ -743,7 +740,7 @@ def VMIStrideStoreOp : VMI_Op<"stride_store", [DeclareOpInterfaceMethods<MemoryE
 def VMIScatterOp : VMI_Op<"scatter", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "VMI logical masked indexed scatter";
   let arguments = (ins VMI_VRegTypeConstraint:$value,
-                       VMI_PtrOrMemRef:$destination,
+                       PtrOrMemRef:$destination,
                        VMI_VRegTypeConstraint:$indices,
                        VMI_MaskTypeConstraint:$mask);
   let results = (outs);
@@ -1356,7 +1353,7 @@ def VMIvLoadOp : VMI_Op<"vload",
     migrate to consumer ops or vstore.
   }];
   let arguments = (ins
-    VMI_PtrOrMemRef:$source,
+    PtrOrMemRef:$source,
     Index:$offset,
     Optional<Index>:$stride,
     Optional<I16>:$block_stride,
@@ -1396,7 +1393,7 @@ def VMIvStoreOp : VMI_Op<"vstore",
   }];
   let arguments = (ins
     Variadic<VMI_VRegTypeConstraint>:$values,
-    VMI_PtrOrMemRef:$destination,
+    PtrOrMemRef:$destination,
     Index:$offset,
     Optional<Index>:$stride,
     Optional<I16>:$block_stride,
@@ -1495,7 +1492,7 @@ def VMIVgatherOp : VMI_Op<"vgather", [DeclareOpInterfaceMethods<MemoryEffectsOpI
     ```
   }];
   let arguments = (ins
-    VMI_PtrOrMemRef:$source,
+    PtrOrMemRef:$source,
     VMI_VRegTypeConstraint:$offsets,
     VMI_MaskTypeConstraint:$mask,
     OptionalAttr<StrAttr>:$pmode
@@ -1518,7 +1515,7 @@ def VMIVgatherbOp : VMI_Op<"vgatherb", [DeclareOpInterfaceMethods<MemoryEffectsO
     ```
   }];
   let arguments = (ins
-    VMI_PtrOrMemRef:$source,
+    PtrOrMemRef:$source,
     VMI_VRegTypeConstraint:$offsets,
     VMI_MaskTypeConstraint:$mask,
     OptionalAttr<StrAttr>:$pmode
@@ -1542,7 +1539,7 @@ def VMIVscatterOp : VMI_Op<"vscatter", [DeclareOpInterfaceMethods<MemoryEffectsO
   }];
   let arguments = (ins
     VMI_VRegTypeConstraint:$value,
-    VMI_PtrOrMemRef:$destination,
+    PtrOrMemRef:$destination,
     VMI_VRegTypeConstraint:$offsets,
     VMI_MaskTypeConstraint:$mask,
     OptionalAttr<StrAttr>:$pmode

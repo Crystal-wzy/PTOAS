@@ -49,43 +49,6 @@ static std::string formatVMIMaskType(int64_t elementCount,
   return result;
 }
 
-static void printVMIType(OpAsmPrinter &printer, Type type) {
-  if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
-    StringRef memorySpaceKeyword;
-    switch (ptrType.getMemorySpace().getAddressSpace()) {
-    case pto::AddressSpace::GM:
-    case pto::AddressSpace::Zero:
-      memorySpaceKeyword = "gm";
-      break;
-    case pto::AddressSpace::MAT:
-      memorySpaceKeyword = "l1";
-      break;
-    case pto::AddressSpace::LEFT:
-      memorySpaceKeyword = "l0a";
-      break;
-    case pto::AddressSpace::RIGHT:
-      memorySpaceKeyword = "l0b";
-      break;
-    case pto::AddressSpace::ACC:
-      memorySpaceKeyword = "l0c";
-      break;
-    case pto::AddressSpace::VEC:
-      memorySpaceKeyword = "ub";
-      break;
-    case pto::AddressSpace::BIAS:
-      memorySpaceKeyword = "bt";
-      break;
-    case pto::AddressSpace::SCALING:
-      memorySpaceKeyword = "fb";
-      break;
-    }
-    printer << "!pto.ptr<" << ptrType.getElementType() << ", "
-            << memorySpaceKeyword << ">";
-    return;
-  }
-  printer << type;
-}
-
 static bool isSupportedVMIElementType(Type type) {
   return isa<IntegerType, FloatType, IndexType>(type) ||
          pto::isPTOLowPrecisionType(type);
@@ -3771,11 +3734,9 @@ void VMIvStoreOp::print(OpAsmPrinter &p) {
   }
   p.printOptionalAttrDict((*this)->getAttrs(), {"operandSegmentSizes"});
   p << " : ";
-  for (auto val : getValues()) {
-    printVMIType(p, val.getType());
-    p << ", ";
-  }
-  printVMIType(p, getDestination().getType());
+  for (auto val : getValues())
+    p << val.getType() << ", ";
+  p << getDestination().getType();
   if (!getMask().empty())
     p << ", " << getMask()[0].getType();
 }
@@ -4140,9 +4101,7 @@ void VMIvLoadOp::print(OpAsmPrinter &p) {
     p.printOperand(getRepeatStride());
   }
   p.printOptionalAttrDict((*this)->getAttrs(), {"operandSegmentSizes"});
-  p << " : ";
-  printVMIType(p, getSource().getType());
-  p << " -> " << getResults().getTypes();
+  p << " : " << getSource().getType() << " -> " << getResults().getTypes();
 }
 
 LogicalResult VMIvLoadOp::verify() {

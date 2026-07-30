@@ -46,8 +46,6 @@ def PTO_ScalingPtrType : Type<
   "scaling pointer type">;
 def PTO_BufferLikeType : AnyTypeOf<[AnyMemRef, PTO_BufferType],
                                     "memref or pointer-like buffer type">;
-def VPTO_PtrOrMemRef :
-  AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
 def PTO_AccStorePayloadType : AnyTypeOf<[AnySignlessInteger, AnyFloat, PTO_ScalingPtrType],
                                         "signless integer, float scalar, or scaling pointer">;
 def PTO_AccStoreClipPayloadType : AnyTypeOf<[AnyInteger, AnyFloat],
@@ -275,7 +273,7 @@ def TensorViewAddrOp : PTO_Op<"tensor_view_addr", [Pure]> {
 
   let arguments = (ins AnyTypeOf<[TensorViewType, PartitionTensorViewType, AnyMemRef],
                                 "TensorViewLike or MemRef">:$src);
-  let results = (outs VPTO_PtrOrMemRef:$dst);
+  let results = (outs PtrOrMemRef:$dst);
 
   let hasVerifier = 1;
 
@@ -299,7 +297,7 @@ def TileBufAddrOp : PTO_Op<"tile_buf_addr", [Pure]> {
 
   let arguments = (ins AnyTypeOf<[TileBufType, AnyMemRef],
                                  "tile_buf or tile-bound memref">:$src);
-  let results = (outs VPTO_PtrOrMemRef:$dst);
+  let results = (outs PtrOrMemRef:$dst);
 
   let hasVerifier = 1;
 

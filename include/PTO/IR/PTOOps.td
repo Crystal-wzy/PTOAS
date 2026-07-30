@@ -45,6 +45,9 @@ def PTOCommType :
   AnyTypeOf<[AnyRankedTensor, TensorViewType, PartitionTensorViewType,
              TileBufType], "TensorView, PartitionTensorView, TileBuf, or Tensor">;
 
+def PtrOrMemRef :
+  AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
+
 def ScalarType :
   AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
 
