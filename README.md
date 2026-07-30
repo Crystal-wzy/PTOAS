@@ -53,13 +53,17 @@ export WORKSPACE_DIR=$HOME/llvm-workspace
 export LLVM_SOURCE_DIR=$WORKSPACE_DIR/llvm-project
 export LLVM_BUILD_DIR=$LLVM_SOURCE_DIR/build-shared
 
-# PTOAS 源码与安装路径
+# PTOAS 源码路径
 export PTO_SOURCE_DIR=$WORKSPACE_DIR/PTOAS
-export PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install
 # =======================================================
 
 # 创建工作目录
 mkdir -p $WORKSPACE_DIR
+
+# 推荐使用独立虚拟环境。后续 LLVM 和 PTOAS 构建必须使用同一个 Python。
+python3 -m venv "$WORKSPACE_DIR/.venv"
+source "$WORKSPACE_DIR/.venv/bin/activate"
+export PYTHON_BIN="$(command -v python3)"
 
 ```
 
@@ -71,7 +75,7 @@ mkdir -p $WORKSPACE_DIR
 * **Python**: 3.10+
 * **Python Packages**: `scikit-build-core`, `pybind11<3`, `nanobind`, `numpy`
 ```bash
-python3 -m pip install 'scikit-build-core>=0.12.2,<2' 'pybind11<3' nanobind numpy
+"$PYTHON_BIN" -m pip install 'scikit-build-core>=0.12.2,<2' 'pybind11<3' nanobind numpy
 
 ```
 
@@ -101,10 +105,10 @@ cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \
     -DBUILD_SHARED_LIBS=ON \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
     -DLLVM_ENABLE_ASSERTIONS=ON \
-    -DPython3_EXECUTABLE=$(which python3) \
-    -DPython_EXECUTABLE=$(which python3) \
-    -Dpybind11_DIR=$(python3 -m pybind11 --cmakedir) \
-    -Dnanobind_DIR=$(python3 -m nanobind --cmake_dir) \
+    -DPython3_EXECUTABLE="$PYTHON_BIN" \
+    -DPython_EXECUTABLE="$PYTHON_BIN" \
+    -Dpybind11_DIR="$("$PYTHON_BIN" -m pybind11 --cmakedir)" \
+    -Dnanobind_DIR="$("$PYTHON_BIN" -m nanobind --cmake_dir)" \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_TARGETS_TO_BUILD="host"
 
@@ -120,23 +124,35 @@ ninja -C $LLVM_BUILD_DIR
 ```bash
 # 1. 下载 PTOAS 源码
 cd $WORKSPACE_DIR
-git clone https://gitcode.com/cann/pto-as.git PTOAS
+git clone https://github.com/hw-native-sys/PTOAS.git PTOAS
 cd $PTO_SOURCE_DIR
 
 # 2. 安装到当前 Python 环境，并保留可增量构建的 build tree
-PYTHON_BIN=python3 \
+PYTHON_BIN="$PYTHON_BIN" \
 LLVM_BUILD_DIR="$LLVM_BUILD_DIR" \
 PTO_BUILD_DIR="$PTO_SOURCE_DIR/build" \
   ./quick_install.sh
 
-# 3. 后续可直接复用同一个 build tree
+# 3. 验证当前 shell 能找到安装后的命令
+command -v ptoas
+ptoas --version
+
+# 4. 后续可直接复用同一个 build tree
 ninja -C "$PTO_SOURCE_DIR/build" check-pto
 
 ```
 
 `quick_install.sh` 使用 editable install，并关闭 build isolation，避免把临时
 构建环境中的 pybind11 路径写入持久化 `CMakeCache.txt`。`ptoas` 会直接安装到
-`PYTHON_BIN` 对应的当前环境中。
+`PYTHON_BIN` 对应的当前环境中。激活上面创建的虚拟环境后，它的 `bin` 目录已经
+位于 `PATH` 中。
+
+如果明确选择不使用虚拟环境，并且 pip 将软件包安装到了用户目录，则还需要执行：
+
+```bash
+export PATH="$(python3 -m site --user-base)/bin:$PATH"
+hash -r
+```
 
 ### 3.4 Python 安装合同 (Python Distribution Contract)
 
@@ -146,17 +162,17 @@ ninja -C "$PTO_SOURCE_DIR/build" check-pto
 ```bash
 # 非 editable 的源码安装
 cd $PTO_SOURCE_DIR
-pip install . --no-build-isolation
+"$PYTHON_BIN" -m pip install . --no-build-isolation
 
 # PTOAS / PTODSL 开发者的 editable 安装
 cd $PTO_SOURCE_DIR
-pip install -e . --no-build-isolation
+"$PYTHON_BIN" -m pip install -e . --no-build-isolation
 ```
 
 发布或 CI 产出的 `ptoas` wheel 也遵循同一合同：
 
 ```bash
-pip install /path/to/ptoas*.whl
+"$PYTHON_BIN" -m pip install /path/to/ptoas*.whl
 ```
 
 安装完成后，以下导入应直接可用：
@@ -188,17 +204,38 @@ from ptoas.mlir.dialects import pto as mlir_pto
 
 ## 4. 运行环境配置 (Runtime Environment)
 
-如果你已经通过 `pip install .`、`pip install -e .` 或 `pip install ptoas*.whl`
-完成安装，那么 `import ptodsl` / `from ptoas.mlir.dialects import pto` / `ptoas`
-都不应再依赖手动设置 `PYTHONPATH`。
-
-需要 CANN、Bisheng、simulator 或 NPU 时，在完成 PTOAS 安装后再加载
-CANN 自带的环境脚本。PTOAS 的 Python 包和 CLI 仍由当前 pip 环境提供，
-不需要手工添加 build/install tree 到 `PYTHONPATH` 或 `PATH`。
+每次打开新 shell 时，先恢复 3.0 中配置的路径变量并重新激活安装 PTOAS 的
+Python 环境。源码或 editable 安装会使用 LLVM 构建目录中的动态库，因此还需要
+将该目录加入动态库搜索路径：
 
 ```bash
-source "${ASCEND_HOME_PATH}/bin/setenv.bash"
+# 先重新导出 WORKSPACE_DIR、LLVM_BUILD_DIR 等 3.0 中的路径变量
+source "$WORKSPACE_DIR/.venv/bin/activate"
+export PYTHON_BIN="$(command -v python3)"
+export LD_LIBRARY_PATH="$LLVM_BUILD_DIR/lib:${LD_LIBRARY_PATH:-}"
+
+command -v ptoas
 ptoas --version
+```
+
+发布 wheel 自带运行时依赖，不使用外部 LLVM build tree 时无需设置上述
+`LD_LIBRARY_PATH`。无论哪种安装方式，都不需要手工拼接 `PYTHONPATH`。
+
+需要 CANN、Bisheng、simulator 或 NPU 时，再加载 CANN 对外提供的环境脚本。
+常见安装位置如下，按实际环境选择一个：
+
+```bash
+source /usr/local/Ascend/cann/set_env.sh
+# 或
+source /usr/local/Ascend/ascend-toolkit/latest/set_env.sh
+```
+
+如果没有使用虚拟环境，请确认 Python 用户命令目录在 `PATH` 中：
+
+```bash
+export PATH="$(python3 -m site --user-base)/bin:$PATH"
+hash -r
+command -v ptoas
 ```
 
 ---
@@ -252,11 +289,11 @@ with Context() as ctx, Location.unknown():
 ```bash
 # 建议先进入支持的 PTOAS / PTODSL 安装环境
 cd $PTO_SOURCE_DIR
-pip install -e . --no-build-isolation
+"$PYTHON_BIN" -m pip install -e . --no-build-isolation
 
 # 运行python binding 测试
 cd $PTO_SOURCE_DIR/test/samples/MatMul/
-python3 ./tmatmulk.py > ./tmatmulk.pto
+"$PYTHON_BIN" ./tmatmulk.py > ./tmatmulk.pto
 
 # 运行ptoas 测试
 ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
@@ -270,6 +307,9 @@ ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
 
 
 ```bash
+# 以下相对路径均以仓库根目录为起点
+cd "$PTO_SOURCE_DIR"
+
 # 1) 生成 npu_validation 测试目录（会在当前 sample 目录下创建 npu_validation/）
 # A2/A3 示例：
 python3 test/npu_validation/scripts/generate_testcase.py \
