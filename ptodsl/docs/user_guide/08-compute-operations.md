@@ -2015,6 +2015,62 @@ These ops rearrange data between vector registers without touching UB memory.
 They are useful for switching between interleaved layouts (`x0, y0, x1, y1,
 ...`) and split layouts (`x...`, `y...`) inside `@pto.simd`.
 
+#### `pto.vsqz(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Compact the active lanes of a vector register toward the
+front while preserving their relative order. Lanes are scanned from low to
+high; lanes for which `mask` is `true` are kept, and the kept elements are
+moved to the lowest result lanes in their original source order. The trailing
+lanes that are no longer occupied are zero-filled according to the underlying
+ISA specification. This is a register compaction: it reorganizes vector
+contents but does not itself perform any store.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Source vector register |
+| `mask` | `MaskType` | Lane predicate selecting the elements to compact |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Compacted vector; same `VRegType` as `vec` |
+
+**Constraints**:
+- The result `VRegType` is identical to the input `vec` `VRegType`; the result
+  type is inferred from `vec` and cannot be supplied separately.
+- The relative order of the active lanes is preserved.
+- Trailing lanes that are not filled by active elements are zero-filled per
+  the underlying ISA semantics.
+- Low-precision vregs are outside the general-purpose compute/rearrangement
+  surface; `vsqz` does not accept them.
+- `vsqz` is register compaction only — it does not execute a store. There is
+  no `mode` or `stored` parameter; the underlying PTOAS emitter determines
+  store hints (such as for `pto.vstur`) from surrounding user code, not from
+  `vsqz` arguments.
+
+**Example** — compact the active lanes of a row, then store the dense prefix to
+a UB base through the alignment-coupled store chain. `vsqz` only compacts the
+register; the dense store must be performed with `pto.vstur` (the required
+consumer that lets the VPTO LLVM emitter set `VSQZ #st=1`), followed by
+`pto.vstar` to flush the trailing bytes. Do **not** feed the compacted vector
+back to `pto.vsts(..., mask)` with the original mask — the original mask selects
+source lanes, not the compacted positions, so it would write the surviving
+elements to the wrong destinations.
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.vector_compute","symbol":"compute_ops_vector_probe","compile":{"BLOCK":128}} -->
+```python
+compacted = pto.vsqz(s_row, col_mask)
+store_base = pto.addptr(out_tile.as_ptr(), pto.const(0, dtype=pto.index))
+align0 = pto.init_align()
+align1 = pto.vstur(align0, compacted, store_base, pto.PostUpdate.ON)
+pto.vstar(align1, store_base)
+```
+
+---
+
 #### `pto.vintlv(lhs: VRegType, rhs: VRegType) -> tuple[VRegType, VRegType]`
 
 **Description**: Interleave two vectors lane-by-lane and return the result as a
@@ -2105,7 +2161,7 @@ even_lanes, odd_lanes = pto.vdintlv(packed_low, packed_high)
 | Compare/select | `vcmp`, `vcmps`, `vsel` |
 | Conversion | `vcvt`, `vpack`, `vbitcast`, `pbitcast` |
 | Index generation | `vci` |
-| Rearrangement | `vintlv`, `vdintlv` |
+| Rearrangement | `vsqz`, `vintlv`, `vdintlv` |
 
 ---
 

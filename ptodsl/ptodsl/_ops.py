@@ -2009,6 +2009,11 @@ def vnot(inp, mask):
     return _emit_unary_vec_op(_pto.VnotOp, inp, mask)
 
 
+def vsqz(inp, mask):
+    """``pto.vsqz`` - compact active lanes to the front while preserving order."""
+    return _emit_unary_vec_op(_pto.VsqzOp, inp, mask)
+
+
 def vexpdif(inp, ref, mask, part: str = "ODD"):
     """``pto.vexpdif`` – ``exp(inp - ref)`` selecting ODD or EVEN lanes."""
     _reject_low_precision_vreg_operands(inp, ref, context="pto.vexpdif(...)")
