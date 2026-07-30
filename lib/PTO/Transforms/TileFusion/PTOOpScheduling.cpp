@@ -338,9 +338,12 @@ struct FusionSpan {
 
 // Collect the physically contiguous spans of fusion metadata in `block`, in
 // block order. A span ends when an op lacks complete metadata, has a different
-// `group_id`, or the block ends. Incomplete metadata (one of group_id/order
-// present) is reported here to keep the error surface identical to
-// collectScheduledGroups / RegionGen.
+// `group_id`, or the block ends. The incomplete-metadata check here is
+// defensive validation for helper safety and consistent diagnostics; it is not
+// a normally reachable second validation path, since collectScheduledGroups
+// already rejects the same malformed input. `originalGroupId` is retained only
+// for physical-span boundary detection and degradation accounting; output IDs
+// are always newly allocated in normalizeBlockFusionMetadata.
 static LogicalResult
 collectPhysicalFusionSpans(Block &block,
                            SmallVectorImpl<FusionSpan> &spans) {
@@ -402,12 +405,12 @@ normalizeBlockFusionMetadata(Block &block, MLIRContext *context,
     op.removeAttr(kFusionOrderAttr);
   }
 
+  const IntegerType i64 = IntegerType::get(context, 64);
   for (FusionSpan &span : spans) {
     if (span.members.size() < 2)
       continue;
 
     const int64_t newGroupId = nextGroupId++;
-    const IntegerType i64 = IntegerType::get(context, 64);
     for (auto [order, op] : llvm::enumerate(span.members)) {
       op->setAttr(kFusionGroupIdAttr, IntegerAttr::get(i64, newGroupId));
       op->setAttr(kFusionOrderAttr,

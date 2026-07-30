@@ -297,9 +297,10 @@ def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
 def OpScheduling : Pass<"pto-op-scheduling", "func::FuncOp"> {
   let summary = "Compact planned fusion groups into block-local contiguous spans";
   let description = [{
-    Consumes fusion planning metadata emitted by FusionPlanPass and performs
-    block-local instruction scheduling to make each accepted fusion group a
-    contiguous span without redefining group membership.
+    Consumes fusion planning metadata emitted by FusionPlanPass, performs
+    block-local instruction scheduling, and normalizes the final physical runs
+    into contiguous groups. Fragmented groups degrade into independent spans;
+    singleton spans lose fusion metadata.
   }];
   let constructor = "mlir::pto::createOpSchedulingPass()";
   let dependentDialects = ["mlir::pto::PTODialect"];

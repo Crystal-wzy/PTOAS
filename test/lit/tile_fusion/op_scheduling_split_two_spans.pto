@@ -30,10 +30,9 @@ module {
     // Span [A, B] (group 0, order 0,1): A writes %tmp0, B reads %tmp0.
     pto.tadd ins(%full0, %full1 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>) {pto.fusion.group_id = 0 : i64, pto.fusion.order = 0 : i64}
     pto.tadd ins(%tmp0, %full2 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>) {pto.fusion.group_id = 0 : i64, pto.fusion.order = 1 : i64}
-    // X writes %bridge and is read by C: C cannot move before X, B cannot move
-    // after X (X reads no group member here, but B would have to cross X to
-    // join C, and the SSA producer chain B <- %tmp1, X <- %tmp1... here X is
-    // an independent unannotated producer of %bridge that C depends on).
+    // X reads B's %tmp1 and produces %bridge for C. B cannot move after X
+    // because X consumes B's output, and C cannot move before X because X
+    // defines C's input, so [A, B] and [C, D] cannot be compacted together.
     pto.tadd ins(%tmp1, %full3 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%bridge : !pto.tile_buf<vec, 32x32xf32>)
     // Span [C, D] (group 0, order 2,3): C reads %bridge, writes %tmp2; D reads %tmp2.
     pto.tadd ins(%bridge, %full4 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp2 : !pto.tile_buf<vec, 32x32xf32>) {pto.fusion.group_id = 0 : i64, pto.fusion.order = 2 : i64}
@@ -54,4 +53,3 @@ module {
 // TWO-SAME: {pto.fusion.group_id = 1 : i64, pto.fusion.order = 0 : i64}
 // TWO-NEXT: pto.tadd ins(%{{[0-9]+}}, %arg0
 // TWO-SAME: {pto.fusion.group_id = 1 : i64, pto.fusion.order = 1 : i64}
-// TWO-NOT: expected one contiguous span per pto.fusion.group_id within a basic block
