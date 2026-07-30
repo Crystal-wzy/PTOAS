@@ -46,6 +46,8 @@ def PTO_ScalingPtrType : Type<
   "scaling pointer type">;
 def PTO_BufferLikeType : AnyTypeOf<[AnyMemRef, PTO_BufferType],
                                     "memref or pointer-like buffer type">;
+def VPTO_PtrOrMemRef :
+  AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
 def PTO_AccStorePayloadType : AnyTypeOf<[AnySignlessInteger, AnyFloat, PTO_ScalingPtrType],
                                         "signless integer, float scalar, or scaling pointer">;
 def PTO_AccStoreClipPayloadType : AnyTypeOf<[AnyInteger, AnyFloat],
@@ -262,15 +264,18 @@ def TensorViewAddrOp : PTO_Op<"tensor_view_addr", [Pure]> {
   let summary = "Extract address from a tensor view.";
   let description = [{
     Returns the address view carried by a `tensor_view` or
-    `partition_tensor_view` value as a typed PTO pointer.
+    `partition_tensor_view` value. The result may be either a memref view or a
+    typed PTO pointer, depending on the requested destination type.
 
     In authoring-form IR this op preserves the descriptor-style surface;
     tile-native inputs remain unchanged through memory planning and sync.
+    This op may also accept a memref operand after earlier view lowering, in
+    which case it behaves as an identity marker and is removed by lowering.
   }];
 
-  let arguments = (ins AnyTypeOf<[TensorViewType, PartitionTensorViewType],
-                                "TensorViewLike">:$src);
-  let results = (outs PtrType:$dst);
+  let arguments = (ins AnyTypeOf<[TensorViewType, PartitionTensorViewType, AnyMemRef],
+                                "TensorViewLike or MemRef">:$src);
+  let results = (outs VPTO_PtrOrMemRef:$dst);
 
   let hasVerifier = 1;
 
@@ -283,15 +288,18 @@ def TileBufAddrOp : PTO_Op<"tile_buf_addr", [Pure]> {
   let summary = "Extract address from a tile_buf.";
   let description = [{
     Returns the address view of the data region of a `tile_buf` value.
-    The result is a typed PTO pointer.
+    The result may be either a memref view or a typed PTO pointer, depending
+    on the requested destination type. Memref results use the tile's static
+    shape and address space.
 
     This op is emitted by TileLang DSL templates and resolved by the
-    FoldTileBufIntrinsics pass after inlining. Tile-native uses remain in PTO
-    IR through memory planning and sync.
+    FoldTileBufIntrinsics pass after inlining. Hand-written `.pto` may also
+    use it directly on lowered memref/tile handles.
   }];
 
-  let arguments = (ins TileBufType:$src);
-  let results = (outs PtrType:$dst);
+  let arguments = (ins AnyTypeOf<[TileBufType, AnyMemRef],
+                                 "tile_buf or tile-bound memref">:$src);
+  let results = (outs VPTO_PtrOrMemRef:$dst);
 
   let hasVerifier = 1;
 
