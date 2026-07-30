@@ -28,7 +28,9 @@ def build():
             i32 = IntegerType.get_signless(32, ctx)
             idx = IndexType.get(ctx)
             ptr_i32 = pto.PtrType.get(i32, ctx)
-            workspace_elems = 48 * 8
+            # PTO-ISA uses element 0 as the shared counter but reserves one
+            # exclusive 64-byte cache line: 16 x i32.
+            workspace_elems = 16
             tv_i32 = pto.TensorViewType.get([workspace_elems], i32, ctx)
             pv_i32 = pto.PartitionTensorViewType.get([workspace_elems], i32, ctx)
 
@@ -42,11 +44,11 @@ def build():
                 gm_workspace_ptr, used_cores = entry.arguments
                 c0 = arith.ConstantOp(idx, 0).result
                 c1 = arith.ConstantOp(idx, 1).result
-                c384 = arith.ConstantOp(idx, workspace_elems).result
+                c16 = arith.ConstantOp(idx, workspace_elems).result
 
-                gm_view = pto.MakeTensorViewOp(tv_i32, gm_workspace_ptr, [c384], [c1]).result
+                gm_view = pto.MakeTensorViewOp(tv_i32, gm_workspace_ptr, [c16], [c1]).result
                 gm_workspace = pto.PartitionViewOp(
-                    pv_i32, gm_view, offsets=[c0], sizes=[c384]
+                    pv_i32, gm_view, offsets=[c0], sizes=[c16]
                 ).result
                 pto.syncall(
                     _mode("soft"),

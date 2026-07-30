@@ -16882,47 +16882,40 @@ static LogicalResult verifySyncAllGmWorkspace(Operation *op, Value workspace,
     if (!memTy.hasRank())
       return op->emitOpError() << "expects " << name << " to be ranked";
     if (!isGmAddressSpaceAttr(memTy.getMemorySpace()))
-      return op->emitOpError() << "expects " << name
-                               << " to be in GM address space";
+      return op->emitOpError()
+             << "expects " << name << " to be in GM address space";
   }
 
   auto elemTy = dyn_cast<IntegerType>(getElemTy(ty));
   if (!elemTy || elemTy.getWidth() != 32)
-    return op->emitOpError() << "expects " << name
-                             << " element type to be i32";
+    return op->emitOpError() << "expects " << name << " element type to be i32";
 
   SmallVector<int64_t, 4> shape = getShapeVec(ty);
   if (shape.empty())
     return op->emitOpError() << "expects " << name << " to have rank >= 1";
   for (int64_t dim : shape) {
     if (dim != ShapedType::kDynamic && dim <= 0)
-      return op->emitOpError() << "expects " << name
-                               << " shape to be positive";
+      return op->emitOpError() << "expects " << name << " shape to be positive";
   }
 
   constexpr int64_t kMinWorkspaceElements = 16;
-  bool hasDynamicDim = false;
-  int64_t staticCapacity = 1;
-  for (int64_t dim : shape) {
-    if (dim == ShapedType::kDynamic) {
-      hasDynamicDim = true;
-      continue;
+  if (!llvm::is_contained(shape, ShapedType::kDynamic)) {
+    int64_t staticCapacity = 1;
+    for (int64_t dim : shape) {
+      int64_t product = 0;
+      if (llvm::MulOverflow(staticCapacity, dim, product)) {
+        staticCapacity = std::numeric_limits<int64_t>::max();
+        break;
+      }
+      staticCapacity = product;
     }
-    if (staticCapacity >= kMinWorkspaceElements)
-      continue;
-    int64_t requiredFactor =
-        (kMinWorkspaceElements + staticCapacity - 1) / staticCapacity;
-    if (dim >= requiredFactor)
-      staticCapacity = kMinWorkspaceElements;
-    else
-      staticCapacity *= dim;
+    if (staticCapacity < kMinWorkspaceElements)
+      return op->emitOpError()
+             << "expects " << name << " to contain at least "
+             << kMinWorkspaceElements
+             << " i32 elements (64 bytes), but static capacity is "
+             << staticCapacity;
   }
-  if (!hasDynamicDim && staticCapacity < kMinWorkspaceElements)
-    return op->emitOpError()
-           << "expects " << name << " to contain at least "
-           << kMinWorkspaceElements
-           << " i32 elements (64 bytes), but static capacity is "
-           << staticCapacity;
 
   return success();
 }
@@ -16943,12 +16936,6 @@ LogicalResult SyncAllOp::verify() {
   if (failed(verifySyncAllGmWorkspace(getOperation(), getGmWorkspace(),
                                       "gm_workspace")))
     return failure();
-
-  if (auto used = getUsedCores()) {
-    auto intTy = dyn_cast<IntegerType>(used.getType());
-    if (!intTy || intTy.getWidth() != 32)
-      return emitOpError("expects used_cores to be i32");
-  }
 
   return success();
 }

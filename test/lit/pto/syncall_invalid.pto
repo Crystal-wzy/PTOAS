@@ -13,6 +13,7 @@
 // RUN: not ptoas %t/wrong_element_type.pto 2>&1 | FileCheck %s --check-prefix=ELEM
 // RUN: not ptoas %t/wrong_address_space.pto 2>&1 | FileCheck %s --check-prefix=SPACE
 // RUN: not ptoas %t/wrong_used_cores_type.pto 2>&1 | FileCheck %s --check-prefix=USED
+// RUN: not ptoas %t/hard_with_operand.pto 2>&1 | FileCheck %s --check-prefix=HARD-OPERAND
 
 // MISSING-GM: error: custom op 'pto.syncall' expects soft syncall to have gm_workspace and optional used_cores
 // LEGACY: error: custom op 'pto.syncall' expects soft syncall to have gm_workspace and optional used_cores
@@ -20,6 +21,7 @@
 // ELEM: error: 'pto.syncall' op expects gm_workspace element type to be i32
 // SPACE: error: 'pto.syncall' op expects gm_workspace to be in GM address space
 // USED: error: 'pto.syncall' op operand #1 must be 32-bit signless integer
+// HARD-OPERAND: error: 'pto.syncall' op expects hard syncall to have no gm_workspace or used_cores
 
 //--- missing_gm.pto
 module {
@@ -68,6 +70,18 @@ module {
   func.func @wrong_used_cores_type(
       %gm: memref<16xi32, #pto.address_space<gm>>, %used: index) {
     pto.syncall(%gm, %used : memref<16xi32, #pto.address_space<gm>>, index) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
+    return
+  }
+}
+
+//--- hard_with_operand.pto
+module {
+  func.func @hard_with_operand(%gm: memref<16xi32, #pto.address_space<gm>>) {
+    "pto.syncall"(%gm) <{
+      core_type = #pto.sync_core_type<aiv_only>,
+      mode = #pto.sync_all_mode<hard>,
+      operandSegmentSizes = array<i32: 1, 0>
+    }> : (memref<16xi32, #pto.address_space<gm>>) -> ()
     return
   }
 }

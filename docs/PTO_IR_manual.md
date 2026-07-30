@@ -8929,6 +8929,8 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
 **Constraints & Verification:**
 
 - Hard mode requires no workspace operands and no `used_cores`.
+- `core_type` remains required in Hard mode because lowering selects
+  `SYNCALL<SyncCoreType::...>()` from it.
 - Soft mode always requires `gm_workspace`.
 - Soft `aiv_only`, `aic_only`, and `mix` use the same operand ABI.
 - `gm_workspace` must be a ranked GM memref, `!pto.tensor_view`, or
@@ -8958,6 +8960,11 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
   core_type = #pto.sync_core_type<mix>
 } : () -> ()
 ```
+
+**Compatibility:** This is a breaking operand-schema change. Existing
+three/four-operand `.pto` files and `.ptobc` files carrying the former
+four-entry `operandSegmentSizes` must be regenerated. PTOAS and IR producers
+such as PyPTO should be upgraded together.
 
 ---
 

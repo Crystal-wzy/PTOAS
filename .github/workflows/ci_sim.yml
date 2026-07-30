@@ -118,7 +118,10 @@ jobs:
       PYPTO_REF: ef6ce7cd8bd33b4c93b58dc34830a20b145736ac
       PYPTO_WORKSPACE: ${{ github.workspace }}/.work/pypto-ci
       PYPTO_RUN_WORKSPACE: ${{ github.workspace }}/.work/pypto-run-ci
-      PTO_ISA_COMMIT: 016396b57e2c17093f1194e6acd89bb112b0ab24
+      # GitHub pin containing the two-argument Soft SYNCALL ABI. The GitCode
+      # mirror carries the equivalent change as d56d42db6a3c14eb195de85392a69b68b862a87c
+      # and includes it in the separate ce3262e3 pin used by remote validation.
+      PTO_ISA_COMMIT: f24f7b736b689cc107b9eb2d362be6a7718fcc99
       PTO_ISA_ROOT: ${{ github.workspace }}/.work/pto-isa-ci
     steps:
       - name: Checkout

@@ -42,7 +42,8 @@ def PTODpsType :
 
 def PTOSyncAllGmWorkspaceType :
   AnyTypeOf<[AnyMemRef, TensorViewType, PartitionTensorViewType],
-            "GM memref, tensor_view, or partition_tensor_view">;
+            "memref, tensor_view, or partition_tensor_view; GM address space "
+            "is verified separately">;
 
 def PTOPipeEntryType :
   AnyTypeOf<[AnyRankedTensor, AnyMemRef, TensorViewType, TileBufType],

@@ -413,7 +413,29 @@ CHECK: SYNCALL<SyncAllMode::Soft, SyncCoreType::Mix>(
 
 ### 9.3 PTO-ISA 编译验证
 
-使用 PTO-ISA f24 或明确的后继版本：
+仓库的 PTO-ISA pin 分属 GitHub 和 GitCode 两套同步历史，不能只用提交 SHA
+祖先关系判断接口是否存在：
+
+| 使用位置 | Pin | 与新 ABI 的关系 |
+| --- | --- | --- |
+| `.github/workflows/ci_sim.yml` | `f24f7b736b689cc107b9eb2d362be6a7718fcc99` | GitHub 新 ABI 基准 |
+| `ci.yml`、Docker、remote NPU validation | `ce3262e3825a235f951917eeada30e52910b6a84` | GitCode pin，包含等价提交 `d56d42db6a3c14eb195de85392a69b68b862a87c` |
+
+直接执行
+`git merge-base --is-ancestor f24f7b7 ce3262e3` 会返回非零，因为两套镜像历史的
+提交 SHA 不同。核验结果如下：
+
+- `git merge-base --is-ancestor d56d42db6a3c14eb195de85392a69b68b862a87c
+  ce3262e3825a235f951917eeada30e52910b6a84` 返回成功；
+- f24 与 ce3262e3 中的 `include/pto/common/syncall_soft.hpp`、
+  `include/pto/npu/a5/SyncAll.hpp` 和 `include/pto/npu/a2a3/SyncAll.hpp`
+  blob SHA 完全一致；
+- 新的两参数 C++ 对 ce3262e3 编译通过；
+- 原 `ci_sim.yml` 使用的 `016396b5` 早于 f24，编译新调用会报
+  `no matching function for call to 'SYNCALL'`，因此本 PR 将 GitHub
+  `ci_sim` pin 更新为 f24，但保留已经包含等价实现的 GitCode ce3262e3 pin。
+
+定向验证使用 PTO-ISA f24：
 
 ```bash
 git -C "${PTO_ISA_ROOT}" checkout \
@@ -424,10 +446,12 @@ ptoas --pto-arch=a5 test/lit/pto/syncall_emitc.pto \
 ```
 
 使用仓库现有的 A5/bisheng 参数和 `${PTO_ISA_ROOT}/include` 编译生成的 kernel
-C++。验证必须覆盖 AIV-only、AIC-only 和 Mix 模板实例。
+C++。验证必须覆盖 AIV-only、AIC-only 和 Mix 模板实例，并显式使用
+`-U__PTO_AUTO__`，避免 auto 模式把 Soft 实现体裁掉后产生假通过。
 
-PR 中应记录准确的 PTO-ISA SHA 和编译命令。推荐做定向 compile-only 验证，
-不要为了本 Issue 修改无关 NPU 测试的全局 PTO-ISA pin。
+f24 已将 AIC-only Soft 实现移到公共 `syncall_soft.hpp`，删除旧 A5
+`static_assert`，并新增 A5 `syncall_aic_soft_kernel.cpp` ST。因此 PTOAS 应继续
+接受 Soft AIC-only，不增加架构门禁。
 
 ## 10. 计划修改的文件
 
@@ -436,11 +460,13 @@ PR 中应记录准确的 PTO-ISA SHA 和编译命令。推荐做定向 compile-o
 | ODS | `include/PTO/IR/PTOOps.td` | 删除 UB/L1 operand 并更新说明 |
 | Parser/Printer/Verifier | `lib/PTO/IR/PTO.cpp` | 实现新数量规则和容量校验 |
 | EmitC | `lib/PTO/Transforms/PTOToEmitC.cpp` | 只生成 GM + used cores，删除旧 helper |
+| CI | `.github/workflows/ci_sim.yml` | GitHub PTO-ISA pin 更新到 f24 |
 | 正向测试 | `test/lit/pto/syncall_emitc.pto` | 覆盖所有核模式及精确调用形式 |
 | 负向测试 | `test/lit/pto/syncall_invalid_*.pto` | 覆盖缺失、非法和容量不足的 GM |
 | Python 示例 | `test/samples/SyncAll/syncall_binding.py` | 使用新生成的 Binding |
 | PTO 示例 | `test/samples/SyncAll/syncall_binding.pto` | 使用规范新 IR |
 | 文档 | `docs/PTO_IR_manual.md` | 说明新 ABI 和运行时责任 |
+| 迁移说明 | `ReleaseNotes.md` | 记录 `.pto` / `.ptobc` 破坏性变更 |
 
 预计不需要修改 CLI 或 pass pipeline。
 
@@ -466,6 +492,9 @@ PR 中应记录准确的 PTO-ISA SHA 和编译命令。推荐做定向 compile-o
    `int32_t{0}`，不生成中间局部变量。
 3. PTO-ISA 编译验证使用 Issue 指定的准确提交
    `f24f7b736b689cc107b9eb2d362be6a7718fcc99`。
+4. Python 示例使用 PTO-ISA 定义的最小 workspace：
+   `SYNCALL_SOFT_WORKSPACE_INT32 = 16`，不再保留旧 per-core slot 的
+   `48 * 8` 容量。
 
 已完成的验证：
 
@@ -476,6 +505,19 @@ PR 中应记录准确的 PTO-ISA SHA 和编译命令。推荐做定向 compile-o
 - `test/samples/runop.sh -t SyncAll` 通过，生成的 IR 和 C++ 不再包含只供
   Soft `SYNCALL` 使用的 UB/L1 Tile 或 `TASSIGN`。
 - AIV-only、AIC-only、Mix 和省略 `used_cores` 的生成 C++ 已使用 PTO-ISA
-  f24 头文件完成语法编译。由于 f24 的 macOS CPU-Sim 头文件本身存在重复 ACL
-  stub 定义，验证仅对这些无关的 CPU-Sim stub 使用本地编译兼容处理；
-  `SYNCALL` 的公共声明和实现保持 f24 原样。
+  f24 头文件并显式 `-U__PTO_AUTO__` 完成语法编译。由于 f24 的 macOS
+  CPU-Sim 头文件本身存在重复 ACL stub 定义，验证仅对这些无关的 CPU-Sim
+  stub 使用本地编译兼容处理；`SYNCALL` 的公共声明和实现保持 f24 原样。
+- 同一份生成 C++ 对 GitCode pin ce3262e3 编译通过，对旧 GitHub pin
+  016396b5 按预期因缺少两参数重载而失败。
+
+## 13. 迁移说明
+
+这是破坏性的 operand schema 变更，不提供旧 ABI 兼容窗口：
+
+- 旧 `.pto` 中三/四 operand 的 Soft `pto.syncall` 必须改写为 GM 加可选核数；
+- 旧 `.ptobc` 使用通用 op 编码保存四段 `operandSegmentSizes`，在新 ODS 下不再
+  合法，必须由更新后的生产者重新生成；
+- PTOAS、PyPTO 及其他直接构造 `SyncAllOp` 的生产者应 lockstep 升级；
+- 已落盘的 PTO IR / Bytecode 不做就地迁移，调用方应从源 DSL 或新 PTO IR
+  重新导出。
