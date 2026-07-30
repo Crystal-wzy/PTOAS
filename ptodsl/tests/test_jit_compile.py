@@ -22,7 +22,7 @@ from ptodsl import pto, scalar
 from ptodsl import _types as pto_types
 import ptodsl._vmi_namespace as vmi_namespace
 from ptodsl._ast_rewrite import PTODSLAstRewriteError
-from ptodsl._bootstrap import make_context
+from ptodsl._context import make_context
 from ptodsl._kernel_signature import DeviceParameterSpec, HelperMarkerParameterSpec, RuntimeScalarParameterSpec
 from ptodsl._tracing.runtime import SignatureTracingRuntime
 from ptodsl._runtime import native_build as native_build_runtime
@@ -30,7 +30,7 @@ from ptodsl._runtime.cache import NativeBuildArtifacts, artifact_paths
 from ptodsl._runtime.codegen import generate_launch_cpp
 from ptodsl._runtime.launch import _marshal_launch_args
 from ptodsl._tracing import current_session
-from mlir.ir import InsertionPoint, Location, Module
+from ptoas.mlir.ir import InsertionPoint, Location, Module
 
 
 def expect(condition: bool, message: str) -> None:

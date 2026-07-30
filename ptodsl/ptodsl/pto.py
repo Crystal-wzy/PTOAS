@@ -17,7 +17,7 @@ or as the sub-namespace ``pto`` from the ptodsl package::
     from ptodsl import pto
 
 All user-facing symbols live here.  Low-level MLIR bindings are accessed
-internally as ``_pto`` (``from mlir.dialects import pto as _pto``).
+internally as ``_pto`` (``from ptoas.mlir.dialects import pto as _pto``).
 """
 
 from ._diagnostics import unsupported_public_surface_error

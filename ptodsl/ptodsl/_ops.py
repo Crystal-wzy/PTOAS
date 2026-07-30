@@ -24,7 +24,6 @@ Design rules:
 
 from functools import wraps
 
-from ._bootstrap import make_context  # noqa: F401 – ensure MLIR on sys.path
 from ._diagnostics import (
     explicit_mode_required_with_context_error,
     make_tensor_view_invalid_layout_error,
@@ -73,8 +72,8 @@ from ._types import (
     vreg_type,
 )
 
-from mlir.dialects import arith, pto as _pto
-from mlir.ir import (
+from ptoas.mlir.dialects import arith, pto as _pto
+from ptoas.mlir.ir import (
     Attribute,
     BF16Type,
     F16Type,
@@ -236,7 +235,7 @@ def const(value: int, *, dtype=None):
     """
     Emit an ``arith.constant``.
 
-    ``dtype`` is a ``_DType`` descriptor or a concrete ``mlir.ir.Type``.
+    ``dtype`` is a ``_DType`` descriptor or a concrete ``ptoas.mlir.ir.Type``.
     Defaults to ``index`` when omitted.
     """
     from ._types import index as _idx_dtype
