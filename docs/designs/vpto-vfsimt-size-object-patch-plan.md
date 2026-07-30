@@ -85,10 +85,14 @@ BiSheng 中的错误传播过程如下：
 
 ### 2.3 正确值来源
 
-`VF_SIMT` code size 应与最终 device object 中目标 `simt_entry` 的 symbol
-大小一致。PTOAS 不从 PTO IR、LLVM IR 或汇编文本估算该值，而是在 BiSheng
-完成代码生成后读取 ELF symbol table 中的 `st_size`，再按目标 ABI 规定的
-单位换算。
+PTOAS 不从 PTO IR、LLVM IR 或汇编文本估算 code size。修复 `0xffff` 时，
+PTOAS 在 BiSheng 完成代码生成后读取目标 `simt_entry` 的 ELF `st_size`，再按
+目标 ABI 规定的单位换算，作为覆盖整个 symbol 的安全替代值。
+
+BiSheng 正常生成的有限 code size 不要求与 `st_size` 换算结果严格相等。
+`st_size` 可能包含不属于 `VF_SIMT` 取指范围的函数结束或对齐指令，因此正常
+编码可以小于 symbol size。patcher 对这类值只检查其非零且不超过 symbol
+边界，并保持原值不变。
 
 `st_size` 必须满足以下条件：
 
@@ -105,7 +109,7 @@ BiSheng 中的错误传播过程如下：
 d5120 scalar caller 包含两个 SIMT callsite，原始 object 中的 code size 都是
 `0xffff`。未 strip object 的 symbol 大小和正确值如下：
 
-| SIMT function | ELF `st_size` | 正确 code size | 原始值 |
+| SIMT function | ELF `st_size` | 修补 code size | 原始值 |
 | --- | ---: | ---: | ---: |
 | `rmsnorm_d5120_kernel_simt_0_simt_entry` | 232 bytes | 58 | 65535 (`0xffff`) |
 | `rmsnorm_d5120_kernel_simt_1_simt_entry` | 2320 bytes | 580 | 65535 (`0xffff`) |
@@ -237,7 +241,8 @@ PTO keep/resume
 patcher 的处理范围如下：
 
 - 仅处理 VPTO vector relocatable device object；
-- 仅处理与 LLVM direct call manifest 唯一对应的 `VF_SIMT` callsite；
+- 仅处理 target 能与 LLVM direct call manifest 中 caller/callee 关系对应的
+  `VF_SIMT` callsite；
 - 仅把已确认的异常值 `0xffff` 改为由 symbol size 换算的正确值；
 - 正确字段保持不变；
 - 不修改 EmitC、cube object、ASC frontend 产物、SIMT body、PB 参数或同步逻辑；
@@ -352,11 +357,13 @@ PTOAS 使用当前 CANN 随 BiSheng 提供的匹配版本 target decoder。decod
 对每个 manifest caller，patcher 只解码该 caller 的 ELF symbol 范围，并完成
 三项检查：
 
-1. LLVM manifest 中存在唯一的 caller -> callee direct call；
-2. callsite 重建出的 target 等于 callee 的 ELF `st_value`；
-3. caller 中识别出的 `VF_SIMT` 数量与 manifest callsite 数量一致。
+1. LLVM manifest 中存在 caller -> callee direct call 关系；
+2. 每个 callsite 重建出的 target 等于 manifest 中某个 callee 的 ELF
+   `st_value`；
+3. manifest 中每个 callee 至少对应一个最终机器 callsite。
 
-同一个 callee 可以有多个 callsite，但每个 callsite 都要独立校验。若新
+机器优化可能展开或复制 LLVM callsite，因此最终 `VF_SIMT` 数量可以多于 LLVM
+direct call 数量。同一个 callee 的每个机器 callsite 都要独立校验。若新
 BiSheng 生成了尚未支持的等价目标地址形式，patcher 明确失败，不能退化为按
 callsite 顺序猜测 callee。
 
@@ -368,17 +375,21 @@ raw object 可能已解析局部 SIMT label，因此不能要求相关 relocatio
 目标相关 helper 负责读取和写入 `VF_SIMT` code size。通用流程只处理
 caller/callee 映射、ELF symbol 和一致性检查，不包含指令编码细节。
 
-每个 callsite 只允许两种状态：
+每个 callsite 按以下规则处理：
 
 ```text
-旧值 == 由 symbol size 换算的正确值
-  -> 已正确编码，记录 no-op
+0 < 旧值 < 0xffff && 旧值 <= symbol size 换算结果
+  -> BiSheng 已正常编码，保持原值
 
 旧值 == 0xffff && callee contains inline asm
   -> 生成补丁记录
+
+旧值 == 0 或旧值 > symbol size 换算结果
+  -> 报错
 ```
 
-其他旧值一律报错，不能假设它仍属于同一个 BiSheng 问题。
+`0xffff` 但 callee 不含 inline asm 时同样报错，不能假设它属于本方案处理的
+BiSheng 问题。
 
 补丁只能改变 code size 字段，不能改变指令的其他语义字段、section 大小、
 symbol、relocation、alignment 或 ELF header。
@@ -401,7 +412,8 @@ patcher 先完成计划，再生成输出。
 
 1. 将完整内存副本写入新的 patched object；
 2. 重新打开 object，检查 ELF section 和 symbol table；
-3. 重新读取每个 callsite，确认 code size 与 callee symbol size 一致；
+3. 重新读取每个 callsite，确认修补值等于 symbol size 换算结果，未修补的有限
+   值保持不变且未越过 callee symbol；
 4. 比较 raw/patched，确认所有变化都位于已登记的 code size 字段；
 5. 校验通过后，将 patched object 交给 device merge。
 
@@ -503,7 +515,8 @@ tools/ptoas/CMakeLists.txt
 - 缺失 `.symtab`、`st_size == 0` 或 size 对齐非法时失败；
 - code size 超出目标字段范围时失败；
 - manifest caller/callee 不唯一时失败；
-- manifest 与 decoder 的 callsite 数量不一致时失败；
+- 机器优化将一个 LLVM callsite 展开为多个同 target callsite 时通过；
+- manifest callee 没有对应机器 callsite 时失败；
 - call target 与 ELF callee 地址不一致时失败；
 - relocation 覆盖目标字段时失败；
 - 补丁范围重叠时失败；
@@ -514,10 +527,10 @@ tools/ptoas/CMakeLists.txt
 至少覆盖：
 
 1. 不含 SIMT call：no-op；
-2. SIMT call 不含 inline asm，原始 size 正确：no-op；
+2. SIMT call 不含 inline asm，原始有限 size 不超过 symbol 边界：no-op；
 3. fixed TPER keep/resume 产生 `0xffff`：修补为由 symbol size 换算的正确值；
 4. 同一 caller 调用两个不同 SIMT callee；
-5. 同一个 callee 存在多个 callsite；
+5. 同一个 LLVM callsite 被机器优化展开为多个同 callee callsite；
 6. module 包含多个 scalar kernel；
 7. cube/vector 混合 module：只修改 vector object；
 8. `off` 保留原始异常字段；
@@ -582,8 +595,8 @@ patcher 不把所有最大值或 sentinel 都视为错误。只有同时满足�
 2. BiSheng 会拒绝负数、未知值和超出字段范围的 code size；
 3. `verify` 模式在完整 VPTO SIMT 测试集上均为 no-op；
 4. d4096 -> d5120 -> d7168 真机连续运行通过；
-5. raw vector object 中所有 `VF_SIMT` code size 都与对应 `simt_entry`
-   symbol size 一致；
+5. raw vector object 中不再出现本问题产生的 `0xffff`，正常有限 code size
+   非零且不超过对应 `simt_entry` symbol size；
 6. TileLang/PTOAS 完成新 CANN 工具链切换，旧 BiSheng 退出支持范围。
 
 删除 patcher 后保留编译期或 CI 校验，防止 `VF_SIMT` 声明范围再次明显大于

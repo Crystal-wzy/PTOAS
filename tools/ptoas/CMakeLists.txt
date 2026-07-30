@@ -19,6 +19,17 @@ set(PTOAS_RUNTIME_SOURCES
   TilelangDaemon.cpp
 )
 
+add_library(PTOASVFSIMTSizePatcher STATIC
+  VFSIMTSizePatcher.cpp
+)
+llvm_update_compile_flags(PTOASVFSIMTSizePatcher)
+target_link_libraries(PTOASVFSIMTSizePatcher PUBLIC
+  LLVMCore
+  LLVMObject
+  LLVMSupport
+  MLIRSupport
+)
+
 set(PTOAS_WRAPPER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/ptoas_wrapper.py")
 set(PTOAS_WRAPPER_BINARY "${CMAKE_CURRENT_BINARY_DIR}/ptoas")
 set(PTOAS_INSTALL_WRAPPER_BINARY "${CMAKE_CURRENT_BINARY_DIR}/ptoas-install")
@@ -73,6 +84,7 @@ endfunction()
 set(PTOAS_RUNTIME_LINK_LIBS
   PTOIR
   PTOTransforms
+  PTOASVFSIMTSizePatcher
   ptobc_lib
   MLIRMlirOptMain
   MLIRBufferizationTransforms

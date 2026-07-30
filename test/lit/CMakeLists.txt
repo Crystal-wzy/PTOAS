@@ -28,6 +28,8 @@ set(PTOIR_TEST_DEPENDS
   FileCheck count not
   ptoas_runtime_deps
   pto-test-opt
+  pto-vfsimt-size-patcher-test
+  yaml2obj
 )
 
 add_lit_testsuite(check-pto "Running the pto regression tests"

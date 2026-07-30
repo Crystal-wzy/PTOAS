@@ -76,6 +76,8 @@ tool_dirs = [config.ptoir_tools_dir, config.ptoir_test_tools_dir,
 tools = [
     'ptoas',
     'pto-test-opt',
+    'pto-vfsimt-size-patcher-test',
+    'yaml2obj',
 ]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)

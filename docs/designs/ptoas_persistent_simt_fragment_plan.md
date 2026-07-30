@@ -582,23 +582,55 @@ lit 测试覆盖：
 
 端到端性能使用 TileLang RMSNorm PTO 后端生成代码作为优化前基线，persistent fragment 版本只把每个 token 重复执行的 W UB→寄存器读取提取到独立 init SIMT section，并通过 keep/resume 在后续 token SIMT section 间保持权重。
 
+本节同时保留 PTO 后端修改前后的两组结果。两组 RMSNorm kernel 的算法、shape
+和有效带宽计算方式相同，生成代码的差异在于 UB→GM 写回使用的 L2 cache mode：
+
+| 数据组 | PTO `mte_ub_gm` codegen | UB→GM cache mode | GM→UB cache mode |
+|:---|:---|:---|:---|
+| 此前 cache mode | 未显式传递 `l2_cache`，使用 PTODSL 默认值 | `nmfv`（`NORMAL_FV`，raw value 0） | 不变 |
+| 当前 cache mode | 传递 TileLang `l2_cache_ctrl` 默认值 4 | `naci`（`NOTALLOC_CI`，raw value 4） | 不变 |
+
+因此，跨表差值反映 UB→GM cache mode 对端到端性能的影响；persistent fragment
+自身的收益应在同一张表内，以对应 cache mode 下的 PTO backend 基线计算。
+
 测试口径如下：
 
 - 数据类型为 FP32，`batch=4096`，grid 为 64；
-- 在同一张 Ascend NPU、同一套 CANN/PTOAS 构建上测试；
-- 使用 TileLang `do_bench` 的 `msprof` backend，warmup 30 次、repeat 20 次，并在采样间执行 L2 cache flush；
+- 每组基线与两种优化版本均在同一张 Ascend NPU、同一套 CANN/PTOAS 构建上测试；
+- 使用 TileLang `do_bench` 的 `msprof` backend，每次测量 warmup 30 次、repeat 20 次，并在采样间执行 L2 cache flush；
 - 有效带宽按算法逻辑访存量 `2 * batch * d * sizeof(fp32) + d * sizeof(fp32) + batch * sizeof(fp32)` 计算，分别对应 X 读取、Y 写出、W 读取和 RSTD 写出；
 - 正确性阈值为 `max_y_diff < 1e-3` 且 `max_rstd_diff < 1e-3`。
 
 基线使用 `tilelang-ds/examples/ascend/example_rmsnorm.py` 的
-`run_regression_perf`，通过 `tilelang.compile(..., target="pto")` 生成未做
-persistent fragment 物化的 kernel。三个 hidden size 分别在独立进程中执行，避免
-前一个 shape 的编译缓存或设备状态影响后续结果。测试使用本地
-`/home/qukelin/projects/PTOAS/build/tools/ptoas/ptoas`（`ptoas 0.51`）和 CANN
-9.1；每个 shape 均完成 kernel 编译、warmup 和 `msprof` 采样。
+`rms_norm_fwd`，通过 `tilelang.compile(..., target="pto")` 生成未做 persistent
+fragment 物化的 kernel；优化版本分别使用
+`example_rmsnorm_persistent_simtvf.py` 中的 UB → fragment 和 GM → fragment
+实现。不同实现与 hidden size 的组合使用独立 TileLang cache，避免复用其他
+组合的编译产物。当前 cache mode 的测试使用 TileLang
+`92dcb62a`、本地 `/home/qukelin/projects/PTOAS/build/tools/ptoas/ptoas`
+（`ptoas 0.55`）和 CANN 9.1；每个 shape 均完成 kernel 编译、warmup 和
+`msprof` 采样。
 
-下表统一列出未驻留基线和两种 persistent fragment 初始化路径。单元格格式为
-“延迟 / 有效带宽”。
+#### 当前 cache mode：`naci`
+
+当前 cache mode 下，每个实现与 shape 的组合启动 5 个独立 Python 进程完成 5 次
+测量；同一组合复用已编译 kernel cache。表中延迟为 5 次结果的算术平均值，有效
+带宽按平均延迟重新计算。单元格格式为“延迟 / 有效带宽”。
+
+| Shape | resident slots | PTO backend 基线 | UB → fragment | GM → fragment |
+|---:|---:|---:|---:|---:|
+| `d=4096` | 32 | 120.059 us / 1118.2 GB/s | 115.022 us / 1167.2 GB/s | 117.207 us / 1145.4 GB/s |
+| `d=5120` | 20 | 137.213 us / 1223.0 GB/s | 132.188 us / 1269.5 GB/s | 134.469 us / 1247.9 GB/s |
+| `d=7168` | 28 | 187.979 us / 1249.7 GB/s | 179.402 us / 1309.5 GB/s | 182.577 us / 1286.7 GB/s |
+
+按当前 cache mode 的测量均值计算，UB → fragment 的延迟降低 3.7%～4.6%、
+有效带宽提升 3.8%～4.8%；GM → fragment 的延迟降低 2.0%～2.9%、有效带宽
+提升 2.0%～3.0%。
+
+#### 此前 cache mode：`nmfv`
+
+下表保留修改 UB→GM cache mode 前的性能快照；数值沿用当时的测量记录，不按本轮
+5 次重复测量重新聚合。
 
 | Shape | resident slots | PTO backend 基线 | UB → fragment | GM → fragment |
 |---:|---:|---:|---:|---:|
@@ -606,12 +638,17 @@ persistent fragment 物化的 kernel。三个 hidden size 分别在独立进程�
 | `d=5120` | 20 | 84.5 us / 1986 GB/s | 79.264 us / 2117.1 GB/s | 79.111 us / 2121.2 GB/s |
 | `d=7168` | 28 | 127.3 us / 1845 GB/s | 117.471 us / 1999.9 GB/s | 119.344 us / 1968.5 GB/s |
 
+按此前 cache mode 的测量值计算，UB → fragment 的延迟降低 6.2%～12.4%、
+有效带宽提升 6.6%～14.2%；GM → fragment 的延迟降低 6.2%～12.7%、有效
+带宽提升 6.7%～14.6%。
+
+#### 正确性
+
 | Shape | `max_y_diff` | `max_rstd_diff` | 正确性 |
 |---:|---:|---:|:---:|
 | `d=4096` | `1.907e-06` | `1.788e-07` | 通过 |
 | `d=5120` | `2.861e-06` | `2.384e-07` | 通过 |
 | `d=7168` | `2.861e-06` | `1.788e-07` | 通过 |
 
-三个 shape 均通过正确性检查。按上表测量值计算，UB → fragment 的延迟降低
-6.2%～12.4%、有效带宽提升 6.6%～14.2%；GM → fragment 的延迟降低
-6.2%～12.7%、有效带宽提升 6.7%～14.6%。
+两种 cache mode 下的三个 shape 均通过正确性检查；当前 cache mode 的 45 次
+测量样本全部通过。

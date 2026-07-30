@@ -12,6 +12,7 @@
 #include "ObjectEmission.h"
 #include "PTO/Compiler/CompilerApi.h"
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
+#include "VFSIMTSizePatcher.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/LogicalResult.h"
@@ -37,6 +38,7 @@ extern llvm::cl::opt<bool> emitVPTOLLVMDialect;
 extern llvm::cl::opt<bool> ptoPrintSeamIR;
 extern llvm::cl::opt<std::string> ptoSeamIRFile;
 extern llvm::cl::opt<std::string> cannOutputVersion;
+extern llvm::cl::opt<VFSIMTSizeFixMode> vptoFixVFSIMTSize;
 
 enum class PTOBackend {
   EmitC,
@@ -73,6 +75,9 @@ public:
   void setBackendInfo(BackendInfo value);
   const BackendInfo &getBackendInfo() const;
 
+  void setVFSIMTSizeFixMode(VFSIMTSizeFixMode value);
+  VFSIMTSizeFixMode getVFSIMTSizeFixMode() const;
+
   int getArgc() const;
   char **getArgv() const;
 
@@ -92,6 +97,7 @@ private:
   std::string outputPath;
   std::string arch;
   BackendInfo backendInfo;
+  VFSIMTSizeFixMode vfsimtSizeFixMode = VFSIMTSizeFixMode::Auto;
   int argc = 0;
   char **argv = nullptr;
   CANNVersion cannVersion = CANNVersion{9, 0, 0, 1};
