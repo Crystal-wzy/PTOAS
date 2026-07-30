@@ -5428,6 +5428,9 @@ static void emitConservativeGmFencePipeDrains(
 static bool isInVectorKernel(Operation *op) {
   for (Operation *parent = op->getParentOp(); parent;
        parent = parent->getParentOp()) {
+    if (isa<pto::SectionVectorOp>(parent))
+      return true;
+
     auto kernelKindAttr = parent->getAttrOfType<FunctionKernelKindAttr>(
         FunctionKernelKindAttr::name);
     if (kernelKindAttr)

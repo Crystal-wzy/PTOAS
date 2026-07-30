@@ -18,8 +18,8 @@ module {
     pto.trandom ins(%k0, %k1, %c0, %c1, %c2, %c3 {rounds = 7 : i32} : i32, i32, i32, i32, i32, i32) outs(%dst : !pto.tile_buf<vec, 4x256xi32>)
     return
   }
-  func.func private @tscatter_arg(%src: !pto.tile_buf<vec, 1x64xf16>, %dst: !pto.tile_buf<vec, 1x32xf16>) {
-    pto.tscatter ins(%src, {maskPattern = #pto.mask_pattern<P0101>} : !pto.tile_buf<vec, 1x64xf16>) outs(%dst : !pto.tile_buf<vec, 1x32xf16>)
+  func.func private @tscatter_arg(%src: !pto.tile_buf<vec, 1x32xf16>, %dst: !pto.tile_buf<vec, 1x64xf16>) {
+    pto.tscatter ins(%src, {maskPattern = #pto.mask_pattern<P0101>} : !pto.tile_buf<vec, 1x32xf16>, "row") outs(%dst : !pto.tile_buf<vec, 1x64xf16>)
     return
   }
   func.func private @ttri_arg(%dst: !pto.tile_buf<vec, 32x32xi32>, %diag: i32) {
@@ -43,6 +43,6 @@ module {
 // EMITC-LABEL: trandom_arg(
 // EMITC: PTOAS__TRANDOM<7>(
 // EMITC-LABEL: tscatter_arg(
-// EMITC: TSCATTER<pto::MaskPattern::P0101>(
+// EMITC: TSCATTER<pto::MaskPattern::P0101, pto::ScatterAxis::SCATTER_ROW>(
 // EMITC-LABEL: ttri_arg(
 // EMITC: TTRI<
