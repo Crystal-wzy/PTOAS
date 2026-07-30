@@ -1274,7 +1274,11 @@ struct SerialFrontendPipeLoweringPass
     // adaptor allows one function to be verified while another function is
     // still mutating its pipe ops. Keep these two small passes serial so every
     // verifier observes either the complete frontend or complete lowered form.
-    for (func::FuncOp funcOp : getOperation().getOps<func::FuncOp>()) {
+    SmallVector<func::FuncOp> functions;
+    getOperation().walk([&](func::FuncOp funcOp) {
+      functions.push_back(funcOp);
+    });
+    for (func::FuncOp funcOp : functions) {
       if (failed(runPipeline(functionPM, funcOp))) {
         signalPassFailure();
         return;

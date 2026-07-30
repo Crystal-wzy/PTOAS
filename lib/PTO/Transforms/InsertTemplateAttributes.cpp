@@ -10,6 +10,7 @@
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Support/PythonExecutable.h"
 #include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/TileOpExpansionUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -979,21 +980,19 @@ struct InsertTemplateAttributesPass
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
+
+    SmallVector<Operation *> tileOperations;
+    module.walk([&](Operation *operation) {
+      if (pto::isTileLibExpandableOp(operation))
+        tileOperations.push_back(operation);
+    });
+    if (tileOperations.empty())
+      return;
     if (daemonSocketPath.empty()) {
       module.emitError(
           "InsertTemplateAttributes requires a PTODSL daemon socket");
       return signalPassFailure();
     }
-
-    SmallVector<Operation *> tileOperations;
-    module.walk([&](Operation *operation) {
-      if (isa<pto::TReshapeOp>(operation))
-        return;
-      if (isa<pto::LoadScalarOp, pto::StoreScalarOp>(operation))
-        return;
-      if (isa<pto::OpPipeInterface>(operation))
-        tileOperations.push_back(operation);
-    });
 
     for (Operation *operation : tileOperations) {
       auto metadata = invokeMetadataHelper(
