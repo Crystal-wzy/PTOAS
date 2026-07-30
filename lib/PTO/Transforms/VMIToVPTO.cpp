@@ -8668,6 +8668,53 @@ struct OneToNVMIFmaOpPattern : OpConversionPattern<VMIFmaOp> {
   }
 };
 
+struct OneToNVMIVexpdifOpPattern : OpConversionPattern<VMIVexpdifOp> {
+  using OpConversionPattern<VMIVexpdifOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(VMIVexpdifOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op.getPmode().has_value() && *op.getPmode() == "merge")
+      return rewriter.notifyMatchFailure(
+          op, "merge predicate mode requires an explicit passthru lowering");
+
+    ValueRange xParts = adaptor.getX();
+    ValueRange maxParts = adaptor.getMax();
+    ValueRange maskParts = adaptor.getMask();
+    FailureOr<SmallVector<Type>> maybeResultTypes =
+        getConvertedResultTypes(op, 0, *this->getTypeConverter());
+    if (failed(maybeResultTypes))
+      return failure();
+    SmallVector<Type> resultTypes = std::move(*maybeResultTypes);
+    if (xParts.size() != maxParts.size() ||
+        xParts.size() != maskParts.size() ||
+        xParts.size() != resultTypes.size())
+      return rewriter.notifyMatchFailure(op, "vexpdif physical arity mismatch");
+
+    SmallVector<Value> results;
+    results.reserve(resultTypes.size());
+    for (auto [x, max, mask, resultType] :
+         llvm::zip_equal(xParts, maxParts, maskParts, resultTypes)) {
+      auto vregType = dyn_cast<VRegType>(resultType);
+      auto maskType = dyn_cast<MaskType>(mask.getType());
+      if (!vregType || !maskType || !vregType.getElementType().isF32() ||
+          x.getType() != resultType || max.getType() != resultType ||
+          maskType.getGranularity() != "b32")
+        return rewriter.notifyMatchFailure(
+            op, "fused vexpdif requires matching physical f32 parts and b32 masks");
+      results.push_back(
+          rewriter
+              .create<VexpdifOp>(op.getLoc(), resultType, x, max, mask,
+                                  rewriter.getStringAttr("EVEN"))
+              .getResult());
+    }
+
+    replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                     *this->getTypeConverter());
+    return success();
+  }
+};
+
 template <typename SourceOp, typename TargetOp>
 struct OneToNVMIUnaryOpPattern : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -11441,7 +11488,8 @@ void populateVMIConversionPatterns(
       OneToNVMIVecScalarOpPattern<VMIMinSOp, VminsOp>,
       OneToNVMIVecScalarOpPattern<VMIShlSOp, VshlsOp>,
       OneToNVMIVecScalarOpPattern<VMIShrSOp, VshrsOp>, OneToNVMIVmullOpPattern,
-      OneToNVMIFmaOpPattern, OneToNVMIBinaryOpPattern<VMIDivFOp, VdivOp>,
+      OneToNVMIFmaOpPattern, OneToNVMIVexpdifOpPattern,
+      OneToNVMIBinaryOpPattern<VMIDivFOp, VdivOp>,
       OneToNVMIBinaryOpPattern<VMIMinFOp, VminOp>,
       OneToNVMIBinaryOpPattern<VMIMinIOp, VminOp>,
       OneToNVMIBinaryOpPattern<VMIMaxFOp, VmaxOp>,
