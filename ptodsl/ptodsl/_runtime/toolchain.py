@@ -61,7 +61,11 @@ def ascend_driver_path() -> Path:
 
 
 def _append_include_flag(flags: list[str], path: Path) -> None:
-    if not path.is_dir():
+    try:
+        is_dir = path.is_dir()
+    except OSError:
+        return
+    if not is_dir:
         return
     flag = f"-I{path}"
     if flag not in flags:
