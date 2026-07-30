@@ -46,6 +46,7 @@ enum class PTOBackend {
 struct BackendInfo {
   PTOBackend defaultBackend = PTOBackend::EmitC;
   std::optional<PTOBackend> singleBackend;
+  bool cliBackendOverride = false;
   bool requiresToolchain = false;
 };
 

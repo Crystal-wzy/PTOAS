@@ -1254,6 +1254,70 @@ static std::unique_ptr<Pass> createNarrowUnusedMultiResultProvenancePass() {
 }
 
 namespace {
+static SmallVector<func::FuncOp> collectSharedPipelineFunctions(ModuleOp module) {
+  SmallVector<func::FuncOp> functions;
+  // Object compilation promotes backend children to top-level compile units.
+  // Preserve recursive traversal only for user-visible IR modes, which retain
+  // the authored container shape for debugging.
+  if (emitMlirIR) {
+    module.walk([&](func::FuncOp funcOp) { functions.push_back(funcOp); });
+  } else {
+    llvm::append_range(functions, module.getOps<func::FuncOp>());
+  }
+  return functions;
+}
+
+struct SerialAutoSyncPass
+    : public PassWrapper<SerialAutoSyncPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SerialAutoSyncPass)
+
+  enum class Mode { InsertSync, Bufid, BarrierAll, GraphSolver };
+
+  SerialAutoSyncPass(Mode mode, bool enableBufidDebug,
+                     int64_t graphEventIdMax)
+      : mode(mode), enableBufidDebug(enableBufidDebug),
+        graphEventIdMax(graphEventIdMax) {}
+
+  void runOnOperation() override {
+    OpPassManager functionPM(func::FuncOp::getOperationName());
+    switch (mode) {
+    case Mode::InsertSync:
+      functionPM.addPass(pto::createPTOInsertSyncPass());
+      break;
+    case Mode::Bufid: {
+      PTOBufidSyncOptions options;
+      options.enableBufidSyncDebug = enableBufidDebug;
+      functionPM.addPass(pto::createPTOBufidSyncPass(options));
+      break;
+    }
+    case Mode::BarrierAll:
+      functionPM.addPass(pto::createPTOInjectBarrierAllSyncPass());
+      break;
+    case Mode::GraphSolver: {
+      PTOGraphSyncSolverOptions options;
+      options.eventIdNumMax = graphEventIdMax;
+      functionPM.addPass(pto::createPTOGraphSyncSolverPass(options));
+      break;
+    }
+    }
+
+    for (func::FuncOp funcOp :
+         collectSharedPipelineFunctions(getOperation())) {
+      if (failed(runPipeline(functionPM, funcOp))) {
+        signalPassFailure();
+        return;
+      }
+    }
+  }
+
+private:
+  Mode mode;
+  bool enableBufidDebug;
+  int64_t graphEventIdMax;
+};
+} // namespace
+
+namespace {
 struct SerialFrontendPipeLoweringPass
     : public PassWrapper<SerialFrontendPipeLoweringPass,
                          OperationPass<ModuleOp>> {
@@ -1274,11 +1338,8 @@ struct SerialFrontendPipeLoweringPass
     // adaptor allows one function to be verified while another function is
     // still mutating its pipe ops. Keep these two small passes serial so every
     // verifier observes either the complete frontend or complete lowered form.
-    SmallVector<func::FuncOp> functions;
-    getOperation().walk([&](func::FuncOp funcOp) {
-      functions.push_back(funcOp);
-    });
-    for (func::FuncOp funcOp : functions) {
+    for (func::FuncOp funcOp :
+         collectSharedPipelineFunctions(getOperation())) {
       if (failed(runPipeline(functionPM, funcOp))) {
         signalPassFailure();
         return;
@@ -3405,21 +3466,40 @@ int mlir::pto::compilePTOASModule(
   // `pto.multi_tile_get` operations and keeps their slot identity for alias
   // and event-id analysis.
   // solvers, while BufidSync is A5-only get_buf/rls_buf synchronization.
-  if (enableInsertSync)
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+  if (enableInsertSync) {
+    if (emitMlirIR)
+      pm.addPass(std::make_unique<SerialAutoSyncPass>(
+          SerialAutoSyncPass::Mode::InsertSync, false, 0));
+    else
+      pm.addNestedPass<func::FuncOp>(pto::createPTOInsertSyncPass());
+  }
   else if (enableBufidSync) {
-    PTOBufidSyncOptions bufidOptions;
-    bufidOptions.enableBufidSyncDebug = enableBufidSyncDebug;
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOBufidSyncPass(bufidOptions));
-  } else if (enableInjectBarrierAllSync)
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOInjectBarrierAllSyncPass());
-  else if (enableGraphSyncSolver) {
-    PTOGraphSyncSolverOptions graphSyncOpts;
-    graphSyncOpts.eventIdNumMax = graphSyncSolverEventIdMax;
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOGraphSyncSolverPass(graphSyncOpts));
+    if (emitMlirIR) {
+      pm.addPass(std::make_unique<SerialAutoSyncPass>(
+          SerialAutoSyncPass::Mode::Bufid, enableBufidSyncDebug, 0));
+    } else {
+      PTOBufidSyncOptions options;
+      options.enableBufidSyncDebug = enableBufidSyncDebug;
+      pm.addNestedPass<func::FuncOp>(pto::createPTOBufidSyncPass(options));
+    }
+  } else if (enableInjectBarrierAllSync) {
+    if (emitMlirIR)
+      pm.addPass(std::make_unique<SerialAutoSyncPass>(
+          SerialAutoSyncPass::Mode::BarrierAll, false, 0));
+    else
+      pm.addNestedPass<func::FuncOp>(
+          pto::createPTOInjectBarrierAllSyncPass());
+  } else if (enableGraphSyncSolver) {
+    if (emitMlirIR) {
+      pm.addPass(std::make_unique<SerialAutoSyncPass>(
+          SerialAutoSyncPass::Mode::GraphSolver, false,
+          graphSyncSolverEventIdMax));
+    } else {
+      PTOGraphSyncSolverOptions options;
+      options.eventIdNumMax = graphSyncSolverEventIdMax;
+      pm.addNestedPass<func::FuncOp>(
+          pto::createPTOGraphSyncSolverPass(options));
+    }
   }
 
   // Materialize each `pto.multi_tile_get` as an addressed `pto.alloc_tile`;
