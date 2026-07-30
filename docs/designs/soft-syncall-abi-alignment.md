@@ -1,45 +1,42 @@
-# Soft `SYNCALL` ABI Alignment with PTO-ISA f24
+# Soft `SYNCALL` ABI 与 PTO-ISA f24 对齐设计
 
-- Status: Draft
-- Tracking issue: [PTOAS #1061](https://github.com/hw-native-sys/PTOAS/issues/1061)
-- PTO-ISA change:
+- 状态：草案
+- 跟踪 Issue：[PTOAS #1061](https://github.com/hw-native-sys/PTOAS/issues/1061)
+- PTO-ISA 变更：
   [`f24f7b736b689cc107b9eb2d362be6a7718fcc99`](https://github.com/hw-native-sys/pto-isa/commit/f24f7b736b689cc107b9eb2d362be6a7718fcc99)
 
-## 1. Summary
+## 1. 摘要
 
-PTO-ISA f24 replaced the core-type-specific soft `SYNCALL` overloads with one
-public ABI:
+PTO-ISA f24 将原先按核类型区分的 Soft `SYNCALL` 重载统一为一个公共 ABI：
 
 ```cpp
 SYNCALL<SyncAllMode::Soft, CoreType>(gmWorkspace, usedCores);
 ```
 
-The UB and L1 scratch arguments no longer exist. PTOAS still models those
-arguments in `pto.syncall`, verifies them, materializes local Tiles for them,
-and emits three- or four-argument C++ calls.
+新接口不再包含 UB 和 L1 临时空间参数。目前 PTOAS 仍在 `pto.syncall` 中描述并校验
+这些参数，为其物化本地 Tile，并生成三参数或四参数的 C++ 调用。
 
-This design changes the canonical PTO IR contract to:
+本设计将规范 PTO IR 契约修改为：
 
-- hard mode: no operands;
-- soft mode: required `gm_workspace` and optional `used_cores`;
-- all soft core types: exactly two EmitC arguments, materializing
-  `int32_t{0}` when `used_cores` is omitted.
+- Hard 模式：无 operand；
+- Soft 模式：必须提供 `gm_workspace`，可以提供 `used_cores`；
+- 所有 Soft 核类型：EmitC 始终生成两个实参；省略 `used_cores` 时物化
+  `int32_t{0}`。
 
-The recommended rollout is a direct switch to the new ABI. A one-release
-compatibility option is described in [Section 8](#8-compatibility-and-rollout)
-if an atomic producer upgrade is not possible.
+推荐直接切换到新 ABI。如果 PTOAS 和上游 IR 生产方无法原子升级，
+[第 8 节](#8-兼容性与发布策略)给出一个仅保留一版的兼容方案。
 
-## 2. Problem statement
+## 2. 问题描述
 
-The current PTOAS soft forms depend on `core_type`:
+当前 PTOAS 的 Soft operand 形式取决于 `core_type`：
 
-| Core type | Current PTO operands | Current C++ arguments |
+| 核类型 | 当前 PTO operand | 当前 C++ 实参 |
 | --- | --- | --- |
-| `aiv_only` | GM + UB + optional used cores | GM + UB + used cores |
-| `aic_only` | GM + L1 + optional used cores | GM + L1 + used cores |
-| `mix` | GM + UB + L1 + optional used cores | GM + UB + L1 + used cores |
+| `aiv_only` | GM + UB + 可选 used cores | GM + UB + used cores |
+| `aic_only` | GM + L1 + 可选 used cores | GM + L1 + used cores |
+| `mix` | GM + UB + L1 + 可选 used cores | GM + UB + L1 + used cores |
 
-For example, current PTOAS emits:
+例如，当前 PTOAS 会生成：
 
 ```cpp
 Tile<TileType::Vec, int32_t, 1, 64> ubWorkspace;
@@ -50,42 +47,39 @@ SYNCALL<SyncAllMode::Soft, SyncCoreType::Mix>(
     gmWorkspace, ubWorkspace, l1Workspace, usedCores);
 ```
 
-That call does not match PTO-ISA f24 or its descendants. It also reserves and
-initializes local storage that the new implementation never consumes.
+该调用无法匹配 PTO-ISA f24 及其后继版本，同时还会预留和初始化新实现根本不会使用
+的本地空间。
 
-The new PTO-ISA implementation uses a shared GM atomic counter. It requires one
-exclusive 64-byte cache line, corresponding to at least 16 `int32_t` elements,
-and the workspace must be zero-initialized before its first use.
+新的 PTO-ISA 实现使用 GM 共享原子计数器。它要求一条独占的 64 字节 cache line，
+对应至少 16 个 `int32_t` 元素，并且 workspace 在第一次使用前必须清零。
 
-## 3. Goals and non-goals
+## 3. 目标与非目标
 
-### 3.1 Goals
+### 3.1 目标
 
-- Align textual PTO IR, ODS-generated APIs, verification, and EmitC with
-  PTO-ISA f24.
-- Keep hard `SYNCALL` behavior unchanged.
-- Accept `memref`, `tensor_view`, and `partition_tensor_view` GM workspaces.
-- Reject statically known GM workspaces smaller than 16 `int32_t` elements.
-- Generate no soft-`SYNCALL` UB/L1 Tile, `TASSIGN`, or local scratch.
-- Update Python examples, the PTO IR manual, and focused regression tests in
-  the same change.
-- Compile generated A5 C++ against PTO-ISA f24 or an explicit descendant SHA.
+- 将文本 PTO IR、ODS 生成 API、校验逻辑和 EmitC 与 PTO-ISA f24 对齐。
+- 保持 Hard `SYNCALL` 行为不变。
+- GM workspace 继续支持 `memref`、`tensor_view` 和
+  `partition_tensor_view`。
+- 拒绝静态容量小于 16 个 `int32_t` 元素的 GM workspace。
+- Soft `SYNCALL` 不再生成 UB/L1 Tile、`TASSIGN` 或本地临时空间。
+- 在同一次改动中同步更新 Python 示例、PTO IR 手册和定向回归测试。
+- 使用 PTO-ISA f24 或明确的后继 SHA 编译生成的 A5 C++。
 
-### 3.2 Non-goals
+### 3.2 非目标
 
-- Changing the PTO-ISA synchronization algorithm.
-- Proving cache-line exclusivity, alignment, or zero-initialization in the
-  PTO IR verifier. These remain caller/runtime obligations.
-- Changing the meaning of `used_cores = 0`.
-- Changing hard-mode FFTS behavior.
-- Adding a new CLI option or changing the PTOAS pass pipeline.
+- 修改 PTO-ISA 的同步算法。
+- 在 PTO IR verifier 中证明 cache line 独占、对齐或已清零；这些仍是调用方或运行时
+  的责任。
+- 修改 `used_cores = 0` 的语义。
+- 修改 Hard 模式的 FFTS 行为。
+- 增加新的 CLI 选项或修改 PTOAS pass pipeline。
 
-## 4. Canonical PTO IR contract
+## 4. 规范 PTO IR 契约
 
-### 4.1 ODS operands
+### 4.1 ODS operand
 
-`SyncAllOp` keeps `AttrSizedOperandSegments` because both operands are
-mode-dependent:
+`SyncAllOp` 保留 `AttrSizedOperandSegments`，因为两个 operand 是否存在都由模式决定：
 
 ```tablegen
 let arguments = (ins
@@ -96,20 +90,20 @@ let arguments = (ins
 );
 ```
 
-`gm_workspace` is optional in ODS so the same op can represent zero-operand
-hard mode. The verifier makes it required for soft mode.
+`gm_workspace` 在 ODS 中仍声明为 Optional，从而让同一个 op 可以表达零 operand 的
+Hard 模式；verifier 再要求 Soft 模式必须提供它。
 
-The segment layouts become:
+新的 segment 布局如下：
 
-| Form | `operandSegmentSizes` |
+| 形式 | `operandSegmentSizes` |
 | --- | --- |
-| hard | `[0, 0]` |
-| soft, inferred core count | `[1, 0]` |
-| soft, explicit core count | `[1, 1]` |
+| Hard | `[0, 0]` |
+| Soft，自动推导核数 | `[1, 0]` |
+| Soft，显式指定核数 | `[1, 1]` |
 
-`core_type` no longer changes the operand layout.
+`core_type` 不再影响 operand 布局。
 
-### 4.2 Soft mode with explicit `used_cores`
+### 4.2 显式提供 `used_cores` 的 Soft 模式
 
 ```mlir
 module {
@@ -125,14 +119,14 @@ module {
 }
 ```
 
-Expected C++:
+预期 C++：
 
 ```cpp
 SYNCALL<SyncAllMode::Soft, SyncCoreType::AIVOnly>(
     gmWorkspace, usedCores);
 ```
 
-The AIC-only and Mix forms use the same operands:
+AIC-only 和 Mix 使用相同的 operand：
 
 ```mlir
 pto.syncall(%gm, %used : memref<16xi32, #pto.address_space<gm>>, i32)
@@ -144,7 +138,7 @@ pto.syncall(%gm, %used : memref<16xi32, #pto.address_space<gm>>, i32)
   core_type = #pto.sync_core_type<mix>
 ```
 
-### 4.3 Soft mode with inferred core count
+### 4.3 自动推导核数的 Soft 模式
 
 ```mlir
 pto.syncall(%gm : !pto.partition_tensor_view<16xi32>)
@@ -152,20 +146,19 @@ pto.syncall(%gm : !pto.partition_tensor_view<16xi32>)
   core_type = #pto.sync_core_type<mix>
 ```
 
-PTOAS must still emit two C++ arguments:
+PTOAS 仍必须生成两个 C++ 实参：
 
 ```cpp
 SYNCALL<SyncAllMode::Soft, SyncCoreType::Mix>(
     gmWorkspace, int32_t{0});
 ```
 
-The generated call does not rely on the C++ default argument. Keeping an
-explicit, typed zero makes the PTO IR omission semantics visible in EmitC and
-stable under overload changes.
+生成的调用不依赖 C++ 默认参数。显式传递带类型的零，可以让 PTO IR 中的省略语义
+在 EmitC 中保持可见，并避免未来重载变化造成不稳定。
 
-### 4.4 Hard mode
+### 4.4 Hard 模式
 
-Hard mode remains a zero-operand op:
+Hard 模式保持为零 operand op：
 
 ```mlir
 pto.syncall()
@@ -173,28 +166,28 @@ pto.syncall()
   core_type = #pto.sync_core_type<mix>
 ```
 
-Expected C++:
+预期 C++：
 
 ```cpp
 SYNCALL<SyncCoreType::Mix>();
 ```
 
-## 5. Parsing, printing, and verification
+## 5. 解析、打印与校验
 
-### 5.1 Custom parser
+### 5.1 自定义 Parser
 
-The parser applies mode-dependent arity rules:
+Parser 按模式应用不同的 operand 数量规则：
 
-1. Parse the operand and type lists, then parse `mode` and `core_type`.
-2. For hard mode, require zero operands and add segment sizes `[0, 0]`.
-3. For soft mode, require one or two operands.
-4. Resolve operand 0 as `gm_workspace`.
-5. Resolve operand 1, when present, as `used_cores`.
-6. Add segment sizes `[1, 0]` or `[1, 1]`.
+1. 解析 operand 和类型列表，再解析 `mode` 与 `core_type`。
+2. Hard 模式要求零 operand，并写入 segment size `[0, 0]`。
+3. Soft 模式要求一个或两个 operand。
+4. 将 operand 0 解析为 `gm_workspace`。
+5. operand 1 存在时，将其解析为 `used_cores`。
+6. 写入 segment size `[1, 0]` 或 `[1, 1]`。
 
-The parser does not branch on `core_type`.
+Parser 不再按 `core_type` 分支。
 
-Representative diagnostics:
+代表性诊断：
 
 ```text
 custom op 'pto.syncall' expects hard syncall to have no operands
@@ -207,76 +200,73 @@ and optional used_cores
 
 ### 5.2 Printer
 
-The printer emits operands in the fixed order:
+Printer 按固定顺序输出 operand：
 
-1. `gm_workspace`, if present;
-2. `used_cores`, if present.
+1. `gm_workspace`，如果存在；
+2. `used_cores`，如果存在。
 
-It elides `operandSegmentSizes`, `mode`, and `core_type` from the optional
-attribute dictionary as it does today. Parse/print round trips therefore
-produce only the canonical new form.
+与当前行为一致，Printer 在可选 attribute dictionary 中省略
+`operandSegmentSizes`、`mode` 和 `core_type`。因此 parse/print round trip
+只会产生规范的新形式。
 
 ### 5.3 Verifier
 
-Hard mode succeeds only when both optional operands are absent.
+Hard 模式仅在两个可选 operand 都不存在时通过。
 
-Soft mode verifies:
+Soft 模式校验：
 
-- `gm_workspace` is present;
-- the workspace is a ranked GM `memref`, `!pto.tensor_view`, or
-  `!pto.partition_tensor_view`;
-- the element type is `i32`;
-- the rank is at least one;
-- every static dimension is positive;
-- when every dimension is static, the element-count product is at least 16;
-- `used_cores`, when present, is `i32`.
+- 必须提供 `gm_workspace`；
+- workspace 必须是有 rank 的 GM `memref`、`!pto.tensor_view` 或
+  `!pto.partition_tensor_view`；
+- 元素类型必须是 `i32`；
+- rank 至少为 1；
+- 每个静态维度都必须为正数；
+- 如果所有维度均为静态，元素总数必须至少为 16；
+- `used_cores` 存在时必须是 `i32`。
 
-The capacity calculation must be overflow-safe. Because only the threshold
-`16` matters, the implementation may stop multiplying as soon as the running
-capacity reaches 16.
+容量计算必须避免整数溢出。由于这里只关心阈值 `16`，实现可以在累计容量达到 16
+后立即停止乘法。
 
-Examples:
+示例：
 
 ```mlir
-// Accepted: exactly 16 elements.
+// 接受：恰好 16 个元素。
 memref<16xi32, #pto.address_space<gm>>
 
-// Accepted: multidimensional static capacity of 16.
+// 接受：多维静态容量为 16。
 memref<4x4xi32, #pto.address_space<gm>>
 
-// Rejected: statically known capacity is too small.
+// 拒绝：静态可知容量不足。
 memref<15xi32, #pto.address_space<gm>>
 
-// Accepted by static verification: the runtime must provide at least 16.
+// 静态校验接受：运行时必须保证至少提供 16 个元素。
 memref<?xi32, #pto.address_space<gm>>
 ```
 
-Suggested diagnostic:
+建议诊断：
 
 ```text
 'pto.syncall' op expects soft syncall gm_workspace to contain at least
 16 i32 elements (64 bytes), but static capacity is 15
 ```
 
-The verifier cannot prove that the buffer starts on a 64-byte boundary, owns
-the entire cache line without aliasing, or is zero-initialized. Those
-requirements must be documented in `docs/PTO_IR_manual.md` and enforced by the
-producer/runtime.
+Verifier 无法证明缓冲区起始地址满足 64 字节对齐、整条 cache line 没有别名，或
+workspace 已完成清零。这些要求必须写入 `docs/PTO_IR_manual.md`，并由 IR 生产方
+或运行时保证。
 
-## 6. EmitC lowering
+## 6. EmitC Lowering
 
-The hard-mode branch and `coreTypeTok()` remain unchanged.
+Hard 模式分支和 `coreTypeTok()` 保持不变。
 
-For soft mode:
+Soft 模式按以下步骤处理：
 
-1. Convert `gm_workspace` to the existing GlobalTensor representation.
-2. Use the converted `used_cores` value when present.
-3. Otherwise create an EmitC value whose rendered literal is
-   `int32_t{0}`.
-4. Emit one `SYNCALL<SyncAllMode::Soft, CoreType>` call with exactly
-   `{gmWorkspace, usedCores}`.
+1. 将 `gm_workspace` 转换为现有 GlobalTensor 表示。
+2. 存在 `used_cores` 时使用转换后的值。
+3. 否则创建渲染文本为 `int32_t{0}` 的 EmitC value。
+4. 生成一个 `SYNCALL<SyncAllMode::Soft, CoreType>` 调用，实参严格为
+   `{gmWorkspace, usedCores}`。
 
-Conceptually:
+概念代码：
 
 ```cpp
 FailureOr<Value> gmWorkspace = buildGmWorkspace();
@@ -290,19 +280,19 @@ rewriter.create<emitc::CallOpaqueOp>(
     ValueRange{*gmWorkspace, usedCores});
 ```
 
-The following old-ABI code is removed:
+删除以下旧 ABI 代码：
 
-- the `core_type` switch that selects UB and/or L1;
-- `buildSyncAllWorkspaceTileValue()`;
-- soft-`SYNCALL` Tile construction;
-- soft-`SYNCALL` `TASSIGN` generation.
+- 根据 `core_type` 选择 UB 和/或 L1 的 switch；
+- `buildSyncAllWorkspaceTileValue()`；
+- Soft `SYNCALL` 的 Tile 构造；
+- Soft `SYNCALL` 的 `TASSIGN` 生成。
 
-## 7. Python API, documentation, and examples
+## 7. Python API、文档与示例
 
-The ODS change regenerates a Python API without `ub_workspace` and
-`l1_workspace`.
+ODS 变更后，重新生成的 Python API 不再包含 `ub_workspace` 和
+`l1_workspace`。
 
-Canonical Python construction:
+规范 Python 构造方式：
 
 ```python
 pto.syncall(
@@ -313,7 +303,7 @@ pto.syncall(
 )
 ```
 
-Inferred core count:
+自动推导核数：
 
 ```python
 pto.syncall(
@@ -323,81 +313,75 @@ pto.syncall(
 )
 ```
 
-The `test/samples/SyncAll` sample must stop creating an `AllocTileOp` solely
-for `SYNCALL`.
+`test/samples/SyncAll` 示例应停止创建只为 `SYNCALL` 服务的 `AllocTileOp`。
 
-`docs/PTO_IR_manual.md` must describe:
+`docs/PTO_IR_manual.md` 必须说明：
 
-- the two canonical soft operands;
-- the 16-element static capacity rule;
-- the exclusive 64-byte cache-line requirement;
-- zero-initialization before first use;
-- the meaning of an omitted or zero `used_cores`;
-- unchanged hard-mode behavior.
+- 两个规范 Soft operand；
+- 16 元素静态容量规则；
+- 独占 64 字节 cache line 的要求；
+- 第一次使用前必须清零；
+- 省略 `used_cores` 或传零的语义；
+- Hard 模式行为不变。
 
-## 8. Compatibility and rollout
+## 8. 兼容性与发布策略
 
-### 8.1 Recommended: direct ABI switch
+### 8.1 推荐方案：直接切换 ABI
 
-The recommended implementation removes UB/L1 from ODS, parser, verifier,
-bindings, and EmitC in one change.
+推荐实现在同一次改动中从 ODS、Parser、Verifier、Binding 和 EmitC 中移除
+UB/L1。
 
-Advantages:
+优点：
 
-- one canonical IR form;
-- no dead local scratch operands;
-- generated bindings cannot accidentally create the removed ABI;
-- no hidden canonicalization dependency;
-- acceptance criteria are straightforward to test.
+- 只有一种规范 IR 形式；
+- 不存在无用的本地临时空间 operand；
+- 生成的 Binding 无法再意外构造已删除的 ABI；
+- 不依赖隐藏的 canonicalization；
+- 验收标准简单直接。
 
-Cost:
+代价：
 
-- cached old `.pto` files and Python producers must be updated together with
-  the PTOAS wheel.
+- 缓存的旧 `.pto` 文件和 Python IR 生产方必须与 PTOAS wheel 同步升级。
 
-This is appropriate when PTOAS and PyPTO can move to the new wheel/IR contract
-atomically.
+如果 PTOAS 与 PyPTO 可以原子切换到新的 wheel/IR 契约，应使用该方案。
 
-### 8.2 Optional: one-release compatibility window
+### 8.2 可选方案：保留一版兼容窗口
 
-If old producers must keep working for one transition release:
+如果旧 IR 生产方必须在一个过渡版本内继续工作：
 
-1. Temporarily keep the legacy optional UB/L1 fields in ODS.
-2. Extend the custom parser to distinguish new `(gm, i32)` from legacy
-   `(gm, local_workspace [, i32])` forms by operand type and count.
-3. Emit a deprecation warning when a legacy local operand is present.
-4. Run an early canonicalization before memory planning that rebuilds the op
-   without UB/L1 operands.
-5. Always emit the new two-argument C++ call.
-6. Remove the compatibility fields and canonicalization in the next release.
+1. 临时在 ODS 中保留旧的可选 UB/L1 字段。
+2. 扩展自定义 Parser，通过 operand 类型和数量区分新的 `(gm, i32)` 与旧的
+   `(gm, local_workspace [, i32])` 形式。
+3. 出现旧本地空间 operand 时生成弃用警告。
+4. 在内存规划前执行早期 canonicalization，将 op 重建为不包含 UB/L1 的形式。
+5. 始终生成新的双参数 C++ 调用。
+6. 在下一版本中删除兼容字段和 canonicalization。
 
-The early canonicalization is mandatory. Merely ignoring UB/L1 in
-`PTOSyncAllToEmitC` can leave their allocations live long enough to generate
-local scratch and `TASSIGN`, violating the new contract.
+早期 canonicalization 是必需的。仅在 `PTOSyncAllToEmitC` 中忽略 UB/L1，
+可能会让其分配一直存活到生成本地临时空间和 `TASSIGN`，从而违反新契约。
 
-This option is intentionally not the default because it expands the public
-surface and test matrix for a short-lived migration path.
+该方案不会作为默认方案，因为它会为短期迁移路径扩大公共接口和测试矩阵。
 
-## 9. Test plan
+## 9. 测试方案
 
-### 9.1 Lit coverage
+### 9.1 Lit 覆盖
 
-| Case | Expected result |
+| 用例 | 预期结果 |
 | --- | --- |
-| soft AIV-only with used cores | exact two-argument AIV call |
-| soft AIC-only with used cores | exact two-argument AIC call |
-| soft Mix with used cores | exact two-argument Mix call |
-| soft mode without used cores | second argument is `int32_t{0}` |
-| hard AIV/AIC/Mix | unchanged zero-argument calls |
-| static GM capacity 16 | accepted |
-| static GM capacity `4x4` | accepted |
-| static GM capacity 15 | rejected with actionable error |
-| dynamic GM capacity | accepted by static verifier |
-| non-i32 GM workspace | rejected |
-| non-GM memref workspace | rejected |
-| non-i32 used cores | rejected |
+| Soft AIV-only，显式 used cores | 精确的双参数 AIV 调用 |
+| Soft AIC-only，显式 used cores | 精确的双参数 AIC 调用 |
+| Soft Mix，显式 used cores | 精确的双参数 Mix 调用 |
+| Soft，省略 used cores | 第二个实参为 `int32_t{0}` |
+| Hard AIV/AIC/Mix | 零参数调用保持不变 |
+| GM 静态容量为 16 | 接受 |
+| GM 静态容量为 `4x4` | 接受 |
+| GM 静态容量为 15 | 拒绝并给出可操作诊断 |
+| GM 动态容量 | 静态 verifier 接受 |
+| GM workspace 不是 i32 | 拒绝 |
+| memref workspace 不是 GM | 拒绝 |
+| used cores 不是 i32 | 拒绝 |
 
-The positive EmitC test must include:
+EmitC 正向测试必须包含：
 
 ```text
 CHECK-NOT: Tile<TileType::Vec
@@ -405,7 +389,7 @@ CHECK-NOT: Tile<TileType::Mat
 CHECK-NOT: TASSIGN
 ```
 
-It must check the complete call shape rather than only the callee prefix:
+测试必须检查完整调用形式，不能只检查 callee 前缀：
 
 ```text
 CHECK: SYNCALL<SyncAllMode::Soft, SyncCoreType::AIVOnly>(
@@ -413,21 +397,20 @@ CHECK: SYNCALL<SyncAllMode::Soft, SyncCoreType::AICOnly>(
 CHECK: SYNCALL<SyncAllMode::Soft, SyncCoreType::Mix>(
 ```
 
-Captured FileCheck variables should be used to ensure each call has only the GM
-and used-core operands.
+应使用捕获的 FileCheck 变量保证每个调用只有 GM 和 used-core 两个实参。
 
-### 9.2 Python sample coverage
+### 9.2 Python 示例覆盖
 
-Run the existing `syncall_binding.py` sample flow and verify:
+运行现有 `syncall_binding.py` 示例流程并验证：
 
-- Python construction succeeds with the regenerated binding;
-- printed PTO IR uses only GM and optional used cores;
-- PTOAS emits the new C++ call;
-- no local `AllocTileOp` is created for synchronization.
+- 使用重新生成的 Binding 可以成功构造 Python IR；
+- 打印出的 PTO IR 只包含 GM 和可选 used cores；
+- PTOAS 生成新的 C++ 调用；
+- 不再为同步创建本地 `AllocTileOp`。
 
-### 9.3 PTO-ISA compile validation
+### 9.3 PTO-ISA 编译验证
 
-Use PTO-ISA commit f24 or an explicit descendant:
+使用 PTO-ISA f24 或明确的后继版本：
 
 ```bash
 git -C "${PTO_ISA_ROOT}" checkout \
@@ -437,49 +420,46 @@ ptoas --pto-arch=a5 test/lit/pto/syncall_emitc.pto \
   -o build/issue_1061_syncall.cpp
 ```
 
-Compile the generated kernel C++ with the repository's existing A5/bisheng
-flags and `${PTO_ISA_ROOT}/include`. The validation must cover AIV-only,
-AIC-only, and Mix template instantiations.
+使用仓库现有的 A5/bisheng 参数和 `${PTO_ISA_ROOT}/include` 编译生成的 kernel
+C++。验证必须覆盖 AIV-only、AIC-only 和 Mix 模板实例。
 
-The PR should record the exact PTO-ISA SHA and compile command. A targeted
-compile-only validation is preferred over changing the global PTO-ISA pin for
-unrelated NPU tests.
+PR 中应记录准确的 PTO-ISA SHA 和编译命令。推荐做定向 compile-only 验证，
+不要为了本 Issue 修改无关 NPU 测试的全局 PTO-ISA pin。
 
-## 10. Planned file changes
+## 10. 计划修改的文件
 
-| Layer | File | Planned change |
+| 层次 | 文件 | 计划改动 |
 | --- | --- | --- |
-| ODS | `include/PTO/IR/PTOOps.td` | remove UB/L1 operands and update description |
-| Parser/printer/verifier | `lib/PTO/IR/PTO.cpp` | implement new arity and capacity rules |
-| EmitC | `lib/PTO/Transforms/PTOToEmitC.cpp` | emit only GM + used cores; remove helper |
-| Positive tests | `test/lit/pto/syncall_emitc.pto` | cover all core modes and exact call shape |
-| Negative tests | `test/lit/pto/syncall_invalid_*.pto` | cover missing/invalid/small GM |
-| Python sample | `test/samples/SyncAll/syncall_binding.py` | use new generated binding |
-| PTO sample | `test/samples/SyncAll/syncall_binding.pto` | use canonical new IR |
-| Documentation | `docs/PTO_IR_manual.md` | document new ABI and runtime obligations |
+| ODS | `include/PTO/IR/PTOOps.td` | 删除 UB/L1 operand 并更新说明 |
+| Parser/Printer/Verifier | `lib/PTO/IR/PTO.cpp` | 实现新数量规则和容量校验 |
+| EmitC | `lib/PTO/Transforms/PTOToEmitC.cpp` | 只生成 GM + used cores，删除旧 helper |
+| 正向测试 | `test/lit/pto/syncall_emitc.pto` | 覆盖所有核模式及精确调用形式 |
+| 负向测试 | `test/lit/pto/syncall_invalid_*.pto` | 覆盖缺失、非法和容量不足的 GM |
+| Python 示例 | `test/samples/SyncAll/syncall_binding.py` | 使用新生成的 Binding |
+| PTO 示例 | `test/samples/SyncAll/syncall_binding.pto` | 使用规范新 IR |
+| 文档 | `docs/PTO_IR_manual.md` | 说明新 ABI 和运行时责任 |
 
-No CLI or pass-pipeline change is expected.
+预计不需要修改 CLI 或 pass pipeline。
 
-## 11. Acceptance criteria
+## 11. 验收标准
 
-The implementation is complete when:
+满足以下条件后，实现视为完成：
 
-- AIV-only, AIC-only, and Mix soft calls contain exactly two C++ arguments.
-- Soft lowering produces no UB/L1 Tile, `TASSIGN`, or local scratch.
-- Omitted `used_cores` produces an explicit typed zero.
-- Statically known GM capacity below 16 `int32_t` elements is rejected.
-- Hard `SYNCALL` output is unchanged.
-- Python construction and printed PTO IR use the new contract.
-- Focused lit tests pass.
-- Generated A5 C++ compiles against the recorded PTO-ISA f24-or-newer SHA.
+- AIV-only、AIC-only 和 Mix 的 Soft 调用都严格包含两个 C++ 实参。
+- Soft Lowering 不再生成 UB/L1 Tile、`TASSIGN` 或本地临时空间。
+- 省略 `used_cores` 时生成显式的带类型零。
+- 静态可知 GM 容量小于 16 个 `int32_t` 元素时拒绝。
+- Hard `SYNCALL` 输出保持不变。
+- Python 构造和打印的 PTO IR 使用新契约。
+- 定向 Lit 测试全部通过。
+- 生成的 A5 C++ 可以使用所记录的 PTO-ISA f24 或后继 SHA 编译。
 
-## 12. Open review decisions
+## 12. 待评审决策
 
-Before implementation, reviewers should confirm:
+开始实现前，请评审者确认：
 
-1. Whether PTOAS and PyPTO can switch atomically. If yes, use the direct ABI
-   switch; otherwise approve the one-release compatibility window.
-2. Whether the emitted omitted-core literal must be textually
-   `int32_t{0}` or only an EmitC value typed as `int32_t` with value zero.
-3. Which PTO-ISA descendant SHA should be used for the PR's compile validation
-   if f24 itself is not the current integration pin.
+1. PTOAS 与 PyPTO 是否可以原子切换。如果可以，使用直接 ABI 切换；否则批准保留
+   一版兼容窗口。
+2. 省略核数时，EmitC 输出是否必须在文本上严格为 `int32_t{0}`，还是只要求
+   value 类型为 `int32_t` 且值为零。
+3. 如果 f24 不是当前集成 pin，本 PR 的编译验证应使用哪个 PTO-ISA 后继 SHA。
