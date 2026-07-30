@@ -1603,6 +1603,172 @@ static bool validateSequentialRun(SequentialRun &run,
   });
 }
 
+static bool hasOnlyExpectedUser(Value value, Operation *expectedUser) {
+  return value.hasOneUse() && *value.getUsers().begin() == expectedUser;
+}
+
+static bool isDynamicSequentialValue(Value value,
+                                     SequentialExprCache &cache) {
+  auto form = normalizeAffine(buildSequentialExpr(value, cache));
+  return form && !form->terms.empty();
+}
+
+// Count only addptrs that are guaranteed to disappear after the candidates
+// following the run head are rewritten. The first candidate's base chain is
+// retained to construct the initial pointer and therefore is not a saving.
+static unsigned countDeadDynamicAddPtrs(const SequentialRun &run) {
+  DenseSet<Operation *> counted;
+  SequentialExprCache cache;
+  for (SequentialCandidate *candidate : llvm::drop_begin(run.candidates)) {
+    Value value = candidate->base;
+    Operation *expectedUser = candidate->op;
+    while (auto addPtr = value.getDefiningOp<pto::AddPtrOp>()) {
+      if (!hasOnlyExpectedUser(value, expectedUser))
+        break;
+      if (isDynamicSequentialValue(addPtr.getOffset(), cache))
+        counted.insert(addPtr);
+      expectedUser = addPtr;
+      value = addPtr.getPtr();
+    }
+  }
+  return counted.size();
+}
+
+static unsigned initialPointerCost(const SequentialRun &run) {
+  auto initialOffset =
+      getConstantIntValue(run.candidates.front()->strideOperand);
+  return initialOffset && *initialOffset == 0 ? 0 : 1;
+}
+
+static bool isRunStrideUse(OpOperand &use, const SequentialRun &run) {
+  return llvm::any_of(run.candidates, [&](SequentialCandidate *candidate) {
+    return use.getOwner() == candidate->op &&
+           use.getOperandNumber() ==
+               static_cast<unsigned>(candidate->info->strideOperandIdx);
+  });
+}
+
+// Collect the cumulative add/sub chain used to form the third and later
+// offsets of a direct symbolic-leaf run. Unsupported producers are the
+// symbolic leaves at which this slice stops.
+static void collectCumulativeOffsetOps(Value value,
+                                       DenseSet<Operation *> &ops) {
+  Operation *defOp = value.getDefiningOp();
+  if (!isa_and_nonnull<arith::AddIOp, arith::SubIOp>(defOp) ||
+      !ops.insert(defOp).second)
+    return;
+  for (Value operand : defOp->getOperands())
+    collectCumulativeOffsetOps(operand, ops);
+}
+
+static bool allUsesDisappearAfterRewrite(Operation *op,
+                                         const DenseSet<Operation *> &deadOps,
+                                         const SequentialRun &run) {
+  return llvm::all_of(op->getResults(), [&](Value result) {
+    return llvm::all_of(result.getUses(), [&](OpOperand &use) {
+      return deadOps.contains(use.getOwner()) || isRunStrideUse(use, run);
+    });
+  });
+}
+
+static bool cumulativeOffsetChainDefinitelyDies(
+    const SequentialRun &run, DenseSet<Operation *> &deadOps) {
+  for (SequentialCandidate *candidate :
+       llvm::drop_begin(run.candidates, 2))
+    collectCumulativeOffsetOps(candidate->strideOperand, deadOps);
+  return !deadOps.empty() &&
+         llvm::all_of(deadOps, [&](Operation *op) {
+           return allUsesDisappearAfterRewrite(op, deadOps, run);
+         });
+}
+
+static bool collectLatePureDefinitions(Value value, Operation *runHead,
+                                       DominanceInfo &dominance,
+                                       DenseSet<Operation *> &clonedOps) {
+  if (dominance.dominates(value, runHead))
+    return true;
+  Operation *defOp = value.getDefiningOp();
+  if (!defOp || defOp->getBlock() != runHead->getBlock() || !isPure(defOp))
+    return false;
+  if (!clonedOps.insert(defOp).second)
+    return true;
+  return llvm::all_of(defOp->getOperands(), [&](Value operand) {
+    return collectLatePureDefinitions(operand, runHead, dominance, clonedOps);
+  });
+}
+
+// Direct symbolic steps are either reused at the run head or cloned there.
+// Cloning is cost-neutral only when the original pure definition chain becomes
+// dead after the address operands are replaced.
+static bool isStepMaterializationCostNeutral(
+    const SequentialRun &run, const DenseSet<Operation *> &deadOffsetOps,
+    DominanceInfo &dominance) {
+  SequentialCandidate *first = run.candidates.front();
+  DenseSet<Operation *> clonedOps;
+  StrideExprRef atom = run.stepForm.terms.front().atom;
+  if (atom->kind == StrideExpr::Kind::Cast) {
+    clonedOps.insert(atom->castOp);
+    SmallVector<Value> leaves;
+    collectLeaves(atom, leaves);
+    for (Value leaf : leaves)
+      if (!collectLatePureDefinitions(leaf, first->op, dominance, clonedOps))
+        return false;
+  } else if (atom->kind == StrideExpr::Kind::Leaf &&
+             !collectLatePureDefinitions(atom->leaf, first->op, dominance,
+                                         clonedOps)) {
+    return false;
+  }
+
+  DenseSet<Operation *> disappearing = deadOffsetOps;
+  disappearing.insert(clonedOps.begin(), clonedOps.end());
+  return llvm::all_of(clonedOps, [&](Operation *op) {
+    return allUsesDisappearAfterRewrite(op, disappearing, run);
+  });
+}
+
+static bool isProfitableDynamicBaseRun(const SequentialRun &run) {
+  if (!run.stepForm.terms.empty())
+    return false;
+  unsigned pointerCost = run.candidates.size() - 1;
+  return countDeadDynamicAddPtrs(run) >
+         pointerCost + initialPointerCost(run);
+}
+
+static bool isProfitableDirectSymbolicLeafRun(
+    const SequentialRun &run, DominanceInfo &dominance) {
+  // validateSequentialRun already enforces N >= 3. This class intentionally
+  // has no higher length threshold, so an N3 run may be accepted.
+  if (run.stepForm.constant != 0 || run.stepForm.terms.size() != 1 ||
+      run.stepForm.terms.front().coeff != 1)
+    return false;
+
+  // This class covers a direct fixed base with offsets 0, step, 2*step, ...
+  // Dynamic base chains are handled independently above.
+  if (!llvm::all_of(run.candidates, [](SequentialCandidate *candidate) {
+        return candidate->base == candidate->rootBase;
+      }))
+    return false;
+  auto firstOffset =
+      getConstantIntValue(run.candidates.front()->strideOperand);
+  if (!firstOffset || *firstOffset != 0)
+    return false;
+
+  DenseSet<Operation *> deadOffsetOps;
+  if (!cumulativeOffsetChainDefinitelyDies(run, deadOffsetOps))
+    return false;
+  return isStepMaterializationCostNeutral(run, deadOffsetOps, dominance);
+}
+
+// Profitability is intentionally a structural whitelist rather than a
+// weighted MLIR-op cost model. It applies uniformly to every supported
+// post-update op: either later candidates delete enough dynamic addptr work, or
+// a direct symbolic step replaces a cumulative address chain.
+static bool isProfitableSequentialRun(const SequentialRun &run,
+                                      DominanceInfo &dominance) {
+  return isProfitableDynamicBaseRun(run) ||
+         isProfitableDirectSymbolicLeafRun(run, dominance);
+}
+
 static void collectNestedBlocks(Operation *op, pto::VecScopeOp owner,
                                 SmallVectorImpl<Block *> &blocks) {
   for (Region &region : op->getRegions()) {
@@ -1678,7 +1844,8 @@ static void processSequentialBlock(Block *block, DominanceInfo &dominance,
       run.stepForm = firstStep->form;
       for (size_t i = start; i < end; ++i)
         run.candidates.push_back(&candidates[i]);
-      if (validateSequentialRun(run, dominance)) {
+      if (validateSequentialRun(run, dominance) &&
+          isProfitableSequentialRun(run, dominance)) {
         runs.push_back(std::move(run));
         // Accepted runs are deliberately non-overlapping. The candidate that
         // broke the current stride becomes the start of the next run.

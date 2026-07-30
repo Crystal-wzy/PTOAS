@@ -16,7 +16,19 @@
 // CHECK: [[STEP:%[a-zA-Z0-9_]+]] = arith.select
 // CHECK: %{{.*}}, [[L1:%[a-zA-Z0-9_]+]] = pto.vlds {{%.*}}[[[STEP]]]
 // CHECK: %{{.*}}, [[L2:%[a-zA-Z0-9_]+]] = pto.vlds [[L1]][[[STEP]]]
-// CHECK: {{^ *}}%{{[^, ]+}} = pto.vlds [[L2]][%c0]
+// CHECK: %{{.*}} = pto.vlds [[L2]][%c0]
+
+// The same N3 direct-symbolic profitability rule applies to stores.
+// CHECK-LABEL: func.func @direct_symbolic_leaf_vsts
+// CHECK: [[S1:%[a-zA-Z0-9_]+]] = pto.vsts {{.*}}, {{%.*}}[[[SSTEP:%[a-zA-Z0-9_]+]]],
+// CHECK: [[S2:%[a-zA-Z0-9_]+]] = pto.vsts {{.*}}, [[S1]][[[SSTEP]]],
+// CHECK: pto.vsts {{.*}}, [[S2]][%c0],
+
+// Block-stride stores use the same rule in their native i16 stride type.
+// CHECK-LABEL: func.func @direct_symbolic_leaf_vsstb
+// CHECK: [[B1:%[a-zA-Z0-9_]+]] = pto.vsstb {{.*}}, {{%.*}}, %c1_i16, [[BSTEP:%[a-zA-Z0-9_]+]], {{.*}} -> !pto.ptr<f32,
+// CHECK: [[B2:%[a-zA-Z0-9_]+]] = pto.vsstb {{.*}}, [[B1]], %c1_i16, [[BSTEP]], {{.*}} -> !pto.ptr<f32,
+// CHECK: pto.vsstb {{.*}}, [[B2]], %c1_i16, %c0_i16, {{.*}} : {{.*}}!pto.mask<b32>
 
 // Distinct opaque SSA leaves are not assumed equal, so the candidate sequence
 // is conservatively left in non-post-update form.
@@ -46,6 +58,34 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
       %step2 = arith.addi %step, %step : index
       %v2 = pto.vlds %src[%step2] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
       pto.vsts %v2, %sink[%c0], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+    }
+    return
+  }
+
+  func.func @direct_symbolic_leaf_vsts(%src: !pto.ptr<f32, ub>, %dst: !pto.ptr<f32, ub>, %step: index) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %step2 = arith.addi %step, %step : index
+    pto.vecscope {
+      %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+      %vec = pto.vlds %src[%c0] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+      pto.vsts %vec, %dst[%c0], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+      pto.vsts %vec, %dst[%step], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+      pto.vsts %vec, %dst[%step2], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+    }
+    return
+  }
+
+  func.func @direct_symbolic_leaf_vsstb(%src: !pto.ptr<f32, ub>, %dst: !pto.ptr<f32, ub>, %step: i16) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c0_i16 = arith.constant 0 : i16
+    %c1_i16 = arith.constant 1 : i16
+    %step2 = arith.addi %step, %step : i16
+    pto.vecscope {
+      %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+      %vec = pto.vlds %src[%c0] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+      pto.vsstb %vec, %dst, %c1_i16, %c0_i16, %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, i16, i16, !pto.mask<b32>
+      pto.vsstb %vec, %dst, %c1_i16, %step, %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, i16, i16, !pto.mask<b32>
+      pto.vsstb %vec, %dst, %c1_i16, %step2, %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, i16, i16, !pto.mask<b32>
     }
     return
   }

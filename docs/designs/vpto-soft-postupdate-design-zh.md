@@ -421,7 +421,7 @@ offset:     -x,     48 - x, 96 - x
 2. 后续候选与前一候选的 `step` 若和当前 `SequentialRun` 的规范化 step 相同，则加入该 `SequentialRun`。
 3. 若 step 不同或无法分析，则当前候选 `SequentialRun` 立即结束；破坏公差的候选不加入该 `SequentialRun`。
 4. 尚未形成合法 step 的两个候选若无法配对，丢弃前一个，以后一个重新尝试。
-5. `SequentialRun` 长度达到 2 时即可确定 `step`，但长度至少为 3 且通过 4.3.3 的合法性检查才接受并改写。接受后，破坏公差的候选作为下一个 `SequentialRun` 的起点；拒绝后，从该候选 `SequentialRun` 的最后一个候选（`end - 1`）重新尝试，使其可与破坏公差的候选组成新 `SequentialRun`。
+5. `SequentialRun` 长度达到 2 时即可确定 `step`，但长度至少为 3、通过 4.3.3 的合法性检查并满足 4.3.4 的收益性条件后才接受并改写。接受后，破坏公差的候选作为下一个 `SequentialRun` 的起点；拒绝后，从该候选 `SequentialRun` 的最后一个候选（`end - 1`）重新尝试，使其可与破坏公差的候选组成新 `SequentialRun`。
 6. 只有已接受 `SequentialRun` 的候选会被消费，且不再参与后续 `SequentialRun`，因此最终接受的 `SequentialRun` 互不重叠。被拒 `SequentialRun` 最多复用一个尾候选，不进行内部回溯或最长子序列搜索。
 
 该规则不追求全局最多命中，而是保证结果简单、线性、确定且符合程序序。
@@ -435,7 +435,7 @@ pto.vsts %x, %other[%c0], %mask : ...
 // 本桶形成一个 step = 64 的最大 SequentialRun
 ```
 
-> **与循环路径的关键区别（链式 vs 共享）。** 循环路径同组 op 共享一个 `iter_arg`、全用 pre-update 指针、**不**链式传递（4.2.7，同迭代内同地址）。顺序路径相反，**必须**链式传递（前一条的 `updated_base` 喂后一条，见 4.3.4）。因此两条交错的序列（vlds 链 + vsts 链）是两条**独立**的链，各自穿针，不能合并；按 `(op 类型, rootBase)` 分桶使每条链自然独立。
+> **与循环路径的关键区别（链式 vs 共享）。** 循环路径同组 op 共享一个 `iter_arg`、全用 pre-update 指针、**不**链式传递（4.2.7，同迭代内同地址）。顺序路径相反，**必须**链式传递（前一条的 `updated_base` 喂后一条，见 4.3.5）。因此两条交错的序列（vlds 链 + vsts 链）是两条**独立**的链，各自穿针，不能合并；按 `(op 类型, rootBase)` 分桶使每条链自然独立。
 
 #### 4.3.3 合法性检查
 
@@ -447,7 +447,26 @@ pto.vsts %x, %other[%c0], %mask : ...
 
 顺序路径不重排 op，也不改变访问地址和访问顺序，因此不同候选之间的内存读写不会截断 `SequentialRun`，无需额外别名分析。
 
-#### 4.3.4 改写
+#### 4.3.4 收益性检查
+
+长度至少为 3 只是合法性门槛。合法的 `SequentialRun` 还必须命中下列两类结构信号之一；`pto.vlds`、`pto.vsts` 和 `pto.vsstb` 使用相同规则，不按 op 类型建立白名单。
+
+**动态多层 base chain。** 当规范化后的 `step` 是编译期常量时，从第二个候选开始统计改写后确定死亡的动态 `pto.addptr`。某层 addptr 的 offset 经 4.3.1 的仿射规范化后包含 SSA 项，才视为动态；纯常量 addptr 不计收益。addptr result 必须只有下一层待删除 addptr 或当前候选这一个用户，第一条候选的 base chain 因仍用于构造 `init_ptr` 而不计收益。使用 `DenseSet` 对共享定义去重，并按下式接受：
+
+```
+deadDynamicAddPtrs > pointerEdges + initPtrCost
+
+pointerEdges = runLength - 1
+initPtrCost  = first.strideOperand 为常量零 ? 0 : 1
+```
+
+即使尾指令使用 normal 形式，它仍消费倒数第二条返回的指针，因此长度为 `N` 的 run 仍有 `N-1` 条 pointer edge。
+
+**direct symbolic leaf。** 所有候选直接使用同一个 `rootBase`，首条 effective offset 为零，规范化 step 恰为 `1 × SSA atom`（常量项为零、只有一个系数为 1 的 leaf/cast atom），且第三条及以后 offset 的累计 `arith.addi` / `arith.subi` 定义链在改写后确定死亡。定义链若有 run 外用户则拒绝。step 已支配 run 头时直接复用；定义在 run 头之后时，仅当 pure 定义可安全克隆且原定义链随地址 use 一起死亡、不会增加重复计算时才接受。该类别没有额外的长度阈值：任意满足合法性最小长度 `N >= 3` 的 run 都可改写。
+
+除此之外均保守拒绝。当前实现不为一般 `arith.addi`、`arith.muli` 或常量 `pto.addptr` 设置主观权重，也不因这些 op 出现在地址表达式中就假设最终 ISA 一定减少。收益性检查只读，不创建 IR；被拒 run 不留下常量、clone 或 `pto.addptr`。
+
+#### 4.3.5 改写
 
 对每个 `SequentialRun`，`stride_new` 就是 4.3.1 得到的规范化 `step`。初始指针直接从 `SequentialRun` 首条 op 的实际操作数计算：
 
@@ -456,16 +475,16 @@ init_ptr = pto.addptr(first.base,
                       (unitBytes/elemBytes)·first.strideOperand)
 ```
 
-这里复用循环路径的精确单位换算；不需要从 `rootBase` 重新构造绝对地址。`SequentialRun` 的前 `N-1` 条 op 替换为 post-update 形式，前一条的 `updated_base` 作为后一条的 base，strideOperand 替换为 `stride_new`。最后一条不再产生无人使用的 `updated_base`，而是保留 normal 形式：base 使用第 `N-1` 条返回的指针，strideOperand 替换为同类型零值。
+这里复用循环路径的精确单位换算；不需要从 `rootBase` 重新构造绝对地址。对长度为 `N` 的 `SequentialRun`，前 `N-1` 条替换为 post-update 形式，前一条的 `updated_base` 作为后一条的 base，strideOperand 替换为 `stride_new`。最后一条只需访问当前指针，不再产生后续用户，因此保留 normal 形式，以前一条的 `updated_base` 为 base，并把 strideOperand 替换为同类型零值：
 
 ```mlir
 // vlds 变换后
 %v0, %ptr1 = pto.vlds %init_ptr[%c64] : ... -> ..., !pto.ptr<f32, ub>
 %v1, %ptr2 = pto.vlds %ptr1[%c64] : ... -> ..., !pto.ptr<f32, ub>
-%v2 = pto.vlds %ptr2[%c0] : ... -> ...
+%v2        = pto.vlds %ptr2[%c0] : ... -> ...
 ```
 
-所有 `SequentialRun` 在只读分析阶段确定后，先物化各自的 `stride_new`、零 stride 和 `init_ptr`，再按原程序序替换候选 op，避免 erase op 使其他 `SequentialRun` 保存的表达式失效。不同桶各自维护独立指针链，即使其 op 在原 block 中交错也互不影响。
+最后一条 normal op 保留原 operands、attributes 和原始 result types，不追加 `updated_base`；`vsts` 与 `vsstb` 同理。所有 `SequentialRun` 在只读分析阶段确定后，先物化各自的 `stride_new`、同类型零值和 `init_ptr`，再按原程序序替换候选 op，避免 erase op 使其他 `SequentialRun` 保存的表达式失效。不同桶各自维护独立指针链，即使其 op 在原 block 中交错也互不影响。
 
 ## 5. Pass 集成
 
@@ -533,15 +552,17 @@ def VPTOSoftPostUpdate : Pass<"vpto-soft-postupdate", "ModuleOp"> {
 20. ~~复用循环路径的类型、精确换算、可用性和 pure 克隆检查，在整条 `SequentialRun` 通过后物化 step 并链式改写。~~
 21. ~~更新 `Passes.td` 中 pass 描述，使其同时覆盖循环递推和 block 内顺序访问。~~
 22. ~~添加 `test/lit/vpto` 回归测试：固定 base 常量序列、变化 base 与 offset 抵消、非常量仿射 step、Block 类 `8*k` 单位精确缩放及宽动态结果无法安全写入 i16 的负向用例、for-body 循环路径未命中后转顺序路径、不同桶交错、多个最大 `SequentialRun`、公差破坏、零步长及无法精确换算的负向用例。~~
+23. ~~将尾指令改为使用当前指针和同类型零 stride 的 normal 形式，避免产生无人使用的最终 `updated_base`。~~
+24. ~~增加独立收益性检查：接受能够删除足量动态多层 `pto.addptr` 的常量-step run，以及任意合法长度的 direct symbolic-leaf run；规则统一适用于当前支持的全部 op。~~
 
 ### Step 4：扩展指令覆盖
 
-23. 为 2.2 中的指令（`vldsx2`、`vsldb`、`plds`、`pldi` 等）添加 ODS `updated_base` 定义。
-24. 扩展 `PostUpdateTable`，为每条新指令按 4.2.1 的方法确定 `StrideUnit`（Element / Block / Byte）。
-25. 补充对应的 LLVM lowering（post intrinsic callee）和 lit 测试。
+25. 为 2.2 中的指令（`vldsx2`、`vsldb`、`plds`、`pldi` 等）添加 ODS `updated_base` 定义。
+26. 扩展 `PostUpdateTable`，为每条新指令按 4.2.1 的方法确定 `StrideUnit`（Element / Block / Byte）。
+27. 补充对应的 LLVM lowering（post intrinsic callee）和 lit 测试。
 
 ### Step 5：验证与开启
 
-26. 端到端验证：用 ptoas 编译，与 bisheng Post-Update 输出对比已知 kernel。
-27. NPU 验证：在硬件上运行 Post-Update kernel（通过现有 `test/vpto/cases/micro-op/vector-load-store/` 框架）。
-28. 将默认值切换为开启。
+28. 端到端验证：用 ptoas 编译，与 bisheng Post-Update 输出对比已知 kernel。
+29. NPU 验证：在硬件上运行 Post-Update kernel（通过现有 `test/vpto/cases/micro-op/vector-load-store/` 框架）。
+30. 将默认值切换为开启。

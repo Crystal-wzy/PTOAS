@@ -1182,8 +1182,12 @@ def VPTOSoftPostUpdate
   let description = [{
     Identifies VPTO load/store operations (vlds, vsts, vsstb) whose effective
     address advances by a fixed symbolic stride. Loop-carried accesses use
-    scf.for iter_args; remaining arithmetic runs within each block, including
-    loop bodies, are rewritten as updated_base pointer chains.
+    scf.for iter_args. Remaining arithmetic runs within each block, including
+    loop bodies, are rewritten only when a conservative structural
+    profitability check predicts address-computation savings. For an accepted
+    sequential run, all but the last operation form an updated_base pointer
+    chain, while the last operation uses the current pointer in normal
+    zero-offset form.
   }];
   let constructor = "mlir::pto::createVPTOSoftPostUpdatePass()";
   let dependentDialects = ["mlir::func::FuncDialect",
