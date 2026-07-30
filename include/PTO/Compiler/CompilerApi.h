@@ -6,19 +6,17 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-#ifndef PTOAS_LIB_BINDINGS_PYTHON_PTOMODULE_H
-#define PTOAS_LIB_BINDINGS_PYTHON_PTOMODULE_H
+#ifndef PTO_COMPILER_COMPILERAPI_H
+#define PTO_COMPILER_COMPILERAPI_H
 
-#include "PTO/Compiler/CompilerApi.h"
-#include "pybind11/pybind11.h"
+#if defined(_WIN32)
+#if defined(PTOAS_COMPILER_BUILDING_LIBRARY)
+#define PTOAS_COMPILER_EXPORT __declspec(dllexport)
+#else
+#define PTOAS_COMPILER_EXPORT __declspec(dllimport)
+#endif
+#else
+#define PTOAS_COMPILER_EXPORT __attribute__((visibility("default")))
+#endif
 
-namespace mlir::pto::python {
-
-/// Adds PTO dialect types, attributes, enums, and registration helpers to the
-/// project-owned ptoas._core extension module through PTOASCompiler.
-PTOAS_COMPILER_EXPORT void
-populatePTODialectBindings(pybind11::module_ &module);
-
-} // namespace mlir::pto::python
-
-#endif // PTOAS_LIB_BINDINGS_PYTHON_PTOMODULE_H
+#endif // PTO_COMPILER_COMPILERAPI_H

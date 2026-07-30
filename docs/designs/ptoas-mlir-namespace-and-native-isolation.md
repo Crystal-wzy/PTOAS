@@ -489,10 +489,14 @@ _mlir.so ──► libPTOASCompiler.so
 _core.so ──► libPTOASCompiler.so
 ```
 
-That is a separate architectural change requiring a deliberate exported API
-boundary and symbol-visibility policy. It is not a prerequisite for the
-namespace migration because repaired wheels already isolate external shared
-libraries with package-local, content-derived names.
+The follow-on implementation, including the shared development SDK and static
+wheel SDK profiles, is specified in
+`docs/designs/ptoas-compiler-dso-wheel-linking.md`.
+
+That architectural change now provides the exported bridge and symbol-
+visibility policy described there. This section is retained as the historical
+namespace-migration baseline; the follow-on design supersedes its native DSO
+topology.
 
 ## Public API Migration
 

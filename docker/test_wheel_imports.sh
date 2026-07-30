@@ -100,6 +100,13 @@ echo "Testing ptodsl public imports..."
 
 echo "Testing installed ptoas console entry..."
 "$PYTHON_BIN" -c "from ptoas import _core; print(f'ptoas native extension imported successfully from {_core.__file__}')"
+PTOAS_PACKAGE_ROOT="$($PYTHON_BIN -c 'from pathlib import Path; from ptoas import _core; print(Path(_core.__file__).parent)')"
+NATIVE_DEPENDENCY_ARGS=("${PTOAS_PACKAGE_ROOT}")
+if [[ "${PTO_EXPECT_STATIC_LLVM:-0}" == "1" ]]; then
+  NATIVE_DEPENDENCY_ARGS+=(--expect-static-llvm)
+fi
+"$PYTHON_BIN" "${REPO_ROOT}/docker/validate_installed_native_dependencies.py" \
+  "${NATIVE_DEPENDENCY_ARGS[@]}"
 PTOAS_VERSION_OUTPUT="$(ptoas --version | tr -d '\r')"
 echo "${PTOAS_VERSION_OUTPUT}"
 EXPECTED_PTOAS_CLI_VERSION="${PTOAS_CLI_VERSION:-${PTOAS_VERSION:-}}"
