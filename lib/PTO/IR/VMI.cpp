@@ -3118,6 +3118,10 @@ LogicalResult VMIVgatherOp::verify() {
   auto maskType = cast<VMIMaskType>(getMask().getType());
   auto resultType = cast<VMIVRegType>(getResult().getType());
 
+  if (failed(verifyUBBackedMemory(getOperation(), getSource().getType(),
+                                  "source")))
+    return failure();
+
   if (failed(verifyMemoryElementMatches(getOperation(), getSource().getType(),
                                         resultType, "source")))
     return failure();
@@ -3165,6 +3169,10 @@ LogicalResult VMIVgatherbOp::verify() {
   auto maskType = cast<VMIMaskType>(getMask().getType());
   auto resultType = cast<VMIVRegType>(getResult().getType());
 
+  if (failed(verifyUBBackedMemory(getOperation(), getSource().getType(),
+                                  "source")))
+    return failure();
+
   if (failed(verifyMemoryElementMatches(getOperation(), getSource().getType(),
                                         resultType, "source")))
     return failure();
@@ -3196,6 +3204,10 @@ LogicalResult VMIVscatterOp::verify() {
   auto valueType = cast<VMIVRegType>(getValue().getType());
   auto offsetsType = cast<VMIVRegType>(getOffsets().getType());
   auto maskType = cast<VMIMaskType>(getMask().getType());
+
+  if (failed(verifyUBBackedMemory(getOperation(),
+                                  getDestination().getType(), "destination")))
+    return failure();
 
   if (failed(verifyMemoryElementMatches(getOperation(),
                                         getDestination().getType(), valueType,
