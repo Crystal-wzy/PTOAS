@@ -216,6 +216,7 @@ public:
 struct PlannedDecl {
   std::string name;
   FunctionType type;
+  bool writeOnlyDestination = false;
 };
 
 struct LoweringState {
@@ -3835,6 +3836,10 @@ static FailureOr<StringRef> buildVgatherbCallee(MLIRContext *context,
 static FailureOr<StringRef> buildVscatterCallee(MLIRContext *context,
                                                 Type valueType) {
   return buildLaneTypedCallee(context, valueType, "vscatter", ".v300");
+}
+
+static FailureOr<Type> getVscatterOffsetsCarrierType(Type offsetsType) {
+  return offsetsType;
 }
 
 static FailureOr<StringRef> buildVaxpyCallee(MLIRContext *context,
@@ -8147,15 +8152,21 @@ public:
     if (failed(calleeName))
       return rewriter.notifyMatchFailure(op, "unsupported vscatter signature");
 
+    FailureOr<Type> offsetsCarrierType = getVscatterOffsetsCarrierType(
+        adaptor.getOffsets().getType());
+    if (failed(offsetsCarrierType))
+      return rewriter.notifyMatchFailure(op, "unsupported vscatter offsets carrier");
+
     auto funcType = rewriter.getFunctionType(
         TypeRange{adaptor.getValue().getType(), adaptor.getDestination().getType(),
-                  adaptor.getOffsets().getType(), adaptor.getMask().getType()},
+                  *offsetsCarrierType, adaptor.getMask().getType()},
         TypeRange{});
     rewriter.create<func::CallOp>(
         op.getLoc(), *calleeName, TypeRange{},
         ValueRange{adaptor.getValue(), adaptor.getDestination(),
                    adaptor.getOffsets(), adaptor.getMask()});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
+    state.plannedDecls.push_back(
+        PlannedDecl{calleeName->str(), funcType, true});
     rewriter.eraseOp(op);
     return success();
   }
@@ -10390,31 +10401,6 @@ public:
   }
 };
 
-class ConvertPointerCastToCastPtrOp final
-    : public OpConversionPattern<pto::PointerCastOp> {
-public:
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(pto::PointerCastOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    if (adaptor.getAddrs().empty())
-      return rewriter.notifyMatchFailure(op, "expected at least one address");
-
-    auto memref = dyn_cast<MemRefType>(op.getResult().getType());
-    if (!memref)
-      return rewriter.notifyMatchFailure(op, "expected memref result type");
-
-    auto ptrTy = pto::PtrType::get(rewriter.getContext(),
-        memref.getElementType(),
-        pto::AddressSpaceAttr::get(rewriter.getContext(), pto::AddressSpace::VEC));
-
-    rewriter.replaceOpWithNewOp<pto::CastPtrOp>(op, ptrTy,
-                                                adaptor.getAddrs().front());
-    return success();
-  }
-};
-
 class ConvertArithSelectOp final : public OpConversionPattern<arith::SelectOp> {
 public:
   ConvertArithSelectOp(TypeConverter &typeConverter, MLIRContext *context)
@@ -11459,7 +11445,7 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
         return isLegalForBranchOpInterfaceTypeConversionPattern(op,
                                                                 typeConverter);
       });
-  target.addIllegalOp<pto::PointerCastOp, pto::AddPtrOp, pto::CastPtrOp, pto::LoadScalarOp,
+  target.addIllegalOp<pto::AddPtrOp, pto::CastPtrOp, pto::LoadScalarOp,
                       pto::StoreScalarOp, pto::PTOLoadOp, pto::PTOStoreOp,
                       pto::PTOLdgOp, pto::PTOStgOp>();
   target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
@@ -11473,8 +11459,8 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
   });
 
   populateVPTOStructuralTypePatterns(typeConverter, patterns, target);
-  patterns.add<ConvertPtoTileBufAddrOp, ConvertPointerCastToCastPtrOp,
-               ConvertPtoAddPtrOp, ConvertPtoCastPtrOp, ConvertPtoLoadScalarOp,
+  patterns.add<ConvertPtoTileBufAddrOp, ConvertPtoAddPtrOp, ConvertPtoCastPtrOp,
+               ConvertPtoLoadScalarOp,
                ConvertPtoStoreScalarOp>(typeConverter, context);
   patterns.add<ConvertPtoLoadOp, ConvertPtoStoreOp, ConvertPtoLdgOp,
                ConvertPtoStgOp>(
@@ -11847,6 +11833,16 @@ emitDeviceLLVMModule(ModuleOp deviceModule, StringRef kernelKind,
   }
 
   applyArtifactVisibilityLinkage(deviceModule, *llvmModule);
+  for (llvm::Function &func : *llvmModule) {
+    if (!func.getName().starts_with("llvm.hivm.vscatter."))
+      continue;
+    // Bisheng LLVM 15 verifies these intrinsic memory effects. Record them
+    // through the LLVM 21 API here; the dispatcher rewrites the new textual
+    // memory(...) spelling before handing the IR to Bisheng.
+    func.setOnlyAccessesArgMemory();
+    func.addFnAttr(llvm::Attribute::NoUnwind);
+    func.addFnAttr(llvm::Attribute::WriteOnly);
+  }
   applySimtEntryCallingConvention(*llvmModule, simtEntryNames);
   if (failed(attachAIVectorScopeMetadata(*llvmModule, diagOS)))
     return failure();

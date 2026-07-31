@@ -34,10 +34,12 @@ NATIVE_MODULE_PATHS = {
     for suffix in importlib.machinery.EXTENSION_SUFFIXES
 }
 MLIR_NATIVE_MODULE_PREFIX = "ptoas/mlir/_mlir_libs/"
-COMMON_CAPI_LIBRARY_PATHS = {
-    f"{MLIR_NATIVE_MODULE_PREFIX}libPTOASPythonCAPI{suffix}"
-    for suffix in (".so", ".dylib")
-}
+PTOAS_COMPILER_LIBRARY_PREFIX = (
+    f"{MLIR_NATIVE_MODULE_PREFIX}libPTOASCompiler"
+)
+OBSOLETE_COMMON_CAPI_PREFIX = (
+    f"{MLIR_NATIVE_MODULE_PREFIX}libPTOASPythonCAPI"
+)
 MLIR_NATIVE_MODULE_PATHS = {
     f"{MLIR_NATIVE_MODULE_PREFIX}_mlir{suffix}"
     for suffix in importlib.machinery.EXTENSION_SUFFIXES
@@ -115,11 +117,22 @@ def validate_wheel_payload(wheel: Path) -> None:
                 f"found {mlir_native_modules}"
             )
 
-        common_capi_libraries = sorted(COMMON_CAPI_LIBRARY_PATHS & names)
-        if len(common_capi_libraries) != 1:
+        compiler_libraries = sorted(
+            name for name in names if name.startswith(PTOAS_COMPILER_LIBRARY_PREFIX)
+        )
+        if len(compiler_libraries) != 1:
             raise SystemExit(
-                "wheel must contain exactly one PTOAS MLIR common CAPI library, "
-                f"found {common_capi_libraries}"
+                "wheel must contain exactly one PTOAS compiler library, "
+                f"found {compiler_libraries}"
+            )
+
+        obsolete_common_capi = sorted(
+            name for name in names if name.startswith(OBSOLETE_COMMON_CAPI_PREFIX)
+        )
+        if obsolete_common_capi:
+            raise SystemExit(
+                "wheel contains the obsolete PTOAS Python CAPI library: "
+                f"{obsolete_common_capi}"
             )
 
         site_initializers = sorted(SITE_INITIALIZER_PATHS & names)

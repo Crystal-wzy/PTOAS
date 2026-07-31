@@ -2081,6 +2081,13 @@ def public_vector_surface_probe(inp_tile: pto.Tile, out_tile: pto.Tile, stats_ti
     s_shifted = pto.vsub(s_row, row_max_broadcast, col_mask)
     p_row = pto.vexp(s_shifted, col_mask)
     row_sum = pto.vcgadd(p_row, col_mask)
+    # Register-level probe: only assert that pto.vsqz emits the op. The
+    # compacted result is intentionally discarded here — a real compress_store
+    # would consume it via pto.init_align + pto.vstur(POST_UPDATE) + pto.vstar
+    # (see docs/user_guide/08-compute-operations.md). This probe deliberately
+    # does NOT chain a masked pto.vsts, because the original col_mask selects
+    # source lanes, not compacted positions, and would scatter the survivors.
+    _ = pto.vsqz(p_row, col_mask)
     pto.vsts(p_row, out_tile[row, 0:], col_mask)
     pto.vsts(row_max, stats_tile.as_ptr(), row, col_mask, dist="1PT_B32")
     pto.vsts(row_sum, stats_tile.as_ptr(), row + 1, col_mask, dist="1PT_B32")
@@ -6001,21 +6008,20 @@ def main() -> None:
 
     tile_slice_text = tile_slice_surface_probe.compile(BLOCK=128).mlir_text()
     expect_parse_roundtrip_and_verify(tile_slice_text, "tile slice surface specialization")
-    expect("memref.subview" in tile_slice_text, "tile[row, col:] should lower through memref.subview")
-    expect("memref.collapse_shape" not in tile_slice_text, "2D tile[row, col:] should lower directly to a rank-reduced memref view")
-    expect("pto.tile_buf_addr" in tile_slice_text, "tile[row, col:] should materialize a memref tile address view")
+    expect("memref.subview" not in tile_slice_text, "tile[row, col:] should no longer lower through memref.subview")
+    expect("pto.tile_buf_addr" in tile_slice_text, "tile[row, col:] should materialize a tile address pointer")
     expect(
-        "pto.vlds" in tile_slice_text and "memref<128xf32, strided<[1], offset: ?>, #pto.address_space<vec>>" in tile_slice_text,
-        "vlds(tile[row, col:]) should lower against the memref slice view",
+        "pto.vlds" in tile_slice_text and "!pto.ptr<f32, ub>" in tile_slice_text,
+        "vlds(tile[row, col:]) should lower against the pointer slice view",
     )
     expect(
-        "pto.vsts" in tile_slice_text and "memref<128xf32, strided<[1], offset: ?>, #pto.address_space<vec>>" in tile_slice_text,
-        "vsts(vec, tile[row, col:], mask) should lower against the memref slice view",
+        "pto.vsts" in tile_slice_text and "!pto.ptr<f32, ub>" in tile_slice_text,
+        "vsts(vec, tile[row, col:], mask) should lower against the pointer slice view",
     )
 
     tile_slice_1d_text = tile_slice_1d_surface_probe.compile(BLOCK=128).mlir_text()
     expect_parse_roundtrip_and_verify(tile_slice_1d_text, "1D tile slice surface specialization")
-    expect("memref.subview" in tile_slice_1d_text, "tile[start:] should lower through memref.subview")
+    expect("memref.subview" not in tile_slice_1d_text, "tile[start:] should lower without memref.subview")
     expect("pto.vldas" in tile_slice_1d_text, "vldas(tile[start:]) should lower against the 1D slice view")
     expect("pto.vldus" in tile_slice_1d_text, "vldus(tile[start:], align) should lower against the 1D slice view")
     expect("pto.vsts" in tile_slice_1d_text, "vsts(vec, tile[start:], mask) should lower against the 1D slice view")
@@ -6435,6 +6441,7 @@ def main() -> None:
     expect("pto.vexp" in public_surface_text, "vexp(...) should lower to pto.vexp")
     expect("pto.vcgmax" in public_surface_text, "vcgmax(...) should lower to pto.vcgmax")
     expect("pto.vcgadd" in public_surface_text, "vcgadd(...) should lower to pto.vcgadd")
+    expect("pto.vsqz" in public_surface_text, "vsqz(...) should lower to pto.vsqz")
     expect("pto.vadds" in public_surface_text, "vsubs(...) should lower via scalar negation plus pto.vadds")
     expect("pto.mte_l1_l0a" in public_surface_text, "mte_l1_l0a(...) should lower to pto.mte_l1_l0a")
     expect("start(" not in public_surface_text, "mte_l1_l0a/l0b start_row/start_col should lower as operands")

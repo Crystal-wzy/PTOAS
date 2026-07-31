@@ -8,9 +8,9 @@
 """
 TileLib render runtime.
 
-Traces a tilelang-style template body into a standalone ``func.func`` whose MLIR is on
-par with the legacy tilelang-dsl render (``tile_buf_addr`` -> memref, ``memref.subview``,
-``pto.vlds/vadd/vsts``, dynamic ``pto.tile_valid_rows/cols``).
+Traces a tilelang-style template body into a standalone ``func.func`` whose MLIR
+uses tile-native handles plus pointer-style ``pto.tile_buf_addr`` /
+``pto.vlds/vadd/vsts`` and dynamic ``pto.tile_valid_rows/cols``.
 
 Control flow is handled by the engine's AST rewrite (``rewrite_jit_function``): plain
 ``for x in range(...)`` in the template body is rewritten at trace time to
@@ -54,8 +54,7 @@ class _TemplateTile(TileValue):
     static ``v_row/v_col`` carried in the tile_buf type).
 
     Metadata (shape/dtype/memory_space) is supplied from the ``TileSpec`` because a raw
-    entry-block ``tile_buf`` type is not introspectable by ``parse_tile_type_metadata``;
-    supplying it explicitly takes the fast path in ``infer_memref_type_from_surface_value``.
+    entry-block ``tile_buf`` type is not introspectable by ``parse_tile_type_metadata``.
     """
 
     def __init__(self, value, spec: TileSpec):

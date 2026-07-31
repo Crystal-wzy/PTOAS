@@ -99,10 +99,11 @@ set(PTOAS_MLIR_PYTHON_SOURCE_SETS
   MLIRPythonSources.Dialects.scf
 )
 
-# Keep one common CAPI DSO for the upstream MLIR Python package. PTOAS owns a
-# single ptoas._core extension, built in tools/ptoas, which links this common
-# CAPI and contains both the PTO dialect implementation and compiler driver.
-add_mlir_python_common_capi_library(PTOASPythonCAPI
+# Keep the MLIR Python CAPI and PTOAS compiler implementation in one package-
+# owned DSO. Generated extensions and the thin ptoas._core entry point all
+# resolve this target, so Python-created and compiler-created IR share one
+# native MLIR runtime.
+add_mlir_python_common_capi_library(PTOASCompiler
   INSTALL_COMPONENT PTOAS_Python
   INSTALL_DESTINATION "ptoas/mlir/_mlir_libs"
   OUTPUT_DIRECTORY "${PTOAS_MLIR_PYTHON_PACKAGE_DIR}/_mlir_libs"
@@ -117,11 +118,21 @@ add_mlir_python_common_capi_library(PTOASPythonCAPI
   # the missing direct dependency until upstream Core declares it itself.
   EMBED_LIBS
     MLIRCAPITransforms
+    PTOCAPI
+    PTOIR
+    PTOTransforms
+    ptobc_lib
+    PTOASCompilerImplementation
 )
 # Imported MLIR aggregate objects do not expose a source language from which
 # CMake can infer the linker driver. The common CAPI is C++, matching MLIR's
 # own in-tree target.
-set_property(TARGET PTOASPythonCAPI PROPERTY LINKER_LANGUAGE CXX)
+set_property(TARGET PTOASCompiler PROPERTY LINKER_LANGUAGE CXX)
+# This is a package-private same-build boundary, not an LLVM-style SDK ABI.
+# Avoid installing both a versioned file and its symlink: wheel archives
+# dereference the symlink and would otherwise store the DSO twice.
+set_property(TARGET PTOASCompiler PROPERTY VERSION)
+set_property(TARGET PTOASCompiler PROPERTY SOVERSION)
 
 add_mlir_python_modules(PTOAS_Python
   ROOT_PREFIX "${PTOAS_MLIR_PYTHON_PACKAGE_DIR}"
@@ -130,7 +141,7 @@ add_mlir_python_modules(PTOAS_Python
     ${PTOAS_MLIR_PYTHON_SOURCE_SETS}
     PTOASPythonSources
   COMMON_CAPI_LINK_LIBS
-    PTOASPythonCAPI
+    PTOASCompiler
 )
 
 # AddMLIRPython deliberately resets each generated target's install RPATH to

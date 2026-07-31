@@ -12,14 +12,14 @@ module {
   func.func @valid_workspaces(
       %exact: memref<16xi32, #pto.address_space<gm>>,
       %multidim: memref<4x4xi32, #pto.address_space<gm>>,
-      %dynamic: memref<?xi32, #pto.address_space<gm>>,
-      %overflowing_capacity: memref<4611686018427387904x4xi32, #pto.address_space<gm>>,
+      %dynamic: !pto.tensor_view<?xi32>,
+      %overflowing_capacity: !pto.partition_tensor_view<4611686018427387904x4xi32>,
       %tensor_view: !pto.tensor_view<16xi32>,
       %partition_view: !pto.partition_tensor_view<16xi32>) {
     pto.syncall(%exact : memref<16xi32, #pto.address_space<gm>>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
     pto.syncall(%multidim : memref<4x4xi32, #pto.address_space<gm>>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aic_only>
-    pto.syncall(%dynamic : memref<?xi32, #pto.address_space<gm>>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<mix>
-    pto.syncall(%overflowing_capacity : memref<4611686018427387904x4xi32, #pto.address_space<gm>>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<mix>
+    pto.syncall(%dynamic : !pto.tensor_view<?xi32>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<mix>
+    pto.syncall(%overflowing_capacity : !pto.partition_tensor_view<4611686018427387904x4xi32>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<mix>
     pto.syncall(%tensor_view : !pto.tensor_view<16xi32>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
     pto.syncall(%partition_view : !pto.partition_tensor_view<16xi32>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aic_only>
     return

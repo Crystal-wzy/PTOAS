@@ -12,6 +12,8 @@
 // RUN: not ptoas %t/small_capacity.pto 2>&1 | FileCheck %s --check-prefix=SMALL
 // RUN: not ptoas %t/wrong_element_type.pto 2>&1 | FileCheck %s --check-prefix=ELEM
 // RUN: not ptoas %t/wrong_address_space.pto 2>&1 | FileCheck %s --check-prefix=SPACE
+// RUN: not ptoas %t/dynamic_memref.pto 2>&1 | FileCheck %s --check-prefix=DYNAMIC
+// RUN: not ptoas %t/wrong_workspace_type.pto 2>&1 | FileCheck %s --check-prefix=TYPE
 // RUN: not ptoas %t/wrong_used_cores_type.pto 2>&1 | FileCheck %s --check-prefix=USED
 // RUN: not ptoas %t/hard_with_operand.pto 2>&1 | FileCheck %s --check-prefix=HARD-OPERAND
 
@@ -20,6 +22,8 @@
 // SMALL: error: 'pto.syncall' op expects gm_workspace to contain at least 16 i32 elements (64 bytes), but static capacity is 15
 // ELEM: error: 'pto.syncall' op expects gm_workspace element type to be i32
 // SPACE: error: 'pto.syncall' op expects gm_workspace to be in GM address space
+// DYNAMIC: error: 'pto.syncall' op expects gm_workspace memref to have a static shape
+// TYPE: error: 'pto.syncall' op operand #0 must be TensorView, PartitionTensorView, or MemRef
 // USED: error: 'pto.syncall' op operand #1 must be 32-bit signless integer
 // HARD-OPERAND: error: 'pto.syncall' op expects hard syncall to have no gm_workspace or used_cores
 
@@ -33,34 +37,52 @@ module {
 
 //--- legacy_operands.pto
 module {
-  func.func @legacy_operands(%gm: memref<16xi32, #pto.address_space<gm>>,
-                             %ub: memref<64xi32, #pto.address_space<vec>>,
+  func.func @legacy_operands(%gm: !pto.partition_tensor_view<16xi32>,
+                             %ub: !pto.tile_buf<vec, 1x64xi32>,
                              %used: i32) {
-    pto.syncall(%gm, %ub, %used : memref<16xi32, #pto.address_space<gm>>, memref<64xi32, #pto.address_space<vec>>, i32) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
+    pto.syncall(%gm, %ub, %used : !pto.partition_tensor_view<16xi32>, !pto.tile_buf<vec, 1x64xi32>, i32) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
     return
   }
 }
 
 //--- small_capacity.pto
 module {
-  func.func @small_capacity(%gm: memref<15xi32, #pto.address_space<gm>>) {
-    pto.syncall(%gm : memref<15xi32, #pto.address_space<gm>>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
+  func.func @small_capacity(%gm: !pto.tensor_view<15xi32>) {
+    pto.syncall(%gm : !pto.tensor_view<15xi32>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
     return
   }
 }
 
 //--- wrong_element_type.pto
 module {
-  func.func @wrong_element_type(%gm: memref<16xf32, #pto.address_space<gm>>) {
-    pto.syncall(%gm : memref<16xf32, #pto.address_space<gm>>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
+  func.func @wrong_element_type(%gm: !pto.tensor_view<16xf32>) {
+    pto.syncall(%gm : !pto.tensor_view<16xf32>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
     return
   }
 }
 
 //--- wrong_address_space.pto
 module {
-  func.func @wrong_address_space(%gm: memref<16xi32, #pto.address_space<vec>>) {
+  func.func @wrong_address_space(
+      %gm: memref<16xi32, #pto.address_space<vec>>) {
     pto.syncall(%gm : memref<16xi32, #pto.address_space<vec>>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
+    return
+  }
+}
+
+//--- dynamic_memref.pto
+module {
+  func.func @dynamic_memref(
+      %gm: memref<?xi32, #pto.address_space<gm>>) {
+    pto.syncall(%gm : memref<?xi32, #pto.address_space<gm>>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
+    return
+  }
+}
+
+//--- wrong_workspace_type.pto
+module {
+  func.func @wrong_workspace_type(%gm: !pto.tile_buf<vec, 1x16xi32>) {
+    pto.syncall(%gm : !pto.tile_buf<vec, 1x16xi32>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
     return
   }
 }
@@ -68,20 +90,20 @@ module {
 //--- wrong_used_cores_type.pto
 module {
   func.func @wrong_used_cores_type(
-      %gm: memref<16xi32, #pto.address_space<gm>>, %used: index) {
-    pto.syncall(%gm, %used : memref<16xi32, #pto.address_space<gm>>, index) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
+      %gm: !pto.tensor_view<16xi32>, %used: index) {
+    pto.syncall(%gm, %used : !pto.tensor_view<16xi32>, index) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
     return
   }
 }
 
 //--- hard_with_operand.pto
 module {
-  func.func @hard_with_operand(%gm: memref<16xi32, #pto.address_space<gm>>) {
+  func.func @hard_with_operand(%gm: !pto.tensor_view<16xi32>) {
     "pto.syncall"(%gm) <{
       core_type = #pto.sync_core_type<aiv_only>,
       mode = #pto.sync_all_mode<hard>,
       operandSegmentSizes = array<i32: 1, 0>
-    }> : (memref<16xi32, #pto.address_space<gm>>) -> ()
+    }> : (!pto.tensor_view<16xi32>) -> ()
     return
   }
 }

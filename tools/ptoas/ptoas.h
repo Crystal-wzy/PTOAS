@@ -10,6 +10,7 @@
 #define PTOAS_H
 
 #include "ObjectEmission.h"
+#include "PTO/Compiler/CompilerApi.h"
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -126,7 +127,7 @@ void registerPTOASPassesAndCLOptions();
 void loadPTOASDialects(MLIRContext &context);
 
 // Reusable driver entry shared by the Python extension and standalone CLI.
-int runPTOAS(int argc, char **argv);
+PTOAS_COMPILER_EXPORT int runPTOAS(int argc, char **argv);
 
 // Attach textual-.pto SSA name hints (function args, block args, op results)
 // to the parsed module's Locations as debug metadata. Called by the driver

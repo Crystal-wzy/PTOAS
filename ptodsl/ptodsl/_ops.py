@@ -297,7 +297,7 @@ def vlds(src_ptr, offset=None, result_vreg_type=None, *, dist=None, post_update=
     post_mode = _normalize_post_update_mode(post_update, context="vlds(..., post_update=...)")
     if isinstance(src_ptr, TileSliceValue):
         if offset is not None or result_vreg_type is not None:
-            raise TypeError("vlds(tile[row, col:]) infers its memref slice and vreg type; do not pass offset/result_vreg_type")
+            raise TypeError("vlds(tile[row, col:]) infers its pointer slice and vreg type; do not pass offset/result_vreg_type")
         if post_mode != "NO_POST_UPDATE":
             raise TypeError("vlds(tile[...], post_update=...) only supports post_update=PostUpdate.OFF; use the pointer form for stateful loads")
         kwargs = {}
@@ -307,13 +307,14 @@ def vlds(src_ptr, offset=None, result_vreg_type=None, *, dist=None, post_update=
                 allowed=_VLOAD_DIST_TOKENS,
                 context="vlds(..., dist)",
             )
-        raw_source = unwrap_surface_value(src_ptr)
+        source, source_offset = _tile_slice_address(src_ptr)
+        raw_source = unwrap_surface_value(source)
         return wrap_surface_value(
             _pto.VldsOp(
                 _infer_vreg_type_from_tile_slice(src_ptr),
                 None,
                 raw_source,
-                _index_zero(),
+                source_offset,
                 **kwargs,
             ).result
         )
@@ -421,11 +422,12 @@ def vldsx2(source, offset_or_dist, dist=None, *, result_vreg_type=None):
         if dist is not None:
             raise TypeError("vldsx2(tile[row, col:], dist) does not accept a separate offset argument")
         result_type = _infer_vreg_type_from_tile_slice(source)
+        source, source_offset = _tile_slice_address(source)
         op = _pto.Vldsx2Op(
             result_type,
             result_type,
             unwrap_surface_value(source),
-            _index_zero(),
+            source_offset,
             _normalize_dist_token(
                 offset_or_dist,
                 allowed=_DEINTERLEAVE_DIST_TOKENS,
@@ -885,12 +887,13 @@ def vsts(val, dst_ptr, offset, mask=None, *, dist=None, post_update="OFF"):
                 allowed=_VSTORE_DIST_TOKENS,
                 context="vsts(..., dist)",
             )
-        raw_destination = unwrap_surface_value(dst_ptr)
+        destination, destination_offset = _tile_slice_address(dst_ptr)
+        raw_destination = unwrap_surface_value(destination)
         _pto.VstsOp(
             None,
             unwrap_surface_value(val),
             raw_destination,
-            _index_zero(),
+            destination_offset,
             unwrap_surface_value(offset),
             **kwargs,
         )
@@ -942,11 +945,12 @@ def vstsx2(low, high, dst_ptr, offset_or_dist, dist_or_mask=None, mask=None):
     if isinstance(dst_ptr, TileSliceValue):
         if mask is not None:
             raise TypeError("vstsx2(low, high, tile[row, col:], dist, mask) does not accept a separate offset argument")
+        destination, destination_offset = _tile_slice_address(dst_ptr)
         _pto.Vstsx2Op(
             unwrap_surface_value(low),
             unwrap_surface_value(high),
-            unwrap_surface_value(dst_ptr),
-            _index_zero(),
+            unwrap_surface_value(destination),
+            destination_offset,
             _normalize_dist_token(
                 offset_or_dist,
                 allowed=_INTERLEAVE_DIST_TOKENS,
@@ -1012,7 +1016,12 @@ def vgatherb(buf, offsets, mask, result_vreg_type=None):
 
 
 def vscatter(value, destination, offsets, mask):
-    """``pto.vscatter`` – indexed scatter to UB."""
+    """Scatter b8/b16/b32 values to UB using width-matched integer offsets.
+
+    The b8 form consumes 128 offsets and stores the 128 even-numbered bytes of
+    its 256-lane value vector. The b16 and b32 forms consume one offset per
+    value lane.
+    """
     _pto.VscatterOp(
         unwrap_surface_value(value),
         unwrap_surface_value(destination),
@@ -1033,6 +1042,8 @@ def vsldb(source, block_stride, repeat_stride, mask):
         if isinstance(source, TileSliceValue)
         else _infer_vreg_type_from_address_source(source)
     )
+    if isinstance(source, TileSliceValue):
+        source = _tile_slice_ptr(source)
     return wrap_surface_value(
         _pto.VsldbOp(
             result_type,
@@ -2006,6 +2017,11 @@ def vrelu(inp, mask):
 def vnot(inp, mask):
     """``pto.vnot`` – element-wise bitwise/logical not."""
     return _emit_unary_vec_op(_pto.VnotOp, inp, mask)
+
+
+def vsqz(inp, mask):
+    """``pto.vsqz`` - compact active lanes to the front while preserving order."""
+    return _emit_unary_vec_op(_pto.VsqzOp, inp, mask)
 
 
 def vexpdif(inp, ref, mask, part: str = "ODD"):
@@ -3788,6 +3804,23 @@ def tci(start, dst, *, tmp=None, descending=False):
     )
 
 
+def tscatter(src, dst, *, indexes=None, axis=None, mask_pattern=None):
+    """``pto.tscatter`` tile scatter wrapper."""
+    if indexes is not None and (axis is not None or mask_pattern is not None):
+        raise ValueError("indexes and axis/mask_pattern cannot be provided together")
+    if indexes is None and (axis is None or mask_pattern is None):
+        raise ValueError(f"non indexes mode must provide both axis and mask_pattern")
+    if axis is not None and axis not in ("row", "col"):
+        raise ValueError(f"axis must be 'row' or 'col', got {axis!r}")
+    _pto.tscatter(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+        indexes=None if indexes is None else unwrap_surface_value(indexes),
+        axis=None if axis is None else axis,
+        mask_pattern=None if mask_pattern is None else _tile_mask_pattern_attr(mask_pattern),
+    )
+
+
 def tsel(mask, src0, src1, dst, *, tmp=None):
     """``pto.tsel ins(mask, src0, src1, tmp) outs(dst)`` with synthesized scratch when omitted."""
     resolved_tmp = tmp if tmp is not None else _resolve_selection_tmp(dst, tmp, context="tsel")
@@ -4049,9 +4082,14 @@ def _tile_slice_ptr(tile_slice: TileSliceValue):
     return addptr(base_ptr, _coerce_index(linear_offset, context="tile slice pointer lowering"))
 
 
+def _tile_slice_address(tile_slice: TileSliceValue):
+    base_ptr = emit_as_ptr(tile_slice.tile)
+    linear_offset = _tile_slice_linear_offset(tile_slice)
+    return base_ptr, _coerce_index(linear_offset, context="tile slice pointer lowering")
+
+
 def _infer_vreg_type_from_tile_slice(tile_slice: TileSliceValue):
-    memref_type = MemRefType(tile_slice.type)
-    elem_type = memref_type.element_type
+    elem_type = infer_tile_element_type(tile_slice.tile)
     lanes = _elements_per_vreg(elem_type)
     return _resolve(vreg_type(lanes, elem_type))
 
@@ -6306,7 +6344,7 @@ __all__ = [
     "texpands", "treshape", "trowexpand", "tcolexpand",
     "trowexpandadd", "trowexpandsub", "trowexpandmul", "trowexpanddiv", "trowexpandmax", "trowexpandmin", "trowexpandexpdif",
     "tcolexpandadd", "tcolexpandsub", "tcolexpandmul", "tcolexpanddiv", "tcolexpandmax", "tcolexpandmin", "tcolexpandexpdif",
-    "tsort32", "tmrgsort", "tgather",
+    "tsort32", "tmrgsort", "tgather", "tscatter",
     "tsel", "tsels", "tcvt",
     "tnot", "tand", "tands", "tor", "tors", "txor", "txors", "tshl", "tshls", "tshr", "tshrs",
     "tpartadd", "tpartmul", "tpartmax", "tpartmin",

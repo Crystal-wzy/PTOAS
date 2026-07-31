@@ -2213,9 +2213,11 @@ LogicalResult VMIScatterOp::verify() {
     return failure();
 
   auto indexElementType = dyn_cast<IntegerType>(indicesType.getElementType());
-  if (!indexElementType || indexElementType.getWidth() != 32 ||
-      indexElementType.isSigned())
-    return emitOpError("requires signless or unsigned 32-bit integer indices");
+  if (!indexElementType || indexElementType.isSigned() ||
+      (indexElementType.getWidth() != 32 &&
+       indexElementType.getWidth() != 16))
+    return emitOpError(
+        "requires signless or unsigned 16-bit or 32-bit integer indices");
 
   if (failed(verifyAllSameVRegShapeAndLayout(getOperation(),
                                              {valueType, indicesType},
@@ -2453,8 +2455,8 @@ verifyVMIVectorScalarOp(Operation *op, VMIVRegType srcType,
         "requires scalar type to match vector element type, got scalar ")
            << scalarType << " vs vector element " << eltTy;
 
-  if (failed(verifyAllSameVRegShapeAndLayout(
-          op, {srcType, resultType}, /*requireSameElement=*/true)))
+  if (failed(verifyAllSameVRegShapeAndLayout(op, {srcType, resultType},
+                                             /*requireSameElement=*/true)))
     return failure();
 
   if (failed(verifyMaskMatchesData(op, maskType, resultType)))
@@ -2480,9 +2482,20 @@ verifyVMIVectorScalarShiftOp(Operation *op, VMIVRegType srcType,
   if (!isVMIIntegerLikeType(eltTy))
     return op->emitOpError(
         "requires integer-like VMI element type for shift");
-
-  return verifyVMIVectorScalarOp(op, srcType, scalarType, resultType,
-                                 maskType, pmode);
+  if (!scalarType.isSignlessInteger(16))
+    return op->emitOpError("requires signless i16 shift amount");
+  if (failed(verifyAllSameVRegShapeAndLayout(op, {srcType, resultType},
+                                             /*requireSameElement=*/true)))
+    return failure();
+  if (failed(verifyMaskMatchesData(op, maskType, resultType)))
+    return failure();
+  if (pmode.has_value()) {
+    StringRef mode = pmode.value();
+    if (mode != "merge" && mode != "zero")
+      return op->emitOpError("unsupported pmode '")
+             << mode << "'; expected \"merge\" or \"zero\"";
+  }
+  return success();
 }
 
 LogicalResult VMIAddSOp::verify() {
@@ -3215,9 +3228,11 @@ LogicalResult VMIVscatterOp::verify() {
 
   auto indexElementType =
       dyn_cast<IntegerType>(offsetsType.getElementType());
-  if (!indexElementType || indexElementType.getWidth() != 32 ||
-      indexElementType.isSigned())
-    return emitOpError("requires signless or unsigned 32-bit integer offsets");
+  if (!indexElementType || indexElementType.isSigned() ||
+      (indexElementType.getWidth() != 32 &&
+       indexElementType.getWidth() != 16))
+    return emitOpError(
+        "requires signless or unsigned 16-bit or 32-bit integer offsets");
 
   if (failed(verifyAllSameVRegShapeAndLayout(getOperation(),
                                              {valueType, offsetsType},

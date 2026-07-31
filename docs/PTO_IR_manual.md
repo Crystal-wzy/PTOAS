@@ -216,11 +216,11 @@ selection):
   regular `tile_buf` that flows through every existing DMA / compute / view
   op unchanged
 
-The N-way physical fan-out lives on the `pto.multi_buffer = N : i32`
-attribute that PTOViewToMemref writes onto the lowered `memref.alloc`;
-downstream passes (PlanMemory / InsertSync / GraphSyncSolver) consume that
-attribute. The per-use slot index threaded through `pto.multi_tile_get` is
-forwarded to the memref layer via the internal `pto.slot_marker` view op.
+The slot count is part of `!pto.multi_tile_buf`. In level1/level2,
+`PTOPlanMemory` plans all slots and records their physical addresses in the
+internal `pto.multi_buffer_addrs` attribute. `PTOResolveBufferSelect`,
+InsertSync, and GraphSyncSolver consume the tile-native allocation and slot
+selection directly; no memref allocation is introduced.
 
 See `docs/designs/ptoas-multi-buffer-explicit-design.md` for the full
 design.
@@ -244,9 +244,8 @@ compiler, not by PTO memory planning.
 - `T` is a scalar integer or float
 
 **Disjoint from tile-buf world.** Values of `!pto.local_array<...>` never
-participate in `pto.pointer_cast`, `pto-plan-memory`, or
-`AllocToPointerCast` rewrites — these passes match on `memref` / tile-buf
-types and simply do not see this type.
+participate in `pto-plan-memory`; the planner only collects tile allocation
+roots and does not see this type.
 
 **Syntax:**
 ```mlir
@@ -867,7 +866,7 @@ result = alloc_tile(base_addr, valid_row, valid_col)   // operands are optional
 
 ##### `pto.alloc_multi_tile` - Allocate N-Slot Multi-Buffer Tile
 
-**Summary:** Declares the lifetime of an N-slot multi-buffer tile. Each slot has the same `tile_buf` shape; only the underlying physical address differs. In the default pipeline (`--pto-level=level1|level2`) the N physical slots are reserved by `PTOPlanMemory` from the `pto.multi_buffer = N` attribute written onto the lowered `memref.alloc`. Under `--pto-level=level3` the caller owns local memory and PlanMemory does not run, so an explicit base `addr` operand is required (mirroring `pto.alloc_tile`); the lowering then fans the base out into the multi-address `pto.pointer_cast` PlanMemory would otherwise produce.
+**Summary:** Declares the lifetime of an N-slot multi-buffer tile. Each slot has the same `tile_buf` shape; only the underlying physical address differs. In the default pipeline (`--pto-level=level1|level2`), `PTOPlanMemory` plans the tile-native allocation directly and records all slot addresses in `pto.multi_buffer_addrs`. Under `--pto-level=level3`, the caller owns local memory and must provide an explicit base `addr`; `PTOResolveBufferSelect` derives each selected slot address from that base.
 
 **Semantics:**
 
@@ -1239,15 +1238,15 @@ op is modeled as writing the prefetched data into `dst`.
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src` | `pto.partition_tensor_view` or lowered GM memref | Source global view |
-| `dst` | `pto.tile_buf` or lowered local memref | Destination local tile |
+| `src` | `pto.partition_tensor_view` | Source global view |
+| `dst` | `pto.tile_buf` | Destination local tile |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
 **Constraints & Verification:**
 
-- `src` must be a partition view before lowering, or the corresponding lowered ranked memref form after `PTOViewToMemref`.
-- `dst` must be a tile buffer before lowering, or the corresponding lowered ranked memref form after `PTOViewToMemref`.
+- `src` must be a partition tensor view.
+- `dst` must be a tile buffer.
 - `dst` must use `loc=vec` or `loc=mat`.
 - Static source extents must be positive when known; static destination valid extents must be non-negative when known.
 - `src` and `dst` element types must have the same element size in bytes.
@@ -1287,7 +1286,7 @@ Lowering maps `%ctx` to `pto::PrefetchAsyncContext`, emits
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Source GM region to prefetch |
+| `src` | `pto.tensor_view` / `pto.partition_tensor_view` | Source GM region to prefetch |
 | `ctx` | `!pto.prefetch_async_context` | Explicit PTO prefetch async context |
 
 **Results:**
@@ -1309,7 +1308,7 @@ Lowering maps `%ctx` to `pto::PrefetchAsyncContext`, emits
     -> !pto.prefetch_async_context
 %event = pto.tprefetch_async(
     %src, %ctx
-    : memref<128xf32, #pto.address_space<gm>>,
+    : !pto.partition_tensor_view<128xf32>,
       !pto.prefetch_async_context)
     -> !pto.async_event
 %session = pto.get_prefetch_async_session %ctx
@@ -7631,14 +7630,28 @@ pto.tgatherb ins(%src, %offs : !pto.tile_buf<...>, !pto.tile_buf<...>)
 
 ---
 
-##### `pto.tscatter` - Scatter Rows
+##### `pto.tscatter` - Tile Scatter
 
-**Summary:** Scatters rows from a source tile into a destination tile using per-row indices.
+**Summary:** Scatters elements from a source tile into a destination tile. Two modes are supported: **index mode** (per-element column offsets) and **mask-pattern mode** (regular spacing controlled by a mask pattern and axis).
 
 **Semantics:**
 
+Index mode:
+
 ```
-dst[row_index[i], j] = src[i, j]
+dst[i, indexes[i, j]] = src[i, j]
+```
+
+Mask-pattern mode (axis = `"row"`):
+
+```
+dst[i, j * times + offset] = src[i, j]   // elements interleaved with zeros along columns
+```
+
+Mask-pattern mode (axis = `"col"`):
+
+```
+dst[i * stride + start, j] = src[i, j]   // elements placed at strided row positions
 ```
 
 **Arguments:**
@@ -7646,49 +7659,53 @@ dst[row_index[i], j] = src[i, j]
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile |
-| `indexes` | `pto.tile_buf` | Row index tile |
 | `dst` | `pto.tile_buf` | Destination tile |
+| `indexes` | `pto.tile_buf` (optional) | Index tile (index mode only) |
+| `axis` | `str` attr (optional) | Scatter direction: `"row"` or `"col"` (mask-pattern mode only) |
+| `maskPattern` | `pto.mask_pattern` attr (optional) | Spacing pattern: `P0101`, `P1010`, `P0001`, `P0010`, `P0100`, `P1000`, `P1111` (mask-pattern mode only) |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
 **Constraints & Verification:**
 
-- **Implementation checks (A2A3)**
+- **Common**
+  - Exactly one of `indexes` operand or `maskPattern` attribute must be provided.
+  - `axis` attribute must not be provided together with `indexes`.
+- **Index mode**
   - `dst`, `src`, and `indexes` must all use `loc=vec`.
   - `dst`/`src` element type must be one of: `i32`, `i16`, `i8`, `f16`, `f32`, `bf16`.
   - `indexes` element type must be one of: `i16`, `i32`.
   - No bounds checks are enforced on `indexes` values.
   - Valid bounds: `dst.valid_shape[i] <= dst.shape[i]`, `src.valid_shape[i] <= src.shape[i]`, and `indexes.valid_shape[i] <= indexes.shape[i]` for each dimension `i`.
   - `dst` and `src` must have the same element type.
+  - `dst.valid_shape[d] >= src.valid_shape[d]` for each dimension `d`.
   - When `dst` element size is 4 bytes, `indexes` element size must also be 4 bytes.
   - When `dst` element size is 2 bytes, `indexes` element size must also be 2 bytes.
   - When `dst` element size is 1 byte, `indexes` element size must be 2 bytes.
-- **Implementation checks (A5)**
-  - `dst`, `src`, and `indexes` must all use `loc=vec`.
+- **Mask-pattern mode**
+  - `dst` and `src` must use `loc=vec` and `row_major` blayout.
   - `dst`/`src` element type must be one of: `i32`, `i16`, `i8`, `f16`, `f32`, `bf16`.
-  - `indexes` element type must be one of: `i16`, `i32`.
-  - No bounds checks are enforced on `indexes` values.
-  - Valid bounds: `dst.valid_shape[i] <= dst.shape[i]`, `src.valid_shape[i] <= src.shape[i]`, and `indexes.valid_shape[i] <= indexes.shape[i]` for each dimension `i`.
   - `dst` and `src` must have the same element type.
-  - When `dst` element size is 4 bytes, `indexes` element size must also be 4 bytes.
-  - When `dst` element size is 2 bytes, `indexes` element size must also be 2 bytes.
-  - When `dst` element size is 1 byte, `indexes` element size must be 2 bytes.
+  - `axis` must be `"row"` or `"col"`.
+  - When `axis = "row"`: `dst.valid_rows == src.valid_rows` and `dst.valid_cols == src.valid_cols * times`.
+  - When `axis = "col"`: `dst.valid_cols == src.valid_cols` and `dst.valid_rows == src.valid_rows * times`.
+  - `times` is the mask expansion factor: `P1111`→1, `P0101`/`P1010`→2, `P0001`/`P0010`/`P0100`/`P1000`→4.
 
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
 
-**Basic Example:**
+**Index mode example:**
 
 ```mlir
 pto.tscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
             outs(%dst : !pto.tile_buf<...>)
 ```
 
-Mask form:
+**Mask-pattern mode example:**
 
 ```mlir
-pto.tscatter ins(%src, {maskPattern = #pto.mask_pattern<P0101>} : !pto.tile_buf<...>)
+pto.tscatter ins(%src, {maskPattern = #pto.mask_pattern<P0101>} : !pto.tile_buf<...>, "row")
             outs(%dst : !pto.tile_buf<...>)
 ```
 
@@ -7712,7 +7729,7 @@ elem mode: dst[i, j] = mem[idx[i, j]]
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| `mem` | `!pto.partition_tensor_view<...>` / GM memref | `NA` | Global source table |
+| `mem` | `!pto.partition_tensor_view<...>` | `NA` | Global source table |
 | `idx` | `pto.tile_buf` | `NA` | Index tile |
 | `dst` | `pto.tile_buf` | `NA` | Destination VEC tile |
 | `coalesce` | `#pto<coalesce ...>` | required | Explicit coalesce mode (`row` / `elem`) |
@@ -7736,7 +7753,6 @@ elem mode: dst[i, j] = mem[idx[i, j]]
   - Element mode: `idx valid_shape == dst valid_shape`.
   - Row mode: `idx valid_shape` may be `[1, dst.valid_row]` or `[dst.valid_row, 1]`.
   - The `[1, R]` row-mode variant uses `row_major`; the `[R, 1]` row-mode variant uses `col_major`.
-  - If `mem` is a rank-5 static GM memref, it must satisfy `<1, 1, 1, Rows, RowWidth>`.
 
 - **Out-of-bounds mode**
   - Default `gatherOob = undefined` lowers to the default `MGATHER(dst, mem, idx)` overload.
@@ -7754,15 +7770,15 @@ elem mode: dst[i, j] = mem[idx[i, j]]
 **Basic Example:**
 
 ```mlir
-pto.mgather ins(%mem, %idx : memref<...>, !pto.tile_buf<...>)
+pto.mgather ins(%mem, %idx : !pto.partition_tensor_view<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
            {coalesce = #pto<coalesce row>}
 
-pto.mgather ins(%mem, %idx : memref<...>, !pto.tile_buf<...>)
+pto.mgather ins(%mem, %idx : !pto.partition_tensor_view<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
            {coalesce = #pto<coalesce elem>}
 
-pto.mgather ins(%mem, %idx : memref<...>, !pto.tile_buf<...>)
+pto.mgather ins(%mem, %idx : !pto.partition_tensor_view<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
            {coalesce = #pto<coalesce row>, gatherOob = #pto<gather_oob zero>}
 ```
@@ -7777,7 +7793,7 @@ when `dst` is a `loc=mat` tile.
 - **`dst`** — `loc=mat`, `blayout=col_major`, `slayout=row_major`, `fractal=512`
   (NZ). Padded `cols` must be a multiple of `C0 = 32 / sizeof(elem)` and padded
   `rows` a multiple of `16` (`FRACTAL_NZ_ROW`).
-- **`idx`** — supplied as a **GM tensor** (`memref` / `partition_tensor_view`)
+- **`idx`** — supplied as a GM `partition_tensor_view`
   of `i32`, **not** a UB tile: on A5 the cube core that issues the L1 transfer
   cannot read AIV's UB.
 - **`coalesce`** — must be **explicit** (`row` or `elem`); there is no UB index
@@ -7792,8 +7808,8 @@ when `dst` is a `loc=mat` tile.
 
 ```mlir
 // Row: no scratch, idx is a GM [1, R] tensor.
-pto.mgather ins(%mem, %idx : memref<1x1x1x64x32xf16, #pto.address_space<gm>>,
-                             memref<1x1x1x1x32xi32, #pto.address_space<gm>>)
+pto.mgather ins(%mem, %idx : !pto.partition_tensor_view<1x1x1x64x32xf16>,
+                             !pto.partition_tensor_view<1x1x1x1x32xi32>)
            outs(%dst : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32,
                                      v_col=32, blayout=col_major, slayout=row_major,
                                      fractal=512, pad=0>)
@@ -7801,9 +7817,9 @@ pto.mgather ins(%mem, %idx : memref<1x1x1x64x32xf16, #pto.address_space<gm>>,
 
 // Elem: GM scratch workspace staged in NZ layout before the bulk copy.
 pto.mgather ins(%mem, %idx, %scratch
-                : memref<1x1x1x64x32xf16, #pto.address_space<gm>>,
-                  memref<1x1x1x32x32xi32, #pto.address_space<gm>>,
-                  memref<1x1x1x32x32xf16, #pto.address_space<gm>>)
+                : !pto.partition_tensor_view<1x1x1x64x32xf16>,
+                  !pto.partition_tensor_view<1x1x1x32x32xi32>,
+                  !pto.partition_tensor_view<1x1x1x32x32xf16>)
            outs(%dst : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32,
                                      v_col=32, blayout=col_major, slayout=row_major,
                                      fractal=512, pad=0>)
@@ -7829,7 +7845,7 @@ elem mode:          mem[idx[i, j]] = src[i, j]
 |------|------|---------|-------------|
 | `src` | `pto.tile_buf` | `NA` | Source VEC tile |
 | `idx` | `pto.tile_buf` | `NA` | Index tile |
-| `mem` | `!pto.partition_tensor_view<...>` / GM memref | `NA` | Global destination table |
+| `mem` | `!pto.partition_tensor_view<...>` | `NA` | Global destination table |
 | `coalesce` | `#pto<coalesce ...>` | inferred | Explicit coalesce mode (`row` / `elem`) |
 | `scatterAtomicOp` | `#pto<scatter_atomic_op ...>` | `none` | Atomic mode (`none/add/max/min`) |
 | `scatterOob` | `#pto<scatter_oob ...>` | `undefined` | Out-of-bounds mode (`undefined/skip/clamp/wrap`) |
@@ -7853,7 +7869,6 @@ elem mode:          mem[idx[i, j]] = src[i, j]
   - Element mode: `idx valid_shape == src valid_shape`.
   - Row mode: `idx valid_shape` may be `[1, src.valid_row]` or `[src.valid_row, 1]`.
   - The `[1, R]` row-mode variant uses `row_major`; the `[R, 1]` row-mode variant uses `col_major`.
-  - If `mem` is a rank-5 static GM memref, it must satisfy `<1, 1, 1, Rows, RowWidth>`.
 
 - **Atomic modes**  
   - Default `scatterAtomicOp = none` lowers to the default `MSCATTER(mem, src, idx)` overload.
@@ -7877,19 +7892,19 @@ elem mode:          mem[idx[i, j]] = src[i, j]
 
 ```mlir
 pto.mscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-            outs(%mem : memref<...>)
+            outs(%mem : !pto.partition_tensor_view<...>)
 
 pto.mscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-            outs(%mem : memref<...>)
+            outs(%mem : !pto.partition_tensor_view<...>)
             {scatterAtomicOp = #pto<scatter_atomic_op add>}
 
 pto.mscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-            outs(%mem : memref<...>)
+            outs(%mem : !pto.partition_tensor_view<...>)
             {scatterAtomicOp = #pto<scatter_atomic_op add>,
              scatterOob = #pto<scatter_oob skip>}
 
 pto.mscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-            outs(%mem : memref<...>)
+            outs(%mem : !pto.partition_tensor_view<...>)
             {coalesce = #pto<coalesce elem>,
              scatterConflict = #pto<scatter_conflict last>}
 ```
@@ -8622,7 +8637,7 @@ dst[i, j] = Quantize(src[i, j]; fp, quant_type)
 | `fp` | `pto.tile_buf` | Scaling parameter tile (`f32`) |
 | `offset` | `pto.tile_buf` | Optional asymmetric offset tile (`f32`, required for `INT8_ASYM`) |
 | `dst` | `pto.tile_buf` | Destination tile (`i8` for SYM, `ui8` for ASYM) |
-| `tmp` | `pto.tile_buf` | Optional scratch tile. A2/A3 uses it for row-broadcast and fp32-to-s32 conversion scratch; PTOAS auto-synthesizes it when omitted. A5 accepts it as a placeholder but does not require it. |
+| `tmp` | `pto.tile_buf` | Optional scratch tile. A2/A3 uses it for row-broadcast and fp32-to-s32 conversion scratch. When omitted, PTOAS preserves the no-tmp form and selects the 4-argument backend overload. A5 accepts it as a placeholder but does not require it. |
 
 **Attributes:**
 
@@ -8919,7 +8934,7 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
 
 | Name | Type | Description |
 |------|------|-------------|
-| `gm_workspace` | optional GM memref/tensor view of `i32` | Global shared workspace used by soft mode |
+| `gm_workspace` | optional GM memref/tensor/partition view of `i32` | Global shared workspace used by soft mode |
 | `used_cores` | optional `i32` | Explicit participant count for soft mode |
 | `mode` | `#pto.sync_all_mode<...>` | `hard` or `soft` |
 | `core_type` | `#pto.sync_core_type<...>` | `aiv_only`, `aic_only`, or `mix` |
@@ -8933,11 +8948,14 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
   `SYNCALL<SyncCoreType::...>()` from it.
 - Soft mode always requires `gm_workspace`.
 - Soft `aiv_only`, `aic_only`, and `mix` use the same operand ABI.
-- `gm_workspace` must be a ranked GM memref, `!pto.tensor_view`, or
-  `!pto.partition_tensor_view` with `i32` elements.
+- `gm_workspace` reuses the `TensorViewLikeOrMemRef` constraint: it must be a
+  GM `memref`, `!pto.tensor_view`, or `!pto.partition_tensor_view` with `i32`
+  elements.
+- A memref workspace must have a static shape so it can be wrapped as the
+  PTO-ISA `GlobalTensor` argument during EmitC lowering.
 - When all dimensions are static, `gm_workspace` must contain at least 16
-  elements (64 bytes). Dynamic workspaces must provide at least that capacity
-  at runtime.
+  elements (64 bytes). Dynamic tensor/partition views must provide at least
+  that capacity at runtime.
 - The workspace must occupy an exclusive 64-byte cache line and be
   zero-initialized before its first `SYNCALL`. Alignment, aliasing, and
   initialization are runtime responsibilities and cannot be proven by the
@@ -8952,7 +8970,7 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
   operandSegmentSizes = array<i32: 1, 1>,
   mode = #pto.sync_all_mode<soft>,
   core_type = #pto.sync_core_type<aiv_only>
-} : (memref<16xi32, #pto.address_space<gm>>, i32) -> ()
+} : (!pto.partition_tensor_view<16xi32>, i32) -> ()
 
 "pto.syncall"() {
   operandSegmentSizes = array<i32: 0, 0>,
@@ -10086,8 +10104,8 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 | Name | Type | Description |
 |------|------|-------------|
-| `scratch` | `pto.tile_buf` / local memref | Local scratch/staging buffer used by the async runtime |
-| `workspace` | `!pto.ptr<...>` / GM memref | Global workspace backing the async session |
+| `scratch` | `pto.tile_buf` | Local scratch/staging buffer used by the async runtime |
+| `workspace` | `!pto.ptr<...>` | Global workspace backing the async session |
 | `sync_id` | optional `i32` attr | Session synchronization ID |
 | `block_bytes` | optional `i64` attr | Communication block size in bytes |
 | `comm_block_offset` | optional `i64` attr | Per-block GM offset in bytes |
@@ -10098,8 +10116,8 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 **Constraints & Verification:**
 
-- `scratch` must be tile-like local storage.
-- `workspace` must be a GM pointer/memref.
+- `scratch` must be a local tile buffer.
+- `workspace` must be a GM pointer.
 - Optional attrs are forwarded as session configuration and must use the declared integer types.
 
 **Basic Example:**
@@ -10118,8 +10136,8 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 | Name | Type | Description |
 |------|------|-------------|
-| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote destination buffer |
-| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local source buffer |
+| `dst` | `pto.tensor_view` / `pto.partition_tensor_view` | Remote destination buffer |
+| `src` | `pto.tensor_view` / `pto.partition_tensor_view` | Local source buffer |
 | `session` | `!pto.async_session` | Async DMA session |
 
 **Results:** `!pto.async_event`
@@ -10146,8 +10164,8 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 | Name | Type | Description |
 |------|------|-------------|
-| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local destination buffer |
-| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote source buffer |
+| `dst` | `pto.tensor_view` / `pto.partition_tensor_view` | Local destination buffer |
+| `src` | `pto.tensor_view` / `pto.partition_tensor_view` | Remote source buffer |
 | `session` | `!pto.async_session` | Async DMA session |
 
 **Results:** `!pto.async_event`
@@ -10199,8 +10217,8 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 | Name | Type | Description |
 |------|------|-------------|
-| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote destination buffer |
-| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local source buffer |
+| `dst` | `pto.tensor_view` / `pto.partition_tensor_view` | Remote destination buffer |
+| `src` | `pto.tensor_view` / `pto.partition_tensor_view` | Local source buffer |
 | `buf` | `buf(%ping)` or `buf(%ping, %pong)` | Staging bundle: one or two local VEC tiles |
 | `atomicType` | `#pto<atomic_type ...>` | Atomic mode, e.g. `atomic_none` or `atomic_add` |
 
@@ -10230,10 +10248,10 @@ pto.comm.tput(%dst, %src, buf(%ping, %pong) : !pto.partition_tensor_view<128xf32
 
 | Name | Type | Description |
 |------|------|-------------|
-| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local destination buffer |
-| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote source buffer |
-| `ping` | `pto.tile_buf` / local VEC memref | Required staging tile (wrapped in `buf(%ping)`) |
-| `pong` | `pto.tile_buf` / local VEC memref | Optional second staging tile (`buf(%ping, %pong)`) |
+| `dst` | `pto.tensor_view` / `pto.partition_tensor_view` | Local destination buffer |
+| `src` | `pto.tensor_view` / `pto.partition_tensor_view` | Remote source buffer |
+| `ping` | `pto.tile_buf` | Required staging tile (wrapped in `buf(%ping)`) |
+| `pong` | `pto.tile_buf` | Optional second staging tile (`buf(%ping, %pong)`) |
 
 **Constraints & Verification:**
 
@@ -10469,7 +10487,7 @@ pto.comm.treduce(%dst, %acc, recv(%ping, %pong), group(%g0, %g1, %g2) :
 Minimum support for **C++ stack-local statically-shaped arrays of scalars** —
 suitable for small auxiliary buffers in host scalar code. Disjoint from the
 tile-buf world: these values do not participate in PTO memory planning or
-`pto.pointer_cast`, and their underlying address is decided by the host C++
+tile address materialization, and their underlying address is decided by the host C++
 compiler. Naming and asm style mirror the `eventid_array` triad.
 
 Operates on the [`!pto.local_array<...>`](#26-ptolocal_arrayd1-x-d2-x--x-dk-x-t) type. See Section 2.6 for type-level constraints.

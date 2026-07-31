@@ -9,13 +9,15 @@
 #ifndef PTOAS_LIB_BINDINGS_PYTHON_PTOMODULE_H
 #define PTOAS_LIB_BINDINGS_PYTHON_PTOMODULE_H
 
+#include "PTO/Compiler/CompilerApi.h"
 #include "pybind11/pybind11.h"
 
 namespace mlir::pto::python {
 
 /// Adds PTO dialect types, attributes, enums, and registration helpers to the
-/// project-owned ptoas._core extension module.
-void populatePTODialectBindings(pybind11::module_ &module);
+/// project-owned ptoas._core extension module through PTOASCompiler.
+PTOAS_COMPILER_EXPORT void
+populatePTODialectBindings(pybind11::module_ &module);
 
 } // namespace mlir::pto::python
 
