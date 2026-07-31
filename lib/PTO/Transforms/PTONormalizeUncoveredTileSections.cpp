@@ -123,18 +123,19 @@ classifyMteOpByAddressSpace(MteOpInterface mteOp) {
   std::optional<AddressSpace> destination;
   if (destinationValue)
     destination = getBufferAddressSpace(destinationValue.getType());
-  if (!destination)
-    return std::nullopt;
 
   if (source && *source == AddressSpace::ACC)
     return InferredSectionKind::Cube;
+  if (source && *source == AddressSpace::VEC)
+    return InferredSectionKind::Vector;
+  if (!destination)
+    return std::nullopt;
   if (*destination == AddressSpace::MAT || *destination == AddressSpace::LEFT ||
       *destination == AddressSpace::RIGHT ||
       *destination == AddressSpace::BIAS ||
       *destination == AddressSpace::SCALING)
     return InferredSectionKind::Cube;
-  if ((source && *source == AddressSpace::VEC) ||
-      *destination == AddressSpace::VEC)
+  if (*destination == AddressSpace::VEC)
     return InferredSectionKind::Vector;
   return std::nullopt;
 }
