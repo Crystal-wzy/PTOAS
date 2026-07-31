@@ -357,6 +357,10 @@ void PTOIRTranslator::RecursionIR(Region *region) {
     else if (auto bitcast = dyn_cast<pto::BitcastOp>(op)) {
       UpdateAliasBufferInfo(bitcast.getResult(), bitcast.getSrc());
     }
+    else if (auto select = dyn_cast<arith::SelectOp>(op)) {
+      UpdateAliasBufferInfo(select.getResult(), select.getTrueValue());
+      UpdateAliasBufferInfo(select.getResult(), select.getFalseValue());
+    }
 
     // --- Case C: 控制流 (SCF) ---
     else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
