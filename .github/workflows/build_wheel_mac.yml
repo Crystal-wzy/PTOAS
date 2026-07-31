@@ -12,9 +12,10 @@ on:
   push:
     tags-ignore:
       - '**'
-  pull_request:
-  # Nightly build & publish (UTC time, offset from Linux workflow).
+  # macOS wheels are intentionally not built on pull requests (expensive
+  # macOS runners); nightly/release/manual runs still build and publish them.
   schedule:
+    # Nightly build & publish (UTC time, offset from Linux workflow).
     - cron: "40 17 * * *"
   workflow_dispatch:
     inputs:
