@@ -86,6 +86,7 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         names = [
             "vsub", "vmin", "vand", "vor", "vxor", "vshl", "vshr",
             "vln", "vsqrt", "vabs", "vneg", "vrec", "vrsqrt", "vrelu", "vnot",
+            "vsqz",
             "vcmin", "vcgmin", "vcpadd",
             "vadds", "vmuls", "vmaxs", "vmins", "vlrelu", "vshls", "vshrs", "vands", "vors", "vxors",
             "vaxpy", "vmula", "vci", "vaddrelu", "vsubrelu", "vsel",
@@ -257,6 +258,25 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             self.assertIs(_ops.vsubrelu(vec, rhs, mask), relu_vec)
             vsub.assert_called_once_with(vec, rhs, mask)
             vrelu.assert_called_once_with(sub_vec, mask)
+
+    def test_vsqz_dispatches_to_generated_op_with_source_type(self):
+        inp = SimpleNamespace(type="vec_ty")
+        mask = SimpleNamespace(type="mask_ty")
+        result = object()
+
+        with patch.object(
+            _ops, "unwrap_surface_value", side_effect=_identity
+        ), patch.object(
+            _ops, "wrap_surface_value", side_effect=_identity
+        ), patch.object(
+            _ops._pto,
+            "VsqzOp",
+            return_value=SimpleNamespace(result=result),
+        ) as op_ctor:
+            output = _ops.vsqz(inp, mask)
+
+        self.assertIs(output, result)
+        op_ctor.assert_called_once_with("vec_ty", inp, mask)
 
     def test_vcgmin_and_vsel_dispatch_correctly(self):
         vec = SimpleNamespace(type="vec_ty")

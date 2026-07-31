@@ -2081,6 +2081,13 @@ def public_vector_surface_probe(inp_tile: pto.Tile, out_tile: pto.Tile, stats_ti
     s_shifted = pto.vsub(s_row, row_max_broadcast, col_mask)
     p_row = pto.vexp(s_shifted, col_mask)
     row_sum = pto.vcgadd(p_row, col_mask)
+    # Register-level probe: only assert that pto.vsqz emits the op. The
+    # compacted result is intentionally discarded here — a real compress_store
+    # would consume it via pto.init_align + pto.vstur(POST_UPDATE) + pto.vstar
+    # (see docs/user_guide/08-compute-operations.md). This probe deliberately
+    # does NOT chain a masked pto.vsts, because the original col_mask selects
+    # source lanes, not compacted positions, and would scatter the survivors.
+    _ = pto.vsqz(p_row, col_mask)
     pto.vsts(p_row, out_tile[row, 0:], col_mask)
     pto.vsts(row_max, stats_tile.as_ptr(), row, col_mask, dist="1PT_B32")
     pto.vsts(row_sum, stats_tile.as_ptr(), row + 1, col_mask, dist="1PT_B32")
@@ -6435,6 +6442,7 @@ def main() -> None:
     expect("pto.vexp" in public_surface_text, "vexp(...) should lower to pto.vexp")
     expect("pto.vcgmax" in public_surface_text, "vcgmax(...) should lower to pto.vcgmax")
     expect("pto.vcgadd" in public_surface_text, "vcgadd(...) should lower to pto.vcgadd")
+    expect("pto.vsqz" in public_surface_text, "vsqz(...) should lower to pto.vsqz")
     expect("pto.vadds" in public_surface_text, "vsubs(...) should lower via scalar negation plus pto.vadds")
     expect("pto.mte_l1_l0a" in public_surface_text, "mte_l1_l0a(...) should lower to pto.mte_l1_l0a")
     expect("start(" not in public_surface_text, "mte_l1_l0a/l0b start_row/start_col should lower as operands")
