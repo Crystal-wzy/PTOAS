@@ -5374,6 +5374,9 @@ LogicalResult PldsOp::verify() {
     return emitOpError("requires index offset");
   if (!isSupportedPredicateLoadDist(getDist()))
     return emitOpError("requires predicate load dist to be NORM, US, or DS");
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getSource().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
@@ -5394,6 +5397,9 @@ LogicalResult PldiOp::verify() {
     return emitOpError("requires offset to be a constant index immediate");
   if (!isSupportedPredicateLoadDist(getDist()))
     return emitOpError("requires predicate load dist to be NORM, US, or DS");
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getSource().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
@@ -6646,6 +6652,9 @@ LogicalResult PstiOp::verify() {
     return emitOpError("requires offset to be a constant index immediate");
   if (!isSupportedPredicateStoreDist(getDist()))
     return emitOpError("requires predicate store dist to be NORM or PK");
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getDestination().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
@@ -6661,6 +6670,9 @@ LogicalResult PstsOp::verify() {
     return emitOpError("requires index offset");
   if (!isSupportedPredicateStoreDist(getDist()))
     return emitOpError("requires predicate store dist to be NORM or PK");
+  if (getUpdatedBase() &&
+      getUpdatedBase().getType() != getDestination().getType())
+    return emitOpError("requires updated base result to match base type");
   return success();
 }
 
