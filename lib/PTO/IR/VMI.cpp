@@ -3777,6 +3777,11 @@ LogicalResult VMIvStoreOp::verify() {
   auto pmode = getPmode();
   if (pmode && !validPModes().count(*pmode))
     return emitOpError("invalid pmode: \"") << *pmode << "\"";
+  if (pmode && *pmode != "zero")
+    return emitOpError("pmode \"merge\" is not supported for stores: the "
+                       "legacy store lowering is mask-governed only and "
+                       "cannot retain prior destination contents on inactive "
+                       "lanes; omit pmode (defaults to \"zero\")");
 
   auto valueType = cast<VMIVRegType>(getValues()[0].getType());
   if (failed(verifyMemoryElementMatches(getOperation(),
@@ -3808,6 +3813,31 @@ LogicalResult VMIvStoreOp::verify() {
 }
 
 void VMIvStoreOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+LogicalResult VMIVsstbOp::verify() {
+  auto valueType = cast<VMIVRegType>(getValue().getType());
+  auto maskType = cast<VMIMaskType>(getMask().getType());
+  if (failed(verifyMemoryElementMatches(getOperation(),
+                                        getDestination().getType(), valueType,
+                                        "destination")) ||
+      failed(verifyUBBackedMemory(getOperation(), getDestination().getType(),
+                                  "destination")))
+    return failure();
+  if (auto pmode = getPmode(); pmode && !validPModes().count(*pmode))
+    return emitOpError("invalid pmode: \"") << *pmode << "\"";
+  if (auto pmode = getPmode(); pmode && *pmode != "zero")
+    return emitOpError("pmode \"merge\" is not supported for stores: the "
+                       "legacy store lowering is mask-governed only and "
+                       "cannot retain prior destination contents on inactive "
+                       "blocks; omit pmode (defaults to \"zero\")");
+  return verifyMaskMatchesData(getOperation(), maskType, valueType);
+}
+
+void VMIVsstbOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());

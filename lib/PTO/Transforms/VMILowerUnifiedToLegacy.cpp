@@ -597,6 +597,12 @@ static LogicalResult lowerVLoad(VMIvLoadOp op, OpBuilder &builder) {
 
 /// Lower vstore by dispatching on dist_mode.
 static LogicalResult lowerVStore(VMIvStoreOp op, OpBuilder &builder) {
+  // pmode="merge" (inactive lanes retain the prior destination contents)
+  // cannot be expressed by the legacy store family, whose writes are governed
+  // purely by the mask. Skip instead of silently dropping the attribute.
+  if (hasMergePmode(op))
+    return failure();
+
   // Group mode: vstore {group=C} → group_store
   if (op.getGroupAttr()) {
     builder.create<VMIGroupStoreOp>(
@@ -1173,7 +1179,7 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
         // Category C2
         isa<VMICvtOp>(op) ||
         // Category C3
-        isa<VMIvLoadOp, VMIvStoreOp>(op) ||
+        isa<VMIvLoadOp, VMIvStoreOp, VMIVsstbOp>(op) ||
         // Category C4
         isa<VMIPsetOp, VMIPgeOp, VMIPltOp>(op) ||
         // Category C6 — unified reduce (partial coverage)
@@ -1316,6 +1322,21 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
 
     if (auto vop = dyn_cast<VMIvStoreOp>(op)) {
       (void)lowerVStore(vop, builder);
+      continue;
+    }
+
+    if (auto vop = dyn_cast<VMIVsstbOp>(op)) {
+      // pmode="merge" cannot be expressed by the legacy stride store; leave
+      // the op for VMIToVPTO (which has no vsstb pattern) so the conversion
+      // fails loudly instead of silently dropping the attribute.
+      if (hasMergePmode(vop))
+        continue;
+      Value repeatStride = builder.create<arith::ConstantOp>(
+          vop.getLoc(), builder.getI16IntegerAttr(0));
+      builder.create<VMIStrideStoreOp>(
+          vop.getLoc(), vop.getValue(), vop.getDestination(), vop.getOffset(),
+          vop.getBlockStride(), repeatStride, vop.getMask());
+      vop->erase();
       continue;
     }
 

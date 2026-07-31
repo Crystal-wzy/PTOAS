@@ -2633,6 +2633,7 @@ def vmi_wrapper_dispatch_probe():
     )
     lo, hi = pto.vmi.vintlv(selected, shuffled, mask)
     pto.vmi.vstore(lo, dst_ptr, offset, mask)
+    pto.vmi.vsstb(hi, dst_ptr, offset, pto.i16(8), mask)
 
     _ = group_mask
     _ = total
@@ -6394,6 +6395,7 @@ def main() -> None:
         "pto.vmi.vinterpret_cast",
         "pto.vmi.vintlv",
         "pto.vmi.vstore",
+        "pto.vmi.vsstb",
     ]
     for op_name in expected_vmi_ops:
         expect(
