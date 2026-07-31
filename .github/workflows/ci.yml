@@ -124,7 +124,7 @@ jobs:
             /etc/apt/sources.list.d/packages-microsoft-prod*.sources
           sudo apt-get update
           sudo apt-get install -y \
-            cmake git ninja-build \
+            ccache cmake git ninja-build \
             python3 python3-pip python3-venv \
             clang-${PTOAS_CLANG_MAJOR} lld-${PTOAS_CLANG_MAJOR} \
             libedit-dev zlib1g-dev libxml2-dev libzstd-dev
@@ -166,6 +166,36 @@ jobs:
           echo "PTOAS_CMAKE_CXX_COMPILER=${clang_cxx}" >> "${GITHUB_ENV}"
           "${clang_c}" --version | head -n 1
           "${clang_cxx}" --version | head -n 1
+
+      - name: Configure ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache" >> "${GITHUB_ENV}"
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
+          echo "CCACHE_COMPILERCHECK=content" >> "${GITHUB_ENV}"
+          echo "CCACHE_NOHASHDIR=true" >> "${GITHUB_ENV}"
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          ccache --version
+
+      # Keep one bounded cache on the default branch. PRs can restore this
+      # shared cache, but do not create a separate cache for every commit.
+      - name: Restore main ccache
+        id: cache-ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-main-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ github.sha }}
+          restore-keys: |
+            ccache-main-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-
+
+      - name: Initialize ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          ccache --max-size=2G
+          ccache --zero-stats
 
       - name: Resolve LLVM source SHA
         shell: bash
@@ -297,6 +327,18 @@ jobs:
         run: |
           export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PATH}"
           ninja -C "${PTO_BUILD_DIR}" check-pto
+
+      - name: Show ccache statistics
+        if: always()
+        shell: bash
+        run: ccache --show-stats
+
+      - name: Save main ccache
+        if: github.ref == 'refs/heads/main' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-main-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ github.sha }}
 
       - name: Run sample tests (py -> pto -> cpp)
         shell: bash
