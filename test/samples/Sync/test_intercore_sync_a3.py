@@ -15,7 +15,6 @@ from ptoas.mlir.ir import (
     InsertionPoint,
     IntegerType,
     Location,
-    MemRefType,
     Module,
 )
 from ptoas.mlir.dialects import arith, func, pto, scf
@@ -31,8 +30,7 @@ def build():
             idx = IndexType.get(ctx)
             i64 = IntegerType.get_signless(64, ctx)
             i32 = IntegerType.get_signless(32, ctx)
-            # Reserve a practical FFTS workspace size instead of a 1-element stub.
-            ffts_ty = MemRefType.get([256], i64)
+            ffts_ty = pto.PtrType.get(i64, ctx)
             ptr_f32 = pto.PtrType.get(f32, ctx)
             fn_ty = func.FunctionType.get([ffts_ty, ptr_f32, i32], [])
 

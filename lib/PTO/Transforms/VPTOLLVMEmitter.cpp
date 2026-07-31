@@ -10401,31 +10401,6 @@ public:
   }
 };
 
-class ConvertPointerCastToCastPtrOp final
-    : public OpConversionPattern<pto::PointerCastOp> {
-public:
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(pto::PointerCastOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    if (adaptor.getAddrs().empty())
-      return rewriter.notifyMatchFailure(op, "expected at least one address");
-
-    auto memref = dyn_cast<MemRefType>(op.getResult().getType());
-    if (!memref)
-      return rewriter.notifyMatchFailure(op, "expected memref result type");
-
-    auto ptrTy = pto::PtrType::get(rewriter.getContext(),
-        memref.getElementType(),
-        pto::AddressSpaceAttr::get(rewriter.getContext(), pto::AddressSpace::VEC));
-
-    rewriter.replaceOpWithNewOp<pto::CastPtrOp>(op, ptrTy,
-                                                adaptor.getAddrs().front());
-    return success();
-  }
-};
-
 class ConvertArithSelectOp final : public OpConversionPattern<arith::SelectOp> {
 public:
   ConvertArithSelectOp(TypeConverter &typeConverter, MLIRContext *context)
@@ -11470,7 +11445,7 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
         return isLegalForBranchOpInterfaceTypeConversionPattern(op,
                                                                 typeConverter);
       });
-  target.addIllegalOp<pto::PointerCastOp, pto::AddPtrOp, pto::CastPtrOp, pto::LoadScalarOp,
+  target.addIllegalOp<pto::AddPtrOp, pto::CastPtrOp, pto::LoadScalarOp,
                       pto::StoreScalarOp, pto::PTOLoadOp, pto::PTOStoreOp,
                       pto::PTOLdgOp, pto::PTOStgOp>();
   target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
@@ -11484,8 +11459,8 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
   });
 
   populateVPTOStructuralTypePatterns(typeConverter, patterns, target);
-  patterns.add<ConvertPtoTileBufAddrOp, ConvertPointerCastToCastPtrOp,
-               ConvertPtoAddPtrOp, ConvertPtoCastPtrOp, ConvertPtoLoadScalarOp,
+  patterns.add<ConvertPtoTileBufAddrOp, ConvertPtoAddPtrOp, ConvertPtoCastPtrOp,
+               ConvertPtoLoadScalarOp,
                ConvertPtoStoreScalarOp>(typeConverter, context);
   patterns.add<ConvertPtoLoadOp, ConvertPtoStoreOp, ConvertPtoLdgOp,
                ConvertPtoStgOp>(

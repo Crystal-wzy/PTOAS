@@ -893,7 +893,7 @@ process_one_dir() {
     fi
 
     # Regression guard for Issue #207:
-    # SSA `pto.treshape` (lowered into `pto.bind_tile`) must lower to a single
+    # SSA `pto.treshape` must lower to a single
     # `TRESHAPE(dst, src)` instead of an invalid Tile-to-pointer cast sequence.
     if [[ "$base" == "reshape" ]]; then
       if ! grep -Fq "TRESHAPE(" "$cpp"; then

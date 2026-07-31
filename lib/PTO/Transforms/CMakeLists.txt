@@ -58,7 +58,6 @@ add_mlir_dialect_library(PTOTransforms
   InsertSync/PTOInsertSync.cpp
   PTOInjectBarrierAllSync.cpp
   InsertSync/InsertSyncDebug.cpp
-  PTOViewToMemref.cpp
   PTORematerializeFixpipeVectorQuant.cpp
   PTOValidateIntToPtrUses.cpp
   InsertTemplateAttributes.cpp
@@ -71,15 +70,14 @@ add_mlir_dialect_library(PTOTransforms
   CppPostprocess.cpp
   Utils.cpp
   OptMemPlanForPipeline.cpp
-  AllocToPointerCast.cpp
   InferPTOMemScope.cpp
   PTOPlanMemory.cpp
+  PTOPlanMemoryModern.cpp
   PTORemoveRedundantBarrier.cpp
   InferPTOLayout.cpp
   PTOA5NormalizeTMovPass.cpp
   PTORemoveIdentityTMov.cpp
   PTOCanonicalizeIR.cpp
-  PTOMaterializeTileHandles.cpp
   BufferizableOpInterfaceImpl.cpp
   ConvertToPTOOp.cpp
   PTOAssignDefaultFrontendPipeIdPass.cpp

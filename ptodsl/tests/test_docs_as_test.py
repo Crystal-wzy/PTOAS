@@ -67,7 +67,7 @@ class DocTestDirective:
     symbol: Optional[str] = None
     compile_kwargs: Optional[dict[str, object]] = None
     fixture: Optional[str] = None
-    files: Optional[dict[str, str]] | None = None
+    files: Optional[dict[str, str]] = None
 
 
 @dataclass(frozen=True)
@@ -308,7 +308,7 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
     return DocTestDirective(mode=mode)
 
 
-def _write_directive_files(snippet_dir: Path, files: dict[str, str] | None) -> None:
+def _write_directive_files(snippet_dir: Path, files: Optional[dict[str, str]]) -> None:
     if not files:
         return
     for relative_path, text in files.items():
@@ -335,7 +335,7 @@ def execute_source(
     symbol: Optional[str] = None,
     *,
     extra_namespace: Optional[dict[str, object]] = None,
-    source_dir: Path | None = None,
+    source_dir: Optional[Path] = None,
 ) -> dict[str, object]:
     source_file = block.path if source_dir is None else source_dir / "case.py"
     namespace: dict[str, object] = {

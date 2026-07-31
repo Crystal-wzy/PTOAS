@@ -266,9 +266,7 @@ def TensorViewAddrOp : PTO_Op<"tensor_view_addr", [Pure]> {
     typed PTO pointer, depending on the requested destination type.
 
     In authoring-form IR this op preserves the descriptor-style surface;
-    during view-to-memref lowering it collapses to the underlying memref value
-    or to a memref-derived pointer.
-
+    tile-native inputs remain unchanged through memory planning and sync.
     This op may also accept a memref operand after earlier view lowering, in
     which case it behaves as an identity marker and is removed by lowering.
   }];
@@ -294,8 +292,7 @@ def TileBufAddrOp : PTO_Op<"tile_buf_addr", [Pure]> {
 
     This op is emitted by TileLang DSL templates and resolved by the
     FoldTileBufIntrinsics pass after inlining. Hand-written `.pto` may also
-    use it directly on the memref result of `pto.bind_tile` / lowered
-    `pto.alloc_tile`.
+    use it directly on lowered memref/tile handles.
   }];
 
   let arguments = (ins AnyTypeOf<[TileBufType, AnyMemRef],

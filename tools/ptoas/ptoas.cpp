@@ -9,6 +9,7 @@
 #include "ptoas.h"
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/VMIUtils.h"
+#include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
@@ -211,7 +212,6 @@ void mlir::pto::registerPTOASPassesAndCLOptions() {
   mlir::registerTransformsPasses();
 
   mlir::pto::registerPTOPasses();
-  mlir::pto::registerPTOViewToMemrefPass();
   mlir::pto::registerPTOInlineLibCall();
   mlir::pto::registerFoldTileBufIntrinsics();
   mlir::pto::registerExpandTileOp();
@@ -403,10 +403,17 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
 
 static llvm::cl::opt<bool> planMemoryOrderBySize(
     "plan-memory-order-by-size",
-    llvm::cl::desc("PlanMemory: allocate buffers largest-first "
-                   "(first-fit-decreasing) instead of the default DMA-first "
-                   "order"),
+    llvm::cl::desc("Plan larger local buffers first inside one AddressSpace "
+                   "before applying the basic SPEC_LEVEL_0 reuse strategy. "
+                   "Defaults to true when --plan-memory-impl=modern is "
+                   "explicitly selected"),
     llvm::cl::init(false));
+
+static llvm::cl::opt<std::string> planMemoryImpl(
+    "plan-memory-impl",
+    llvm::cl::desc("Select local memory planner implementation: legacy or "
+                   "modern"),
+    llvm::cl::init("legacy"));
 
 static llvm::cl::opt<bool> enableBufidSync(
     "enable-bufid_sync",
@@ -712,6 +719,97 @@ static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
     return true;
   }
   return false;
+}
+
+struct ReserveBufferMemSpec {
+  uint64_t capacityBytes = 0;
+  uint64_t alignmentBytes = 1;
+};
+
+static ReserveBufferMemSpec getReserveBufferMemSpec(PTOArch arch,
+                                                    AddressSpace space) {
+  switch (space) {
+  case AddressSpace::VEC:
+    return {arch == PTOArch::A5 ? 253952ull : 196608ull, 256};
+  case AddressSpace::MAT:
+    return {524288ull, 256};
+  case AddressSpace::LEFT:
+  case AddressSpace::RIGHT:
+  case AddressSpace::ACC:
+  case AddressSpace::BIAS:
+  case AddressSpace::SCALING:
+  case AddressSpace::GM:
+  case AddressSpace::Zero:
+    break;
+  }
+  return {};
+}
+
+static LogicalResult validateReserveBufferBase(pto::ReserveBufferOp op,
+                                               PTOArch arch) {
+  auto baseAttr = op.getBaseAttr();
+  if (!baseAttr)
+    return op.emitError("expects explicit 'base'");
+
+  int64_t signedBase = baseAttr.getInt();
+  if (signedBase < 0)
+    return op.emitError("expects 'base' to be non-negative when present");
+
+  ReserveBufferMemSpec spec =
+      getReserveBufferMemSpec(arch, op.getLocation().getAddressSpace());
+  uint64_t base = static_cast<uint64_t>(signedBase);
+  if (base % spec.alignmentBytes != 0) {
+    return op.emitError("expects 'base' to be aligned to ")
+           << spec.alignmentBytes << " bytes for "
+           << stringifyEnum(op.getLocation().getAddressSpace());
+  }
+
+  uint64_t size = static_cast<uint64_t>(op.getSize());
+  if (base > spec.capacityBytes || size > spec.capacityBytes - base) {
+    return op.emitError("reserved range exceeds ")
+           << stringifyEnum(op.getLocation().getAddressSpace())
+           << " capacity: base " << base << " + size " << size
+           << " > " << spec.capacityBytes << " bytes";
+  }
+
+  return success();
+}
+
+static bool validateReserveBufferLevelRules(ModuleOp module,
+                                            PTOBuildLevel level) {
+  bool failed = false;
+  PTOArch arch = getTargetArch(module);
+  module.walk([&](pto::ReserveBufferOp op) {
+    if (level != PTOBuildLevel::Level3) {
+      if (op.getAutoAlloc()) {
+        if (op.getBaseAttr()) {
+          op.emitError("unexpected 'base' on auto reserve_buffer: "
+                       "level1/level2 assign it in pto-plan-memory");
+          failed = true;
+        }
+        return;
+      }
+
+      if (op.getBaseAttr())
+        (void)validateReserveBufferBase(op, arch);
+      op.emitError("pto.reserve_buffer with explicit 'base' (auto = false) is "
+                   "not supported when --pto-level=level1 or level2; use "
+                   "--pto-level=level3 or set auto = true");
+      failed = true;
+      return;
+    }
+
+    if (op.getAutoAlloc() || !op.getBaseAttr()) {
+      op.emitError("pto.reserve_buffer requires 'auto = false' and explicit "
+                   "'base' when --pto-level=level3");
+      failed = true;
+      return;
+    }
+
+    if (mlir::failed(validateReserveBufferBase(op, arch)))
+      failed = true;
+  });
+  return !failed;
 }
 
 static constexpr llvm::StringLiteral kAutoSyncTailPolicyBarrierAll =
@@ -1915,11 +2013,20 @@ static bool rewriteMarkerCallToSubscript(std::string &cpp, llvm::StringRef marke
       cpp, marker, [&](const ParsedMarkerCall &call) -> std::optional<std::string> {
         if (call.args.size() != expectedNumArgs)
           return std::nullopt;
+        std::string replacement;
+        replacement.reserve(call.args[0].size() + call.args[1].size() + 8 +
+                            (isStore ? call.args[2].size() : 0));
+        replacement.push_back('(');
+        replacement.append(call.args[0].str());
+        replacement.push_back(')');
+        replacement.push_back('[');
+        replacement.append(call.args[1].str());
+        replacement.push_back(']');
         if (isStore) {
-          return (call.args[0] + "[" + call.args[1] + "] = " + call.args[2])
-              .str();
+          replacement.append(" = ");
+          replacement.append(call.args[2].str());
         }
-        return (call.args[0] + "[" + call.args[1] + "]").str();
+        return replacement;
       });
 }
 
@@ -3112,12 +3219,21 @@ int mlir::pto::compilePTOASModule(
     return 1;
   }
 
+  bool hasUserPlannedMultiAddrs = false;
+  module->walk([&](pto::AllocMultiTileOp op) {
+    if (!op->hasAttr(pto::kPtoMultiBufferAddrsAttrName))
+      return;
+    op.emitError() << "attribute '" << pto::kPtoMultiBufferAddrsAttrName
+                   << "' is reserved for pto-plan-memory";
+    hasUserPlannedMultiAddrs = true;
+  });
+  if (hasUserPlannedMultiAddrs)
+    return 1;
+
   if (effectiveLevel == PTOBuildLevel::Level3) {
     // In level3 the caller owns local memory and PTOPlanMemory is skipped, so
     // every allocation must carry an explicit physical address. For
-    // multi-buffer, `addr` is the base of the contiguous N-slot region; the
-    // alloc lowering fans it out into the multi-address `pto.pointer_cast`
-    // PlanMemory would otherwise produce.
+    // multi-buffer, `addr` is the base of the contiguous N-slot region.
     bool missing = false;
     module->walk([&](pto::AllocTileOp op) {
       if (!op.getAddr()) {
@@ -3153,6 +3269,9 @@ int mlir::pto::compilePTOASModule(
     if (hasAddr)
       return 1;
   }
+
+  if (!validateReserveBufferLevelRules(*module, effectiveLevel))
+    return 1;
 
   {
     PassManager preBackendPM(module->getContext());
@@ -3249,17 +3368,29 @@ int mlir::pto::compilePTOASModule(
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
   }
 
-  pm.addPass(pto::createPTOViewToMemrefPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTORematerializeFixpipeVectorQuantPass());
 
+  if (planMemoryImpl != "legacy" && planMemoryImpl != "modern") {
+    llvm::errs() << "Error: invalid --plan-memory-impl='" << planMemoryImpl
+                 << "', expected 'legacy' or 'modern'.\n";
+    return 1;
+  }
+
   if (effectiveLevel != PTOBuildLevel::Level3) {
-    PlanMemoryOptions planMemoryOption;
-    planMemoryOption.memMode = MemPlanMode::LOCAL_MEM_PLAN;
-    planMemoryOption.enableGlobalReuse = false;
-    planMemoryOption.enablePrintMemoryAllocatedSize = false;
-    planMemoryOption.orderBySize = planMemoryOrderBySize;
-    pm.addPass(pto::createPlanMemoryPass(planMemoryOption));
+    pto::PlanMemoryOptions planMemoryOptions;
+    planMemoryOptions.memMode = "local";
+    bool effectivePlanMemoryOrderBySize = planMemoryOrderBySize;
+    if (planMemoryImpl == "modern" &&
+        planMemoryOrderBySize.getNumOccurrences() == 0) {
+      effectivePlanMemoryOrderBySize = true;
+    }
+    planMemoryOptions.orderBySize = effectivePlanMemoryOrderBySize;
+    if (planMemoryImpl == "legacy") {
+      pm.addPass(pto::createPlanMemoryPass(planMemoryOptions));
+    } else {
+      pm.addPass(pto::createPlanMemoryModernPass(planMemoryOptions));
+    }
   }
   pm.addPass(pto::createPTOResolveReservedBuffersPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveIdentityTMovPass());
@@ -3267,8 +3398,8 @@ int mlir::pto::compilePTOASModule(
   // Conditionally add one automatic synchronization mode. Barrier-all is a
   // conservative standalone pass; InsertSync and GraphSyncSolver are set/wait
   // solvers. Sync runs BEFORE PTOResolveBufferSelect so it sees per-use
-  // `pto.slot_marker` ops and can keep multi-buffer slot identity (const slot
-  // K vs slot K' or dynamic slot) for the alias / event-id analysis.
+  // `pto.multi_tile_get` operations and keeps their slot identity for alias
+  // and event-id analysis.
   // solvers, while BufidSync is A5-only get_buf/rls_buf synchronization.
   if (enableInsertSync)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
@@ -3287,9 +3418,8 @@ int mlir::pto::compilePTOASModule(
         pto::createPTOGraphSyncSolverPass(graphSyncOpts));
   }
 
-  // Materialize per-slot single-address `pto.pointer_cast` (constant slot)
-  // or an `arith.select` chain (dynamic slot). The multi-address cast
-  // produced by PlanMemory survives as the alloc anchor.
+  // Materialize each `pto.multi_tile_get` as an addressed `pto.alloc_tile`;
+  // dynamic selections use an `arith.select` chain over planned addresses.
   pm.addPass(pto::createPTOResolveBufferSelectPass());
   if (effectiveBackend == PTOBackend::EmitC)
     pm.addPass(createNarrowUnusedMultiResultProvenancePass());
@@ -3310,13 +3440,8 @@ int mlir::pto::compilePTOASModule(
     return 0;
   }
 
-  // Reintroduce tile-native handles once on the shared mainline so both
-  // backends consume the same post-planning seam IR.
-  pm.addPass(pto::createPTOMaterializeTileHandlesPass());
   pm.addPass(createCSEPass());
-  // Inline PTODSL backend helpers only after the shared mainline has
-  // materialized tile-native handles, so helper arguments are restored to the
-  // tile_buf ABI before qk.as_ptr()-style bridges are cloned into callers.
+  // PTODSL backend helpers already use the tile-native ABI.
   pm.addPass(pto::createPTOInlineBackendHelpersPass());
   if (effectiveBackend == PTOBackend::EmitC)
     pm.addPass(createNarrowUnusedMultiResultProvenancePass());

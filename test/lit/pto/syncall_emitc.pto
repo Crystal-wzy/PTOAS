@@ -1,11 +1,11 @@
 // RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s
 
 module {
-  func.func @syncall_emitc(%gm: memref<64xi32, #pto.address_space<gm>>,
-                           %ub: memref<64xi32, #pto.address_space<vec>>,
-                           %l1: memref<64xi32, #pto.address_space<mat>>,
+  func.func @syncall_emitc(%gm: !pto.partition_tensor_view<64xi32>,
+                           %ub: !pto.tile_buf<vec, 1x64xi32>,
+                           %l1: !pto.tile_buf<mat, 1x64xi32>,
                            %used: i32) {
-    pto.syncall(%gm, %ub, %l1, %used : memref<64xi32, #pto.address_space<gm>>, memref<64xi32, #pto.address_space<vec>>, memref<64xi32, #pto.address_space<mat>>, i32) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<mix>
+    pto.syncall(%gm, %ub, %l1, %used : !pto.partition_tensor_view<64xi32>, !pto.tile_buf<vec, 1x64xi32>, !pto.tile_buf<mat, 1x64xi32>, i32) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<mix>
     pto.syncall() mode = #pto.sync_all_mode<hard>, core_type = #pto.sync_core_type<mix>
     return
   }

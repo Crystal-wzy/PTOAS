@@ -5038,7 +5038,8 @@ LogicalResult TensorViewAddrOp::verify() {
   } else if (auto memrefType = dyn_cast<BaseMemRefType>(srcType)) {
     elementType = memrefType.getElementType();
     expectedRank = memrefType.getRank();
-    auto srcSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(memrefType.getMemorySpace());
+    auto srcSpace =
+        dyn_cast_or_null<pto::AddressSpaceAttr>(memrefType.getMemorySpace());
     if (srcSpace && srcSpace != gmSpace)
       return emitOpError("memref source must stay in gm memory space");
   } else {
@@ -5081,10 +5082,6 @@ LogicalResult TileBufAddrOp::verify() {
     srcMemorySpace = srcTileType.getMemorySpace();
     srcRank = static_cast<int64_t>(srcTileType.getShape().size());
   } else if (auto srcMemRefType = dyn_cast<BaseMemRefType>(getSrc().getType())) {
-    // PTOViewToMemref may lower tile_buf producers to memref + pto.bind_tile
-    // before the shared materialization bridge restores tile handles.
-    // Hand-written pto.tile_buf_addr may therefore temporarily see a tile-bound
-    // memref operand in that intermediate form.
     elementType = srcMemRefType.getElementType();
     srcMemorySpace = srcMemRefType.getMemorySpace();
     srcRank = srcMemRefType.getRank();
