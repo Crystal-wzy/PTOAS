@@ -3659,7 +3659,8 @@ FailureOr<SmallVector<Value>> materializeLaneStrideToContiguous(
   results.reserve(resultTypes.size());
   for (auto [resultIndex, resultType] : llvm::enumerate(resultTypes)) {
     size_t sourceBegin = resultIndex * laneStride;
-    size_t sourceEnd = std::min(sourceBegin + laneStride, sourceParts.size());
+    size_t sourceEnd =
+        std::min<size_t>(sourceBegin + laneStride, sourceParts.size());
     SmallVector<Value> currentLevel;
     currentLevel.reserve(sourceEnd - sourceBegin);
     for (Value source : sourceParts.slice(sourceBegin, sourceEnd - sourceBegin)) {

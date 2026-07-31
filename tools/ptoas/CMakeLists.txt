@@ -53,7 +53,7 @@ foreach(_ptoas_wrapper IN ITEMS
   )
 endforeach()
 
-function(ptoas_configure_runtime_target target_name)
+function(ptoas_configure_runtime_compile_target target_name)
   target_compile_definitions(${target_name} PRIVATE
     PTOAS_RELEASE_VERSION="${PTOAS_CLI_VERSION}"
     # Source-tree defaults for TileLib expansion. These let ptoas run directly
@@ -65,50 +65,91 @@ function(ptoas_configure_runtime_target target_name)
     PTOAS_DEFAULT_TILEOPS_PKG_PATH="${CMAKE_SOURCE_DIR}/lib"
     ${ARGN}
   )
-  target_link_libraries(${target_name} PUBLIC
-    PTOIR
-    PTOTransforms
-    ptobc_lib
-    MLIRMlirOptMain
-    MLIRBufferizationTransforms
-    MLIRArithTransforms
-    MLIRTensorTransforms
-    MLIRFuncTransforms
-    MLIRIR
-    MLIRParser
-    MLIRPass
-    MLIREmitCDialect
-    MLIRSCFDialect
-    MLIRGPUDialect
-    MLIRTransforms
-    MLIRTargetCpp
-    MLIRAffineDialect
-    MLIRArithDialect
-    MLIRTensorDialect
-    MLIRControlFlowDialect
-    MLIRBufferizationDialect
-    MLIRFuncDialect
-    MLIRFuncInlinerExtension
-    MLIRLLVMIRTransforms
-    MLIRSupport
-    LLVMOption
-    MLIRTransformUtils
-  )
   add_dependencies(${target_name}
     PTOOpsIncGen
   )
 endfunction()
 
-# Keep the LLVM-based driver sources under LLVM's RTTI/exception compile mode.
-# The pybind11 translation unit must retain the Python extension's normal RTTI
-# and exception mode, so it is compiled by the module target separately.
-add_library(ptoas_runtime_objects OBJECT ${PTOAS_RUNTIME_SOURCES})
-llvm_update_compile_flags(ptoas_runtime_objects)
-ptoas_configure_runtime_target(ptoas_runtime_objects)
+set(PTOAS_RUNTIME_LINK_LIBS
+  PTOIR
+  PTOTransforms
+  ptobc_lib
+  MLIRMlirOptMain
+  MLIRBufferizationTransforms
+  MLIRArithTransforms
+  MLIRTensorTransforms
+  MLIRFuncTransforms
+  MLIRIR
+  MLIRParser
+  MLIRPass
+  MLIREmitCDialect
+  MLIRSCFDialect
+  MLIRGPUDialect
+  MLIRTransforms
+  MLIRTargetCpp
+  MLIRAffineDialect
+  MLIRArithDialect
+  MLIRTensorDialect
+  MLIRControlFlowDialect
+  MLIRBufferizationDialect
+  MLIRFuncDialect
+  MLIRFuncInlinerExtension
+  MLIRLLVMIRTransforms
+  MLIRSupport
+  LLVMOption
+  MLIRTransformUtils
+)
 
-# Build the single PTOAS-owned Python extension. It contains both the compiler
-# driver and PTO dialect bindings, while linking MLIR's shared common CAPI so
-# Python-created MLIR objects and the compiler use the same MLIR runtime.
+# This aggregation root owns all compiler and PTO Python binding objects. The
+# final shared library is declared earlier as PTOASCompiler; AddMLIR resolves
+# this forward target relationship during generation.
+add_mlir_library(PTOASCompilerImplementation
+  OBJECT
+  ENABLE_AGGREGATION
+  EXCLUDE_FROM_LIBMLIR
+  DISABLE_INSTALL
+  PARTIAL_SOURCES_INTENDED
+
+  ${PTOAS_RUNTIME_SOURCES}
+  "${CMAKE_SOURCE_DIR}/lib/Bindings/Python/PTOModule.cpp"
+
+  LINK_LIBS PUBLIC
+  ${PTOAS_RUNTIME_LINK_LIBS}
+)
+ptoas_configure_runtime_compile_target(obj.PTOASCompilerImplementation)
+target_compile_definitions(obj.PTOASCompilerImplementation PRIVATE
+  "MLIR_PYTHON_PACKAGE_PREFIX=ptoas.mlir."
+  PTOAS_COMPILER_BUILDING_LIBRARY=1
+)
+target_include_directories(PTOASCompilerImplementation PRIVATE
+  "${CMAKE_SOURCE_DIR}/lib/Bindings/Python"
+)
+target_link_libraries(obj.PTOASCompilerImplementation PRIVATE pybind11::module)
+
+# LLVM normally disables RTTI and exceptions. Retain the Python binding
+# contract only for its translation unit while leaving compiler sources on the
+# standard LLVM flags.
+if(MSVC)
+  set_property(SOURCE "${CMAKE_SOURCE_DIR}/lib/Bindings/Python/PTOModule.cpp"
+    APPEND PROPERTY COMPILE_OPTIONS /EHsc /GR)
+elseif(LLVM_COMPILER_IS_GCC_COMPATIBLE OR CLANG_CL)
+  set_property(SOURCE "${CMAKE_SOURCE_DIR}/lib/Bindings/Python/PTOModule.cpp"
+    APPEND PROPERTY COMPILE_OPTIONS -frtti -fexceptions)
+endif()
+
+# PTOModule.cpp references the CPython API. As with a regular extension, those
+# symbols are supplied by the interpreter at load time rather than libpython.
+target_link_libraries(PTOASCompiler PRIVATE pybind11::module)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT LLVM_USE_SANITIZER)
+  target_link_options(PTOASCompiler PRIVATE "LINKER:-z,undefs")
+endif()
+set_target_properties(PTOASCompiler PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES
+)
+
+# Build the single PTOAS-owned Python extension as a thin entry point. Compiler,
+# PTO dialect, and MLIR CAPI implementation all live in PTOASCompiler.
 set(PTOAS_BUILD_PYTHON_PACKAGE_DIR "${CMAKE_BINARY_DIR}/python/ptoas")
 add_mlir_python_extension(PTOASPythonCore _core
   INSTALL_COMPONENT PTOAS_Python
@@ -117,11 +158,8 @@ add_mlir_python_extension(PTOASPythonCore _core
   PYTHON_BINDINGS_LIBRARY pybind11
   SOURCES
     NativeModule.cpp
-    "${CMAKE_SOURCE_DIR}/lib/Bindings/Python/PTOModule.cpp"
   LINK_LIBS
-    ptoas_runtime_objects
-    PTOCAPI
-    PTOASPythonCAPI
+    PTOASCompiler
 )
 target_compile_definitions(PTOASPythonCore PRIVATE
   "MLIR_PYTHON_PACKAGE_PREFIX=ptoas.mlir."

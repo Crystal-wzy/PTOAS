@@ -31,7 +31,7 @@ endif()
 
 set(_ptoas_known_native_files
   "${_ptoas_package_root}/$<TARGET_FILE_NAME:PTOASPythonCore>"
-  "${_ptoas_mlir_lib_root}/$<TARGET_FILE_NAME:PTOASPythonCAPI>"
+  "${_ptoas_mlir_lib_root}/$<TARGET_FILE_NAME:PTOASCompiler>"
 )
 foreach(_ptoas_native IN LISTS _ptoas_known_native_files)
   if(NOT EXISTS "${_ptoas_native}")
@@ -148,7 +148,7 @@ foreach(_ptoas_dependency IN LISTS _ptoas_resolved_dependencies)
   endif()
 
   get_filename_component(_ptoas_dependency_name "${_ptoas_dependency_real}" NAME)
-  if(_ptoas_dependency_name MATCHES "^libPTOASPythonCAPI")
+  if(_ptoas_dependency_name MATCHES "^libPTOASCompiler")
     continue()
   endif()
   file(INSTALL "${_ptoas_dependency}"

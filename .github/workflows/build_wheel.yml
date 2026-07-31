@@ -38,7 +38,7 @@ concurrency:
 env:
   LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
   LLVM_REF: feature-vpto-llvm21
-  LLVM_CACHE_FLAVOR: llvm21-vpto-release-hardening-v1
+  LLVM_CACHE_FLAVOR: llvm21-vpto-wheel-static-pic-v1
 
 jobs:
   build_wheel:
@@ -148,7 +148,7 @@ jobs:
         run: |
           echo "WORKSPACE_DIR=/llvm-workspace" >> $GITHUB_ENV
           echo "LLVM_SOURCE_DIR=/llvm-workspace/llvm-project" >> $GITHUB_ENV
-          echo "LLVM_BUILD_DIR=/llvm-workspace/llvm-project/build-release" >> $GITHUB_ENV
+          echo "LLVM_BUILD_DIR=/llvm-workspace/llvm-project/build-wheel-static" >> $GITHUB_ENV
           echo "PTO_SOURCE_DIR=$GITHUB_WORKSPACE" >> $GITHUB_ENV
           echo "PTO_BUILD_DIR=$GITHUB_WORKSPACE/build-release" >> $GITHUB_ENV
 
@@ -166,7 +166,7 @@ jobs:
         id: cache-llvm
         uses: actions/cache/restore@v4
         with:
-          path: /llvm-workspace/llvm-project/build-release
+          path: /llvm-workspace/llvm-project/build-wheel-static
           key: llvm-${{ steps.llvm-source.outputs.sha }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-${{ env.LLVM_CACHE_FLAVOR }}
 
       - name: Prepare LLVM source
@@ -187,7 +187,12 @@ jobs:
           cd $LLVM_SOURCE_DIR
           cmake -C "$PTO_SOURCE_DIR/cmake/LinuxHardeningCache.cmake" -G Ninja -S llvm -B $LLVM_BUILD_DIR \
             -DLLVM_ENABLE_PROJECTS="mlir;clang" \
-            -DBUILD_SHARED_LIBS=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLVM_BUILD_LLVM_DYLIB=OFF \
+            -DLLVM_LINK_LLVM_DYLIB=OFF \
+            -DMLIR_LINK_MLIR_DYLIB=OFF \
+            -DLLVM_ENABLE_PIC=ON \
+            -DMLIR_INSTALL_AGGREGATE_OBJECTS=ON \
             -DLLVM_ENABLE_ASSERTIONS=OFF \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
             -DPython3_EXECUTABLE=${PY_PATH}/bin/python \
@@ -203,7 +208,7 @@ jobs:
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: /llvm-workspace/llvm-project/build-release
+          path: /llvm-workspace/llvm-project/build-wheel-static
           key: llvm-${{ steps.llvm-source.outputs.sha }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-${{ env.LLVM_CACHE_FLAVOR }}
 
       - name: Build PTOAS
@@ -233,15 +238,15 @@ jobs:
           export PTO_WHEEL_DIST_DIR=$PTO_SOURCE_DIR/build/wheel-dist
           export PTO_WHEELHOUSE=$GITHUB_WORKSPACE/wheelhouse
           mkdir -p "$PTO_WHEELHOUSE"
-          # The raw wheel intentionally keeps package-relative RPATHs. Give
-          # auditwheel the external LLVM build only while resolving and
-          # bundling its shared dependencies.
+          # Static LLVM/MLIR is embedded in PTOASCompiler. Keep the build-tree
+          # path available only for incidental non-LLVM shared dependencies.
           export LD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
           auditwheel repair --plat manylinux_2_34_${{ matrix.arch }} "$PTO_WHEEL_DIST_DIR"/ptoas*.whl -w "$PTO_WHEELHOUSE"
 
       - name: Test wheel installation
         run: |
-          PTO_TEST_WHEEL_PATH="$GITHUB_WORKSPACE/wheelhouse/ptoas*.whl" \
+          PTO_EXPECT_STATIC_LLVM=1 \
+            PTO_TEST_WHEEL_PATH="$GITHUB_WORKSPACE/wheelhouse/ptoas*.whl" \
             bash $PTO_SOURCE_DIR/docker/test_wheel_imports.sh
 
       - name: Upload wheel artifact
@@ -285,14 +290,12 @@ jobs:
           test -f "$TEST_DIR/extracted/ptodsl/__init__.py"
           test -d "$TEST_DIR/extracted/ptoas/_runtime/share/ptoas/TileOps"
           test "$(cat "$TEST_DIR/extracted/.ptoas-python-version")" = "3.11"
-          found_core=
-          for core in "$TEST_DIR"/extracted/ptoas/_core*.so; do
-            if [ -f "$core" ]; then
-              found_core=1
-              break
-            fi
-          done
-          test -n "$found_core"
+          compgen -G "$TEST_DIR/extracted/ptoas/_core*.so" >/dev/null
+          compgen -G "$TEST_DIR/extracted/ptoas/mlir/_mlir_libs/libPTOASCompiler*" >/dev/null
+          ! compgen -G "$TEST_DIR/extracted/ptoas/mlir/_mlir_libs/libPTOASPythonCAPI*" >/dev/null
+
+          python "$PTO_SOURCE_DIR/docker/validate_installed_native_dependencies.py" \
+            "$TEST_DIR/extracted/ptoas" --expect-static-llvm
 
           env -u PYTHONPATH -u DYLD_LIBRARY_PATH -u LD_LIBRARY_PATH \
             "$TEST_DIR/extracted/bin/ptoas" --version
