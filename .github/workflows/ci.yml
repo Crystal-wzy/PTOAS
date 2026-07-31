@@ -179,13 +179,16 @@ jobs:
           echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
           ccache --version
 
-      - name: Restore ccache
-        uses: actions/cache@v4
+      # Keep one bounded cache on the default branch. PRs can restore this
+      # shared cache, but do not create a separate cache for every commit.
+      - name: Restore main ccache
+        id: cache-ccache
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: ccache-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ github.sha }}
+          key: ccache-main-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-
+            ccache-main-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-
 
       - name: Initialize ccache
         shell: bash
@@ -329,6 +332,13 @@ jobs:
         if: always()
         shell: bash
         run: ccache --show-stats
+
+      - name: Save main ccache
+        if: github.ref == 'refs/heads/main' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-main-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ github.sha }}
 
       - name: Run sample tests (py -> pto -> cpp)
         shell: bash
