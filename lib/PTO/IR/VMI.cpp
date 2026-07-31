@@ -3734,7 +3734,9 @@ LogicalResult VMIvStoreOp::verify() {
       return emitOpError("group must be positive, got ") << numGroups;
     if (getValues().size() != 1)
       return emitOpError("group mode requires exactly 1 value");
-    return success();
+    auto valueType = cast<VMIVRegType>(getValues()[0].getType());
+    if (failed(verifyNumGroups(getOperation(), valueType, numGroups)))
+      return failure();
   }
 
   // block_stride / repeat_stride: paired, mutually exclusive with
@@ -3750,7 +3752,6 @@ LogicalResult VMIvStoreOp::verify() {
           "block_stride and dist_mode are mutually exclusive");
     if (getValues().size() != 1)
       return emitOpError("block-stride mode requires exactly 1 value");
-    return success();
   }
 
   auto distMode = getDistMode();
@@ -3784,7 +3785,11 @@ LogicalResult VMIvStoreOp::verify() {
                        "lanes; omit pmode (defaults to \"zero\")");
 
   auto valueType = cast<VMIVRegType>(getValues()[0].getType());
-  if (failed(verifyMemoryElementMatches(getOperation(),
+  bool isPackedGroupStore =
+      getGroup() &&
+      isPackedByteGroupStore(getDestination().getType(), valueType);
+  if (!isPackedGroupStore &&
+      failed(verifyMemoryElementMatches(getOperation(),
                                         getDestination().getType(), valueType,
                                         "destination")))
     return failure();
@@ -4126,7 +4131,9 @@ LogicalResult VMIvLoadOp::verify() {
       return emitOpError("group must be positive, got ") << numGroups;
     if (getResults().size() != 1)
       return emitOpError("group mode requires exactly 1 result");
-    return success();
+    auto resultType = cast<VMIVRegType>(getResults()[0].getType());
+    if (failed(verifyNumGroups(getOperation(), resultType, numGroups)))
+      return failure();
   }
 
   // block_stride and repeat_stride must be paired, mutually exclusive
@@ -4142,7 +4149,6 @@ LogicalResult VMIvLoadOp::verify() {
           "block_stride and dist_mode are mutually exclusive");
     if (getResults().size() != 1)
       return emitOpError("block-stride mode requires exactly 1 result");
-    return success();
   }
 
   // result count vs dist-mode
