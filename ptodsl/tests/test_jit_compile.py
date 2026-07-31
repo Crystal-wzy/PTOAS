@@ -2655,10 +2655,15 @@ def vmi_wrapper_dispatch_probe():
     multiply_accumulate = pto.vmi.vmula(lhs, lhs, rhs, mask)
     widened = pto.vmi.vadd(low, high, mask)
     casted = pto.vmi.vcvt(shuffled, pto.f16)
+    casted_r = pto.vmi.vcvt(shuffled, pto.f16, rounding="R", saturate="SAT")
+    casted_a = pto.vmi.vcvt(shuffled, pto.f16, rounding="A", saturate="SAT")
+    casted_h = pto.vmi.vcvt(shuffled, pto.f16, rounding="H", saturate="SAT")
+    casted_z = pto.vmi.vcvt(shuffled, pto.f16, rounding="Z", saturate="SAT")
     recast = pto.vmi.vinterpret_cast(
         lhs,
         pto.i32,
     )
+    recast_narrow = pto.vmi.vinterpret_cast(lhs, pto.f16)
     lo, hi = pto.vmi.vintlv(selected, shuffled, mask)
     even, odd = pto.vmi.vdintlv(lo, hi, mask)
     pto.vmi.vscatter(selected, dst_ptr, idx, mask)
@@ -2676,7 +2681,9 @@ def vmi_wrapper_dispatch_probe():
     _ = cumul
     _ = widened
     _ = casted
+    _ = (casted_r, casted_a, casted_h, casted_z)
     _ = recast
+    _ = recast_narrow
     _ = hi
     _ = (subtracted, multiplied, divided, maximum, minimum, absolute, negated)
     _ = (exponent, logarithm, square_root, int_and, int_or, int_xor, int_not)
@@ -6488,9 +6495,22 @@ def main() -> None:
         "!pto.vmi.vreg<64xf16>" in vmi_wrapper_dispatch_text,
         "PTODSL VMI conversion probes should materialize converted logical VMI vector result types in MLIR",
     )
+    for rounding in ("R", "A", "H", "Z"):
+        expect(
+            f'rounding = "{rounding}"' in vmi_wrapper_dispatch_text,
+            f"PTODSL vcvt should preserve canonical {rounding} rounding",
+        )
+    expect(
+        vmi_wrapper_dispatch_text.count('saturate = "SAT"') >= 5,
+        "PTODSL vcvt should preserve explicit SAT and default omitted narrowing saturation to SAT",
+    )
     expect(
         "!pto.vmi.vreg<64xi32>" in vmi_wrapper_dispatch_text,
         "PTODSL VMI index/reinterpret probes should materialize integer logical VMI vector result types in MLIR",
+    )
+    expect(
+        "!pto.vmi.vreg<128xf16>" in vmi_wrapper_dispatch_text,
+        "PTODSL vinterpret_cast should infer lane count by conserving total bits",
     )
     expect(
         "!pto.vmi.mask<64xpred>" in vmi_wrapper_dispatch_text,

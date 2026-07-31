@@ -877,7 +877,7 @@ For int→int widening, the source element type must carry signedness
 | `source` | `VRegType` | Input vector (source element type) |
 | `to_dtype` | `DType` | Target element type. PTODSL derives the result vector type from the source lane count/layout and this dtype |
 | `rounding` | rounding mode or `None` | Optional rounding mode token |
-| `saturate` | saturate mode or `None` | Optional saturation mode token |
+| `saturate` | `"SAT"`, `"NOSAT"`, or `None` | Saturation mode. For fp-narrow, int-narrow, and fp-to-int, `None` defaults to `"SAT"` |
 | `pmode` | `str` or `None` | Optional predicate mode: `"merge"` keeps predicate-inactive lanes at their prior value; `"zero"` writes 0 |
 
 **Returns**:
@@ -894,7 +894,11 @@ narrow = pto.vmi.vcvt(src_f32, pto.f16)
 ```
 
 **Constraints**:
-- The masked form of `vcvt` is not currently supported on this surface.
+- The masked form of `vcvt` is not yet supported by the current PTODSL/IR
+  implementation. It remains part of the VMI ISA contract for future support.
+- Authored VMI IR requires explicit `"SAT"` or `"NOSAT"` for fp-narrow,
+  int-narrow, and fp-to-int. PTODSL uses `"SAT"` when `saturate` is omitted
+  for these directions.
 - The source and target dtype pair must be legal for the target backend.
 - For `f32 -> f8e4m3/f8e5m2`, PTODSL accepts `rounding="R"`, `"A"`, `"H"`,
   and `"Z"`; other low-level rounding tokens remain rejected on the VMI
@@ -925,6 +929,7 @@ annotation changes. This is a reinterpretation, not a numeric conversion.
 
 ```python
 as_i32 = pto.vmi.vinterpret_cast(src, pto.i32)
+as_f16 = pto.vmi.vinterpret_cast(src, pto.f16)  # 64xf32 -> 128xf16
 ```
 
 **Constraints**:

@@ -1305,10 +1305,11 @@ def VMICvtOp : VMI_Op<"vcvt", [Pure]> {
     - int → int, |dst| < |src|: integer truncation         (replaces trunci)
 
     Attributes:
-    - `rounding`: rounding mode for fp narrowing (A=away-from-zero,
-      H=half-up). Valid only when dst bit-width < src bit-width for fp types.
-    - `saturate`: saturating behavior on overflow ("SAT"). Valid for any
-      narrowing conversion (fp or int).
+    - `rounding`: rounding mode for fp narrowing (R=nearest-even,
+      A=away-from-zero, H=half-up, Z=toward-zero). Valid only when dst
+      bit-width < src bit-width for fp types.
+    - `saturate`: "SAT" or "NOSAT"; required for fp narrowing, integer
+      narrowing, and fp-to-int conversion.
     - `pmode`: predication mode ("merge" | "zero").
 
     For int→int widening, the source element type must carry signedness

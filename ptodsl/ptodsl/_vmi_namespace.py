@@ -212,8 +212,9 @@ def _derive_vinterpret_cast_result_type(source, to_dtype, *, context: str):
             f"target element width; got {source_type.element_count}x"
             f"{source_elem_type} -> {target_elem_type}"
         )
+    target_lanes = total_bits // target_bits
     return _pto.VMIVRegType.get(
-        total_bits // target_bits,
+        target_lanes,
         target_elem_type,
         layout=source_type.layout,
     )
