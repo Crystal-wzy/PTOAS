@@ -230,7 +230,12 @@ getIterArgIncrement(Value v, ForOp forOp) -> {status, StrideExpr}:
 
 三态返回是必要的：`NotIterArg` 表示该操作数与累加器无关，应回退 delta 路径；`Failed` 表示确实是 iter_arg 但增量无法分解，此时必须整体放弃——把未知增量当作 0 会静默算错地址。
 
-累加器路径和 delta 路径对 cast 使用同一安全条件：非缩窄 cast 可以保留；缩窄 cast 只有在能证明不会改变循环 delta 时才能穿过。特别地，若 strideOperand 是由 index 类型 iter_arg 缩窄得到的 i16，当前 pass 无法证明该 iter_arg 的完整运行时值域，因此返回 `Failed`，避免在 iter_arg 越过 65535 时仍错误地产生固定 i16 post-update stride。
+累加器路径和 delta 路径对 cast 使用同一条正确性条件：必须能够证明 `delta(cast(x)) == cast(delta(x))`。循环不变量的 cast 的 delta 恒为零，可以直接保留；loop-varying cast 则按转换方向分别证明：
+
+- 对 `iN -> index` 扩展，当前 pass 只接受规范 i16 地址域中的直接 IV 或 iter_arg 递推。循环次数、初值和固定增量必须均为常量，并能证明包括最终 backedge 在内的完整源递推不会在相应的有符号或无符号 i16 范围中回绕；其他源宽度、动态递推或复杂递推均返回 `Failed`。
+- 对 `index -> iN` 缩窄，必须证明循环中每个被 cast 的源值均可由目标类型表示，使缩窄不会截断地址序列。当前只对具有常量 lower、upper 和正 step 的直接 IV 做此证明；index 类型 iter_arg 的完整运行时值域无法由当前分析确定，因此返回 `Failed`。
+
+上述规则只覆盖 `arith.index_cast` 和 `arith.index_castui`；`arith.trunci` 等其他整数转换不属于当前分析语法，遇到时保守放弃。
 
 ```
 baseIncr = getIterArgIncrement(desc.base, forOp)      // NotIterArg → 回退 delta
@@ -271,7 +276,7 @@ scf.for %iv = %c0 to %c16 step %c1
 | `v = arith.addi(a, b)` | `delta(a) + delta(b)` |
 | `v = arith.subi(a, b)` | `delta(a) - delta(b)` |
 | `v = arith.muli(a, b)`，其中一个循环不变 | `invariant * delta(other)` |
-| `v = arith.index_castui(a)` 或 `arith.index_cast(a)` | cast 不缩窄时为 `cast(delta(a))`；缩窄时仅在能证明不发生截断时成立，否则为 `unknown` |
+| `v = arith.index_castui(a)` 或 `arith.index_cast(a)` | 循环不变量为零；loop-varying 的 `iN -> index` 扩展仅接受已证明完整递推不回绕的规范 i16 来源；loop-varying 的 `index -> iN` 缩窄仅在能证明所有源值均可由目标类型表示时为 `cast(delta(a))`，否则为 `unknown` |
 | 其他 | `unknown`（放弃） |
 
 ```
@@ -280,7 +285,7 @@ stride_new = (elemBytes/unitBytes)·delta(base) + delta(strideOperand)   // 见 
 
 `stride_new` 须为循环不变量，`(elemBytes/unitBytes)·delta(base)` 须为精确整数缩放（见 4.2.1 约束）。
 
-**正确性：** delta 表中的操作构成仿射函数的封闭运算集合。定义链仅由这些操作构成时，delta 计算不会遗漏。遇到表外操作时保守放弃。cast 需要额外满足值域条件：非缩窄 cast 保留在 `StrideExpr` 中；缩窄 cast 只有在输入循环不变，或输入就是 IV 且常量 lower/upper/step 能证明所有 IV 值均落在目标整数范围内时才穿过。否则 `delta(cast(x))` 可能在截断回绕点突变，分析返回 `unknown`。
+**正确性：** delta 表中的操作构成仿射函数的封闭运算集合。定义链仅由这些操作构成时，delta 计算不会遗漏。遇到表外操作时保守放弃。cast 需要额外满足源递推和值域条件（4.2.3）。
 
 delta 分析同样是纯符号的：表中每一行返回 `StrideExpr`，结果按 `Value` 缓存。
 

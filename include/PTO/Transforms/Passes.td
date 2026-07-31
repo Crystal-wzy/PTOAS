@@ -1187,7 +1187,11 @@ def VPTOSoftPostUpdate
     profitability check predicts address-computation savings. For an accepted
     sequential run, all but the last operation form an updated_base pointer
     chain, while the last operation uses the current pointer in normal
-    zero-offset form. Loop-aware liveness removes software accumulator
+    zero-offset form. Loop-varying integer addresses extended to `index` are
+    consumed only from the canonical i16 address domain, and only when a
+    direct constant recurrence proves that the source cannot wrap. Other
+    integer widths and unproven recurrences are left for a dedicated address
+    normalization pass. Loop-aware liveness removes software accumulator
     recurrences made obsolete by new pointer chains while retaining
     accumulators with observable uses.
   }];

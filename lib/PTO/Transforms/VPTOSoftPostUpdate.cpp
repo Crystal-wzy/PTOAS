@@ -14,12 +14,15 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
+#include <cstdint>
+#include <limits>
 #include <memory>
 
 namespace mlir {
@@ -35,6 +38,11 @@ namespace {
 
 // A hardware block is 32 bytes; block-strided ops count in these units.
 static constexpr int64_t kBlockSizeBytes = 32;
+
+// Loop-varying integer addresses must be normalized to this width before this
+// pass may turn them into pointer recurrences. Other widths are left for a
+// dedicated address-normalization pass.
+static constexpr unsigned kCanonicalAddressWidth = 16;
 
 // What one unit of an op's strideOperand means, in address terms.  This is a
 // property of the op's lowering, not of the pass: `Element` ops run their
@@ -645,20 +653,148 @@ static unsigned integerLikeBitWidth(Type type) {
   return cast<IntegerType>(type).getWidth();
 }
 
-// A narrowing index cast does not generally commute with delta: once the
-// source crosses the destination range, delta(cast(x)) is not cast(delta(x)).
-// Accept only the cases for which this pass can prove that delta(cast(x)) == cast(delta(x))
-// The IV proof is intentionally limited to constant positive loops;
-// all other dynamic narrowing is rejected conservatively.
+static std::optional<uint64_t> getConstantTripCount(scf::ForOp forOp) {
+  auto lower = getConstantIntValue(forOp.getLowerBound());
+  auto upper = getConstantIntValue(forOp.getUpperBound());
+  auto step = getConstantIntValue(forOp.getStep());
+  if (!lower || !upper || !step || *step <= 0)
+    return std::nullopt;
+  if (*lower >= *upper)
+    return 0;
+
+  __int128 distance = static_cast<__int128>(*upper) - *lower;
+  __int128 count = (distance + static_cast<__int128>(*step) - 1) / *step;
+  if (count > std::numeric_limits<uint64_t>::max())
+    return std::nullopt;
+  return static_cast<uint64_t>(count);
+}
+
+static std::optional<APInt> getConstantAPInt(Value value) {
+  APInt constant;
+  if (!matchPattern(value, m_ConstantInt(&constant)))
+    return std::nullopt;
+  return constant;
+}
+
+// Return the mathematical increment of a direct constant-step iter_arg
+// recurrence. Signed address casts interpret constants as signed deltas.
+// Unsigned address casts interpret an addi constant as its unsigned value,
+// matching how the same constant is widened when the stride is materialized.
+// A subtractive unsigned recurrence is rejected because widening its i16
+// two's-complement increment would produce a large positive stride instead.
+static std::optional<__int128>
+getConstantIterArgIncrement(BlockArgument iterArg, scf::ForOp forOp,
+                            bool isUnsigned) {
+  unsigned idx = iterArg.getArgNumber() - 1;
+  auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+  Value yielded = yieldOp.getOperand(idx);
+  if (yielded == iterArg)
+    return 0;
+
+  if (auto addOp = yielded.getDefiningOp<arith::AddIOp>()) {
+    Value increment;
+    if (addOp.getLhs() == iterArg)
+      increment = addOp.getRhs();
+    else if (addOp.getRhs() == iterArg)
+      increment = addOp.getLhs();
+    auto constant = increment ? getConstantAPInt(increment) : std::nullopt;
+    if (constant)
+      return isUnsigned ? static_cast<__int128>(constant->getZExtValue())
+                        : static_cast<__int128>(constant->getSExtValue());
+  }
+
+  if (auto subOp = yielded.getDefiningOp<arith::SubIOp>()) {
+    if (isUnsigned || subOp.getLhs() != iterArg)
+      return std::nullopt;
+    auto constant = getConstantAPInt(subOp.getRhs());
+    if (constant) {
+      int64_t signedConstant = constant->getSExtValue();
+      if (signedConstant ==
+          -(int64_t{1} << (kCanonicalAddressWidth - 1)))
+        return std::nullopt;
+      return -static_cast<__int128>(signedConstant);
+    }
+  }
+  return std::nullopt;
+}
+
+// Prove that a canonical i16 source recurrence never wraps, including the
+// final backedge update. This intentionally recognizes only direct IV and
+// constant-step iter_arg recurrences. More general integer addresses must be
+// normalized and proven by an earlier pass before soft post-update consumes
+// them.
+static bool canonicalAddressRecurrenceDoesNotWrap(Value input,
+                                                  Operation *castOp,
+                                                  scf::ForOp forOp) {
+  auto inputType = dyn_cast<IntegerType>(input.getType());
+  if (!inputType || inputType.getWidth() != kCanonicalAddressWidth)
+    return false;
+
+  auto tripCount = getConstantTripCount(forOp);
+  if (!tripCount)
+    return false;
+  if (*tripCount == 0)
+    return true;
+
+  bool isUnsigned = isa<arith::IndexCastUIOp>(castOp);
+  APInt initialBits;
+  __int128 increment;
+  if (input == forOp.getInductionVar()) {
+    auto lower = getConstantAPInt(forOp.getLowerBound());
+    auto step = getConstantAPInt(forOp.getStep());
+    if (!lower || !step)
+      return false;
+    initialBits = *lower;
+    increment = static_cast<__int128>(step->getSExtValue());
+  } else {
+    auto iterArg = dyn_cast<BlockArgument>(input);
+    if (!iterArg || iterArg.getOwner() != forOp.getBody() ||
+        iterArg.getArgNumber() == 0)
+      return false;
+    unsigned idx = iterArg.getArgNumber() - 1;
+    auto initial = getConstantAPInt(forOp.getInitArgs()[idx]);
+    auto step = getConstantIterArgIncrement(iterArg, forOp, isUnsigned);
+    if (!initial || !step)
+      return false;
+    initialBits = *initial;
+    increment = *step;
+  }
+
+  __int128 initial = isUnsigned
+                         ? static_cast<__int128>(initialBits.getZExtValue())
+                         : static_cast<__int128>(initialBits.getSExtValue());
+  __int128 final = initial + increment * static_cast<__int128>(*tripCount);
+  __int128 minValue = std::min(initial, final);
+  __int128 maxValue = std::max(initial, final);
+  if (isUnsigned)
+    return minValue >= 0 &&
+           maxValue <=
+               static_cast<__int128>(llvm::maxUIntN(kCanonicalAddressWidth));
+  return minValue >= -static_cast<__int128>(uint64_t{1}
+                                            << (kCanonicalAddressWidth - 1)) &&
+         maxValue <= static_cast<__int128>(
+                         (uint64_t{1} << (kCanonicalAddressWidth - 1)) - 1);
+}
+
+// An index cast commutes with loop delta only when both the cast and its source
+// recurrence preserve the mathematical address sequence. Loop-invariant casts
+// have zero delta. Loop-varying integer-to-index casts are accepted only from
+// the canonical i16 address domain with a direct, provably non-wrapping
+// recurrence. Narrowing casts retain the existing constant-IV range proof.
 static bool castPreservesLoopDelta(Operation *castOp, scf::ForOp forOp) {
   Value input = castOp->getOperand(0);
+  if (forOp.isDefinedOutsideOfLoop(input))
+    return true; // Both the cast value and its delta (zero) are invariant.
+
+  if (castOp->getResult(0).getType().isIndex() &&
+      isa<IntegerType>(input.getType()))
+    return canonicalAddressRecurrenceDoesNotWrap(input, castOp, forOp);
+
   unsigned inputWidth = integerLikeBitWidth(input.getType());
   unsigned resultWidth = integerLikeBitWidth(castOp->getResult(0).getType());
   if (resultWidth >= inputWidth)
     return true;
 
-  if (forOp.isDefinedOutsideOfLoop(input))
-    return true; // Both the cast value and its delta (zero) are invariant.
   if (input != forOp.getInductionVar())
     return false;
 
