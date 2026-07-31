@@ -16,7 +16,13 @@ from ptoas.mlir.ir import BF16Type, F16Type, F32Type, Float8E4M3FNType, Float8E5
 
 from ._scalar_coercion import coerce_scalar_to_type
 from ._surface_values import _coerce_index_value, _try_get_constant_index, unwrap_surface_value, wrap_surface_value
-from ._types import _ensure_tensor_storage_dtype, _resolve, vmi_mask_type, vmi_vreg_type
+from ._types import (
+    VMI_LANE_COUNTS,
+    _ensure_tensor_storage_dtype,
+    _resolve,
+    vmi_mask_type,
+    vmi_vreg_type,
+)
 
 
 class _UnspecifiedArgument:
@@ -197,10 +203,19 @@ def _derive_vcvt_result_type(source, to_dtype, *, context: str):
     )
 
 
+def _check_vmi_lane_count(lanes: int, *, context: str) -> None:
+    if lanes not in VMI_LANE_COUNTS:
+        raise ValueError(
+            f"{context} requires lanes to be one of 1, 2, 4, 8, 64, 128, 256; "
+            f"got {lanes}"
+        )
+
+
 def _derive_vinterpret_cast_result_type(source, to_dtype, *, context: str):
     if to_dtype is None:
         raise TypeError(f"{context} requires to_dtype")
     source_type = _as_vmi_vreg_type(_type_of(source), context=context)
+    source_lanes = source_type.element_count
     source_elem_type = source_type.element_type
     target_elem_type = _ensure_tensor_storage_dtype(to_dtype, context=context)
     source_bits = _type_bit_width(source_elem_type, context=context)
@@ -213,10 +228,18 @@ def _derive_vinterpret_cast_result_type(source, to_dtype, *, context: str):
             f"{source_elem_type} -> {target_elem_type}"
         )
     target_lanes = total_bits // target_bits
+    _check_vmi_lane_count(target_lanes, context=context)
+    if target_lanes != source_lanes and source_type.layout is not None:
+        raise TypeError(
+            f"{context} cannot preserve the source layout across a lane-count "
+            f"change ({source_type} -> {target_lanes}x{target_elem_type}); "
+            "layouts are tied to the source lane count"
+        )
+    layout = source_type.layout if target_lanes == source_lanes else None
     return _pto.VMIVRegType.get(
         target_lanes,
         target_elem_type,
-        layout=source_type.layout,
+        layout=layout,
     )
 
 

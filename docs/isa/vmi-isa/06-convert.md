@@ -108,7 +108,8 @@
 ## `pto.vmi.vinterpret_cast`
 
 - **semantics:** Bitwise reinterpretation of a vector register — same bits,
-  different element type. No data movement, no layout change.
+  different element type. No data movement. The lane count may change so long
+  as the total number of bits is conserved.
 
   ```c
   // Same bits, reinterpreted element-by-element

@@ -150,7 +150,6 @@ class _MaskDescriptor(_DType):
     def __repr__(self):
         return f"<pto.mask {self._bits}>"
 
-
 class _StructDescriptor(_DType):
     """Deferred ``!pto.struct<...>`` type assembled from scalar fields."""
 
@@ -178,10 +177,15 @@ class _StructDescriptor(_DType):
         fields = ", ".join(repr(field) for field in self._field_descriptors)
         return f"<pto.struct {fields}>"
 
+# Legal logical lane counts for VMI vreg/mask types on the formal PTODSL
+# surface: compact/group-slot flows use the first four values, full logical
+# vectors use 64/128/256.  The IR layer intentionally accepts additional
+# positive lane counts for internal compatibility.
+VMI_LANE_COUNTS = (1, 2, 4, 8, 64, 128, 256)
 
 class _VMIVRegDescriptor(_DType):
     def __init__(self, lanes: int, elem):
-        if lanes not in (1, 2, 4, 8, 64, 128, 256):
+        if lanes not in VMI_LANE_COUNTS:
             raise ValueError(
                 "pto.vmi.vreg(...) requires lanes to be one of "
                 "1, 2, 4, 8, 64, 128, 256"
@@ -205,7 +209,7 @@ class _VMIVRegDescriptor(_DType):
 
 class _VMIMaskDescriptor(_DType):
     def __init__(self, lanes: int):
-        if lanes not in (1, 2, 4, 8, 64, 128, 256):
+        if lanes not in VMI_LANE_COUNTS:
             raise ValueError(
                 "pto.vmi.mask(...) requires lanes to be one of "
                 "1, 2, 4, 8, 64, 128, 256"

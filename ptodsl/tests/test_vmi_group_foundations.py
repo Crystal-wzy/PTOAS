@@ -35,6 +35,14 @@ def invalid_reduce_group_probe():
     _ = pto.vmi.vcmax(value, mask, group=16)
 
 
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def invalid_reinterpret_lane_count_probe():
+    # 8xf32 (256 bits) -> si8 must derive 32 lanes, which is outside the legal
+    # lane-count domain; the derivation must not bypass the constructor whitelist.
+    value = pto.vmi.vbrc(pto.f32(0.0), size=8)
+    _ = pto.vmi.vinterpret_cast(value, pto.si8)
+
+
 def main() -> None:
     for lanes in (1, 2, 4, 8, 64, 128, 256):
         pto.vmi.vreg(lanes, pto.f32)
@@ -77,6 +85,40 @@ def main() -> None:
         assert "group to be one of 1, 2, 4, 8" in str(exc)
     else:
         raise AssertionError("PTODSL grouped reduce must reject group=16")
+
+    try:
+        invalid_reinterpret_lane_count_probe.compile()
+    except ValueError as exc:
+        assert "1, 2, 4, 8, 64, 128, 256" in str(exc)
+    else:
+        raise AssertionError(
+            "PTODSL vinterpret_cast must reject a derived lane count outside "
+            "1, 2, 4, 8, 64, 128, 256"
+        )
+
+    # A bit-reinterpretation that changes the lane count must not silently
+    # reuse the source layout (group/slot counts are tied to the source lanes).
+    from types import SimpleNamespace
+
+    from ptoas.mlir.dialects import pto as _pto
+    from ptoas.mlir.ir import Attribute, Context, F32Type
+    from ptodsl._vmi_namespace import _derive_vinterpret_cast_result_type
+
+    with Context() as ctx:
+        _pto.register_dialect(ctx)
+        layout = Attribute.parse("#pto.vmi.layout<deinterleaved = 2>")
+        source_type = _pto.VMIVRegType.get(64, F32Type.get(), layout=layout)
+        try:
+            _derive_vinterpret_cast_result_type(
+                SimpleNamespace(type=source_type), pto.f16, context="test"
+            )
+        except TypeError as exc:
+            assert "layout" in str(exc)
+        else:
+            raise AssertionError(
+                "vinterpret_cast across a lane-count change must reject a "
+                "layout-assigned source"
+            )
 
 
 if __name__ == "__main__":
