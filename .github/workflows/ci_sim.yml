@@ -61,7 +61,6 @@ jobs:
               - 'test/tilelang_st/**'
               - 'test/dsl-st/**'
               - 'test/tilelib-st/**'
-              - 'tilelang-dsl/**'
               - 'ptodsl/**'
               - 'tools/ptoas/**'
               - 'lib/TileOps/**'
@@ -113,8 +112,7 @@ jobs:
       LLVM_REF: feature-vpto-llvm21
       PTOAS_VENV: ${{ github.workspace }}/.work/ptoas-sim-venv
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
-      TILELANG_DSL_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ci
-      TILELANG_DSL_UT_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ut-ci
+      TILELIB_ST_WORKSPACE: ${{ github.workspace }}/.work/tilelib-st-ci
       PYPTO_REF: ef6ce7cd8bd33b4c93b58dc34830a20b145736ac
       PYPTO_WORKSPACE: ${{ github.workspace }}/.work/pypto-ci
       PYPTO_RUN_WORKSPACE: ${{ github.workspace }}/.work/pypto-run-ci
@@ -250,7 +248,7 @@ jobs:
           rm -rf "${GITHUB_WORKSPACE}/build-ptodsl"
           rm -rf "${PTOAS_VENV}"
           rm -rf "${VPTO_SIM_WORKSPACE}"
-          rm -rf "${TILELANG_DSL_WORKSPACE}"
+          rm -rf "${TILELIB_ST_WORKSPACE}"
           rm -rf "${PYPTO_WORKSPACE}"
           rm -rf "${PYPTO_RUN_WORKSPACE}"
           rm -rf "${PTO_ISA_ROOT}"
@@ -692,18 +690,18 @@ jobs:
           echo "PTO_DSL_ST_PYTHON_TAG=${PYTHON_TAG}" >> "${GITHUB_ENV}"
           echo "PTO_DSL_ST_LLVM_DIR=${PTO_DSL_ST_LLVM_DIR}" >> "${GITHUB_ENV}"
 
-      - name: Run TileLang DSL CI
-        # Temporarily keep unmaintained TileLang ST in smoke mode for every trigger.
+      - name: Run TileOp ST CI
+        # Temporarily keep the legacy-named TileOp ST harness in smoke mode for every trigger.
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "${TILELANG_DSL_WORKSPACE}"
+          mkdir -p "${TILELIB_ST_WORKSPACE}"
           export LLVM_BUILD_DIR="${LLVM_DIR}"
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
           PTOAS_BIN="${PTOAS_BIN}" \
           bash test/tilelang_st/script/run_ci.sh -r sim -v a5 \
             --build-jobs 32 --jobs 64 --smoke \
-            2>&1 | tee "${TILELANG_DSL_WORKSPACE}/run_ci.log"
+            2>&1 | tee "${TILELIB_ST_WORKSPACE}/run_ci.log"
 
       - name: Restore PTODSL LLVM build cache
         id: ptodsl-llvm-cache
@@ -790,7 +788,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "${TILELANG_DSL_WORKSPACE}"
+          mkdir -p "${TILELIB_ST_WORKSPACE}"
           export TORCH_DEVICE_BACKEND_AUTOLOAD=0
           source "${ASCEND_HOME_PATH}/bin/setenv.bash"
 
@@ -818,7 +816,7 @@ jobs:
           PY
           }
 
-          PROBE_LOG="${TILELANG_DSL_WORKSPACE}/ptodsl-python-probe.log"
+          PROBE_LOG="${TILELIB_ST_WORKSPACE}/ptodsl-python-probe.log"
           : > "${PROBE_LOG}"
           echo "Probing PTODSL DSL ST Python: ${PTO_DSL_ST_PYTHON_BIN}" | tee -a "${PROBE_LOG}"
           echo "Probing PTODSL DSL ST ptoas: ${PTO_DSL_ST_PTOAS_BIN}" | tee -a "${PROBE_LOG}"
@@ -863,26 +861,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "${TILELANG_DSL_WORKSPACE}"
+          mkdir -p "${TILELIB_ST_WORKSPACE}"
           export PYTHON_BIN="${PTO_DSL_ST_PYTHON_BIN}"
           export PTO_PYTHON_BIN="${PTO_DSL_ST_PYTHON_BIN}"
           export PATH="${PTO_DSL_ST_BIN_DIR}:${PATH}"
           export TORCH_DEVICE_BACKEND_AUTOLOAD=0
           source "${ASCEND_HOME_PATH}/bin/setenv.bash"
 
-          TILELIB_ST_OUTPUT_ROOT="${TILELANG_DSL_WORKSPACE}/tilelib-st-a5" \
+          TILELIB_ST_OUTPUT_ROOT="${TILELIB_ST_WORKSPACE}/tilelib-st-a5" \
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
           PTOAS_BIN="${PTO_DSL_ST_PTOAS_BIN}" \
-          "${PTO_DSL_ST_PYTHON_BIN}" -m pytest \
-            -n "${TILELIB_ST_JOBS:-16}" --dist=worksteal -v \
-            test/tilelib-st/test_tilelib_st.py \
-            2>&1 | tee "${TILELANG_DSL_WORKSPACE}/tilelib-st-a5.log"
+          scripts/sim_dsl.sh test/tilelib-st/run_tilelib_st.py -- test/tilelib-st/a5 \
+            2>&1 | tee "${TILELIB_ST_WORKSPACE}/tilelib-st-a5.log"
 
       - name: Run PTODSL ST CI
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "${TILELANG_DSL_WORKSPACE}"
+          mkdir -p "${TILELIB_ST_WORKSPACE}"
           export PYTHON_BIN="${PTO_DSL_ST_PYTHON_BIN}"
           export PTO_PYTHON_BIN="${PTO_DSL_ST_PYTHON_BIN}"
           export PATH="${PTO_DSL_ST_BIN_DIR}:${PATH}"
@@ -892,38 +888,19 @@ jobs:
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
           PTOAS_BIN="${PTO_DSL_ST_PTOAS_BIN}" \
           scripts/sim_dsl.sh test/dsl-st \
-            2>&1 | tee "${TILELANG_DSL_WORKSPACE}/ptodsl-dsl-st.log"
+            2>&1 | tee "${TILELIB_ST_WORKSPACE}/ptodsl-dsl-st.log"
 
-      - name: Upload TileLang DSL logs
+      - name: Upload TileLib ST logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tilelang-dsl-ci-${{ github.run_id }}
+          name: tilelib-st-ci-${{ github.run_id }}
           path: |
-            ${{ env.TILELANG_DSL_WORKSPACE }}/run_ci.log
-            ${{ env.TILELANG_DSL_WORKSPACE }}/ptodsl-dsl-st.log
-            ${{ env.TILELANG_DSL_WORKSPACE }}/tilelib-st-a5.log
-            ${{ env.TILELANG_DSL_WORKSPACE }}/tilelib-st-a5/**
-            ${{ env.TILELANG_DSL_WORKSPACE }}/ptodsl-python-probe.log
-          if-no-files-found: warn
-
-      - name: Run TileLang DSL unit tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "${TILELANG_DSL_UT_WORKSPACE}"
-          export PATH="${PTOAS_VENV}/bin:${PATH}"
-          cd tilelang-dsl/python
-          python3 -m unittest discover -s ../tests -p 'test_*.py' \
-            2>&1 | tee "${TILELANG_DSL_UT_WORKSPACE}/unittest.log"
-
-      - name: Upload TileLang DSL unit test logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tilelang-dsl-ut-ci-${{ github.run_id }}
-          path: |
-            ${{ env.TILELANG_DSL_UT_WORKSPACE }}/unittest.log
+            ${{ env.TILELIB_ST_WORKSPACE }}/run_ci.log
+            ${{ env.TILELIB_ST_WORKSPACE }}/ptodsl-dsl-st.log
+            ${{ env.TILELIB_ST_WORKSPACE }}/tilelib-st-a5.log
+            ${{ env.TILELIB_ST_WORKSPACE }}/tilelib-st-a5/**
+            ${{ env.TILELIB_ST_WORKSPACE }}/ptodsl-python-probe.log
           if-no-files-found: warn
 
       - name: Upload VPTO SIM logs

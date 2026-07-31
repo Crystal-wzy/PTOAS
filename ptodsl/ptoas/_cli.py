@@ -64,12 +64,10 @@ def launch(user_args: Sequence[str], *, wrapper: Path | None = None) -> int:
     os.environ["PTOAS_BIN"] = str(wrapper)
     os.environ["PTOAS_PYTHON_EXE"] = sys.executable
     argv = [str(wrapper)]
-    if not _has_cli_option(user_args, "--tilelang-path"):
-        argv.extend(["--tilelang-path", str(tileops_dir)])
-    if not _has_cli_option(user_args, "--tilelang-pkg-path"):
-        argv.extend(["--tilelang-pkg-path", str(python_root)])
     if not _has_cli_option(user_args, "--ptodsl-pkg-path"):
         argv.extend(["--ptodsl-pkg-path", str(python_root)])
+    if not _has_cli_option(user_args, "--tileops-pkg-path"):
+        argv.extend(["--tileops-pkg-path", str(tileops_dir.parent)])
     argv.extend(user_args)
 
     return int(native_module.main(argv))

@@ -52,8 +52,8 @@ source "${ASCEND_HOME_PATH}/bin/setenv.bash"
 | C++ IR/Verifier | `lib/PTO/IR/PTO.cpp` |
 | ExpandTileOp | `lib/PTO/Transforms/ExpandTileOp.cpp` |
 | VPTO→LLVM lowering | `lib/PTO/Transforms/VPTOLLVMEmitter.cpp` |
-| Python DSL 模板 | `lib/TileOps/` |
-| DSL daemon | `tilelang-dsl/python/tilelang_dsl/` |
+| PTODSL TileLib 模板 | `lib/TileOps/` |
+| PTODSL TileLib daemon | `ptodsl/ptodsl/tilelib/serving/` |
 | Tile Op ISA 参考 | `docs/isa/tile-op/` |
 | TPrint 格式/约束详参 | 本文档阶段 2.1 ~ 2.4 |
 
@@ -588,7 +588,7 @@ v30 对、output.bin 错 → TSTORE 路径
 什么阶段报错？
 ├─ ptoas crash/assert fail
 │   ├─ 加了 --enable-tile-op-expand → DSL 模板 bug 或 daemon 缓存过期
-│   │   → pkill -f daemon_server; 检查 lib/TileOps/<op>_template.py
+│   │   → pkill -f tilelib; 检查 lib/TileOps/a5/<op>.py
 │   └─ 没加 → VPTO lowering 或 pass pipeline bug
 │       → --vpto-print-ir 看 VPTO IR; 检查 VPTOLLVMEmitter.cpp
 │
@@ -662,7 +662,7 @@ TPrint 不匹配时，按以下顺序排查：
 | C++ IR/Verifier | `lib/PTO/IR/PTO.cpp` | `ninja -C build ptoas` + 清 build |
 | Expand/属性转发 | `lib/PTO/Transforms/ExpandTileOp.cpp` | `ninja -C build ptoas` + 清 build |
 | VPTO→LLVM lowering | `lib/PTO/Transforms/VPTOLLVMEmitter.cpp` | `ninja -C build ptoas` + 清 build |
-| DSL 模板 | `lib/TileOps/*_template.py` | 清 build + `pkill -f daemon_server` |
+| PTODSL TileLib 模板 | `lib/TileOps/a5/*.py` | 清 build + 重启 TileLib daemon |
 | `.pto` 文件 | `*.pto` | 仅重跑 ptoas |
 
 **清 build**：`rm -rf test/tilelang_st/npu/a5/src/st/build`

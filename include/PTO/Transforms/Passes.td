@@ -573,12 +573,6 @@ def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
     "mlir::vector::VectorDialect"
   ];
   let options = [
-    Option<"tilelangPath", "tilelang-path", "std::string",
-           /*default=*/"\"\"",
-           "Path to directory of .py tilelang DSL template files">,
-    Option<"tilelangPkgPath", "tilelang-pkg-path", "std::string",
-           /*default=*/"\"\"",
-           "PYTHONPATH for tilelang_dsl package (added to env)">,
     Option<"pythonExe", "python-exe", "std::string",
            /*default=*/"\"python3\"",
            "Python executable for TileLib invocation">,
@@ -587,7 +581,7 @@ def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
            "Path to Unix domain socket for daemon RPC">,
     Option<"tileLibBackend", "tile-lib-backend", "std::string",
            /*default=*/"\"ptodsl\"",
-           "TileLib backend: ptodsl or tilelang">,
+           "TileLib backend: ptodsl">,
     Option<"tileLibPkgPath", "tile-lib-pkg-path", "std::string",
            /*default=*/"\"\"",
            "PYTHONPATH root for the selected TileLib backend">,

@@ -47,6 +47,9 @@ jobs:
     # release/nightly runs fan out to publish the full wheel set plus binary artifacts.
     name: Build ptoas wheel (${{ matrix.arch }}, py${{ matrix.python }})
     runs-on: ${{ matrix.arch == 'x86_64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -268,6 +271,7 @@ jobs:
 
       - name: Smoke test archived ptoas binary artifact
         if: matrix.python == '3.11'
+        shell: bash
         run: |
           TEST_DIR="$RUNNER_TEMP/ptoas-dist-smoke-${{ matrix.arch }}"
           rm -rf "$TEST_DIR"
@@ -279,10 +283,16 @@ jobs:
           test -f "$TEST_DIR/extracted/ptoas/_cli.py"
           test -f "$TEST_DIR/extracted/ptoas/mlir/ir.py"
           test -f "$TEST_DIR/extracted/ptodsl/__init__.py"
-          test -f "$TEST_DIR/extracted/tilelang_dsl/__init__.py"
-          test -d "$TEST_DIR/extracted/share/ptoas/TileOps"
+          test -d "$TEST_DIR/extracted/ptoas/_runtime/share/ptoas/TileOps"
           test "$(cat "$TEST_DIR/extracted/.ptoas-python-version")" = "3.11"
-          compgen -G "$TEST_DIR/extracted/ptoas/_core*.so" >/dev/null
+          found_core=
+          for core in "$TEST_DIR"/extracted/ptoas/_core*.so; do
+            if [ -f "$core" ]; then
+              found_core=1
+              break
+            fi
+          done
+          test -n "$found_core"
 
           env -u PYTHONPATH -u DYLD_LIBRARY_PATH -u LD_LIBRARY_PATH \
             "$TEST_DIR/extracted/bin/ptoas" --version

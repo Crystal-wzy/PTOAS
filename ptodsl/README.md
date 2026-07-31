@@ -97,9 +97,7 @@ Wheel and CMake-tree launchers pass the Python root containing their own
 installed or staged `ptodsl` package to the native driver. Use
 `--ptodsl-pkg-path=/path/to/package/root` for an explicit command-line
 override. PTODSL daemon failures are reported as errors and never fall back to
-the TileLang implementation. Use
-`--tile-lib-backend=tilelang` only when explicitly comparing against the legacy
-TileLangDSL template library.
+the TileLang implementation.
 
 `InsertTemplateAttributes` queries legal-candidate metadata before fusion and
 stores an ordered `candidates` array containing only `id`, `name`,
