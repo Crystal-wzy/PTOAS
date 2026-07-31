@@ -109,6 +109,9 @@
       : index -> !pto.vmi.mask<256×b32>
   ```
 
+`num_groups` is logically legal for any positive divisor of the result mask
+lane count. A backend may impose a narrower materialization limit separately.
+
 
 > **Mask Boolean Ops (`vand` / `vor` / `vxor` / `vnot` on masks):**
 >

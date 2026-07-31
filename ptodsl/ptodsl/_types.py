@@ -181,6 +181,11 @@ class _StructDescriptor(_DType):
 
 class _VMIVRegDescriptor(_DType):
     def __init__(self, lanes: int, elem):
+        if lanes not in (1, 2, 4, 8, 64, 128, 256):
+            raise ValueError(
+                "pto.vmi.vreg(...) requires lanes to be one of "
+                "1, 2, 4, 8, 64, 128, 256"
+            )
         self._lanes = lanes
         self._elem = elem
 
@@ -200,6 +205,11 @@ class _VMIVRegDescriptor(_DType):
 
 class _VMIMaskDescriptor(_DType):
     def __init__(self, lanes: int):
+        if lanes not in (1, 2, 4, 8, 64, 128, 256):
+            raise ValueError(
+                "pto.vmi.mask(...) requires lanes to be one of "
+                "1, 2, 4, 8, 64, 128, 256"
+            )
         self._lanes = lanes
         self._granularity = "pred"
 

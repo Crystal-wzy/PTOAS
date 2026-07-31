@@ -314,8 +314,16 @@ def _derive_vmi_reduce_result_type(source, group, *, context: str):
             result_lanes = int(group)
         except (TypeError, ValueError) as exc:
             raise TypeError(f"{context} requires group to be an integer when provided") from exc
-        if result_lanes <= 0:
-            raise TypeError(f"{context} requires group to be positive, got {group!r}")
+        if result_lanes not in (1, 2, 4, 8):
+            raise ValueError(
+                f"{context} requires group to be one of 1, 2, 4, 8; "
+                f"got {group!r}"
+            )
+        if source_type.element_count % result_lanes != 0:
+            raise ValueError(
+                f"{context} requires group to evenly divide the source lane "
+                f"count; got group={result_lanes}, lanes={source_type.element_count}"
+            )
     return _pto.VMIVRegType.get(result_lanes, source_type.element_type)
 
 
