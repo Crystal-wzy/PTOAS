@@ -8934,7 +8934,7 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
 
 | Name | Type | Description |
 |------|------|-------------|
-| `gm_workspace` | optional GM memref/tensor/partition view of `i32` | Global shared workspace used by soft mode |
+| `gm_workspace` | optional GM pointer/tensor/partition view of `i32` | Global shared workspace used by soft mode |
 | `used_cores` | optional `i32` | Explicit participant count for soft mode |
 | `mode` | `#pto.sync_all_mode<...>` | `hard` or `soft` |
 | `core_type` | `#pto.sync_core_type<...>` | `aiv_only`, `aic_only`, or `mix` |
@@ -8948,14 +8948,14 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
   `SYNCALL<SyncCoreType::...>()` from it.
 - Soft mode always requires `gm_workspace`.
 - Soft `aiv_only`, `aic_only`, and `mix` use the same operand ABI.
-- `gm_workspace` reuses the `TensorViewLikeOrMemRef` constraint: it must be a
-  GM `memref`, `!pto.tensor_view`, or `!pto.partition_tensor_view` with `i32`
-  elements.
-- A memref workspace must have a static shape so it can be wrapped as the
-  PTO-ISA `GlobalTensor` argument during EmitC lowering.
+- `gm_workspace` must be a GM `!pto.ptr`, `!pto.tensor_view`, or
+  `!pto.partition_tensor_view` with `i32` elements.
+- A pointer workspace must reference at least 16 contiguous `i32` elements;
+  pointer capacity is a runtime responsibility because it is not encoded in
+  the pointer type.
 - When all dimensions are static, `gm_workspace` must contain at least 16
-  elements (64 bytes). Dynamic tensor/partition views must provide at least
-  that capacity at runtime.
+  elements (64 bytes). This verifier check applies to tensor/partition views;
+  dynamic views must provide at least that capacity at runtime.
 - The workspace must occupy an exclusive 64-byte cache line and be
   zero-initialized before its first `SYNCALL`. Alignment, aliasing, and
   initialization are runtime responsibilities and cannot be proven by the
@@ -8966,7 +8966,11 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
 **Basic Example:**
 
 ```mlir
-"pto.syncall"(%gm, %used) {
+pto.syncall(%gm, %used : !pto.ptr<i32, gm>, i32)
+  mode = #pto.sync_all_mode<soft>,
+  core_type = #pto.sync_core_type<aiv_only>
+
+"pto.syncall"(%gm_view, %used) {
   operandSegmentSizes = array<i32: 1, 1>,
   mode = #pto.sync_all_mode<soft>,
   core_type = #pto.sync_core_type<aiv_only>

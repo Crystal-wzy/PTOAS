@@ -16323,32 +16323,29 @@ static LogicalResult verifySyncAllGmWorkspace(Operation *op, Value workspace,
   Type ty = workspace.getType();
   Type elemType;
   SmallVector<int64_t, 4> shape;
-  if (auto memTy = dyn_cast<MemRefType>(ty)) {
-    auto memorySpace =
-        dyn_cast_or_null<pto::AddressSpaceAttr>(memTy.getMemorySpace());
-    if (!memorySpace ||
-        memorySpace.getAddressSpace() != pto::AddressSpace::GM)
+  if (auto ptrTy = dyn_cast<pto::PtrType>(ty)) {
+    if (ptrTy.getMemorySpace().getAddressSpace() != pto::AddressSpace::GM)
       return op->emitOpError() << "expects " << name
                                << " to be in GM address space";
-    if (!memTy.hasStaticShape())
-      return op->emitOpError() << "expects " << name
-                               << " memref to have a static shape";
-    elemType = memTy.getElementType();
-    shape.assign(memTy.getShape().begin(), memTy.getShape().end());
+    elemType = ptrTy.getElementType();
   } else if (isa<pto::TensorViewType, pto::PartitionTensorViewType>(ty)) {
     elemType = getElemTy(ty);
     shape = getShapeVec(ty);
-  } else if (isa<UnrankedMemRefType>(ty)) {
-    return op->emitOpError() << "expects " << name << " to be ranked";
   } else {
     return op->emitOpError()
            << "expects " << name
-           << " to be a GM memref/tensor_view/partition_view";
+           << " to be a GM ptr/tensor_view/partition_view";
   }
 
   auto elemTy = dyn_cast<IntegerType>(elemType);
   if (!elemTy || elemTy.getWidth() != 32)
     return op->emitOpError() << "expects " << name << " element type to be i32";
+
+  // A pointer does not carry capacity metadata. It is lowered as the fixed
+  // 16 x i32 workspace required by PTO-ISA; allocation size remains a runtime
+  // responsibility.
+  if (isa<pto::PtrType>(ty))
+    return success();
 
   if (shape.empty())
     return op->emitOpError() << "expects " << name << " to have rank >= 1";

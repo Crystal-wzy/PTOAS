@@ -10,11 +10,11 @@
 
 module {
   func.func @syncall_emitc(
-      %gm: memref<16xi32, #pto.address_space<gm>>, %used: i32) {
-    pto.syncall(%gm, %used : memref<16xi32, #pto.address_space<gm>>, i32) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
-    pto.syncall(%gm, %used : memref<16xi32, #pto.address_space<gm>>, i32) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aic_only>
-    pto.syncall(%gm, %used : memref<16xi32, #pto.address_space<gm>>, i32) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<mix>
-    pto.syncall(%gm : memref<16xi32, #pto.address_space<gm>>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<mix>
+      %gm: !pto.ptr<i32, gm>, %used: i32) {
+    pto.syncall(%gm, %used : !pto.ptr<i32, gm>, i32) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aiv_only>
+    pto.syncall(%gm, %used : !pto.ptr<i32, gm>, i32) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<aic_only>
+    pto.syncall(%gm, %used : !pto.ptr<i32, gm>, i32) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<mix>
+    pto.syncall(%gm : !pto.ptr<i32, gm>) mode = #pto.sync_all_mode<soft>, core_type = #pto.sync_core_type<mix>
     pto.syncall() mode = #pto.sync_all_mode<hard>, core_type = #pto.sync_core_type<aiv_only>
     pto.syncall() mode = #pto.sync_all_mode<hard>, core_type = #pto.sync_core_type<aic_only>
     pto.syncall() mode = #pto.sync_all_mode<hard>, core_type = #pto.sync_core_type<mix>
@@ -26,6 +26,9 @@ module {
 // CHECK-NOT: Tile<TileType::Vec
 // CHECK-NOT: Tile<TileType::Mat
 // CHECK-NOT: TASSIGN
+// CHECK: pto::Shape<1, 1, 1, 1, 16>
+// CHECK: pto::Stride<16, 16, 16, 16, 1>
+// CHECK: GlobalTensor<int32_t, pto::Shape<1, 1, 1, 1, 16>, pto::Stride<16, 16, 16, 16, 1>, pto::Layout::ND>
 // CHECK: SYNCALL<SyncAllMode::Soft, SyncCoreType::AIVOnly>({{[^,]+}}, {{[^)]+}});
 // CHECK-NOT: Tile<TileType::Vec
 // CHECK-NOT: Tile<TileType::Mat

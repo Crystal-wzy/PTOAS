@@ -277,10 +277,10 @@ def TensorViewLike :
   AnyTypeOf<[TensorViewType, PartitionTensorViewType],
             "TensorView or PartitionTensorView">;
 
-// Helper for GM views and their memref-compatible entry form.
-def TensorViewLikeOrMemRef :
-  AnyTypeOf<[TensorViewType, PartitionTensorViewType, AnyMemRef],
-            "TensorView, PartitionTensorView, or MemRef">;
+// Helper for a tile-native GM pointer or logical GM view.
+def PtrOrTensorViewLike :
+  AnyTypeOf<[PtrType, TensorViewType, PartitionTensorViewType],
+            "Ptr, TensorView, or PartitionTensorView">;
 
 // Get the size of a dimension of a tensor_view.
 // Result type: Index (use arith.index_cast if i32 is needed).
@@ -2961,7 +2961,7 @@ def SyncAllOp : PTO_Op<"syncall", [AttrSizedOperandSegments]> {
   }];
 
   let arguments = (ins
-    Optional<TensorViewLikeOrMemRef>:$gm_workspace,
+    Optional<PtrOrTensorViewLike>:$gm_workspace,
     Optional<I32>:$used_cores,
     PTO_SyncAllModeAttr:$mode,
     PTO_SyncCoreTypeAttr:$core_type

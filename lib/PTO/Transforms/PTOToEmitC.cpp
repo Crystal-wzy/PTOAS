@@ -5714,6 +5714,9 @@ struct PTOSyncToEmitC : public OpConversionPattern<mlir::pto::TSyncOp> {
   }
 };
 
+static FailureOr<Value> buildSyncAllGlobalTensorFromPointer(
+    ConversionPatternRewriter &rewriter, Location loc, Value ptr, Type elemTy);
+
 struct PTOSyncAllToEmitC : public OpConversionPattern<mlir::pto::SyncAllOp> {
   using OpConversionPattern<mlir::pto::SyncAllOp>::OpConversionPattern;
 
@@ -5739,18 +5742,11 @@ struct PTOSyncAllToEmitC : public OpConversionPattern<mlir::pto::SyncAllOp> {
       if (isEmitCGlobalTensorLikeType(gm.getType()))
         return gm;
 
-      auto memTy = dyn_cast<MemRefType>(op.getGmWorkspace().getType());
-      if (!memTy)
+      auto ptrTy = dyn_cast<pto::PtrType>(op.getGmWorkspace().getType());
+      if (!ptrTy)
         return failure();
-
-      Value gt = buildGlobalTensorFromMemref(
-          rewriter, op.getLoc(), gm, memTy,
-          op.getGmWorkspace().getDefiningOp()
-              ? op.getGmWorkspace().getDefiningOp()
-              : op.getOperation());
-      if (!gt)
-        return failure();
-      return gt;
+      return buildSyncAllGlobalTensorFromPointer(
+          rewriter, op.getLoc(), gm, ptrTy.getElementType());
     };
 
     if (mode == pto::SyncAllMode::Hard) {
@@ -7810,6 +7806,15 @@ static FailureOr<Value> buildGlobalTensorViewFromPointer(
       loc, gtType, gtTypeStr, ArrayAttr{}, ArrayAttr{},
       ValueRange{ptr, shapeVal, strideVal});
   return gt.getResult(0);
+}
+
+static FailureOr<Value> buildSyncAllGlobalTensorFromPointer(
+    ConversionPatternRewriter &rewriter, Location loc, Value ptr, Type elemTy) {
+  constexpr int64_t kWorkspaceElements = 16;
+  SmallVector<int64_t, 1> shape{kWorkspaceElements};
+  SmallVector<int64_t, 1> strides{1};
+  return buildGlobalTensorViewFromPointer(rewriter, loc, ptr, elemTy, shape,
+                                          strides);
 }
 
 static bool parseIntegerTemplateList(StringRef token, StringRef marker,
