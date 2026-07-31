@@ -1,20 +1,5 @@
 # PTOAS (PTO Assembler & Optimizer)
 
-## 未发布
-
-### 不兼容变更
-
-- Soft `pto.syncall` 的 operand ABI 与 PTO-ISA 新接口对齐，从按核类型区分的
-  `gm_workspace + ub_workspace/l1_workspace [+ used_cores]` 统一为
-  `gm_workspace [+ used_cores]`。
-- 旧的三/四 operand `.pto` 文本及包含旧 `operandSegmentSizes` 的 `.ptobc`
-  不再兼容。使用方需升级 PTOAS 与 PyPTO/其他 IR 生产者，并重新生成已落盘的
-  PTO IR 和 PTO Bytecode。
-- 生成的新 C++ 需要包含两参数 Soft `SYNCALL` ABI 的 PTO-ISA。GitHub 基准提交为
-  `f24f7b736b689cc107b9eb2d362be6a7718fcc99`；GitCode 的
-  `ce3262e3825a235f951917eeada30e52910b6a84` 已通过等价提交
-  `d56d42db6a3c14eb195de85392a69b68b862a87c` 包含该接口。
-
 ## 版本
 - 版本号：v0.51
 - 发布日期：2026-02-14
