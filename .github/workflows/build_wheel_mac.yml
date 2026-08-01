@@ -39,7 +39,7 @@ concurrency:
 env:
   LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
   LLVM_REF: feature-vpto-llvm21
-  LLVM_CACHE_FLAVOR: llvm21-vpto-wheel-static-pic-v1
+  LLVM_CACHE_FLAVOR: llvm21-vpto-wheel-static-pic-v2
 
 jobs:
   build_wheel:
@@ -149,6 +149,7 @@ jobs:
           echo "WORKSPACE_DIR=${RUNNER_TEMP}/llvm-workspace" >> $GITHUB_ENV
           echo "LLVM_SOURCE_DIR=${RUNNER_TEMP}/llvm-workspace/llvm-project" >> $GITHUB_ENV
           echo "LLVM_BUILD_DIR=${RUNNER_TEMP}/llvm-workspace/llvm-project/build-wheel-static" >> $GITHUB_ENV
+          echo "LLVM_INSTALL_DIR=${RUNNER_TEMP}/llvm-workspace/llvm-install" >> $GITHUB_ENV
           echo "PTO_SOURCE_DIR=$GITHUB_WORKSPACE" >> $GITHUB_ENV
           echo "PTO_BUILD_DIR=$GITHUB_WORKSPACE/build-release" >> $GITHUB_ENV
 
@@ -162,12 +163,16 @@ jobs:
           fi
           echo "sha=${LLVM_SOURCE_SHA}" >> "$GITHUB_OUTPUT"
 
+      # The cache holds the LLVM install prefix, not the build tree: it is
+      # much smaller and is shared across Python versions (PTOAS assembles the
+      # mlir Python package itself from MLIR's exported Python source-set, so
+      # the Python used to configure LLVM does not affect wheel builds).
       - name: Restore LLVM build cache (exact key)
         id: cache-llvm
         uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.temp }}/llvm-workspace/llvm-project/build-wheel-static
-          key: llvm-${{ steps.llvm-source.outputs.sha }}-${{ steps.runner-meta.outputs.label }}-${{ matrix.arch }}-${{ matrix.python }}-${{ env.LLVM_CACHE_FLAVOR }}
+          path: ${{ runner.temp }}/llvm-workspace/llvm-install
+          key: llvm-${{ steps.llvm-source.outputs.sha }}-${{ steps.runner-meta.outputs.label }}-${{ matrix.arch }}-${{ env.LLVM_CACHE_FLAVOR }}
 
       - name: Prepare LLVM source
         run: |
@@ -200,16 +205,26 @@ jobs:
             -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" \
             -Dnanobind_DIR="$(python -m nanobind --cmake_dir)" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_TARGETS_TO_BUILD="host"
+            -DLLVM_TARGETS_TO_BUILD="host" \
+            -DCMAKE_INSTALL_PREFIX=$LLVM_INSTALL_DIR
           ninja -C $LLVM_BUILD_DIR
+          cmake --install $LLVM_BUILD_DIR
 
-      # Upload cache immediately after the build step to avoid later steps polluting the release build tree.
+      # Upload cache immediately after the build step to avoid later steps
+      # polluting the install tree. Only the default branch saves, and only
+      # from a single Python leg: branch pushes may restore the shared cache
+      # but must not create private multi-GB entries that evict it, and
+      # parallel Python legs must not race to save the same key.
       - name: Save LLVM cache
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: >-
+          steps.cache-llvm.outputs.cache-hit != 'true' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+          matrix.python == '3.11' &&
+          success()
         uses: actions/cache/save@v4
         with:
-          path: ${{ runner.temp }}/llvm-workspace/llvm-project/build-wheel-static
-          key: llvm-${{ steps.llvm-source.outputs.sha }}-${{ steps.runner-meta.outputs.label }}-${{ matrix.arch }}-${{ matrix.python }}-${{ env.LLVM_CACHE_FLAVOR }}
+          path: ${{ runner.temp }}/llvm-workspace/llvm-install
+          key: llvm-${{ steps.llvm-source.outputs.sha }}-${{ steps.runner-meta.outputs.label }}-${{ matrix.arch }}-${{ env.LLVM_CACHE_FLAVOR }}
 
       - name: Build PTOAS
         run: |
@@ -228,7 +243,9 @@ jobs:
           export _PYTHON_HOST_PLATFORM="$(python "$PTO_SOURCE_DIR/docker/get_macos_wheel_plat_name.py" "$TARGET_ARCH")"
           rm -rf "${PTO_SOURCE_DIR}/build/wheel-dist"
           mkdir -p "${PTO_SOURCE_DIR}/build/wheel-dist"
-          SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}" \
+          # LLVM_BUILD_DIR may point at an LLVM install prefix; CMakeLists.txt
+          # derives LLVM_DIR/MLIR_DIR from it (see docs/build_with_installed_llvm.md).
+          SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}" LLVM_BUILD_DIR="${LLVM_INSTALL_DIR}" \
             python -m pip wheel "${PTOAS_WHEEL_SOURCE_DIR}" \
               --no-build-isolation --no-deps \
               --wheel-dir "${PTO_SOURCE_DIR}/build/wheel-dist"
@@ -269,9 +286,10 @@ jobs:
           echo "delocate dependency summary:"
           delocate-listdeps "${wheels[0]}" || true
 
-          # Static LLVM/MLIR is embedded in PTOASCompiler. Keep the build-tree
-          # path available only for incidental non-LLVM shared dependencies.
-          export DYLD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+          # Static LLVM/MLIR is embedded in PTOASCompiler. Keep the LLVM
+          # install-tree path available only for incidental non-LLVM shared
+          # dependencies.
+          export DYLD_LIBRARY_PATH="${LLVM_INSTALL_DIR}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
           delocate-wheel \
             --require-archs "${REQUIRED_ARCH}" \
             --wheel-dir "$PTO_WHEELHOUSE" \
