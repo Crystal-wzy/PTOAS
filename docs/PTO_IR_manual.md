@@ -10201,7 +10201,7 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 ##### `pto.comm.tput` - Synchronous Remote Write
 
-**Summary:** Lowers to `pto::comm::TPUT(...)` and copies data from local GM to remote GM through a VEC staging tile.
+**Summary:** Copies data synchronously from local GM to remote GM through a VEC staging tile.
 
 **Arguments:**
 
@@ -10214,9 +10214,29 @@ This section documents PTO communication primitives. PTOAS currently exposes:
 
 **Constraints & Verification:**
 
-- `dst` / `src` must be GM-shaped values with positive static shapes.
-- `dst` and `src` must have the same element type and static shape.
-- `ping` / `pong` must be local VEC tile-like values whose element type matches `src`.
+- `dst` / `src` must be GM-shaped values. Static dimensions must be positive.
+- Dynamic dimensions are supported only when both operands are
+  `pto.partition_tensor_view` values.
+- `dst` and `src` must have the same element type and identical static/dynamic
+  shape signatures. Corresponding dynamic extents must be equal at runtime.
+- Runtime extents must be nonnegative, and each partition range must remain
+  within its backing tensor view. A zero extent denotes an empty transfer.
+- `ping` / `pong` must be local VEC tile-like values whose element type matches
+  `src`. Their physical `rows` / `cols` must be positive static values.
+- Staging `v_row` / `v_col` values must be positive and may be static or
+  dynamic. If a transfer enters the chunked path, a static `v_row` / `v_col`
+  must exactly divide the corresponding logical row / column extent. Use
+  dynamic valid dimensions when a partial final chunk is possible.
+- When `pong` is present, it must have the same type as `ping`.
+
+**Semantics:**
+
+For every logical index in the common `src` / `dst` shape, the operation reads
+the local `src` element and writes the corresponding remote `dst` element.
+`atomic_none` performs a normal write; an atomic mode such as `atomic_add`
+combines the source value with the destination according to that mode. The
+staging bundle may divide the logical range into chunks but does not change the
+logical transfer extent.
 
 **Examples:**
 
@@ -10228,11 +10248,36 @@ pto.comm.tput(%dst, %src, buf(%ping) : !pto.partition_tensor_view<128xf32>, !pto
 pto.comm.tput(%dst, %src, buf(%ping, %pong) : !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) {atomicType = #pto<atomic_type atomic_add>}
 ```
 
+For a variable-size transfer, construct both partitions with the same runtime
+extent and use dynamic staging valid dimensions when the extent may require a
+partial final chunk:
+
+```mlir
+%dst_part = pto.partition_view %dst_view,
+  offsets = [%c0, %c0], sizes = [%rows, %c4096]
+  : !pto.tensor_view<?x?xi8> -> !pto.partition_tensor_view<?x4096xi8>
+%src_part = pto.partition_view %src_view,
+  offsets = [%c0, %c0], sizes = [%rows, %c4096]
+  : !pto.tensor_view<?x?xi8> -> !pto.partition_tensor_view<?x4096xi8>
+%stage = pto.alloc_tile addr = %c0_i64
+  valid_row = %c1 valid_col = %c4096
+  : !pto.tile_buf<loc=vec, dtype=i8, rows=1, cols=4096,
+                  v_row=?, v_col=?, blayout=row_major,
+                  slayout=none_box, fractal=512, pad=0>
+pto.comm.tput(%dst_part, %src_part, buf(%stage)
+  : !pto.partition_tensor_view<?x4096xi8>,
+    !pto.partition_tensor_view<?x4096xi8>,
+    !pto.tile_buf<loc=vec, dtype=i8, rows=1, cols=4096,
+                  v_row=?, v_col=?, blayout=row_major,
+                  slayout=none_box, fractal=512, pad=0>)
+  {atomicType = #pto<atomic_type atomic_none>}
+```
+
 ---
 
 ##### `pto.comm.tget` - Synchronous Remote Read
 
-**Summary:** Lowers to `pto::comm::TGET(...)` and copies data from remote GM to local GM through a VEC staging tile.
+**Summary:** Copies data synchronously from remote GM to local GM through a VEC staging tile.
 
 **Arguments:**
 
@@ -10245,8 +10290,17 @@ pto.comm.tput(%dst, %src, buf(%ping, %pong) : !pto.partition_tensor_view<128xf32
 
 **Constraints & Verification:**
 
-- Same GM/global-like and staging constraints as `pto.comm.tput`.
-- `dst` and `src` must have the same element type and static shape.
+- The GM/global-like, dynamic partition, runtime extent, zero-length, and
+  staging constraints are the same as for `pto.comm.tput`.
+- `dst` and `src` must have the same element type and identical static/dynamic
+  shape signatures.
+
+**Semantics:**
+
+For every logical index in the common `src` / `dst` shape, the operation reads
+the remote `src` element and writes the corresponding local `dst` element. The
+staging bundle may divide the logical range into chunks but does not change the
+logical transfer extent.
 
 **Examples:**
 
