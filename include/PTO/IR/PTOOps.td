@@ -2947,19 +2947,17 @@ def SyncAllOp : PTO_Op<"syncall", [AttrSizedOperandSegments]> {
 
     Supported IR forms:
     - hard sync: no operands, `mode = hard`
-    - soft AIV-only sync: `gm_workspace`, `ub_workspace`, optional `used_cores`
-    - soft AIC-only sync: `gm_workspace`, `l1_workspace`, optional `used_cores`
-    - soft mixed sync: `gm_workspace`, `ub_workspace`, `l1_workspace`,
-      optional `used_cores`
+    - soft sync: `gm_workspace`, optional `used_cores`
 
-    The verifier mirrors the input-form constraints exposed by the public
-    `pto-isa` API.
+    The soft operand ABI is identical for AIV-only, AIC-only, and mixed
+    synchronization. The GM workspace must reserve at least 16 `i32` elements
+    (64 bytes), be zero-initialized before first use, and occupy an exclusive
+    cache line.
   }];
 
   let arguments = (ins
-    Optional<PTODpsType>:$gm_workspace,
-    Optional<PTODpsType>:$ub_workspace,
-    Optional<PTODpsType>:$l1_workspace,
+    Optional<AnyTypeOf<[PtrType, TensorViewLike],
+                       "Ptr, TensorView, or PartitionTensorView">>:$gm_workspace,
     Optional<I32>:$used_cores,
     PTO_SyncAllModeAttr:$mode,
     PTO_SyncCoreTypeAttr:$core_type

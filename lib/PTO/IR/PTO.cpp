@@ -3458,8 +3458,8 @@ void mlir::pto::SyncWaitOp::print(OpAsmPrinter &p) {
 
 ParseResult mlir::pto::SyncAllOp::parse(OpAsmParser &parser,
                                         OperationState &result) {
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> operands;
-  SmallVector<Type, 4> operandTypes;
+  SmallVector<OpAsmParser::UnresolvedOperand, 2> operands;
+  SmallVector<Type, 2> operandTypes;
   Attribute modeAttr;
   Attribute coreTypeAttr;
 
@@ -3497,11 +3497,9 @@ ParseResult mlir::pto::SyncAllOp::parse(OpAsmParser &parser,
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  auto addSegmentSizes = [&](int32_t gm, int32_t ub, int32_t l1,
-                             int32_t used) {
+  auto addSegmentSizes = [&](int32_t gm, int32_t used) {
     result.addAttribute("operandSegmentSizes",
-                        parser.getBuilder().getDenseI32ArrayAttr(
-                            {gm, ub, l1, used}));
+                        parser.getBuilder().getDenseI32ArrayAttr({gm, used}));
   };
 
   switch (mode.getValue()) {
@@ -3509,66 +3507,29 @@ ParseResult mlir::pto::SyncAllOp::parse(OpAsmParser &parser,
     if (!operands.empty())
       return parser.emitError(parser.getCurrentLocation())
              << "expects hard syncall to have no operands";
-    addSegmentSizes(0, 0, 0, 0);
+    addSegmentSizes(0, 0);
     return success();
   case pto::SyncAllMode::Soft:
     break;
   }
 
-  switch (coreType.getValue()) {
-  case pto::SyncCoreType::AIVOnly:
-    if (operands.size() != 2 && operands.size() != 3)
-      return parser.emitError(parser.getCurrentLocation())
-             << "expects soft AIV-only syncall to have gm_workspace, "
-                "ub_workspace, and optional used_cores";
-    if (parser.resolveOperand(operands[0], operandTypes[0], result.operands) ||
-        parser.resolveOperand(operands[1], operandTypes[1], result.operands))
-      return failure();
-    if (operands.size() == 3 &&
-        parser.resolveOperand(operands[2], operandTypes[2], result.operands))
-      return failure();
-    addSegmentSizes(1, 1, 0, operands.size() == 3 ? 1 : 0);
-    return success();
-  case pto::SyncCoreType::AICOnly:
-    if (operands.size() != 2 && operands.size() != 3)
-      return parser.emitError(parser.getCurrentLocation())
-             << "expects soft AIC-only syncall to have gm_workspace, "
-                "l1_workspace, and optional used_cores";
-    if (parser.resolveOperand(operands[0], operandTypes[0], result.operands) ||
-        parser.resolveOperand(operands[1], operandTypes[1], result.operands))
-      return failure();
-    if (operands.size() == 3 &&
-        parser.resolveOperand(operands[2], operandTypes[2], result.operands))
-      return failure();
-    addSegmentSizes(1, 0, 1, operands.size() == 3 ? 1 : 0);
-    return success();
-  case pto::SyncCoreType::Mix:
-    if (operands.size() != 3 && operands.size() != 4)
-      return parser.emitError(parser.getCurrentLocation())
-             << "expects soft mixed syncall to have gm_workspace, "
-                "ub_workspace, l1_workspace, and optional used_cores";
-    if (parser.resolveOperand(operands[0], operandTypes[0], result.operands) ||
-        parser.resolveOperand(operands[1], operandTypes[1], result.operands) ||
-        parser.resolveOperand(operands[2], operandTypes[2], result.operands))
-      return failure();
-    if (operands.size() == 4 &&
-        parser.resolveOperand(operands[3], operandTypes[3], result.operands))
-      return failure();
-    addSegmentSizes(1, 1, 1, operands.size() == 4 ? 1 : 0);
-    return success();
-  }
-
-  llvm_unreachable("unhandled SyncCoreType");
+  if (operands.size() != 1 && operands.size() != 2)
+    return parser.emitError(parser.getCurrentLocation())
+           << "expects soft syncall to have gm_workspace and optional "
+              "used_cores";
+  if (parser.resolveOperand(operands[0], operandTypes[0], result.operands))
+    return failure();
+  if (operands.size() == 2 &&
+      parser.resolveOperand(operands[1], operandTypes[1], result.operands))
+    return failure();
+  addSegmentSizes(1, operands.size() == 2 ? 1 : 0);
+  return success();
 }
 
 void mlir::pto::SyncAllOp::print(OpAsmPrinter &p) {
-  SmallVector<Value, 4> operands;
+  SmallVector<Value, 2> operands;
   if (getGmWorkspace())
     operands.push_back(getGmWorkspace());
-  if (getUbWorkspace())
-    operands.push_back(getUbWorkspace());
-  if (getL1Workspace())
-    operands.push_back(getL1Workspace());
   if (getUsedCores())
     operands.push_back(getUsedCores());
 
@@ -16360,73 +16321,69 @@ LogicalResult TTestOp::verify() {
 static LogicalResult verifySyncAllGmWorkspace(Operation *op, Value workspace,
                                               StringRef name) {
   Type ty = workspace.getType();
-  if (!isa<pto::TensorViewType, pto::PartitionTensorViewType>(ty))
+  Type elemType;
+  SmallVector<int64_t, 4> shape;
+  if (auto ptrTy = dyn_cast<pto::PtrType>(ty)) {
+    if (ptrTy.getMemorySpace().getAddressSpace() != pto::AddressSpace::GM)
+      return op->emitOpError() << "expects " << name
+                               << " to be in GM address space";
+    elemType = ptrTy.getElementType();
+  } else if (isa<pto::TensorViewType, pto::PartitionTensorViewType>(ty)) {
+    elemType = getElemTy(ty);
+    shape = getShapeVec(ty);
+  } else {
     return op->emitOpError()
-           << "expects " << name << " to be a tensor_view or partition_view";
+           << "expects " << name
+           << " to be a GM ptr/tensor_view/partition_view";
+  }
 
-  auto elemTy = dyn_cast<IntegerType>(getElemTy(ty));
+  auto elemTy = dyn_cast<IntegerType>(elemType);
   if (!elemTy || elemTy.getWidth() != 32)
-    return op->emitOpError() << "expects " << name
-                             << " element type to be i32";
+    return op->emitOpError() << "expects " << name << " element type to be i32";
 
-  SmallVector<int64_t, 4> shape = getShapeVec(ty);
+  // A pointer does not carry capacity metadata. It is lowered as the fixed
+  // 16 x i32 workspace required by PTO-ISA; allocation size remains a runtime
+  // responsibility.
+  if (isa<pto::PtrType>(ty))
+    return success();
+
   if (shape.empty())
     return op->emitOpError() << "expects " << name << " to have rank >= 1";
   for (int64_t dim : shape) {
     if (dim != ShapedType::kDynamic && dim <= 0)
-      return op->emitOpError() << "expects " << name
-                               << " shape to be positive";
+      return op->emitOpError() << "expects " << name << " shape to be positive";
   }
-  return success();
-}
 
-static LogicalResult verifySyncAllTileWorkspace(Operation *op, Value workspace,
-                                                StringRef name,
-                                                pto::AddressSpace expectedSpace) {
-  Type ty = workspace.getType();
-  if (!isa<pto::TileBufType>(ty))
-    return op->emitOpError() << "expects " << name << " to be tile_buf type";
-
-  if (isa<pto::TileBufType>(ty) && failed(verifyTileBufCommon(op, ty, name)))
-    return failure();
-
-  auto as = getPTOMemorySpaceEnum(ty);
-  if (!as || *as != expectedSpace)
-    return op->emitOpError() << "expects " << name << " to be in "
-                             << (expectedSpace == pto::AddressSpace::VEC
-                                     ? "vec"
-                                     : "mat")
-                             << " address space";
-
-  Type elemTy = getElemTy(ty);
-  auto intTy = dyn_cast_or_null<IntegerType>(elemTy);
-  if (!intTy || intTy.getWidth() != 32)
-    return op->emitOpError() << "expects " << name
-                             << " element type to be i32";
-
-  auto shape = getShapeVec(ty);
-  if (shape.empty() || shape.size() > 2)
-    return op->emitOpError() << "expects " << name
-                             << " to be rank-1 or rank-2";
-  for (int64_t dim : shape) {
-    if (dim != ShapedType::kDynamic && dim <= 0)
-      return op->emitOpError() << "expects " << name
-                               << " shape to be positive";
+  constexpr int64_t kMinWorkspaceElements = 16;
+  if (!llvm::is_contained(shape, ShapedType::kDynamic)) {
+    int64_t staticCapacity = 1;
+    for (int64_t dim : shape) {
+      int64_t product = 0;
+      if (llvm::MulOverflow(staticCapacity, dim, product)) {
+        staticCapacity = std::numeric_limits<int64_t>::max();
+        break;
+      }
+      staticCapacity = product;
+    }
+    if (staticCapacity < kMinWorkspaceElements)
+      return op->emitOpError()
+             << "expects " << name << " to contain at least "
+             << kMinWorkspaceElements
+             << " i32 elements (64 bytes), but static capacity is "
+             << staticCapacity;
   }
+
   return success();
 }
 
 LogicalResult SyncAllOp::verify() {
   bool hasGm = static_cast<bool>(getGmWorkspace());
-  bool hasUb = static_cast<bool>(getUbWorkspace());
-  bool hasL1 = static_cast<bool>(getL1Workspace());
   auto mode = getMode().getValue();
-  auto coreType = getCoreType().getValue();
 
   if (mode == pto::SyncAllMode::Hard) {
-    if (hasGm || hasUb || hasL1 || getUsedCores())
+    if (hasGm || getUsedCores())
       return emitOpError(
-          "expects hard syncall to have no workspace operands or used_cores");
+          "expects hard syncall to have no gm_workspace or used_cores");
     return success();
   }
 
@@ -16436,41 +16393,7 @@ LogicalResult SyncAllOp::verify() {
                                       "gm_workspace")))
     return failure();
 
-  if (auto used = getUsedCores()) {
-    auto intTy = dyn_cast<IntegerType>(used.getType());
-    if (!intTy || intTy.getWidth() != 32)
-      return emitOpError("expects used_cores to be i32");
-  }
-
-  switch (coreType) {
-  case pto::SyncCoreType::AIVOnly:
-    if (!hasUb || hasL1)
-      return emitOpError("expects soft AIV-only syncall to use gm_workspace "
-                         "+ ub_workspace only");
-    return verifySyncAllTileWorkspace(getOperation(), getUbWorkspace(),
-                                      "ub_workspace",
-                                      pto::AddressSpace::VEC);
-  case pto::SyncCoreType::AICOnly:
-    if (hasUb || !hasL1)
-      return emitOpError("expects soft AIC-only syncall to use gm_workspace "
-                         "+ l1_workspace only");
-    return verifySyncAllTileWorkspace(getOperation(), getL1Workspace(),
-                                      "l1_workspace",
-                                      pto::AddressSpace::MAT);
-  case pto::SyncCoreType::Mix:
-    if (!hasUb || !hasL1)
-      return emitOpError("expects soft mixed syncall to use gm_workspace + "
-                         "ub_workspace + l1_workspace");
-    if (failed(verifySyncAllTileWorkspace(getOperation(), getUbWorkspace(),
-                                          "ub_workspace",
-                                          pto::AddressSpace::VEC)))
-      return failure();
-    return verifySyncAllTileWorkspace(getOperation(), getL1Workspace(),
-                                      "l1_workspace",
-                                      pto::AddressSpace::MAT);
-  }
-
-  llvm_unreachable("unhandled SyncCoreType");
+  return success();
 }
 
 LogicalResult TBroadcastOp::verify() {

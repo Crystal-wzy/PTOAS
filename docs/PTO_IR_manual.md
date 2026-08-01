@@ -8928,17 +8928,13 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
 **Forms:**
 
 - Hard sync: no workspace operands
-- Soft AIV-only sync: `gm_workspace + ub_workspace [+ used_cores]`
-- Soft AIC-only sync: `gm_workspace + l1_workspace [+ used_cores]`
-- Soft mixed sync: `gm_workspace + ub_workspace + l1_workspace [+ used_cores]`
+- Soft sync: `gm_workspace [+ used_cores]`
 
 **Arguments:**
 
 | Name | Type | Description |
 |------|------|-------------|
-| `gm_workspace` | optional GM tensor/partition view of `i32` | Global shared workspace used by soft mode |
-| `ub_workspace` | optional VEC tile of `i32` | Vector-core local workspace for soft mode |
-| `l1_workspace` | optional MAT tile of `i32` | Cube-core local workspace for soft mode |
+| `gm_workspace` | optional GM pointer/tensor/partition view of `i32` | Global shared workspace used by soft mode |
 | `used_cores` | optional `i32` | Explicit participant count for soft mode |
 | `mode` | `#pto.sync_all_mode<...>` | `hard` or `soft` |
 | `core_type` | `#pto.sync_core_type<...>` | `aiv_only`, `aic_only`, or `mix` |
@@ -8948,31 +8944,49 @@ pto.wait_event [#pto.pipe_event_type<EVENT_LOAD_FROM_GM>, #pto.pipe_event_type<E
 **Constraints & Verification:**
 
 - Hard mode requires no workspace operands and no `used_cores`.
+- `core_type` remains required in Hard mode because lowering selects
+  `SYNCALL<SyncCoreType::...>()` from it.
 - Soft mode always requires `gm_workspace`.
-- Soft `aiv_only` requires `ub_workspace` and forbids `l1_workspace`.
-- Soft `aic_only` requires `l1_workspace` and forbids `ub_workspace`.
-- Soft `mix` requires both `ub_workspace` and `l1_workspace`.
-- `gm_workspace` must be a `tensor_view` or `partition_tensor_view` of `i32`.
-- `ub_workspace` / `l1_workspace` must be rank-1 or rank-2 `i32` tiles in `vec` / `mat` address space respectively.
-- These constraints intentionally mirror the corresponding PTO-ISA API parameter checks in `verify()`.
+- Soft `aiv_only`, `aic_only`, and `mix` use the same operand ABI.
+- `gm_workspace` must be a GM `!pto.ptr`, `!pto.tensor_view`, or
+  `!pto.partition_tensor_view` with `i32` elements.
+- A pointer workspace must reference at least 16 contiguous `i32` elements;
+  pointer capacity is a runtime responsibility because it is not encoded in
+  the pointer type.
+- When all dimensions are static, `gm_workspace` must contain at least 16
+  elements (64 bytes). This verifier check applies to tensor/partition views;
+  dynamic views must provide at least that capacity at runtime.
+- The workspace must occupy an exclusive 64-byte cache line and be
+  zero-initialized before its first `SYNCALL`. Alignment, aliasing, and
+  initialization are runtime responsibilities and cannot be proven by the
+  verifier.
+- Omitting `used_cores`, or passing zero, asks PTO-ISA to derive the participant
+  count from the launch configuration.
 
 **Basic Example:**
 
 ```mlir
-"pto.syncall"(%gm, %ub, %used) {
-  operandSegmentSizes = array<i32: 1, 1, 0, 1>,
+pto.syncall(%gm, %used : !pto.ptr<i32, gm>, i32)
   mode = #pto.sync_all_mode<soft>,
   core_type = #pto.sync_core_type<aiv_only>
-} : (!pto.partition_tensor_view<64xi32>,
-     !pto.tile_buf<vec, 1x64xi32>,
-     i32) -> ()
+
+"pto.syncall"(%gm_view, %used) {
+  operandSegmentSizes = array<i32: 1, 1>,
+  mode = #pto.sync_all_mode<soft>,
+  core_type = #pto.sync_core_type<aiv_only>
+} : (!pto.partition_tensor_view<16xi32>, i32) -> ()
 
 "pto.syncall"() {
-  operandSegmentSizes = array<i32: 0, 0, 0, 0>,
+  operandSegmentSizes = array<i32: 0, 0>,
   mode = #pto.sync_all_mode<hard>,
   core_type = #pto.sync_core_type<mix>
 } : () -> ()
 ```
+
+**Compatibility:** This is a breaking operand-schema change. Existing
+three/four-operand `.pto` files and `.ptobc` files carrying the former
+four-entry `operandSegmentSizes` must be regenerated. PTOAS and IR producers
+such as PyPTO should be upgraded together.
 
 ---
 
