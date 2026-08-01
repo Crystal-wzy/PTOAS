@@ -6,6 +6,9 @@ concurrency:
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
   # Nightly remote-board validation (GitHub cron is UTC).
   # 22:00 CST (UTC+8) == 14:00 UTC.
   schedule:
@@ -255,7 +258,10 @@ jobs:
 
       # LLVM build 完成后立即保存缓存，避免后续测试影响缓存内容
       - name: Save LLVM build cache
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: >-
+          steps.cache-llvm.outputs.cache-hit != 'true' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+          success()
         uses: actions/cache/save@v4
         with:
           path: |

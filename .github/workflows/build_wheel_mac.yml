@@ -39,7 +39,7 @@ concurrency:
 env:
   LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
   LLVM_REF: feature-vpto-llvm21
-  LLVM_CACHE_FLAVOR: llvm21-vpto-wheel-static-pic-v2
+  LLVM_CACHE_FLAVOR: llvm21-vpto-wheel-static-pic-utils-v3
 
 jobs:
   build_wheel:
@@ -206,6 +206,7 @@ jobs:
             -Dnanobind_DIR="$(python -m nanobind --cmake_dir)" \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_TARGETS_TO_BUILD="host" \
+            -DLLVM_INSTALL_UTILS=ON \
             -DCMAKE_INSTALL_PREFIX=$LLVM_INSTALL_DIR
           ninja -C $LLVM_BUILD_DIR
           cmake --install $LLVM_BUILD_DIR
