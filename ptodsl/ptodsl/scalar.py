@@ -360,6 +360,7 @@ def _element_bytewidth(elem_type):
 __all__ = [
     "muli", "addi", "subi",
     "index_cast",
+    "cast",
     "select",
     "max", "min", "exp", "log", "sqrt", "abs",
     "load", "store",

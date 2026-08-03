@@ -35,6 +35,10 @@ def vector_float_cast_shape_mismatch_probe():
     _ = scalar.cast(value, pto.Vec(pto.f32, 8))
 
 
+def test_scalar_cast_is_public():
+    assert "cast" in scalar.__all__
+
+
 def test_scalar_float_cast():
     text = scalar_float_cast_probe.compile().mlir_text()
     assert "arith.extf" in text
@@ -63,6 +67,7 @@ def test_vector_float_cast_rejects_shape_mismatch():
 
 
 def main():
+    test_scalar_cast_is_public()
     test_scalar_float_cast()
     test_vector_float_cast_preserves_shape()
     test_vector_float_cast_rejects_shape_mismatch()
