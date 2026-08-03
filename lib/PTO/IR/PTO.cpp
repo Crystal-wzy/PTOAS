@@ -3895,8 +3895,14 @@ static bool isCommGlobalLikeType(Type ty) {
   return isa<pto::TensorViewType, pto::PartitionTensorViewType>(ty);
 }
 
-static LogicalResult verifyCommGlobalLike(Operation *op, Value value,
-                                          StringRef name) {
+enum class CommGlobalShapePolicy {
+  StaticOnly,
+  AllowDynamicPartitionView,
+};
+
+static LogicalResult verifyCommGlobalLike(
+    Operation *op, Value value, StringRef name,
+    CommGlobalShapePolicy policy = CommGlobalShapePolicy::StaticOnly) {
   Type ty = value.getType();
   if (!isCommGlobalLikeType(ty))
     return op->emitOpError()
@@ -3905,10 +3911,23 @@ static LogicalResult verifyCommGlobalLike(Operation *op, Value value,
   SmallVector<int64_t, 4> shape = getShapeVec(ty);
   if (shape.empty())
     return op->emitOpError() << "expects " << name << " to have rank >= 1";
+
+  bool opAllowsDynamic =
+      policy == CommGlobalShapePolicy::AllowDynamicPartitionView;
+  bool isAllowedDynamicType = isa<pto::PartitionTensorViewType>(ty);
   for (int64_t dim : shape) {
-    if (dim == ShapedType::kDynamic || dim <= 0)
-      return op->emitOpError() << "expects " << name
-                               << " to have a positive static shape";
+    if (dim == ShapedType::kDynamic) {
+      if (!opAllowsDynamic)
+        return op->emitOpError()
+               << "does not support dynamic dimensions on " << name;
+      if (!isAllowedDynamicType)
+        return op->emitOpError() << "allows dynamic dimensions on " << name
+                                 << " only for partition_tensor_view";
+      continue;
+    }
+    if (dim <= 0)
+      return op->emitOpError() << "expects every static dimension of " << name
+                               << " to be positive";
   }
   return success();
 }
@@ -16260,8 +16279,12 @@ LogicalResult TGetAsyncOp::verify() {
 }
 
 LogicalResult TPutOp::verify() {
-  if (failed(verifyCommGlobalLike(*this, getDst(), "dst")) ||
-      failed(verifyCommGlobalLike(*this, getSrc(), "src")) ||
+  if (failed(verifyCommGlobalLike(
+          *this, getDst(), "dst",
+          CommGlobalShapePolicy::AllowDynamicPartitionView)) ||
+      failed(verifyCommGlobalLike(
+          *this, getSrc(), "src",
+          CommGlobalShapePolicy::AllowDynamicPartitionView)) ||
       failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
       failed(verifyCommPingPongSameType(*this, getPing(), getPong(), "ping",
                                         "pong")))
@@ -16269,15 +16292,20 @@ LogicalResult TPutOp::verify() {
   if (getElemTy(getDst().getType()) != getElemTy(getSrc().getType()))
     return emitOpError("expects src and dst to have the same element type");
   if (getShapeVec(getDst().getType()) != getShapeVec(getSrc().getType()))
-    return emitOpError("expects src and dst to have the same static shape");
+    return emitOpError(
+        "expects src and dst to have the same static/dynamic shape signature");
   if (getElemTy(getPing().getType()) != getElemTy(getSrc().getType()))
     return emitOpError("expects staging tile element type to match src/dst");
   return success();
 }
 
 LogicalResult TGetOp::verify() {
-  if (failed(verifyCommGlobalLike(*this, getDst(), "dst")) ||
-      failed(verifyCommGlobalLike(*this, getSrc(), "src")) ||
+  if (failed(verifyCommGlobalLike(
+          *this, getDst(), "dst",
+          CommGlobalShapePolicy::AllowDynamicPartitionView)) ||
+      failed(verifyCommGlobalLike(
+          *this, getSrc(), "src",
+          CommGlobalShapePolicy::AllowDynamicPartitionView)) ||
       failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
       failed(verifyCommPingPongSameType(*this, getPing(), getPong(), "ping",
                                         "pong")))
@@ -16285,7 +16313,8 @@ LogicalResult TGetOp::verify() {
   if (getElemTy(getDst().getType()) != getElemTy(getSrc().getType()))
     return emitOpError("expects src and dst to have the same element type");
   if (getShapeVec(getDst().getType()) != getShapeVec(getSrc().getType()))
-    return emitOpError("expects src and dst to have the same static shape");
+    return emitOpError(
+        "expects src and dst to have the same static/dynamic shape signature");
   if (getElemTy(getPing().getType()) != getElemTy(getSrc().getType()))
     return emitOpError("expects staging tile element type to match src/dst");
   return success();
