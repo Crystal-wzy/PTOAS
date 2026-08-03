@@ -11,7 +11,8 @@
 
 // Stack-local structs must reach the VPTO LLVM pipeline. The nested access
 // proves each path element is lowered to an aggregate GEP before the scalar
-// store/load, rather than merely passing PTO frontend verification.
+// store/load, rather than merely passing PTO frontend verification. A struct
+// declared in a loop must still use entry-block stack storage.
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
   func.func @struct_vpto_llvm() attributes {pto.kernel} {
     %i32 = arith.constant 7 : i32
@@ -23,6 +24,20 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.struct_set %s[1, 1], %i16 : !pto.struct<i32, !pto.struct<f32, i16>>, i16
     %value = pto.struct_get %s[1, 0] : !pto.struct<i32, !pto.struct<f32, i16>> -> f32
     pto.struct_set %s[1, 0], %value : !pto.struct<i32, !pto.struct<f32, i16>>, f32
+    return
+  }
+
+  func.func @struct_vpto_loop() attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c3 = arith.constant 3 : index
+    %c1 = arith.constant 1 : index
+    %value = arith.constant 7 : i32
+    scf.for %iv = %c0 to %c3 step %c1 {
+      %s = pto.declare_struct -> !pto.struct<i32>
+      pto.struct_set %s[0], %value : !pto.struct<i32>, i32
+      %read = pto.struct_get %s[0] : !pto.struct<i32> -> i32
+      pto.struct_set %s[0], %read : !pto.struct<i32>, i32
+    }
     return
   }
 }
@@ -38,3 +53,10 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // CHECK: store i16 9, ptr
 // CHECK: getelementptr { float, i16 }, ptr {{.*}}, i32 0, i32 0
 // CHECK: load float, ptr
+
+// CHECK-LABEL: define {{.*}} @struct_vpto_loop_mix_aiv()
+// CHECK: %[[LOOP_STATE:.*]] = alloca { i32 }, i64 1
+// CHECK: br label
+// CHECK-NOT: alloca
+// CHECK: getelementptr { i32 }, ptr %[[LOOP_STATE]], i32 0, i32 0
+// CHECK: store i32 7, ptr

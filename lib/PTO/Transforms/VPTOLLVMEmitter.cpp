@@ -10462,10 +10462,25 @@ public:
                                          "expected LLVM pointer result type");
     auto structType = cast<pto::StructType>(op.getS().getType());
     Type storageType = getVPTOStructStorageType(structType, rewriter);
-    Value one = rewriter.create<LLVM::ConstantOp>(
-        op.getLoc(), rewriter.getI64Type(), rewriter.getIndexAttr(1));
-    rewriter.replaceOpWithNewOp<LLVM::AllocaOp>(
-        op, resultType, storageType, one, /*alignment=*/0);
+    auto parentFunc = op->getParentOfType<func::FuncOp>();
+    if (!parentFunc)
+      return rewriter.notifyMatchFailure(
+          op, "expected struct declaration inside a function");
+
+    // A non-entry alloca is a dynamic stack allocation. Keep one stack slot per
+    // declaration per function invocation even when the declaration is nested
+    // in a loop or a region.
+    Value storage;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block &entryBlock = parentFunc.getBody().front();
+      rewriter.setInsertionPointToStart(&entryBlock);
+      Value one = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), rewriter.getI64Type(), rewriter.getIndexAttr(1));
+      storage = rewriter.create<LLVM::AllocaOp>(
+          op.getLoc(), resultType, storageType, one, /*alignment=*/0);
+    }
+    rewriter.replaceOp(op, storage);
     return success();
   }
 };
