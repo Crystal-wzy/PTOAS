@@ -12,17 +12,25 @@
 # for example: ninja -C build check-pto.
 #
 # Optional env:
-#   LLVM_BUILD_DIR   - default: ${LLVM_SOURCE_DIR:-/llvm-workspace/llvm-project}/build-shared
+#   LLVM_BUILD_DIR   - default: <repo-parent>/llvm-project/build-shared
 #   PTO_BUILD_DIR    - default: <repo>/build
 #   PYTHON_BIN       - default: python
 
 set -euo pipefail
 
 PTO_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LLVM_SOURCE_DIR="${LLVM_SOURCE_DIR:-/llvm-workspace/llvm-project}"
+LLVM_SOURCE_DIR="${LLVM_SOURCE_DIR:-$(cd "${PTO_SOURCE_DIR}/.." && pwd)/llvm-project}"
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${LLVM_SOURCE_DIR}/build-shared}"
 PTO_BUILD_DIR="${PTO_BUILD_DIR:-${PTO_SOURCE_DIR}/build}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+
+LLVM_DIR="${LLVM_BUILD_DIR}/lib/cmake/llvm"
+MLIR_DIR="${LLVM_BUILD_DIR}/lib/cmake/mlir"
+if [[ ! -d "${LLVM_DIR}" || ! -d "${MLIR_DIR}" ]]; then
+  echo "LLVM/MLIR CMake packages not found under: ${LLVM_BUILD_DIR}" >&2
+  echo "Set LLVM_BUILD_DIR to an existing LLVM build directory." >&2
+  exit 1
+fi
 
 if command -v ccache >/dev/null 2>&1; then
   export CMAKE_C_COMPILER_LAUNCHER="${CMAKE_C_COMPILER_LAUNCHER:-ccache}"
@@ -36,8 +44,10 @@ fi
 
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
   "${PYTHON_BIN}" -m pip install --editable "${PTO_SOURCE_DIR}" \
-    --no-build-isolation \
-    --config-settings="build-dir=${PTO_BUILD_DIR}"
+    --no-build-isolation -v \
+    --config-settings="build-dir=${PTO_BUILD_DIR}" \
+    --config-settings="cmake.define.LLVM_DIR=${LLVM_DIR}" \
+    --config-settings="cmake.define.MLIR_DIR=${MLIR_DIR}"
 
 echo "PTOAS editable install complete."
 echo "Build directory: ${PTO_BUILD_DIR}"

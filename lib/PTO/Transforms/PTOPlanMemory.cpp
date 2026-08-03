@@ -2631,7 +2631,13 @@ private:
 void PlanMemoryPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
   SmallVector<func::FuncOp> funcs;
-  moduleOp.walk([&](func::FuncOp funcOp) { funcs.push_back(funcOp); });
+  moduleOp.walk([&](func::FuncOp funcOp) {
+    // TileOp helpers only contain compute code and deliberately do not own
+    // alloc_tile/reserve_buffer lifetimes.  All other functions, including
+    // ordinary functions in backend child modules, must be planned.
+    if (!funcOp->hasAttr("pto.tileop.helper"))
+      funcs.push_back(funcOp);
+  });
 
   for (func::FuncOp funcOp : funcs) {
     auto parsedMode = parseLegacyMemPlanMode(funcOp, this->memMode);
