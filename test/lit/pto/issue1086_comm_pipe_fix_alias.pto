@@ -6,10 +6,11 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: ptoas --pto-arch=a3 --enable-insert-sync %s -o - 2>&1 | FileCheck %s --implicit-check-not='#define PIPE_FIX'
+// RUN: ptoas --pto-arch=a3 --enable-insert-sync %s -o - 2>&1 | FileCheck %s --implicit-check-not='#define PIPE_FIX PIPE_M'
 
 // Regression for issue #1086: including the communication header must not
-// alias the system PIPE_FIX pipeline token to PIPE_M.
+// alias the system PIPE_FIX pipeline token to PIPE_M. Older A3 toolchains
+// still need the numeric pipeline fallback used by PTO-ISA communication code.
 
 module attributes {pto.target_arch = "a2a3"} {
   func.func @comm_then_fixpipe_store(
@@ -58,6 +59,9 @@ module attributes {pto.target_arch = "a2a3"} {
 }
 
 // CHECK: #include "pto/pto-inst.hpp"
+// CHECK: #ifndef PIPE_FIX
+// CHECK-NEXT: #define PIPE_FIX static_cast<pipe_t>(10)
+// CHECK-NEXT: #endif
 // CHECK: #include "pto/comm/pto_comm_inst.hpp"
 // CHECK-LABEL: AICORE void comm_then_fixpipe_store(
 // CHECK: pto::comm::TWAIT(
