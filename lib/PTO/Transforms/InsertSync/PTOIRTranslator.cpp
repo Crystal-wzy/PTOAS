@@ -82,6 +82,18 @@ static pto::AddressSpace getTileAddressSpace(pto::TileBufType type) {
   return pto::AddressSpace::MAT;
 }
 
+static void
+appendUniqueMemInfo(SmallVectorImpl<std::unique_ptr<BaseMemInfo>> &infos,
+                    std::unique_ptr<BaseMemInfo> candidate) {
+  if (!candidate)
+    return;
+  if (llvm::any_of(infos, [&](const std::unique_ptr<BaseMemInfo> &info) {
+        return info && *info == *candidate;
+      }))
+    return;
+  infos.emplace_back(std::move(candidate));
+}
+
 } // namespace
 
 static bool getConstIndexValue(Value value, int64_t &out) {
@@ -829,17 +841,12 @@ void PTOIRTranslator::UpdateAliasBufferInfo(Value result, Value source) {
 
   auto &resultMemInfoVec = buffer2MemInfoMap_[result];
   for (auto &parentInfo : buffer2MemInfoMap_[source])
-    resultMemInfoVec.emplace_back(parentInfo->clone(result));
+    appendUniqueMemInfo(resultMemInfoVec, parentInfo->clone(result));
 }
 
 void PTOIRTranslator::UpdateConservativeAliasBufferInfo(Value result,
                                                         Value source) {
-  if (!result || !source) return;
-  if (!buffer2MemInfoMap_.contains(source)) return;
-
-  auto &resultMemInfoVec = buffer2MemInfoMap_[result];
-  for (auto &parentInfo : buffer2MemInfoMap_[source])
-    resultMemInfoVec.emplace_back(parentInfo->clone(result));
+  UpdateAliasBufferInfo(result, source);
 }
 
 LogicalResult PTOIRTranslator::UpdateIntToPtrOpMemInfo(pto::IntToPtrOp op) {

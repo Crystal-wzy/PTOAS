@@ -13,10 +13,31 @@
 // RUN:   | FileCheck %s --check-prefix=GSS
 
 module attributes {pto.target_arch = "a3"} {
-  func.func @arith_select_tile_sync(
+  func.func @arith_select_tile_read_sync(
       %cond: i1,
       %src0: !pto.partition_tensor_view<16x16xf32>,
-      %src1: !pto.partition_tensor_view<16x16xf32>,
+      %dst: !pto.partition_tensor_view<16x16xf32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %addr0 = arith.constant 0 : i64
+    %addr1 = arith.constant 1024 : i64
+    %addr2 = arith.constant 2048 : i64
+    %a = pto.alloc_tile addr = %addr0 : !pto.tile_buf<vec, 16x16xf32>
+    %seed = pto.alloc_tile addr = %addr1 : !pto.tile_buf<vec, 16x16xf32>
+    %b = pto.alloc_tile addr = %addr2 : !pto.tile_buf<vec, 16x16xf32>
+
+    pto.tload ins(%src0 : !pto.partition_tensor_view<16x16xf32>)
+              outs(%a : !pto.tile_buf<vec, 16x16xf32>)
+    pto.tabs ins(%seed : !pto.tile_buf<vec, 16x16xf32>)
+             outs(%b : !pto.tile_buf<vec, 16x16xf32>)
+    %selected = arith.select %cond, %a, %b : !pto.tile_buf<vec, 16x16xf32>
+    pto.tstore ins(%selected : !pto.tile_buf<vec, 16x16xf32>)
+               outs(%dst : !pto.partition_tensor_view<16x16xf32>)
+    return
+  }
+
+  func.func @arith_select_tile_write_sync(
+      %cond: i1,
+      %src: !pto.partition_tensor_view<16x16xf32>,
       %dst: !pto.partition_tensor_view<16x16xf32>)
       attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
     %addr0 = arith.constant 0 : i64
@@ -24,29 +45,45 @@ module attributes {pto.target_arch = "a3"} {
     %a = pto.alloc_tile addr = %addr0 : !pto.tile_buf<vec, 16x16xf32>
     %b = pto.alloc_tile addr = %addr1 : !pto.tile_buf<vec, 16x16xf32>
 
-    pto.tload ins(%src0 : !pto.partition_tensor_view<16x16xf32>)
-              outs(%a : !pto.tile_buf<vec, 16x16xf32>)
-    pto.tload ins(%src1 : !pto.partition_tensor_view<16x16xf32>)
-              outs(%b : !pto.tile_buf<vec, 16x16xf32>)
     %selected = arith.select %cond, %a, %b : !pto.tile_buf<vec, 16x16xf32>
-    pto.tstore ins(%selected : !pto.tile_buf<vec, 16x16xf32>)
+    pto.tload ins(%src : !pto.partition_tensor_view<16x16xf32>)
+              outs(%selected : !pto.tile_buf<vec, 16x16xf32>)
+    pto.tstore ins(%b : !pto.tile_buf<vec, 16x16xf32>)
                outs(%dst : !pto.partition_tensor_view<16x16xf32>)
     return
   }
 }
 
-// INSERT-LABEL: func.func @arith_select_tile_sync
-// INSERT: pto.tload
+// INSERT-LABEL: func.func @arith_select_tile_read_sync
 // INSERT: pto.tload
 // INSERT: pto.set_flag[<PIPE_MTE2>, <PIPE_MTE3>,
+// INSERT: pto.tabs
+// INSERT: pto.set_flag[<PIPE_V>, <PIPE_MTE3>,
 // INSERT: arith.select
+// INSERT-DAG: pto.wait_flag[<PIPE_MTE2>, <PIPE_MTE3>,
+// INSERT-DAG: pto.wait_flag[<PIPE_V>, <PIPE_MTE3>,
+// INSERT-NEXT: pto.tstore
+
+// INSERT-LABEL: func.func @arith_select_tile_write_sync
+// INSERT: arith.select
+// INSERT: pto.tload
+// INSERT: pto.set_flag[<PIPE_MTE2>, <PIPE_MTE3>,
 // INSERT: pto.wait_flag[<PIPE_MTE2>, <PIPE_MTE3>,
 // INSERT-NEXT: pto.tstore
 
-// GSS-LABEL: func.func @arith_select_tile_sync
-// GSS: pto.tload
+// GSS-LABEL: func.func @arith_select_tile_read_sync
 // GSS: pto.tload
 // GSS: pto.set_flag[<PIPE_MTE2>, <PIPE_MTE3>,
+// GSS: pto.tabs
+// GSS: pto.set_flag[<PIPE_V>, <PIPE_MTE3>,
 // GSS: arith.select
+// GSS-DAG: pto.wait_flag[<PIPE_MTE2>, <PIPE_MTE3>,
+// GSS-DAG: pto.wait_flag[<PIPE_V>, <PIPE_MTE3>,
+// GSS-NEXT: pto.tstore
+
+// GSS-LABEL: func.func @arith_select_tile_write_sync
+// GSS: arith.select
+// GSS: pto.tload
+// GSS: pto.set_flag[<PIPE_MTE2>, <PIPE_MTE3>,
 // GSS: pto.wait_flag[<PIPE_MTE2>, <PIPE_MTE3>,
 // GSS-NEXT: pto.tstore
