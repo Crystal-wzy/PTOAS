@@ -47,6 +47,7 @@ MaskType = _pto_mod.MaskType
 VMIVRegType = _pto_mod.VMIVRegType
 VMIMaskType = _pto_mod.VMIMaskType
 AlignType = _pto_mod.AlignType
+StructType = _export_optional_cext_symbol("StructType")
 AsyncSessionType = _pto_mod.AsyncSessionType
 AsyncEventType = _pto_mod.AsyncEventType
 PrefetchAsyncContextType = _export_optional_cext_symbol("PrefetchAsyncContextType")

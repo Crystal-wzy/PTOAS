@@ -296,6 +296,16 @@ def low_precision_vcvt_frontend():
     pto.vsts(roundtrip, dst_ptr, pto.const(0), mask_b32)
 
 
+@pto.jit(target="a5", backend="emitc")
+def struct_frontend_verify_probe():
+    state_ty = pto.struct_type(pto.i32, pto.struct_type(pto.f32, pto.i16))
+    state = pto.declare_struct(state_ty)
+    pto.struct_set(state, 0, 1)
+    pto.struct_set(state, (1, 0), 3.5)
+    pto.struct_set(state, (1, 1), 7)
+    _ = pto.struct_get(state, (1, 0))
+
+
 @pto.simt
 def vec_value_arith_simt_body(
     A_ptr: pto.ptr(pto.f32, "gm"),
@@ -342,6 +352,32 @@ def main() -> None:
     expect(
         "pto.tload" in simple_frontend_text and "pto.tstore" in simple_frontend_text,
         "host_vec_copy frontend verification output should keep the tile IO contract visible",
+    )
+
+    struct_text = struct_frontend_verify_probe.compile().mlir_text()
+    expect(
+        "pto.declare_struct" in struct_text and "pto.struct_get" in struct_text,
+        "struct_frontend_verify_probe source MLIR should contain the PTODSL struct surface before frontend verification",
+    )
+    struct_frontend_texts = run_ptoas_frontend_verify(
+        ptoas_bin,
+        struct_text,
+        "struct_frontend_verify_probe PTODSL artifact",
+    )
+    expect(
+        len(struct_frontend_texts) == 1,
+        "struct_frontend_verify_probe should lower to exactly one backend child module",
+    )
+    struct_frontend_text = struct_frontend_texts[0]
+    expect(
+        "func.func @struct_frontend_verify_probe" in struct_frontend_text,
+        "struct_frontend_verify_probe frontend verification should preserve the kernel symbol",
+    )
+    expect(
+        "pto.declare_struct" in struct_frontend_text
+        and "pto.struct_set" in struct_frontend_text
+        and "pto.struct_get" in struct_frontend_text,
+        "struct_frontend_verify_probe frontend verification should preserve the struct IR contract",
     )
 
     simt_gm_memory_text = simt_gm_memory_core_kernel.compile().mlir_text()

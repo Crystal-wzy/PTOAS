@@ -27,6 +27,7 @@ from ._scalar_coercion import coerce_scalar_to_type
 from ._surface_types import const_expr
 from ._tracing.active import current_session
 from ._surface_values import unwrap_surface_value, wrap_like_surface_value, wrap_surface_value
+from ._types import _StructDescriptor
 
 from ptoas.mlir.dialects import pto as _pto, scf
 from ptoas.mlir.ir import InsertionPoint
@@ -276,9 +277,14 @@ class _ForBuilder:
     def carry(self, **kwargs):
         if not kwargs:
             raise ValueError("carry(...) requires at least one named loop-carried value")
-        for name in kwargs:
+        for name, value in kwargs.items():
             if not isinstance(name, str) or not name:
                 raise TypeError("carry(...) names must be non-empty strings")
+            if isinstance(value, _StructDescriptor):
+                raise TypeError(
+                    "pto.for_(...).carry(...) does not accept pto.struct_type(...) descriptors; "
+                    "declare the struct outside the loop and mutate it in place inside the loop body"
+                )
         return _CarryForCM(self._start, self._stop, self._step, tuple(kwargs.items()))
 
 
