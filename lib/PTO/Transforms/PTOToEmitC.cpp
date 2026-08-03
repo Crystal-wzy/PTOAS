@@ -13753,12 +13753,6 @@ struct EmitPTOManualPass
 	    builder.create<emitc::IncludeOp>(
 	        loc, "pto/pto-inst.hpp", /*is_standard_include=*/false);
         if (needsCommInclude) {
-	      builder.create<emitc::VerbatimOp>(
-	          loc, builder.getStringAttr(R"cpp(
-#ifndef PIPE_FIX
-#define PIPE_FIX PIPE_M
-#endif
-)cpp"));
 	      builder.create<emitc::IncludeOp>(
 	          loc, "pto/comm/pto_comm_inst.hpp", /*is_standard_include=*/false);
         }
