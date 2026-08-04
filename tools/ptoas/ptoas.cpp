@@ -692,6 +692,19 @@ llvm::cl::opt<std::string> mlir::pto::cannOutputVersion(
     llvm::cl::desc("Override the CANN version used for lowering and public ABI output selection; examples: 9.0.0, 9.0.0-beta.1"),
     llvm::cl::value_desc("version"), llvm::cl::init(""));
 
+llvm::cl::opt<mlir::pto::VFSIMTSizeFixMode> mlir::pto::vptoFixVFSIMTSize(
+    "vpto-fix-vfsimt-size",
+    llvm::cl::desc("Validate or repair VF_SIMT code sizes in VPTO vector objects"),
+    llvm::cl::value_desc("auto|off|verify"),
+    llvm::cl::values(
+        clEnumValN(mlir::pto::VFSIMTSizeFixMode::Auto, "auto",
+                   "Repair the known invalid 0xffff size (default)"),
+        clEnumValN(mlir::pto::VFSIMTSizeFixMode::Off, "off",
+                   "Skip VF_SIMT size validation and repair"),
+        clEnumValN(mlir::pto::VFSIMTSizeFixMode::Verify, "verify",
+                   "Validate VF_SIMT sizes without repairing them")),
+    llvm::cl::init(mlir::pto::VFSIMTSizeFixMode::Auto));
+
 enum class PTOBuildLevel {
   Level1,
   Level2,
@@ -2849,6 +2862,12 @@ static void prepareVPTOForEmission(PassManager &pm) {
       pto::createPTOUnrollSIMTForPass());
   kernelModulePM.addPass(createSCCPPass());
   kernelModulePM.addPass(createCanonicalizerPass());
+  kernelModulePM.addPass(createCSEPass());
+  kernelModulePM.addNestedPass<func::FuncOp>(
+      pto::createPTOAnalyzeSIMTPersistentFragmentPass());
+  kernelModulePM.addNestedPass<func::FuncOp>(
+      pto::createPTOMaterializeSIMTPersistentFragmentPass());
+  kernelModulePM.addPass(pto::createPTOOutlineSIMTSectionsPass());
   kernelModulePM.addPass(pto::createVPTOPtrNormalizePass());
   kernelModulePM.addPass(pto::createVPTOPtrCastCleanupPass());
   kernelModulePM.addPass(pto::createVPTOOptimizeVcvtPass());

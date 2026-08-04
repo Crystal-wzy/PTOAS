@@ -714,6 +714,15 @@ const mlir::pto::BackendInfo &mlir::pto::PTOASContext::getBackendInfo() const {
   return backendInfo;
 }
 
+void mlir::pto::PTOASContext::setVFSIMTSizeFixMode(VFSIMTSizeFixMode value) {
+  vfsimtSizeFixMode = value;
+}
+
+mlir::pto::VFSIMTSizeFixMode
+mlir::pto::PTOASContext::getVFSIMTSizeFixMode() const {
+  return vfsimtSizeFixMode;
+}
+
 void mlir::pto::PTOASContext::setOutputCANNVersionOverride(
     std::optional<CANNVersion> value) {
   outputCANNVersionOverride = std::move(value);
@@ -1037,7 +1046,7 @@ static LogicalResult emitVPTOLLVMFatobj(
           jobResult.vptoCubeModule.module.get(),
           jobResult.vptoVectorModule.module.get(), stubSource,
           outputPath, moduleId, *toolchain, context.getTempFiles(),
-          llvm::errs())))
+          context.getVFSIMTSizeFixMode(), llvm::errs())))
     return failure();
   return success();
 }
@@ -1251,6 +1260,7 @@ static int runPTOASDriver(int argc, char **argv) {
 
   PTOASContext context(registry, outputFilename, argc, argv);
   context.setOutputCANNVersionOverride(outputCANNVersionOverride);
+  context.setVFSIMTSizeFixMode(mlir::pto::vptoFixVFSIMTSize);
   context.initializeMLIRContext();
 
   std::unique_ptr<llvm::MemoryBuffer> inputBuffer = readInputBuffer();

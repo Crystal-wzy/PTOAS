@@ -17529,18 +17529,6 @@ static LogicalResult verifyUniqueKeepGroupSlots(KeepOp current,
   return success();
 }
 
-static LogicalResult verifySimtKeepResumeCommon(Operation *op, int64_t slot) {
-  func::FuncOp func = getParentFunc(op);
-  if (!func || !func->hasAttr(pto::kPTOSimtEntryAttrName))
-    return op->emitOpError("must appear inside a function marked with '")
-           << pto::kPTOSimtEntryAttrName << "'";
-  if (slot < 0 || slot >= kSimtKeepResumeSlotLimit) {
-    return op->emitOpError("requires slot in range [0, ")
-           << (kSimtKeepResumeSlotLimit - 1) << "]";
-  }
-  return success();
-}
-
 static bool isSupportedSimtKeepResumeType(Type type) {
   if (auto intType = dyn_cast<IntegerType>(type))
     return intType.getWidth() <= 64;
@@ -17558,6 +17546,17 @@ static LogicalResult verifyInsideSimtExecutionScope(Operation *op) {
     return op->emitOpError("must appear inside a function marked with '")
            << pto::kPTOSimtEntryAttrName
            << "' or inside pto.section.simt";
+  return success();
+}
+
+static LogicalResult verifySimtKeepResumeCommon(Operation *op, int64_t slot) {
+  if (!isInsideSimtExecutionScope(op))
+    return op->emitOpError("must appear inside a function marked with '")
+           << pto::kPTOSimtEntryAttrName << "' or inside pto.section.simt";
+  if (slot < 0 || slot >= kSimtKeepResumeSlotLimit) {
+    return op->emitOpError("requires slot in range [0, ")
+           << (kSimtKeepResumeSlotLimit - 1) << "]";
+  }
   return success();
 }
 
@@ -17611,12 +17610,23 @@ LogicalResult KeepOp::verify() {
     return failure();
 
   Block *block = getOperation()->getBlock();
-  Operation *terminator = block ? block->getTerminator() : nullptr;
-  if (!terminator || !isa<func::ReturnOp>(terminator))
+  bool insideSection =
+      getOperation()->getParentOfType<SectionSimtOp>() != nullptr;
+  Operation *lastPayloadOp = nullptr;
+  if (insideSection) {
+    if (!block->empty())
+      lastPayloadOp = &block->back();
+  } else {
+    Operation *terminator = block->getTerminator();
+    if (isa<func::ReturnOp>(terminator))
+      lastPayloadOp = terminator->getPrevNode();
+  }
+  if (!lastPayloadOp)
     return emitOpError(
-        "must be placed in the SIMT epilogue before func.return");
+        "must be placed in the SIMT epilogue before func.return or the end "
+        "of pto.section.simt");
 
-  Operation *cur = terminator->getPrevNode();
+  Operation *cur = lastPayloadOp;
   while (cur && isa<SyncthreadsOp>(cur))
     cur = cur->getPrevNode();
   Operation *lastKeep = cur;
@@ -17624,7 +17634,7 @@ LogicalResult KeepOp::verify() {
     return emitOpError()
            << "must be placed in the SIMT epilogue before func.return; only "
               "'pto.syncthreads' may appear between the final 'pto.keep' group "
-              "and func.return";
+              "and func.return or the end of pto.section.simt";
 
   Operation *firstKeep = lastKeep;
   while (Operation *prev = firstKeep->getPrevNode()) {
@@ -17635,7 +17645,8 @@ LogicalResult KeepOp::verify() {
   if (!isOpInRange(getOperation(), firstKeep, lastKeep))
     return emitOpError()
            << "must be in the contiguous SIMT keep epilogue group immediately "
-              "before optional 'pto.syncthreads' and func.return";
+              "before optional 'pto.syncthreads' and func.return or the end "
+              "of pto.section.simt";
   if (failed(verifyUniqueKeepGroupSlots(*this, firstKeep, lastKeep)))
     return failure();
   return success();

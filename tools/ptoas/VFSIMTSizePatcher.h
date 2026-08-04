@@ -6,21 +6,38 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-#ifndef PTOAS_VPTO_FATOBJ_EMISSION_H
-#define PTOAS_VPTO_FATOBJ_EMISSION_H
+#ifndef PTOAS_VFSIMT_SIZE_PATCHER_H
+#define PTOAS_VFSIMT_SIZE_PATCHER_H
 
-#include "ObjectEmission.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
+
+#include <string>
+
+namespace llvm {
+class Module;
+class raw_ostream;
+} // namespace llvm
 
 namespace mlir::pto {
 
-inline LogicalResult emitVPTOFatobj(llvm::Module *cubeModule,
-                                    llvm::Module *vectorModule,
-                                    llvm::StringRef stubSource,
-                                    llvm::ToolOutputFile &outputFile,
-                                    llvm::raw_ostream &diagOS) {
-  return emitFatobjLLVMWithRuntime(cubeModule, vectorModule, stubSource,
-                                   outputFile, VFSIMTSizeFixMode::Auto, diagOS);
-}
+enum class VFSIMTSizeFixMode {
+  Auto,
+  Off,
+  Verify,
+};
+
+struct VFSIMTSizePatchResult {
+  bool changed = false;
+  unsigned verifiedCallSites = 0;
+  unsigned patchedCallSites = 0;
+  std::string objectPath;
+};
+
+FailureOr<VFSIMTSizePatchResult>
+verifyAndPatchVFSIMTSize(llvm::Module &module, llvm::StringRef rawObjectPath,
+                         llvm::StringRef patchedObjectPath,
+                         VFSIMTSizeFixMode mode, llvm::raw_ostream &diagOS);
 
 } // namespace mlir::pto
 

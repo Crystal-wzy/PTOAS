@@ -6,22 +6,16 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-#ifndef PTOAS_VPTO_FATOBJ_EMISSION_H
-#define PTOAS_VPTO_FATOBJ_EMISSION_H
+// RUN: not ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o /dev/null 2>&1 | FileCheck %s
 
-#include "ObjectEmission.h"
-
-namespace mlir::pto {
-
-inline LogicalResult emitVPTOFatobj(llvm::Module *cubeModule,
-                                    llvm::Module *vectorModule,
-                                    llvm::StringRef stubSource,
-                                    llvm::ToolOutputFile &outputFile,
-                                    llvm::raw_ostream &diagOS) {
-  return emitFatobjLLVMWithRuntime(cubeModule, vectorModule, stubSource,
-                                   outputFile, VFSIMTSizeFixMode::Auto, diagOS);
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @persistent_fragment_outside_access() attributes {pto.entry} {
+    %c1_i32 = arith.constant 1 : i32
+    %fragment = llvm.alloca %c1_i32 x f32 {pto.persistent} : (i32) -> !llvm.ptr
+    %one = arith.constant 1.000000e+00 : f32
+    llvm.store %one, %fragment : f32, !llvm.ptr
+    return
+  }
 }
 
-} // namespace mlir::pto
-
-#endif
+// CHECK: error: 'llvm.store' op persistent SIMT fragment access must be inside pto.section.simt
