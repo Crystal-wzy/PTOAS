@@ -44,8 +44,10 @@ operation。它支持标量字段和嵌套 struct，EmitC 已能将该类型 low
 
 ### 2.2 非目标
 
-- 不新增或修改 `!pto.struct` 的 ODS、C++ verifier、PTO pass 或 EmitC lowering。
-  VPTO LLVM lowering 是本实现补齐的现有 IR 后端契约，不改变 struct 的 IR 语义。
+- 不新增或修改 `!pto.struct` 的 ODS、标量字段/path verifier、PTO pass 或 EmitC
+  lowering。为在全部 PTOAS 输出路径保留 stack-storage provenance，本实现新增
+  `!pto.struct` function argument 的 C++ verifier 拒绝；它不改变可表示的字段或存储
+  语义。VPTO LLVM lowering 是本实现补齐的现有 IR 后端契约。
 - 不将 struct 用作 Tile、TensorView、pointer、local array 或其他非标量 handle 的
   容器；这些字段本来就由 PTO IR type verifier 拒绝。
 - 不新增通用 `pto.f64` 标量 type surface。PTO IR 可以在 struct 字段中表示 `f64`，
@@ -53,10 +55,11 @@ operation。它支持标量字段和嵌套 struct，EmitC 已能将该类型 low
   author 的字段类型。
 - 不提供字段名、dataclass 映射、Python dict 初始化、自动零初始化或动态字段索引。
   PTO IR 的字段身份是位置而不是名字。
-- 不放宽栈对象生命周期：struct 不能从函数返回、不能作为 `scf.if` / `scf.for`
-  结果或 `yield` 值逃逸。
-- 第一阶段不扩展 PTODSL 的 module、`@pto.tileop` 或 `@pto.simt`
-  的公开函数 ABI 以传递 struct。用户只能在同一 traced function 中声明和使用它。
+- 不放宽栈对象生命周期：struct 不能从函数返回、不能作为 function argument、
+  `scf.if` / `scf.for` 结果或 `yield` 值逃逸。
+- 不扩展任何 PTODSL 函数 ABI 以传递 struct，包括 `@pto.jit` 的 entry 和
+  `entry=False` module、`@pto.tileop` 与 `@pto.simt`。用户只能在同一 traced
+  function 中声明和使用它。
 - 不修改既有 pipe pass 或 `pto.pipe` 的公开 API。
 
 ## 3. 用户 API
@@ -153,10 +156,13 @@ pto.struct_set(struct, path, value) -> None
 | 不支持字段 | `i1`、`f8e4m3`、`f8e5m2`、`hif8`、`f4*` 等 storage-only 低精度类型、tile/view、ptr、local array 和其他 handle | 与 type verifier 一致 |
 | path | Python 编译期常量、非空、每级索引合法 | `DenseI64ArrayAttr`，逐层验证 |
 | 叶子 | 只能读写标量叶子 | aggregate leaf 会被 op verifier 拒绝 |
-| 生命周期 | 不从函数或 region 返回，不参与 yield | struct 是指向声明 scope 栈存储的 value |
+| 生命周期 | 不从函数或 region 返回，不参与 yield 或 function argument | struct 是指向声明 scope 栈存储的 value |
 
 嵌套层级没有人为上限。前端 path resolver 以迭代方式逐层遍历，复杂度与用户给出的
-path 长度线性相关；完整的 type 与生命周期合法性仍由 PTO IR verifier 最终决定。
+path 长度线性相关；VPTO storage-type construction 也使用显式后序遍历而不是 C++
+递归。descriptor 的 lazy `resolve()` 继续按 descriptor nesting materialize 字段，
+不参与 field-path 或 backend storage traversal。完整的 type 与生命周期合法性仍由
+PTO IR verifier 最终决定。
 
 前端不尝试在 Python 层完整复制 scope escape 分析。对函数结果、region result、
 derived struct result 等跨 operation 的情形，保留现有 PTO module provenance
@@ -170,7 +176,7 @@ validation 的诊断。这样可以避免前端和 IR verifier 产生两套不�
 `struct_type(*field_types)`：
 
 1. 保存原始字段 descriptor，允许在无 MLIR context 时创建。
-2. 在 `resolve()` 中递归调用 `_resolve()`，把所有字段 materialize。
+2. 在 `resolve()` 中按 descriptor nesting materialize 所有字段。
 3. 通过 `_pto.StructType.get(resolved_fields)` 创建 type。
 4. 在调用 binding 前检查 binding 是否存在；若安装的 native extension 太旧，报出
    明确的“重新构建 PTO Python extension”错误，沿用 `vreg_type` / `mask_type`
@@ -229,10 +235,10 @@ import 只能创建惰性 descriptor，不能 resolve type 或创建 MLIR contex
 | struct 作为 `pto.for_(...).carry(...)` state | 明确拒绝，提示在外层声明并在 loop body 内原地读写 |
 | 未在 tracing context 中创建 op | 沿用当前 MLIR insertion-point 错误约定 |
 
-函数返回、`yield` 和其他逃逸场景继续采用 PTO IR verifier 的既有诊断，而不在
-PTODSL 中形成不完整的静态分析。例外是公开的 JIT/subkernel signature 和
-`pto.for_(...).carry(...)`：它们有明确的 PTODSL 入口，前端必须在构造非法 ABI 或
-loop-carried IR 前拒绝 struct。
+函数返回、`yield`、function argument 和其他逃逸场景继续采用 PTO IR verifier 的
+既有诊断，而不在 PTODSL 中形成不完整的静态分析。例外是公开的 JIT/subkernel
+signature 和 `pto.for_(...).carry(...)`：它们有明确的 PTODSL 入口，前端必须在构造
+非法 ABI 或 loop-carried IR 前拒绝 struct。
 
 ## 6. 后端和兼容性
 
@@ -247,11 +253,12 @@ pto.struct_set(struct, path, value) -> pto.struct_set
 
 EmitC 保持既有行为，生成具名 C++ struct 的函数局部变量及成员访问。VPTO LLVM
 lowering 将 `!pto.struct<T...>` 映射为 opaque LLVM pointer，并为每个 declaration
-生成 literal LLVM struct 的 `alloca`；get/set 使用常量 field path 构造 GEP 后执行
-scalar load/store。为避免 loop 或嵌套 region 内重复栈分配，该 `alloca` 统一插入父函数
-的 entry block；同一 declaration 在其原始 region 中复用该 slot。该物理分配位置不
-放宽 PTO IR 的词法生命周期和逃逸约束。两个 VPTO emitter（默认和 CANN 9）采用相同
-的 lowering。无需新增 backend pass 或命令行 flag。
+生成 literal LLVM struct 的 `alloca`；嵌套 storage type 通过显式后序遍历构造，避免
+深层合法 type 消耗 C++ call stack。get/set 使用常量 field path 构造 GEP 后执行 scalar
+load/store，并按 scalar type 发射 natural byte alignment。为避免 loop 或嵌套 region 内
+重复栈分配，该 `alloca` 统一插入父函数的 entry block；同一 declaration 在其原始
+region 中复用该 slot。该物理分配位置不放宽 PTO IR 的词法生命周期和逃逸约束。两个
+VPTO emitter（默认和 CANN 9）采用相同的 lowering。无需新增 backend pass 或命令行 flag。
 
 本实现不修改既有 pipe pass。用户声明的 struct 不引入额外的 `pto.pipe` API 或
 编译器实现依赖。
@@ -267,7 +274,8 @@ Python `struct` 标准库、潜在 Python class 名称以及未来结构化 valu
 
 - 三个 operation 签名和 `struct_type` 的字段类型规则；
 - 嵌套 path 访问示例；
-- 栈生命周期、无默认初始化、不能返回/yield 的限制；
+- 所有函数 ABI 都拒绝 struct，以及栈生命周期、无默认初始化、不能返回/yield/
+  function argument 的限制；
 - 该 API 用于标量状态，不用于 Tile、TensorView 或 pipe descriptor。
 
 示例已增加至 `ptodsl/tests/support/docs_fragment_fixtures.py`，并纳入现有
@@ -289,10 +297,11 @@ docs-as-tests 机制。
   `pto.for_(...).carry(state=struct)` 被前端拒绝；
 - `@pto.jit` 生成的 module 可通过 `--emit-pto-ir` frontend verification。
 
-现有 `test/lit/pto/struct_*.pto` 承担 IR verifier 和 EmitC 的回归职责，不复制到
-PTODSL 测试。最小 A5 VPTO LLVM lit 覆盖默认与 CANN 9 emitter，确认
-declaration、嵌套 path 的 get/set 都在 backend pipeline 中降为 LLVM
-alloca/GEP/load/store；该测试不依赖 NPU runtime。
+IR verifier lit 拒绝 struct function argument，与 PTODSL decorator 的 ABI 拒绝保持
+一致。PTODSL frontend test 额外把局部 `declare_struct` 实际 lower 至 EmitC C++，防止
+只验证 `--emit-pto-ir` metadata。最小 A5 VPTO LLVM lit 覆盖默认与 CANN 9 emitter，
+确认 declaration、三层嵌套 path 的 get/set 都在 backend pipeline 中降为 LLVM
+alloca/GEP/load/store，并覆盖 i8/bf16/i64 的自然对齐；该测试不依赖 NPU runtime。
 
 ### 7.3 验收矩阵
 
@@ -301,8 +310,9 @@ alloca/GEP/load/store；该测试不依赖 NPU runtime。
 | Python 单测 | API 参数、type/path 推导、字面量 materialization 和错误信息 |
 | Docs-as-tests | 用户示例可在 fixture context 中编译 |
 | PTOAS frontend | JIT 输出在 `ptoas --emit-pto-ir` 下验证通过 |
-| EmitC lit | 已有 struct IR 的 C++ 生成继续通过 |
-| VPTO lit | struct declaration / get / set 继续成功 lower 到 LLVM |
+| PTO IR verifier | struct function argument 被拒绝，避免隐藏 stack-storage provenance |
+| EmitC lowering | PTODSL 局部 `declare_struct` 输出具名 struct 与直接字段访问 |
+| VPTO lit | struct declaration / nested get-set 成功 lower 到 LLVM，并检查自然对齐 |
 
 ## 8. 实现组成
 
@@ -311,13 +321,16 @@ alloca/GEP/load/store；该测试不依赖 NPU runtime。
 2. `_ops.py` 实现 path normalizer、leaf type resolver 和三个 wrapper，并导出到
    `pto.py`。
 3. `_kernel_signature.py` 与 `_subkernels.py` 的 runtime-scalar annotation 判定显式
-   排除 `_StructDescriptor`；control-flow carry builder 拒绝 struct state，`@pto.jit`
-   参数具有 struct 专用 ABI 诊断。
+   排除 `_StructDescriptor`；所有 `@pto.jit` 与 subkernel ABI 保持 struct 专用拒绝
+   诊断；control-flow carry builder 拒绝 struct state。
 4. `test_struct.py` 固定公开 API、ABI boundary 和 error contract。
 5. 用户手册和 docs fixture 纳入 docs-as-tests。
-6. 回归验证包括 PTODSL 单测、针对性 PTOAS frontend verification，以及现有 struct lit。
-7. 两个 VPTO LLVM emitter 将 struct lowering 为 alloca/GEP/load/store；最小 A5 VPTO
-   LLVM lit 覆盖默认与 CANN 9 路径及 loop 内 declaration 的 entry-block storage。
+6. 回归验证包括 PTODSL 单测、PTODSL 到 EmitC 输出检查、针对性 PTOAS frontend
+   verification，以及 struct function-argument verifier lit。
+7. 两个 VPTO LLVM emitter 将 struct lowering 为 alloca/GEP/load/store，使用迭代
+   post-order storage-type construction 与显式 natural store alignment；最小 A5 VPTO
+   LLVM lit 覆盖默认与 CANN 9 路径、三层嵌套字段、mixed-width alignment 及 loop 内
+   declaration 的 entry-block storage。
 
 ## 9. 需要保持的决定
 
@@ -326,7 +339,8 @@ alloca/GEP/load/store；该测试不依赖 NPU runtime。
 - `struct_get` 只能产生标量值，嵌套 aggregate 只能通过更长 path 访问。
 - 第一阶段只支持函数内局部 state，不建立 PTODSL 的 struct 参数 ABI。
 - `_StructDescriptor` 不可作为 runtime scalar annotation 或 loop-carried state。
-- 嵌套层级无人为上限；path resolver 必须迭代实现且不缓存跨 context 的 MLIR type。
+- 嵌套层级无人为上限；path resolver 与 VPTO storage-type construction 必须迭代实现，
+  并且 descriptor 不缓存跨 context 的 MLIR type。
 - 后端 IR/verifier 是 lifecycle 和完整 type 合法性的最终权威。
 
 这些决定使 PTODSL 表层成为现有 PTO IR 的直接、可验证映射，避免引入第二套 struct

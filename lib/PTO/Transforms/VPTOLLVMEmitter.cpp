@@ -36,6 +36,7 @@
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -221,16 +222,40 @@ public:
 // an opaque LLVM pointer, consistent with other pointer-like PTO handles.
 static LLVM::LLVMStructType getVPTOStructStorageType(pto::StructType structType,
                                                       Builder &builder) {
-  SmallVector<Type> fieldTypes;
-  fieldTypes.reserve(structType.getNumFields());
-  for (Type fieldType : structType.getFieldTypes()) {
-    if (auto nestedStruct = dyn_cast<pto::StructType>(fieldType)) {
-      fieldTypes.push_back(getVPTOStructStorageType(nestedStruct, builder));
+  struct Frame {
+    pto::StructType type;
+    bool materialize;
+  };
+
+  // PTO structs form an acyclic type tree. Build literal LLVM struct types in
+  // explicit post-order so deeply nested legal structs do not consume the C++
+  // call stack during lowering.
+  SmallVector<Frame> worklist{{structType, false}};
+  llvm::DenseMap<pto::StructType, LLVM::LLVMStructType> storageTypes;
+  while (!worklist.empty()) {
+    Frame frame = worklist.pop_back_val();
+    if (!frame.materialize) {
+      worklist.push_back({frame.type, true});
+      for (Type fieldType : frame.type.getFieldTypes()) {
+        if (auto nestedStruct = dyn_cast<pto::StructType>(fieldType))
+          worklist.push_back({nestedStruct, false});
+      }
       continue;
     }
-    fieldTypes.push_back(convertVPTOType(fieldType, builder));
+
+    SmallVector<Type> fieldTypes;
+    fieldTypes.reserve(frame.type.getNumFields());
+    for (Type fieldType : frame.type.getFieldTypes()) {
+      if (auto nestedStruct = dyn_cast<pto::StructType>(fieldType)) {
+        fieldTypes.push_back(storageTypes.find(nestedStruct)->second);
+        continue;
+      }
+      fieldTypes.push_back(convertVPTOType(fieldType, builder));
+    }
+    storageTypes[frame.type] =
+        LLVM::LLVMStructType::getLiteral(builder.getContext(), fieldTypes);
   }
-  return LLVM::LLVMStructType::getLiteral(builder.getContext(), fieldTypes);
+  return storageTypes.find(structType)->second;
 }
 
 static FailureOr<Value>
@@ -10520,8 +10545,9 @@ public:
         cast<pto::StructType>(op.getS().getType()), op.getPath());
     if (failed(address))
       return rewriter.notifyMatchFailure(op, "invalid struct field path");
-    rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, adaptor.getValue(),
-                                                *address);
+    rewriter.replaceOpWithNewOp<LLVM::StoreOp>(
+        op, adaptor.getValue(), *address,
+        getNaturalByteAlignment(adaptor.getValue().getType()));
     return success();
   }
 };

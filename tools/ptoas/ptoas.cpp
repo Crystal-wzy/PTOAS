@@ -3056,6 +3056,12 @@ int mlir::pto::compilePTOASModule(
     PTOBackend effectiveBackend, PTOASCompileResult &result,
     bool emitVPTOHostStub) {
   result.reset();
+  // Validate stack-local struct provenance before every output path. In
+  // particular, --emit-pto-ir returns before the EmitC validation pass and
+  // VPTO does not use that pass.
+  if (failed(pto::validateStructProvenance(*module)))
+    return 1;
+
   std::string arch = resolveEffectiveTargetArch(*module, context.getArch());
   int argc = context.getArgc();
   char **argv = context.getArgv();

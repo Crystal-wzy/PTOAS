@@ -110,7 +110,7 @@ value = pto.struct_get(state, (1, 0))
 
 Python `int` literals can initialize integer and floating-point fields; Python `float` literals only initialize floating-point fields and are rounded to the destination type. Existing SSA values must exactly match the destination field type, so `i32 -> i16`, `index -> i32`, and `f32 -> f16` do not insert implicit casts. `bool`, strings, dynamic path values, low-precision storage types, pointer/view/tile handles, and `i1` are rejected.
 
-Structs cannot be used as `@pto.jit`, `@pto.tileop`, or `@pto.simt` parameters, or as `pto.for_(...).carry(...)` state. A struct declared outside an ordinary `pto.for_` may be read and mutated inside that loop. Struct values also cannot be returned or yielded from their declaring scope.
+Structs cannot be used as `@pto.jit`, `@pto.tileop`, or `@pto.simt` parameters, or as `pto.for_(...).carry(...)` state. A struct declared outside an ordinary `pto.for_` may be read and mutated inside that loop. Struct values also cannot be returned, yielded, or passed as function arguments from their declaring scope.
 
 ## 4.2 Vector register type
 

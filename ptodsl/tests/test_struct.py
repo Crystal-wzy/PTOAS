@@ -140,6 +140,13 @@ class StructSurfaceTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "Stack-local structs must be created inside"):
             pto.jit(target="a5")(bad_entry)
 
+    def test_struct_is_rejected_as_kernel_module_abi_annotation(self):
+        def bad_helper(state: STRUCT_TYPE):
+            del state
+
+        with self.assertRaisesRegex(TypeError, "Stack-local structs must be created inside"):
+            pto.jit(target="a5", entry=False)(bad_helper)
+
     def test_struct_is_rejected_as_subkernel_abi_annotation(self):
         def bad_subkernel(state: STRUCT_TYPE):
             del state

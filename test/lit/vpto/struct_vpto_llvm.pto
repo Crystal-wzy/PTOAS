@@ -40,6 +40,21 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     }
     return
   }
+
+  func.func @struct_vpto_nested_width() attributes {pto.kernel} {
+    %i8 = arith.constant 5 : i8
+    %bf16 = arith.constant 1.500000e+00 : bf16
+    %i16 = arith.constant 9 : i16
+    %i64 = arith.constant 11 : i64
+    %s = pto.declare_struct -> !pto.struct<i8, !pto.struct<bf16, !pto.struct<i16, i64>>>
+    pto.struct_set %s[0], %i8 : !pto.struct<i8, !pto.struct<bf16, !pto.struct<i16, i64>>>, i8
+    pto.struct_set %s[1, 0], %bf16 : !pto.struct<i8, !pto.struct<bf16, !pto.struct<i16, i64>>>, bf16
+    pto.struct_set %s[1, 1, 0], %i16 : !pto.struct<i8, !pto.struct<bf16, !pto.struct<i16, i64>>>, i16
+    pto.struct_set %s[1, 1, 1], %i64 : !pto.struct<i8, !pto.struct<bf16, !pto.struct<i16, i64>>>, i64
+    %read = pto.struct_get %s[1, 1, 1] : !pto.struct<i8, !pto.struct<bf16, !pto.struct<i16, i64>>> -> i64
+    pto.struct_set %s[1, 1, 1], %read : !pto.struct<i8, !pto.struct<bf16, !pto.struct<i16, i64>>>, i64
+    return
+  }
 }
 
 // CHECK-LABEL: define {{.*}} @struct_vpto_llvm_mix_aiv()
@@ -60,3 +75,20 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // CHECK-NOT: alloca
 // CHECK: getelementptr { i32 }, ptr %[[LOOP_STATE]], i32 0, i32 0
 // CHECK: store i32 7, ptr
+
+// This three-level mixed-width local struct checks the iterative storage-type
+// construction and explicit scalar alignment.
+// CHECK-LABEL: define {{.*}} @struct_vpto_nested_width_mix_aiv()
+// CHECK: alloca { i8, { bfloat, { i16, i64 } } }, i64 1
+// CHECK: getelementptr { i8, { bfloat, { i16, i64 } } }, ptr {{.*}}, i32 0, i32 0
+// CHECK: store i8 5, ptr {{.*}}, align 1
+// CHECK: getelementptr { i8, { bfloat, { i16, i64 } } }, ptr {{.*}}, i32 0, i32 1
+// CHECK: getelementptr { bfloat, { i16, i64 } }, ptr {{.*}}, i32 0, i32 0
+// CHECK: store bfloat {{.*}}, ptr {{.*}}, align 2
+// CHECK: getelementptr { bfloat, { i16, i64 } }, ptr {{.*}}, i32 0, i32 1
+// CHECK: getelementptr { i16, i64 }, ptr {{.*}}, i32 0, i32 0
+// CHECK: store i16 9, ptr {{.*}}, align 2
+// CHECK: getelementptr { i16, i64 }, ptr {{.*}}, i32 0, i32 1
+// CHECK: store i64 11, ptr {{.*}}, align 8
+// CHECK: getelementptr { i16, i64 }, ptr {{.*}}, i32 0, i32 1
+// CHECK: load i64, ptr {{.*}}, align 8
