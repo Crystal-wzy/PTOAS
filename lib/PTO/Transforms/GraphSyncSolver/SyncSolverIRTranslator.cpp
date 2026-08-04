@@ -13,6 +13,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "../Utils.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -80,7 +81,10 @@ llvm::SmallVector<Value> IRTranslator::tracebackMemValsStep(Value val) {
     return out;
   }
 
-  if (auto addPtr = dyn_cast<pto::AddPtrOp>(defOp)) {
+  if (auto select = dyn_cast<arith::SelectOp>(defOp)) {
+    out.push_back(select.getTrueValue());
+    out.push_back(select.getFalseValue());
+  } else if (auto addPtr = dyn_cast<pto::AddPtrOp>(defOp)) {
     out.push_back(addPtr.getPtr());
   } else if (auto intToPtr = dyn_cast<pto::IntToPtrOp>(defOp)) {
     if (auto ptrToInt = intToPtr.getAddr().getDefiningOp<pto::PtrToIntOp>())
