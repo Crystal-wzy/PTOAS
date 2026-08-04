@@ -7130,8 +7130,13 @@ public:
     Type elementType = getElementTypeFromVectorLike(op.getValue().getType());
     if (!elementType)
       return rewriter.notifyMatchFailure(op, "unsupported vsts element type");
+    Type offsetElementType = elementType;
+    if (auto ptrType = dyn_cast<pto::PtrType>(op.getDestination().getType()))
+      offsetElementType = ptrType.getElementType();
+    else if (auto memrefType = dyn_cast<BaseMemRefType>(op.getDestination().getType()))
+      offsetElementType = memrefType.getElementType();
     auto offsetBytes =
-        convertElementOffsetToBytes(op, adaptor.getOffset(), elementType);
+        convertElementOffsetToBytes(op, adaptor.getOffset(), offsetElementType);
     auto basePtr = dyn_cast<LLVM::LLVMPointerType>(adaptor.getDestination().getType());
     auto dist =
         parseStoreDistImmediate(op.getDist().value_or(""), elementType);
