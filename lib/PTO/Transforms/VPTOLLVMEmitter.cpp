@@ -300,6 +300,29 @@ struct LoweringState {
   SmallVector<PlannedDecl> plannedDecls;
 };
 
+class LowerTrapOpPattern final : public OpConversionPattern<pto::TrapOp> {
+public:
+  explicit LowerTrapOpPattern(TypeConverter &typeConverter,
+                              MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<pto::TrapOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::TrapOp op, pto::TrapOp::Adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    constexpr StringLiteral calleeName = "llvm.hivm.TRAP";
+    auto funcType = rewriter.getFunctionType({}, {});
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
+                                   ValueRange{});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 enum class VcvtElemKind {
   Invalid,
   F16,
@@ -11423,6 +11446,7 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerAtomicBinaryOpPattern<pto::AtomicAndOp>,
                LowerAtomicBinaryOpPattern<pto::AtomicOrOp>,
                LowerAtomicBinaryOpPattern<pto::AtomicXorOp>,
+               LowerTrapOpPattern,
                LowerScalarIntrinsicOpPattern<pto::PrmtOp>,
                LowerMulhiOpPattern,
                LowerMulI32ToI64OpPattern,
@@ -11631,7 +11655,7 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::AtomicAddOp, pto::AtomicSubOp,
                       pto::AtomicMinOp, pto::AtomicMaxOp,
                       pto::AtomicAndOp, pto::AtomicOrOp,
-                      pto::AtomicXorOp, pto::PrmtOp,
+                      pto::AtomicXorOp, pto::TrapOp, pto::PrmtOp,
                       pto::MulhiOp, pto::MulI32ToI64Op, pto::SqrtOp,
                       pto::AbsFOp, pto::ExpOp, pto::LogOp, pto::CeilOp,
                       pto::FloorOp, pto::RintOp, pto::RoundOp, pto::FMinOp,
@@ -11736,7 +11760,9 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
     target.addIllegalOp<pto::UBSetMaskNormOp>();
   }
 
-  target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+  target.markUnknownOpDynamicallyLegal([](Operation *op) {
+    return !isa<pto::TrapOp>(op);
+  });
 }
 
 static void populateVPTOStructuralTypePatterns(
