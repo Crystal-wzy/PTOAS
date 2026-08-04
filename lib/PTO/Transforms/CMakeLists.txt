@@ -104,6 +104,7 @@ add_mlir_dialect_library(PTOTransforms
   SlotAffineAnalysis.cpp
   PTOWrapFunctionsInSectionsPass.cpp
   PTONormalizeUncoveredTileSections.cpp
+  PTOValidatePhysicalSectionBoundaries.cpp
   PTOMaterializeTileOpSections.cpp
   VPTONormalizeContainer.cpp
   VPTOSplitCVModule.cpp

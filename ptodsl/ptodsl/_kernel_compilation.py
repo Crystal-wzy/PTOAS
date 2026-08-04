@@ -87,15 +87,18 @@ class KernelCompiler:
         self._compiled_cache = {}
 
     def tracing_callback(self, constexpr_bindings=None):
-        if not self._ast_rewrite:
-            return self._callback
         cache_key = tuple(
             (name, constexpr_bindings[name])
             for name in sorted(constexpr_bindings or {})
         )
+        cache_key = (self._ast_rewrite, cache_key)
         cached = self._trace_callback_cache.get(cache_key)
         if cached is None:
-            cached = rewrite_jit_function(self._callback, static_bindings=constexpr_bindings)
+            cached = rewrite_jit_function(
+                self._callback,
+                static_bindings=constexpr_bindings,
+                rewrite_control_flow=self._ast_rewrite,
+            )
             self._trace_callback_cache[cache_key] = cached
         return cached
 

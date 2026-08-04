@@ -364,6 +364,16 @@ def inline_subkernel_value_escape_error(role: str, type_text: str) -> RuntimeErr
     )
 
 
+def physical_section_value_escape_error(source_kind: str, type_text: str) -> RuntimeError:
+    """Return a diagnostic for a value escaping a physical section."""
+    return RuntimeError(
+        f"cannot use a value defined in pto.section.{source_kind} outside that physical section "
+        f"(got {type_text}). Physical sections have lexical SSA scope; pass shared data "
+        "through a GM/UB buffer with explicit synchronization, or recompute the value "
+        "from section-entry inputs."
+    )
+
+
 def simd_value_escape_error(type_text: str) -> RuntimeError:
     """Return one diagnostic for transient SIMD values escaping a simd subkernel boundary."""
     return RuntimeError(
@@ -532,6 +542,7 @@ __all__ = [
     "jit_missing_annotation_error",
     "jit_non_gm_ptr_entry_error",
     "inline_subkernel_value_escape_error",
+    "physical_section_value_escape_error",
     "make_tensor_view_missing_metadata_error",
     "illegal_inline_subkernel_placement_error",
     "illegal_subkernel_placement_error",
