@@ -158,16 +158,19 @@ from ptodsl import pto
 
 
 @pto.jit(target="a5")
-def wheel_clean_env_probe():
+def wheel_clean_env_probe(
+    a_ptr: pto.ptr(pto.f32, "gm"),
+    o_ptr: pto.ptr(pto.f32, "gm"),
+):
     a_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32, addr=0)
     o_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32, addr=0)
     a_view = pto.make_tensor_view(
-        pto.castptr(pto.const(0, dtype=pto.ui64), pto.ptr(pto.f32, "gm")),
+        a_ptr,
         shape=[1, 16],
         strides=[16, 1],
     )
     o_view = pto.make_tensor_view(
-        pto.castptr(pto.const(0, dtype=pto.ui64), pto.ptr(pto.f32, "gm")),
+        o_ptr,
         shape=[1, 16],
         strides=[16, 1],
     )

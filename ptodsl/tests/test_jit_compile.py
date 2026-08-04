@@ -4279,20 +4279,23 @@ def main() -> None:
     expect("!pto.tile_buf<vec, 1x64xf32>" in block64_text, "BLOCK=64 specialization MLIR missing specialized tile")
     expect("pto.entry" in default_text, "default @pto.jit entry child should carry the explicit entry marker")
     expect("pto.entry" in explicit_text, "explicit @pto.jit entry child should carry the explicit entry marker")
-    expect(default_text.count("module") >= 2, "default @pto.jit should emit an outer container plus one child module")
-    expect(block64_text.count("module") >= 2, "specialized @pto.jit should keep the outer-plus-child container shape")
-    expect('module attributes {pto.target_arch = "a5"}' in default_text, "outer container should carry only shared target-arch metadata")
+    expect(default_text.count("module") == 2, "default @pto.jit should wrap an unspecified-kind kernel in a backend child module")
+    expect(block64_text.count("module") == 2, "specialized @pto.jit should keep the backend child module shape")
+    expect(
+        'module attributes {pto.backend = "vpto", pto.target_arch = "a5"}' in default_text,
+        "unpartitioned VPTO module should carry backend and target metadata",
+    )
     expect('pto.mode = ' not in default_text, "generated PTODSL container IR should no longer expose public pto.mode")
     expect(
         'pto.backend = "vpto"' in default_text
         and 'pto.target_arch = "a5"' in default_text
-        and 'pto.kernel_kind = #pto.kernel_kind<vector>' in default_text,
+        and 'pto.kernel_kind' not in default_text,
         "primary VPTO child module should carry PTOAS-facing backend metadata directly on the child module",
     )
     expect(
         'pto.backend = "vpto"' in explicit_text
         and 'pto.target_arch = "a5"' in explicit_text
-        and 'pto.kernel_kind = #pto.kernel_kind<vector>' in explicit_text,
+        and 'pto.kernel_kind' not in explicit_text,
         "explicit specialization child module should keep the same VPTO child metadata shape",
     )
     expect(
@@ -4389,8 +4392,8 @@ def main() -> None:
         "@pto.jit(entry=False) handles should expose an explicit, stable cache-signature protocol",
     )
     expect(
-        helper_cache_signature[7] == "vector" and helper_cache_signature[8] is False,
-        "default @pto.jit handles should keep vector as the effective kernel kind while recording that it was not explicit",
+        helper_cache_signature[7] is None and helper_cache_signature[8] is False,
+        "default @pto.jit handles should leave the effective kernel kind unspecified",
     )
     expect_raises(
         RuntimeError,
@@ -4454,7 +4457,7 @@ def main() -> None:
     )
     expect(
         kernel_module_call_text.count('pto.backend = "vpto"') >= 2
-        and kernel_module_call_text.count('pto.kernel_kind = #pto.kernel_kind<vector>') >= 2,
+        and 'pto.kernel_kind' not in kernel_module_call_text,
         "entry-plus-helper specialization should materialize separate child modules for caller and callee",
     )
     ast_rewrite_kernel_module_text = entry_calls_ast_rewrite_kernel_module_probe.compile().mlir_text()
@@ -4499,7 +4502,7 @@ def main() -> None:
     expect(
         'pto.backend = "vpto"' in mixed_backend_text
         and 'pto.target_arch = "a5"' in mixed_backend_text
-        and 'pto.kernel_kind = #pto.kernel_kind<vector>' in mixed_backend_text,
+        and 'pto.kernel_kind' not in mixed_backend_text,
         "mixed-backend callee child should preserve the callee's VPTO backend through child pto.backend metadata",
     )
     expect(
@@ -4672,7 +4675,10 @@ def main() -> None:
             export_macro,
         ):
             expect(launch_cpp.is_file(), "native build should materialize launch.cpp before compiling it")
-            expect(kernel_kind in {"vector", "cube"}, "native build should forward the authored kernel kind")
+            expect(
+                kernel_kind in {None, "vector", "cube"},
+                "native build should forward the optional authored kernel kind",
+            )
             launch_target_arches.append(target_arch)
             expect(export_macro.endswith("_EXPORTS"), "native build should preserve launch export macro naming")
             launch_object.write_text("fake launch object\n", encoding="utf-8")
@@ -4680,7 +4686,10 @@ def main() -> None:
         def fake_link_shared_library(launch_object, kernel_object, shared_library, *, kernel_kind):
             expect(launch_object.is_file(), "native build should compile launch.cpp before linking")
             expect(kernel_object.is_file(), "native build should run ptoas before shared-library link")
-            expect(kernel_kind in {"vector", "cube"}, "native build should preserve kernel-kind-aware link flags")
+            expect(
+                kernel_kind in {None, "vector", "cube"},
+                "native build should preserve the optional kernel kind",
+            )
             shared_library.write_text("fake shared library\n", encoding="utf-8")
 
         with mock.patch.object(native_build_runtime, "artifact_paths", side_effect=fake_artifacts), mock.patch.object(
@@ -4745,9 +4754,10 @@ def main() -> None:
             f"{label} native build should hand the backend-partitioned container MLIR to ptoas unchanged",
         )
         if module_spec.jit_source is None:
+            expected_module_count = 2
             expect(
-                observation["mlir_text"].count("module") >= 2,
-                f"{label} native build should route the unified outer+child container through ptoas",
+                observation["mlir_text"].count("module") >= expected_module_count,
+                f"{label} native build should route the authored module shape through ptoas",
             )
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -4892,7 +4902,7 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(merged_same_mode_text, "merged same-mode PTODSL container")
     expect(
         merged_same_mode_text.count('func.func @host_vec_copy(') == 2,
-        "merge_jit_modules() should preserve both primary child modules in the merged container",
+        "merge_jit_modules() should preserve same-named specializations in independent backend child modules",
     )
 
     runtime_metadata_text = runtime_metadata_kernel.compile().mlir_text()

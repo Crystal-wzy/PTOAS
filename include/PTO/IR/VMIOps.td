@@ -40,7 +40,8 @@ def PTO_PhysicalVMIPartTypeConstraint : AnyTypeOf<
   "PTO physical vector register or mask type">;
 
 class VMI_Op<string mnemonic, list<Trait> traits = []>
-    : PTO_Op<"vmi." # mnemonic, traits>;
+    : PTO_Op<"vmi." # mnemonic,
+             !listconcat(traits, [MicroOpInterface, VectorMicroOpInterface])>;
 
 //===--- Legacy (old) VMI ops ---===//
 

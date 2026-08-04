@@ -12,6 +12,7 @@ All CMs work with the current MLIR insertion point; no context threading needed.
 
 Public API
 ──────────
+``section(kind)``         – ``pto.section.cube/vector { … }``
 ``vecscope()``            – ``pto.vecscope { … }``
 ``for_(lo, hi, step)``
                           – ``scf.for`` with optional named carry state via ``.carry(...)``
@@ -25,7 +26,7 @@ from ._diagnostics import explicit_mode_required_with_context_error
 from ._runtime_index_ops import coerce_runtime_index
 from ._scalar_coercion import coerce_scalar_to_type
 from ._surface_types import const_expr
-from ._tracing.active import current_session
+from ._tracing.active import current_session, require_active_session
 from ._surface_values import unwrap_surface_value, wrap_like_surface_value, wrap_surface_value
 
 from ptoas.mlir.dialects import pto as _pto, scf
@@ -60,6 +61,33 @@ class _VecScopeCM:
 def vecscope() -> _VecScopeCM:
     """Return a context manager that emits ``pto.vecscope { … }``."""
     return _VecScopeCM()
+
+
+class _SectionCM:
+    """Context manager for an explicit cube or vector physical section."""
+
+    def __init__(self, kind: str):
+        if not isinstance(kind, str):
+            raise TypeError("pto.section(kind) expects 'cube' or 'vector'")
+        if kind not in {"cube", "vector"}:
+            raise ValueError("pto.section(kind) expects 'cube' or 'vector'")
+        self._kind = kind
+        self._cm = None
+
+    def __enter__(self):
+        _require_explicit_mode("pto.section()")
+        session = require_active_session("pto.section")
+        self._cm = session.enter_physical_section(self._kind)
+        self._cm.__enter__()
+        return None
+
+    def __exit__(self, *exc):
+        return self._cm.__exit__(*exc)
+
+
+def section(kind: str) -> _SectionCM:
+    """Assign enclosed operations to one core; the context binds no ``as`` value."""
+    return _SectionCM(kind)
 
 
 # ── compile-time control-flow helpers ─────────────────────────────────────────
@@ -637,6 +665,6 @@ def yield_(*vals):
 
 
 __all__ = [
-    "vecscope", "static_range", "const_expr", "LoopHandle", "BranchHandle",
+    "section", "vecscope", "static_range", "const_expr", "LoopHandle", "BranchHandle",
     "for_", "if_", "yield_",
 ]

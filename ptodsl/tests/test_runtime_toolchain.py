@@ -41,6 +41,7 @@ class RuntimeToolchainTest(unittest.TestCase):
         self.assertEqual(
             toolchain.aicore_arch_for_kernel_kind("vector", "a3"), "dav-c220-vec"
         )
+        self.assertEqual(toolchain.aicore_arch_for_kernel_kind(None, "a3"), "dav-c220")
         self.assertEqual(
             toolchain.aicore_arch_for_kernel_kind("cube", "a3"), "dav-c220-cube"
         )
@@ -55,6 +56,7 @@ class RuntimeToolchainTest(unittest.TestCase):
         self.assertEqual(
             toolchain.aicore_arch_for_kernel_kind("cube", "a5"), "dav-c310-cube"
         )
+        self.assertEqual(toolchain.aicore_arch_for_kernel_kind(None, "a5"), "dav-c310")
 
     def test_native_launch_flags_use_target_arch(self):
         with mock.patch.object(native_build, "common_include_flags", return_value=[]):

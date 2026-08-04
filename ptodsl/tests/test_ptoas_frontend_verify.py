@@ -479,11 +479,11 @@ def main() -> None:
     expect(
         "func.func public @scale_row_kernel_module__ptodsl_" in example_vpto_child
         and 'pto.visibility = "external"' in example_vpto_child
-        and "pto.kernel_kind = #pto.kernel_kind<vector>" in example_vpto_child
+        and "pto.kernel_kind" not in example_vpto_child
         and "pto.section.vector {" not in example_vpto_child
         and "pto.mte_gm_ub" in example_vpto_child
         and "pto.vmuls" in example_vpto_child,
-        "mixed_backend_kernel_module.py VPTO child should expose one explicit vector kernel-module definition without a legacy inline section",
+        "mixed_backend_kernel_module.py VPTO child should defer vector inference without a legacy inline section",
     )
 
     example_frontend_texts = run_ptoas_frontend_verify(
@@ -538,10 +538,10 @@ def main() -> None:
         "cv-split frontend verification should preserve the cube helper public ABI-specialized symbol and kernel_kind",
     )
     expect(
-        cv_split_frontend_text.count("pto.aic_initialize_pipe") >= 3
-        and cv_split_frontend_text.count("pto.tpush_to_aiv") >= 2
-        and "pto.tpop_from_aiv" in cv_split_frontend_text,
-        "cv-split frontend verification should keep the cube helper pipe init, push, and receive paths intact",
+        "pto.initialize_l2g2l_pipe" in cv_split_frontend_text
+        and "pto.tpush(" in cv_split_frontend_text
+        and "pto.tpop(" in cv_split_frontend_text,
+        "cv-split frontend verification should lower the helper pipe init, push, and receive paths",
     )
     expect(
         'pto.kernel_kind = #pto.kernel_kind<vector>' in cv_split_frontend_text
@@ -553,10 +553,12 @@ def main() -> None:
         "cv-split frontend verification should preserve the vector helper public ABI-specialized symbol and kernel_kind",
     )
     expect(
-        cv_split_frontend_text.count("pto.aiv_initialize_pipe") >= 3
-        and cv_split_frontend_text.count("pto.tpush_to_aic") >= 2
-        and "pto.tpop_from_aic" in cv_split_frontend_text,
-        "cv-split frontend verification should keep the vector helper pipe init, push, and receive paths intact",
+        "pto.tfree(" in cv_split_frontend_text
+        and "pto.aic_initialize_pipe" not in cv_split_frontend_text
+        and "pto.aiv_initialize_pipe" not in cv_split_frontend_text
+        and "pto.tpush_to_" not in cv_split_frontend_text
+        and "pto.tpop_from_" not in cv_split_frontend_text,
+        "cv-split frontend verification should remove directional pipe ops after lowering",
     )
 
     lowp_text = low_precision_vcvt_frontend.compile().mlir_text()

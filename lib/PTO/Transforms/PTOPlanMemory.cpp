@@ -2630,28 +2630,12 @@ private:
 
 void PlanMemoryPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
-  // PTODSL TileOp input is a container module whose executable functions live
-  // in a kernel-kind child module. Keep legacy child modules out of this pass:
-  // their frontend pipe ABI is intentionally handled by the existing split
-  // path rather than TileOp memory planning.
   SmallVector<func::FuncOp> funcs;
-  for (func::FuncOp funcOp : moduleOp.getOps<func::FuncOp>())
-    funcs.push_back(funcOp);
-  moduleOp.walk([&](ModuleOp childModule) {
-    if (childModule == moduleOp)
-      return;
-
-    bool hasTileOpHelper = false;
-    for (func::FuncOp funcOp : childModule.getOps<func::FuncOp>()) {
-      if (funcOp->hasAttr("pto.tileop.helper")) {
-        hasTileOpHelper = true;
-        break;
-      }
-    }
-    if (!hasTileOpHelper)
-      return;
-
-    for (func::FuncOp funcOp : childModule.getOps<func::FuncOp>())
+  moduleOp.walk([&](func::FuncOp funcOp) {
+    // TileOp helpers only contain compute code and deliberately do not own
+    // alloc_tile/reserve_buffer lifetimes.  All other functions, including
+    // ordinary functions in backend child modules, must be planned.
+    if (!funcOp->hasAttr("pto.tileop.helper"))
       funcs.push_back(funcOp);
   });
 

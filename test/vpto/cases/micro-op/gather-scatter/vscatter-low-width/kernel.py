@@ -46,6 +46,7 @@ def _copy_ub_to_gm(src, dst):
     target="a5",
     backend="vpto",
     mode="explicit",
+    kernel_kind="vector",
     insert_sync=False,
 )
 def vscatter_b8_kernel(
@@ -80,6 +81,7 @@ def vscatter_b8_kernel(
     target="a5",
     backend="vpto",
     mode="explicit",
+    kernel_kind="vector",
     insert_sync=False,
 )
 def vscatter_b16_kernel(

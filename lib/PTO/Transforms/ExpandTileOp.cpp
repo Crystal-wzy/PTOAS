@@ -31,6 +31,7 @@
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Support/PythonExecutable.h"
 #include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/TileOpExpansionUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1206,11 +1207,7 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
   // Collect tile ops first (avoid modifying while iterating).
   SmallVector<Operation *, 16> tileOps;
   func.walk([&](Operation *op) {
-    if (isa<pto::TReshapeOp>(op))
-      return;
-    if (isa<pto::LoadScalarOp, pto::StoreScalarOp>(op))
-      return;
-    if (isa<pto::OpPipeInterface>(op))
+    if (pto::isTileLibExpandableOp(op))
       tileOps.push_back(op);
   });
 
@@ -1259,6 +1256,17 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
 void ExpandTileOpPass::runOnOperation() {
   ModuleOp mod = getOperation();
   MLIRContext *ctx = &getContext();
+
+  bool hasExpandableOps = false;
+  mod.walk([&](Operation *op) {
+    if (pto::isTileLibExpandableOp(op)) {
+      hasExpandableOps = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (!hasExpandableOps)
+    return;
 
   if (tileLibBackend != "ptodsl") {
     mod.emitError("ExpandTileOp received unsupported tile-lib-backend '" +

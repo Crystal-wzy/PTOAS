@@ -157,7 +157,7 @@ from ._ops import (             # noqa: F401
 
 # ── Control flow ──────────────────────────────────────────────────────────────
 from ._control_flow import (    # noqa: F401
-    vecscope,
+    section, vecscope,
     for_, if_, yield_,
     static_range,
     LoopHandle, BranchHandle,

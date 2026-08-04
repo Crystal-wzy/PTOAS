@@ -50,7 +50,15 @@ def run_ptoas_frontend(ptoas_bin: Path, mlir_text: str) -> str:
 
     try:
         result = subprocess.run(
-            [str(ptoas_bin), "--pto-arch=a5", str(input_path), "--emit-pto-ir", "-o", "-"],
+            [
+                str(ptoas_bin),
+                "--pto-arch=a5",
+                "--pto-backend=emitc",
+                str(input_path),
+                "--emit-pto-ir",
+                "-o",
+                "-",
+            ],
             capture_output=True,
             text=True,
             check=False,

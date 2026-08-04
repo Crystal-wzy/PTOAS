@@ -7,7 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // Guard: normalize must reject a top-level segment that still mixes a nested
-// explicit section with sibling uncovered TileOps after inferred wrapping.
+// explicit section with sibling uncovered ops after inferred wrapping.
 // RUN: not ptoas --pto-arch=a5 --pto-backend=vpto --emit-pto-ir %s -o - 2>&1 | FileCheck %s
 
 module attributes {pto.target_arch = "a5"} {
@@ -34,6 +34,6 @@ module attributes {pto.target_arch = "a5"} {
   }
 }
 
-// CHECK: still contains an uncovered top-level TileOp segment after section normalization
-// CHECK: mixes nested explicit pto.section.* with sibling TileOps outside those sections
+// CHECK: still contains an uncovered top-level op segment after section normalization
+// CHECK: mixes nested explicit pto.section.* with sibling ops outside those sections
 // CHECK: starts at 'scf.for'

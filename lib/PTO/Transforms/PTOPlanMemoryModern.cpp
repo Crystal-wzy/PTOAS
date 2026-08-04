@@ -1648,20 +1648,11 @@ struct PlanMemoryModernPass
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
     SmallVector<func::FuncOp> funcs;
-    for (func::FuncOp funcOp : moduleOp.getOps<func::FuncOp>())
-      funcs.push_back(funcOp);
-    moduleOp.walk([&](ModuleOp childModule) {
-      if (childModule == moduleOp)
-        return;
-
-      bool hasTileOpHelper = llvm::any_of(
-          childModule.getOps<func::FuncOp>(), [](func::FuncOp funcOp) {
-            return funcOp->hasAttr("pto.tileop.helper");
-          });
-      if (!hasTileOpHelper)
-        return;
-
-      for (func::FuncOp funcOp : childModule.getOps<func::FuncOp>())
+    moduleOp.walk([&](func::FuncOp funcOp) {
+      // `pto.tileop.helper` identifies compute-only helpers, not whether a
+      // child module needs memory planning.  Skip those helpers themselves,
+      // while planning every ordinary function in nested backend modules.
+      if (!funcOp->hasAttr("pto.tileop.helper"))
         funcs.push_back(funcOp);
     });
 
