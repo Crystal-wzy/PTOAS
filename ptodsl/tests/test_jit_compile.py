@@ -3167,8 +3167,14 @@ def explicit_mx_scale_staging_surface_probe():
     a_stage1_l0 = pto.castptr(stage1_u64, pto.ptr(pto.f8e4m3, "left"))
     b_stage1_l0 = pto.castptr(stage1_u64, pto.ptr(pto.f8e4m3, "right"))
 
-    pto.load_cbuf_to_ca_mx(a_scale_l1, a_stage1_l0, 3, 5, 16, 2, 8, 2)
-    pto.load_cbuf_to_cb_mx(b_scale_l1, b_stage1_l0, 3, 5, 16, 2, 8, 2)
+    pto.mte_l1_l0a_mx(
+        a_scale_l1, a_stage1_l0,
+        x_start=3, y_start=5, x_step=16, y_step=2, src_stride=8, dst_stride=2,
+    )
+    pto.mte_l1_l0b_mx(
+        b_scale_l1, b_stage1_l0,
+        x_start=3, y_start=5, x_step=16, y_step=2, src_stride=8, dst_stride=2,
+    )
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -6668,7 +6674,7 @@ def main() -> None:
         explicit_mx_scale_staging_text.count("!pto.ptr<!pto.f8E8M0, l1>") >= 2,
         "explicit MX staging should preserve E8M0 L1 source pointers",
     )
-    for op_name in ("load_cbuf_to_ca_mx", "load_cbuf_to_cb_mx"):
+    for op_name in ("mte_l1_l0a_mx", "mte_l1_l0b_mx"):
         expect(
             re.search(
                 rf"pto\.{op_name} %\d+, %\d+, %c3_i64(?:_\d+)?, %c5_i64(?:_\d+)?, "

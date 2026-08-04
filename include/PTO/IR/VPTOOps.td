@@ -3026,10 +3026,7 @@ def PTO_MteL1L0aMxOp : PTO_MteOp<"mte_l1_l0a_mx", [
   let arguments = (ins
     PTO_BufferLikeType:$source,
     PTO_BufferLikeType:$destination,
-    I64:$m,
-    I64:$k,
-    I64:$start_row,
-    I64:$start_col
+    Variadic<I64>:$controls
   );
 
   let results = (outs);
@@ -3037,9 +3034,8 @@ def PTO_MteL1L0aMxOp : PTO_MteOp<"mte_l1_l0a_mx", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $source `,` $destination `,` $m `,` $k `,` $start_row `,` $start_col
-    attr-dict `:` type($source) `,` type($destination) `,` type($m) `,`
-    type($k) `,` type($start_row) `,` type($start_col)
+    $source `,` $destination `,` $controls attr-dict `:` type($source) `,`
+    type($destination) `,` type($controls)
   }];
 }
 
@@ -3049,10 +3045,7 @@ def PTO_MteL1L0bMxOp : PTO_MteOp<"mte_l1_l0b_mx", [
   let arguments = (ins
     PTO_BufferLikeType:$source,
     PTO_BufferLikeType:$destination,
-    I64:$k,
-    I64:$n,
-    I64:$start_row,
-    I64:$start_col
+    Variadic<I64>:$controls
   );
 
   let results = (outs);
@@ -3060,9 +3053,8 @@ def PTO_MteL1L0bMxOp : PTO_MteOp<"mte_l1_l0b_mx", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $source `,` $destination `,` $k `,` $n `,` $start_row `,` $start_col
-    attr-dict `:` type($source) `,` type($destination) `,` type($k) `,`
-    type($n) `,` type($start_row) `,` type($start_col)
+    $source `,` $destination `,` $controls attr-dict `:` type($source) `,`
+    type($destination) `,` type($controls)
   }];
 }
 

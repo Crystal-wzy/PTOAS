@@ -50,8 +50,8 @@ def mad_mx_e8m0_stage_abi_kernel(
     b_scale_gm: pto.ptr(pto.ui16, "gm"),
     c_gm: pto.ptr(pto.f32, "gm"),
 ):
-    # All L0 addresses are real byte addresses. The VPTO LLVM emitter alone
-    # encodes the LOAD.MX destination ABI immediately before the intrinsic.
+    # PTODSL passes real L0 byte addresses. The MX wrapper derives the internal
+    # scale-stage destination required by the LOAD.MX ABI.
     a_l1 = pto.castptr(pto.ui64(L1_A_DATA_ADDR), pto.ptr(pto.f8e4m3, "mat"))
     b_l1 = pto.castptr(pto.ui64(L1_B_DATA_ADDR), pto.ptr(pto.f8e4m3, "mat"))
     a_scale_storage_l1 = pto.castptr(pto.ui64(L1_A_SCALE_ADDR), pto.ptr(pto.ui16, "mat"))
@@ -77,8 +77,16 @@ def mad_mx_e8m0_stage_abi_kernel(
 
     pto.mte_l1_l0a(a_l1, a_l0_stage0, M, TILE_K_SUB)
     pto.mte_l1_l0b(b_l1, b_l0_stage0, TILE_K_SUB, N, transpose=True)
-    pto.load_cbuf_to_ca_mx(a_scale_l1, a_l0_stage0, 0, 0, N // 16, 2, SCALE_SRC_STRIDE, 2)
-    pto.load_cbuf_to_cb_mx(b_scale_l1, b_l0_stage0, 0, 0, N // 16, 2, SCALE_SRC_STRIDE, 2)
+    pto.mte_l1_l0a_mx(
+        a_scale_l1, a_l0_stage0,
+        x_start=0, y_start=0, x_step=N // 16, y_step=2,
+        src_stride=SCALE_SRC_STRIDE, dst_stride=2,
+    )
+    pto.mte_l1_l0b_mx(
+        b_scale_l1, b_l0_stage0,
+        x_start=0, y_start=0, x_step=N // 16, y_step=2,
+        src_stride=SCALE_SRC_STRIDE, dst_stride=2,
+    )
     pto.set_flag(pto.Pipe.MTE1, pto.Pipe.M, event_id=0)
     pto.wait_flag(pto.Pipe.MTE1, pto.Pipe.M, event_id=0)
     pto.mad_mx(a_l0_stage0, b_l0_stage0, c_l0, M, N, TILE_K_SUB, disable_gemv=True, sat="sat")
@@ -88,8 +96,16 @@ def mad_mx_e8m0_stage_abi_kernel(
     pto.mte_l1_l0b(b_l1_stage1, b_l0_stage1, TILE_K_SUB, N, transpose=True)
     # y_start=2 selects the second K=128 scale half. Together with the nonzero
     # L0 destination, this distinguishes raw addresses from pre-divided ones.
-    pto.load_cbuf_to_ca_mx(a_scale_l1, a_l0_stage1, 0, 2, N // 16, 2, SCALE_SRC_STRIDE, 2)
-    pto.load_cbuf_to_cb_mx(b_scale_l1, b_l0_stage1, 0, 2, N // 16, 2, SCALE_SRC_STRIDE, 2)
+    pto.mte_l1_l0a_mx(
+        a_scale_l1, a_l0_stage1,
+        x_start=0, y_start=2, x_step=N // 16, y_step=2,
+        src_stride=SCALE_SRC_STRIDE, dst_stride=2,
+    )
+    pto.mte_l1_l0b_mx(
+        b_scale_l1, b_l0_stage1,
+        x_start=0, y_start=2, x_step=N // 16, y_step=2,
+        src_stride=SCALE_SRC_STRIDE, dst_stride=2,
+    )
     pto.set_flag(pto.Pipe.MTE1, pto.Pipe.M, event_id=1)
     pto.wait_flag(pto.Pipe.MTE1, pto.Pipe.M, event_id=1)
     pto.mad_mx_acc(a_l0_stage1, b_l0_stage1, c_l0, M, N, TILE_K_SUB, disable_gemv=True, sat="sat")

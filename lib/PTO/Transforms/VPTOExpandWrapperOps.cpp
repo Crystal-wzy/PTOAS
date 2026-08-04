@@ -1570,19 +1570,28 @@ struct ExpandLeftLoadMxPattern : public OpRewritePattern<pto::MteL1L0aMxOp> {
       return rewriter.notifyMatchFailure(
           op, "failed to derive MX scale destination pointer");
 
-    FailureOr<LoadCbufToMxControl> control =
-        deriveLoadCbufToCaMxControl(loc, op.getM(), op.getK(),
-                                    sourceType.getElementType(),
-                                    op.getStartRow(), op.getStartCol(),
-                                    rewriter);
-    if (failed(control))
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to derive load_cbuf_to_ca_mx control");
+    OperandRange controls = op.getControls();
+    if (controls.size() != 4 && controls.size() != 6)
+      return rewriter.notifyMatchFailure(
+          op, "expected four shape-derived controls or six explicit MX controls");
+    LoadCbufToMxControl control;
+    if (controls.size() == 6) {
+      control = {controls[0], controls[1], controls[2], controls[3],
+                 controls[4], controls[5]};
+    } else {
+      FailureOr<LoadCbufToMxControl> derived = deriveLoadCbufToCaMxControl(
+          loc, controls[0], controls[1], sourceType.getElementType(),
+          controls[2], controls[3], rewriter);
+      if (failed(derived))
+        return rewriter.notifyMatchFailure(
+            op, "failed to derive load_cbuf_to_ca_mx control");
+      control = *derived;
+    }
 
     rewriter.create<pto::LoadCbufToCaMxOp>(
-        loc, source, destination, control->xStartPosition,
-        control->yStartPosition, control->xStep, control->yStep,
-        control->srcStride, control->dstStride);
+        loc, source, destination, control.xStartPosition,
+        control.yStartPosition, control.xStep, control.yStep,
+        control.srcStride, control.dstStride);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1606,19 +1615,29 @@ struct ExpandRightLoadMxPattern : public OpRewritePattern<pto::MteL1L0bMxOp> {
     if (!destination)
       return rewriter.notifyMatchFailure(
           op, "failed to derive MX scale destination pointer");
-    FailureOr<LoadCbufToMxControl> control =
-        deriveLoadCbufToCbMxControl(loc, op.getK(), op.getN(),
-                                    sourceType.getElementType(),
-                                    op.getStartRow(), op.getStartCol(),
-                                    rewriter);
-    if (failed(control))
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to derive load_cbuf_to_cb_mx control");
+
+    OperandRange controls = op.getControls();
+    if (controls.size() != 4 && controls.size() != 6)
+      return rewriter.notifyMatchFailure(
+          op, "expected four shape-derived controls or six explicit MX controls");
+    LoadCbufToMxControl control;
+    if (controls.size() == 6) {
+      control = {controls[0], controls[1], controls[2], controls[3],
+                 controls[4], controls[5]};
+    } else {
+      FailureOr<LoadCbufToMxControl> derived = deriveLoadCbufToCbMxControl(
+          loc, controls[0], controls[1], sourceType.getElementType(),
+          controls[2], controls[3], rewriter);
+      if (failed(derived))
+        return rewriter.notifyMatchFailure(
+            op, "failed to derive load_cbuf_to_cb_mx control");
+      control = *derived;
+    }
 
     rewriter.create<pto::LoadCbufToCbMxOp>(
-        loc, source, destination, control->xStartPosition,
-        control->yStartPosition, control->xStep, control->yStep,
-        control->srcStride, control->dstStride);
+        loc, source, destination, control.xStartPosition,
+        control.yStartPosition, control.xStep, control.yStep,
+        control.srcStride, control.dstStride);
     rewriter.eraseOp(op);
     return success();
   }

@@ -21,10 +21,17 @@ def _identity(value):
 
 
 class VectorCubeSurfaceTest(unittest.TestCase):
-    def test_explicit_mx_scale_loads_preserve_all_controls(self):
+    def test_mte_mx_explicit_controls_preserve_all_values(self):
         source = object()
         destination = object()
-        controls = (3, 5, 16, 2, 8, 2)
+        controls = {
+            "x_start": 3,
+            "y_start": 5,
+            "x_step": 16,
+            "y_step": 2,
+            "src_stride": 8,
+            "dst_stride": 2,
+        }
 
         def coerce(value, *, context):
             return f"{context}:{value}"
@@ -32,36 +39,57 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         expected = (
             source,
             destination,
-            "load_cbuf_to_ca_mx x_start:3",
-            "load_cbuf_to_ca_mx y_start:5",
-            "load_cbuf_to_ca_mx x_step:16",
-            "load_cbuf_to_ca_mx y_step:2",
-            "load_cbuf_to_ca_mx src_stride:8",
-            "load_cbuf_to_ca_mx dst_stride:2",
+            "mte_l1_l0a_mx x_start:3",
+            "mte_l1_l0a_mx y_start:5",
+            "mte_l1_l0a_mx x_step:16",
+            "mte_l1_l0a_mx y_step:2",
+            "mte_l1_l0a_mx src_stride:8",
+            "mte_l1_l0a_mx dst_stride:2",
         )
         with patch.object(_ops, "_require_explicit_mode"), \
              patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_ops, "_coerce_i64", side_effect=coerce), \
-             patch.object(_ops._pto, "LoadCbufToCaMxOp") as load_ca:
-            pto.load_cbuf_to_ca_mx(source, destination, *controls)
-        load_ca.assert_called_once_with(*expected)
+             patch.object(_ops._pto, "MteL1L0aMxOp") as load_ca:
+            pto.mte_l1_l0a_mx(source, destination, **controls)
+        load_ca.assert_called_once_with(source, destination, list(expected[2:]))
 
         expected = (
             source,
             destination,
-            "load_cbuf_to_cb_mx x_start:3",
-            "load_cbuf_to_cb_mx y_start:5",
-            "load_cbuf_to_cb_mx x_step:16",
-            "load_cbuf_to_cb_mx y_step:2",
-            "load_cbuf_to_cb_mx src_stride:8",
-            "load_cbuf_to_cb_mx dst_stride:2",
+            "mte_l1_l0b_mx x_start:3",
+            "mte_l1_l0b_mx y_start:5",
+            "mte_l1_l0b_mx x_step:16",
+            "mte_l1_l0b_mx y_step:2",
+            "mte_l1_l0b_mx src_stride:8",
+            "mte_l1_l0b_mx dst_stride:2",
         )
         with patch.object(_ops, "_require_explicit_mode"), \
              patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_ops, "_coerce_i64", side_effect=coerce), \
-             patch.object(_ops._pto, "LoadCbufToCbMxOp") as load_cb:
-            pto.load_cbuf_to_cb_mx(source, destination, *controls)
-        load_cb.assert_called_once_with(*expected)
+             patch.object(_ops._pto, "MteL1L0bMxOp") as load_cb:
+            pto.mte_l1_l0b_mx(source, destination, **controls)
+        load_cb.assert_called_once_with(source, destination, list(expected[2:]))
+
+    def test_mte_mx_explicit_controls_require_a_complete_mode(self):
+        source = object()
+        destination = object()
+        complete_controls = {
+            "x_start": 3,
+            "y_start": 5,
+            "x_step": 16,
+            "y_step": 2,
+            "src_stride": 8,
+            "dst_stride": 2,
+        }
+
+        with patch.object(_ops, "_require_explicit_mode"):
+            with self.assertRaisesRegex(TypeError, "require x_start"):
+                pto.mte_l1_l0a_mx(source, destination, x_start=3)
+            with self.assertRaisesRegex(TypeError, "either k/n or explicit"):
+                pto.mte_l1_l0b_mx(source, destination, 128, 256, **complete_controls)
+
+        self.assertFalse(hasattr(pto, "load_cbuf_to_ca_mx"))
+        self.assertFalse(hasattr(pto, "load_cbuf_to_cb_mx"))
 
     def test_row_reduction_auto_tmp_prefers_surface_metadata(self):
         src = SimpleNamespace(

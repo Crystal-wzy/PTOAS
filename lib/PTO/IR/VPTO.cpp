@@ -7693,6 +7693,19 @@ static LogicalResult verifyCubeBridgeLoadStart(OpTy op) {
                                    "start_row", op.getStartCol(), "start_col");
 }
 
+static LogicalResult verifyMxLoadControls(Operation *op,
+                                          OperandRange controls) {
+  if (controls.size() == 4)
+    return verifyCubeBridgeLoadStart(op, controls[2], "start_row",
+                                     controls[3], "start_col");
+  if (controls.size() == 6)
+    return verifyCubeBridgeLoadStart(op, controls[0], "x_start",
+                                     controls[1], "y_start");
+  return op->emitOpError()
+         << "requires either four shape-derived controls or six explicit "
+            "MX controls";
+}
+
 static LogicalResult verifyMxDestinationAlignment(Operation *op,
                                                   Value destination) {
   constexpr int64_t kMxDestinationAddressUnitBytes = 16;
@@ -7745,33 +7758,33 @@ LogicalResult MteL1L0bOp::verify() {
 LogicalResult MteL1L0aMxOp::verify() {
   if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT")))
     return failure();
-  return verifyCubeBridgeLoadStart(*this);
+  if (failed(verifyMxLoadControls(getOperation(), getControls())))
+    return failure();
+  return verifyMxDestinationAlignment(getOperation(), getDestination());
 }
 
 LogicalResult MteL1L0bMxOp::verify() {
   if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT")))
     return failure();
-  return verifyCubeBridgeLoadStart(*this);
+  if (failed(verifyMxLoadControls(getOperation(), getControls())))
+    return failure();
+  return verifyMxDestinationAlignment(getOperation(), getDestination());
 }
 
 LogicalResult LoadCbufToCaMxOp::verify() {
   if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT")))
     return failure();
-  if (failed(verifyCubeBridgeLoadStart(
-          getOperation(), getXStartPosition(), "x_start_position",
-          getYStartPosition(), "y_start_position")))
-    return failure();
-  return verifyMxDestinationAlignment(getOperation(), getDestination());
+  return verifyCubeBridgeLoadStart(getOperation(), getXStartPosition(),
+                                   "x_start_position", getYStartPosition(),
+                                   "y_start_position");
 }
 
 LogicalResult LoadCbufToCbMxOp::verify() {
   if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT")))
     return failure();
-  if (failed(verifyCubeBridgeLoadStart(
-          getOperation(), getXStartPosition(), "x_start_position",
-          getYStartPosition(), "y_start_position")))
-    return failure();
-  return verifyMxDestinationAlignment(getOperation(), getDestination());
+  return verifyCubeBridgeLoadStart(getOperation(), getXStartPosition(),
+                                   "x_start_position", getYStartPosition(),
+                                   "y_start_position");
 }
 
 void MteL1L0aOp::getEffects(

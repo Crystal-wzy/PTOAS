@@ -9,7 +9,7 @@
 // RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto-llvm-ir %s -o - 2>&1 | FileCheck %s
 
 // The E8M0 source is a semantic L1 byte payload. The stage-1 destinations are
-// real L0 byte pointers; VPTO owns their conversion to the LOAD.MX ABI.
+// real L0 byte pointers; the MX wrapper owns their conversion to the LOAD.MX ABI.
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cube>} {
   func.func @mad_mx_e8m0_stage_abi_vpto_llvm() attributes {pto.kernel} {
     %c0 = arith.constant 0 : i64
@@ -25,9 +25,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
     %a_stage1 = pto.castptr %c32768 : i64 -> !pto.ptr<f8E4M3FN, l0a>
     %b_stage1 = pto.castptr %c32768 : i64 -> !pto.ptr<f8E4M3FN, l0b>
 
-    pto.load_cbuf_to_ca_mx %a_scale, %a_stage1, %c0, %c2, %c16, %c2, %c8, %c2
+    pto.mte_l1_l0a_mx %a_scale, %a_stage1, %c0, %c2, %c16, %c2, %c8, %c2
       : !pto.ptr<!pto.f8E8M0, l1>, !pto.ptr<f8E4M3FN, l0a>, i64, i64, i64, i64, i64, i64
-    pto.load_cbuf_to_cb_mx %b_scale, %b_stage1, %c0, %c2, %c16, %c2, %c8, %c2
+    pto.mte_l1_l0b_mx %b_scale, %b_stage1, %c0, %c2, %c16, %c2, %c8, %c2
       : !pto.ptr<!pto.f8E8M0, l1>, !pto.ptr<f8E4M3FN, l0b>, i64, i64, i64, i64, i64, i64
     return
   }
