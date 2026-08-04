@@ -13719,7 +13719,6 @@ struct EmitPTOManualPass
         bool needsEventIdArrayHelper = false;
         bool needsTRandomHelper = false;
         bool needsGlobalTensorDataHelper = false;
-        bool needsCommInclude = false;
         mop.walk([&](Operation *op) {
           if (isa<mlir::pto::DeclareEventIdArrayOp>(op))
             needsEventIdArrayHelper = true;
@@ -13735,15 +13734,6 @@ struct EmitPTOManualPass
           }
           if (isa<mlir::pto::PartitionViewOp>(op))
             needsGlobalTensorDataHelper = true;
-          if (isa<mlir::pto::BuildAsyncSessionOp, mlir::pto::TPutAsyncOp,
-                  mlir::pto::TGetAsyncOp, mlir::pto::TPrefetchAsyncOp,
-                  mlir::pto::WaitAsyncEventOp, mlir::pto::TestAsyncEventOp,
-                  mlir::pto::TPutOp,
-                  mlir::pto::TGetOp, mlir::pto::TNotifyOp, mlir::pto::TWaitOp,
-                  mlir::pto::TTestOp, mlir::pto::TBroadcastOp,
-                  mlir::pto::CommTGatherOp, mlir::pto::CommTScatterOp,
-                  mlir::pto::TReduceOp>(op))
-            needsCommInclude = true;
         });
 
 		    // 1. 插入头文件
@@ -13752,16 +13742,6 @@ struct EmitPTOManualPass
 	    builder.setInsertionPointToStart(mop.getBody());
 	    builder.create<emitc::IncludeOp>(
 	        loc, "pto/pto-inst.hpp", /*is_standard_include=*/false);
-        if (needsCommInclude) {
-	      builder.create<emitc::VerbatimOp>(
-	          loc, builder.getStringAttr(R"cpp(
-#ifndef PIPE_FIX
-#define PIPE_FIX PIPE_M
-#endif
-)cpp"));
-	      builder.create<emitc::IncludeOp>(
-	          loc, "pto/comm/pto_comm_inst.hpp", /*is_standard_include=*/false);
-        }
 	    builder.create<emitc::VerbatimOp>(
 	        loc, builder.getStringAttr("using namespace pto;"));
 
