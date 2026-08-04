@@ -185,8 +185,15 @@ static unsigned getNaturalByteAlignment(Type type) {
 }
 
 static bool hasVPTOConvertibleType(Type type) {
-  return isa<pto::VRegType, pto::MaskType, pto::AlignType, pto::PtrType,
-             pto::StructType>(type);
+  if (!type)
+    return false;
+  if (isa<pto::VRegType, pto::MaskType, pto::AlignType, pto::PtrType,
+          pto::StructType>(type) ||
+      pto::isPTOLowPrecisionType(type))
+    return true;
+  if (auto vecType = dyn_cast<VectorType>(type))
+    return hasVPTOConvertibleType(vecType.getElementType());
+  return false;
 }
 
 static bool hasVPTOConvertibleType(TypeRange types) {
@@ -11095,17 +11102,41 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     if (isa<pto::CastPtrOp>(op))
       return failure();
+    Type propertyType;
+    if (auto allocaOp = dyn_cast<LLVM::AllocaOp>(op))
+      propertyType = allocaOp.getElemType();
+    else if (auto gepOp = dyn_cast<LLVM::GEPOp>(op))
+      propertyType = gepOp.getElemType();
     if (!hasVPTOConvertibleType(op->getOperandTypes()) &&
-        !hasVPTOConvertibleType(op->getResultTypes()))
+        !hasVPTOConvertibleType(op->getResultTypes()) &&
+        !hasVPTOConvertibleType(propertyType))
       return failure();
     if (op->getNumRegions() != 0)
       return rewriter.notifyMatchFailure(
           op, "region ops with VPTO types are handled structurally");
 
-    FailureOr<Operation *> converted =
-        convertOpResultTypes(op, operands, *typeConverter, rewriter);
-    if (failed(converted))
-      return failure();
+    SmallVector<Type> convertedResultTypes;
+    if (failed(typeConverter->convertTypes(op->getResultTypes(),
+                                           convertedResultTypes)))
+      return rewriter.notifyMatchFailure(op, "failed to convert result types");
+    OperationState state(op->getLoc(), op->getName());
+    state.addOperands(operands);
+    state.addTypes(convertedResultTypes);
+    state.addAttributes(op->getAttrs());
+    state.addSuccessors(op->getSuccessors());
+    state.propertiesAttr = op->getPropertiesAsAttribute();
+    Operation *converted = rewriter.create(state);
+    if (propertyType) {
+      Type convertedPropertyType = typeConverter->convertType(propertyType);
+      if (!convertedPropertyType)
+        return rewriter.notifyMatchFailure(
+            op, "failed to convert LLVM element type");
+      if (auto allocaOp = dyn_cast<LLVM::AllocaOp>(converted))
+        allocaOp.setElemType(convertedPropertyType);
+      else
+        cast<LLVM::GEPOp>(converted).setElemType(convertedPropertyType);
+    }
+    rewriter.replaceOp(op, converted->getResults());
     return success();
   }
 };
@@ -11635,6 +11666,16 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
         return !hasVPTOConvertibleType(op->getOperandTypes()) &&
                !hasVPTOConvertibleType(op->getResultTypes());
       });
+  target.addDynamicallyLegalOp<LLVM::AllocaOp>([&](LLVM::AllocaOp op) {
+    return typeConverter.isLegal(op->getOperandTypes()) &&
+           typeConverter.isLegal(op->getResultTypes()) &&
+           typeConverter.isLegal(op.getElemType());
+  });
+  target.addDynamicallyLegalOp<LLVM::GEPOp>([&](LLVM::GEPOp op) {
+    return typeConverter.isLegal(op->getOperandTypes()) &&
+           typeConverter.isLegal(op->getResultTypes()) &&
+           typeConverter.isLegal(op.getElemType());
+  });
   target.markUnknownOpDynamicallyLegal([&](Operation *op) {
     return typeConverter.isLegal(op->getOperandTypes()) &&
            typeConverter.isLegal(op->getResultTypes());

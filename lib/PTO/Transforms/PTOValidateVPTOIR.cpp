@@ -21,7 +21,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -998,6 +1000,23 @@ private:
   }
 
   LogicalResult validateAuthoringOperationSurface() {
+    WalkResult constantWalkResult =
+        helper.getModule().walk([&](arith::ConstantOp constant) {
+          Type resultType = constant.getType();
+          Type elementType = resultType;
+          if (auto vectorType = dyn_cast<VectorType>(resultType))
+            elementType = vectorType.getElementType();
+          if (!pto::isPTOFloat8Type(elementType))
+            return WalkResult::advance();
+
+          constant.emitOpError()
+              << "does not support directly constructed FP8 constants in "
+                 "the VPTO backend; produce FP8 values with pto.convert";
+          return WalkResult::interrupt();
+        });
+    if (constantWalkResult.wasInterrupted())
+      return failure();
+
     WalkResult loopWalkResult = helper.getModule().walk([&](scf::ForOp loop) {
       if (!VPTOLegalityHelper::isAIVectorScopeCarrier(loop))
         return WalkResult::advance();
