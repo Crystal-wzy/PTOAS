@@ -61,6 +61,13 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "type_system.struct": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def type_system_struct_probe():
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "type_system.low_precision_types": _fixture(
         f"""
         @pto.jit(target="a5")

@@ -2698,8 +2698,8 @@ LogicalResult mlir::pto::DeclareStructOp::verify() {
               "but its value is passed to '"
            << user->getName()
            << "', which would expose the address of storage that is about to "
-              "die; declare the struct in the outer scope and pass it down as "
-              "a function argument instead (pto.struct_set mutates in place, "
+              "die; declare the struct in the outer scope and mutate it from "
+              "the nested region instead (pto.struct_set mutates in place, "
               "so a struct never needs to be returned or yielded)";
   }
   return success();
@@ -2889,24 +2889,30 @@ LogicalResult mlir::pto::validatePTOEntryFunctions(ModuleOp module) {
 }
 
 // A !pto.struct is represented as a pointer to stack storage. Its provenance
-// therefore has to remain explicit: the value either comes directly from
-// pto.declare_struct or is received as a function entry argument. Operations
-// such as arith.select and scf.if must not manufacture another struct-typed SSA
-// result, because that alias hides the declaration from DeclareStructOp's
-// direct-use escape check. CFG block arguments may relay an existing value:
-// forwarding a declaration directly is already rejected because the branch is
-// a terminator, while forwarding a function argument preserves its lifetime.
-//
-// Function results are rejected separately because func.func records them in
-// its signature rather than as SSA results. Passing structs down into helpers
-// remains supported, and pto.struct_set mutates in place, so no derived struct
-// result is needed.
+// must therefore remain explicit: the value comes directly from
+// pto.declare_struct in the owning function. Function arguments/results and
+// operations such as arith.select and scf.if must not manufacture or relay a
+// struct-typed SSA value, because that alias hides the declaration from
+// DeclareStructOp's direct-use escape check. CFG block arguments cannot make a
+// declaration safe to forward either: the branch is a terminator and is
+// rejected by DeclareStructOp::verify.
 LogicalResult mlir::pto::validateStructProvenance(ModuleOp module) {
   if (!module)
     return success();
 
   WalkResult result = module.walk([&](Operation *op) -> WalkResult {
     if (auto func = dyn_cast<func::FuncOp>(op)) {
+      for (auto [i, inputTy] :
+           llvm::enumerate(func.getFunctionType().getInputs())) {
+        if (!isa<StructType>(inputTy))
+          continue;
+        func.emitOpError()
+            << "argument " << i << " has type " << inputTy
+            << ", but a stack-local struct must not be a function argument; "
+               "structs must originate from 'pto.declare_struct' in the same "
+               "function";
+        return WalkResult::interrupt();
+      }
       for (auto [i, resultTy] :
            llvm::enumerate(func.getFunctionType().getResults())) {
         if (!isa<StructType>(resultTy))
@@ -2916,7 +2922,7 @@ LogicalResult mlir::pto::validateStructProvenance(ModuleOp module) {
             << ", but a stack-local struct must not be returned: the value is "
                "a pointer into the callee's frame, and returning it (even "
                "when it merely passes an argument back through) launders its "
-               "provenance; pass the struct down as an argument instead "
+               "provenance; keep the struct in its declaring function "
                "(pto.struct_set mutates in place, so a result is never needed)";
         return WalkResult::interrupt();
       }

@@ -1062,6 +1062,47 @@ void mlir::pto::python::populatePTODialectBindings(pybind11::module_ &m) {
             py::arg("cls"), py::arg("context") = py::none());
 
     mlir_type_subclass(
+        m, "StructType",
+        [](MlirType type) -> bool { return isa<mlir::pto::StructType>(unwrap(type)); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, py::sequence fieldTypes, MlirContext context) -> py::object {
+                std::vector<MlirType> fields;
+                fields.reserve(fieldTypes.size());
+                for (py::handle field : fieldTypes)
+                  fields.push_back(py::cast<MlirType>(field));
+                if (fields.empty())
+                  throw py::value_error("StructType.get requires at least one field type");
+                if (!context.ptr)
+                  context = mlirTypeGetContext(fields.front());
+                llvm::SmallVector<mlir::Type> unwrappedFields;
+                unwrappedFields.reserve(fields.size());
+                for (MlirType field : fields)
+                  unwrappedFields.push_back(unwrap(field));
+                auto structType = mlir::pto::StructType::getChecked(
+                    [&]() {
+                      return mlir::emitError(
+                          mlir::UnknownLoc::get(unwrap(context)));
+                    },
+                    unwrap(context), llvm::ArrayRef<mlir::Type>(unwrappedFields));
+                if (!structType)
+                  throw py::value_error(
+                      "StructType.get received invalid struct field types");
+                return cls.attr("__call__")(
+                    wrap(structType));
+            },
+            py::arg("cls"), py::arg("field_types"), py::arg("context") = py::none())
+        .def_property_readonly(
+            "field_types",
+            [](MlirType self) -> py::list {
+                auto structType = cast<mlir::pto::StructType>(unwrap(self));
+                py::list fields;
+                for (mlir::Type field : structType.getFieldTypes())
+                  fields.append(wrap(field));
+                return fields;
+            });
+
+    mlir_type_subclass(
         m, "AsyncSessionType",
         [](MlirType type) -> bool { return mlirPTOTypeIsAAsyncSessionType(type); })
         .def_classmethod(

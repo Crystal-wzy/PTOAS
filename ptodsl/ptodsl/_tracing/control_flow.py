@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from .._runtime_index_ops import coerce_runtime_index
 from .._surface_values import unwrap_surface_value
+from .._types import _is_struct_type
 
 from ptoas.mlir.dialects import arith
 from ptoas.mlir.dialects import scf
@@ -87,6 +88,11 @@ def _coerce_index(value):
 
 def _materialize_carry_init(value):
     raw_value = unwrap_surface_value(value)
+    if _is_struct_type(getattr(raw_value, "type", None)):
+        raise TypeError(
+            "pto.for_(...).carry(...) does not accept stack-local struct values; "
+            "declare the struct outside the loop and mutate it in place inside the loop body"
+        )
     if isinstance(raw_value, bool):
         raise TypeError("pto.for_(...).carry(...) does not accept bool loop-carried values")
     if isinstance(raw_value, int):

@@ -156,6 +156,39 @@ def run_ptoas_frontend_verify_whole(ptoas_bin: Path, mlir_text: str, label: str)
     return result.stdout
 
 
+def run_ptoas_emitc(ptoas_bin: Path, mlir_text: str, label: str) -> list[str]:
+    child_modules = extract_child_module_texts(mlir_text, label)
+    cpp_texts: list[str] = []
+
+    for index, child_text in enumerate(child_modules, start=1):
+        with tempfile.NamedTemporaryFile("w", suffix=".mlir", delete=False, encoding="utf-8") as handle:
+            handle.write(child_text)
+            input_path = Path(handle.name)
+
+        try:
+            result = subprocess.run(
+                [str(ptoas_bin), str(input_path), "--pto-backend=emitc", "-o", "-"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        finally:
+            input_path.unlink(missing_ok=True)
+
+        expect(
+            result.returncode == 0,
+            f"{label} [child {index}] should lower through EmitC.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        expect(
+            result.stdout.strip(),
+            f"{label} [child {index}] should emit non-empty C++ through EmitC",
+        )
+        cpp_texts.append(result.stdout)
+
+    return cpp_texts
+
+
 def run_ptoas_frontend_expect_failure(
     ptoas_bin: Path,
     mlir_text: str,
@@ -296,6 +329,16 @@ def low_precision_vcvt_frontend():
     pto.vsts(roundtrip, dst_ptr, pto.const(0), mask_b32)
 
 
+@pto.jit(target="a5", backend="emitc")
+def struct_frontend_verify_probe():
+    state_ty = pto.struct_type(pto.i32, pto.struct_type(pto.f32, pto.i16))
+    state = pto.declare_struct(state_ty)
+    pto.struct_set(state, 0, 1)
+    pto.struct_set(state, (1, 0), 3.5)
+    pto.struct_set(state, (1, 1), 7)
+    _ = pto.struct_get(state, (1, 0))
+
+
 @pto.simt
 def vec_value_arith_simt_body(
     A_ptr: pto.ptr(pto.f32, "gm"),
@@ -342,6 +385,51 @@ def main() -> None:
     expect(
         "pto.tload" in simple_frontend_text and "pto.tstore" in simple_frontend_text,
         "host_vec_copy frontend verification output should keep the tile IO contract visible",
+    )
+
+    struct_text = struct_frontend_verify_probe.compile().mlir_text()
+    expect(
+        "pto.declare_struct" in struct_text and "pto.struct_get" in struct_text,
+        "struct_frontend_verify_probe source MLIR should contain the PTODSL struct surface before frontend verification",
+    )
+    struct_frontend_texts = run_ptoas_frontend_verify(
+        ptoas_bin,
+        struct_text,
+        "struct_frontend_verify_probe PTODSL artifact",
+    )
+    expect(
+        len(struct_frontend_texts) == 1,
+        "struct_frontend_verify_probe should lower to exactly one backend child module",
+    )
+    struct_frontend_text = struct_frontend_texts[0]
+    expect(
+        "func.func @struct_frontend_verify_probe" in struct_frontend_text,
+        "struct_frontend_verify_probe frontend verification should preserve the kernel symbol",
+    )
+    expect(
+        "pto.declare_struct" in struct_frontend_text
+        and "pto.struct_set" in struct_frontend_text
+        and "pto.struct_get" in struct_frontend_text,
+        "struct_frontend_verify_probe frontend verification should preserve the struct IR contract",
+    )
+
+    struct_emitc_cpp_texts = run_ptoas_emitc(
+        ptoas_bin,
+        struct_text,
+        "struct_frontend_verify_probe PTODSL EmitC artifact",
+    )
+    expect(
+        len(struct_emitc_cpp_texts) == 1,
+        "struct PTODSL probe should materialize one EmitC module",
+    )
+    joined_struct_emitc_cpp = "\n".join(struct_emitc_cpp_texts)
+    expect(
+        "struct PtoStruct_i32_S_f32_i16_E" in joined_struct_emitc_cpp,
+        "PTODSL struct probe should lower to a named EmitC struct",
+    )
+    expect(
+        ".f0" in joined_struct_emitc_cpp and ".f1.f0" in joined_struct_emitc_cpp,
+        "EmitC should lower PTODSL struct writes and nested reads to direct field access",
     )
 
     simt_gm_memory_text = simt_gm_memory_core_kernel.compile().mlir_text()
