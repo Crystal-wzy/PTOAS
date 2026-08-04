@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ptoas.mlir.dialects import pto as _pto
-from ptoas.mlir.ir import BF16Type, F16Type, F32Type, Float8E4M3FNType, Float8E5M2Type, IntegerType, MemRefType
+from ptoas.mlir.ir import BF16Type, F16Type, F32Type, Float8E4M3FNType, Float8E5M2Type, IntegerType, MemRefType, UnitAttr
 
 from ._scalar_coercion import coerce_scalar_to_type
 from ._surface_values import _coerce_index_value, _try_get_constant_index, unwrap_surface_value, wrap_surface_value
@@ -506,7 +506,7 @@ def _emit_reduce(
             )
     kwargs = {"group": group, "pmode": pmode, "loc": loc, "ip": ip}
     if reassoc is not _UNSPECIFIED:
-        kwargs["reassoc"] = reassoc
+        kwargs["reassoc"] = UnitAttr.get()
     return _call_value(
         op_name,
         _derive_vmi_reduce_result_type(source, group, context=context),
@@ -732,9 +732,9 @@ class _VMINamespace:
             )
         return _call_value("vbrc", result_type, raw_value, group=group, loc=loc, ip=ip)
 
-    vcadd = staticmethod(lambda source, mask, *, group=None, pmode=None, reassoc=_UNSPECIFIED, loc=None, ip=None: _emit_reduce("vcadd", source, mask, group=group, pmode=pmode, reassoc=reassoc, loc=loc, ip=ip))
-    vcmax = staticmethod(lambda source, mask, *, group=None, pmode=None, loc=None, ip=None: _emit_reduce("vcmax", source, mask, group=group, pmode=pmode, loc=loc, ip=ip))
-    vcmin = staticmethod(lambda source, mask, *, group=None, pmode=None, loc=None, ip=None: _emit_reduce("vcmin", source, mask, group=group, pmode=pmode, loc=loc, ip=ip))
+    vcadd = staticmethod(lambda source, mask, *, group=1, pmode=None, reassoc=_UNSPECIFIED, loc=None, ip=None: _emit_reduce("vcadd", source, mask, group=1 if group is None else group, pmode=pmode, reassoc=reassoc, loc=loc, ip=ip))
+    vcmax = staticmethod(lambda source, mask, *, group=1, pmode=None, loc=None, ip=None: _emit_reduce("vcmax", source, mask, group=1 if group is None else group, pmode=pmode, loc=loc, ip=ip))
+    vcmin = staticmethod(lambda source, mask, *, group=1, pmode=None, loc=None, ip=None: _emit_reduce("vcmin", source, mask, group=1 if group is None else group, pmode=pmode, loc=loc, ip=ip))
 
     @staticmethod
     def vcvt(

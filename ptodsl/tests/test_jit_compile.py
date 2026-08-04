@@ -1290,6 +1290,28 @@ def ast_runtime_for_probe(rows: pto.i32):
         pto.pipe_barrier(pto.Pipe.ALL)
 
 
+@pto.jit(target="a5", mode="explicit")
+def ast_nested_runtime_for_induction_scope_probe(rows: pto.i32):
+    for outer in range(rows):
+        _ = outer
+        with pto.vecscope():
+            for lane in range(4):
+                _ = lane
+                pto.mem_bar(pto.BarrierType.VST_VLD)
+
+
+@pto.jit(target="a5", mode="explicit")
+def ast_nested_runtime_for_local_temp_scope_probe(rows: pto.i32):
+    for outer in range(rows):
+        _ = outer
+        with pto.vecscope():
+            for row in range(4):
+                for col in range(2):
+                    ob = row + col
+                    _ = ob
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
 @pto.jit(target="a5")
 def ast_runtime_for_carry_probe(rows: pto.i32):
     one = pto.const(1, dtype=pto.i32)
@@ -2614,9 +2636,12 @@ def vmi_wrapper_dispatch_probe():
     pred = pto.vmi.vcmp(scaled, lhs, mask, "ogt")
     selected = pto.vmi.vsel(pred, scaled, expanded)
     shuffled = pto.vmi.vselr(selected, idx)
-    total = pto.vmi.vcadd(shuffled, mask, reassoc=True)
+    total = pto.vmi.vcadd(shuffled, mask, reassoc=False)
+    explicit_total = pto.vmi.vcadd(shuffled, mask, group=1, reassoc=False)
     peak = pto.vmi.vcmax(shuffled, mask)
+    explicit_peak = pto.vmi.vcmax(shuffled, mask, group=1)
     floor = pto.vmi.vcmin(shuffled, mask)
+    explicit_floor = pto.vmi.vcmin(shuffled, mask, group=1)
     group_peak = pto.vmi.vcmax(shuffled, group_mask, group=8)
     gather = pto.vmi.vgather(src_ptr, idx, mask)
     gatherb = pto.vmi.vgatherb(src_ptr, idx, mask)
@@ -2636,8 +2661,11 @@ def vmi_wrapper_dispatch_probe():
 
     _ = group_mask
     _ = total
+    _ = explicit_total
     _ = peak
+    _ = explicit_peak
     _ = floor
+    _ = explicit_floor
     _ = group_peak
     _ = gather
     _ = gatherb
@@ -5590,6 +5618,26 @@ def main() -> None:
         "ast_rewrite=True Python range(...) should lower to one scf.for",
     )
 
+    ast_nested_runtime_for_induction_scope_text = ast_nested_runtime_for_induction_scope_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_nested_runtime_for_induction_scope_text,
+        "AST-rewritten nested runtime induction scope specialization",
+    )
+    expect(
+        ast_nested_runtime_for_induction_scope_text.count("scf.for") == 2,
+        "nested runtime loop induction variables should remain local to their loops",
+    )
+
+    ast_nested_runtime_for_local_temp_scope_text = ast_nested_runtime_for_local_temp_scope_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_nested_runtime_for_local_temp_scope_text,
+        "AST-rewritten nested runtime local temp scope specialization",
+    )
+    expect(
+        ast_nested_runtime_for_local_temp_scope_text.count("scf.for") == 3,
+        "nested runtime loop temporaries consumed in-loop should not become live-outs",
+    )
+
     ast_runtime_for_carry_text = ast_runtime_for_carry_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(ast_runtime_for_carry_text, "AST-rewritten runtime carry for specialization")
     expect(
@@ -6400,6 +6448,15 @@ def main() -> None:
             op_name in vmi_wrapper_dispatch_text,
             f"representative {op_name} wrapper dispatch should emit the matching generated VMI op",
         )
+    for op_name, expected_count in (("vcadd", 2), ("vcmax", 3), ("vcmin", 2)):
+        expect(
+            vmi_wrapper_dispatch_text.count(f"pto.vmi.{op_name}") == expected_count,
+            f"pto.vmi.{op_name} should emit both omitted-group and explicit-group probes",
+        )
+    expect(
+        vmi_wrapper_dispatch_text.count("group = 1") >= 6,
+        "VMI reductions should make the omitted group equivalent to group=1",
+    )
     expect(
         vmi_wrapper_dispatch_text.count("pto.vmi.vload") == 7,
         "vmi wrapper dispatch probe should lower seven explicit VMI loads",
