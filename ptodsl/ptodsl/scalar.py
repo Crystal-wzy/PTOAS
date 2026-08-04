@@ -79,6 +79,41 @@ def select(cond, true_val, false_val):
     ).result)
 
 
+def cast(value, dtype):
+    """Cast a runtime scalar or builtin vector to ``dtype``.
+
+    For builtin vectors, a scalar ``dtype`` denotes the destination element
+    type and the source vector shape is preserved.  An explicit ``pto.Vec``
+    descriptor is also accepted when its shape matches the source.
+    """
+    raw_value = unwrap_surface_value(value)
+    target_type = _resolve(dtype)
+    source_is_vector = hasattr(raw_value, "type") and VectorType.isinstance(raw_value.type)
+    target_is_vector = VectorType.isinstance(target_type)
+
+    if source_is_vector:
+        source_vector_type = VectorType(raw_value.type)
+        if target_is_vector:
+            target_vector_type = VectorType(target_type)
+            if tuple(source_vector_type.shape) != tuple(target_vector_type.shape):
+                raise TypeError(
+                    "scalar.cast(vector, dtype) requires the destination vector shape "
+                    f"to match the source: got {target_type}, expected shape "
+                    f"{tuple(source_vector_type.shape)}"
+                )
+        else:
+            target_type = VectorType.get(list(source_vector_type.shape), target_type)
+    elif target_is_vector:
+        raise TypeError(
+            "scalar.cast(scalar, dtype) cannot produce a vector; "
+            "use pto.Vec(..., init=value) to broadcast"
+        )
+
+    return wrap_surface_value(
+        coerce_scalar_to_type(value, target_type, context="scalar.cast(...)")
+    )
+
+
 def max(lhs, rhs):
     """Runtime scalar maximum across float / integer / index values."""
     return wrap_surface_value(emit_runtime_max(
@@ -325,6 +360,7 @@ def _element_bytewidth(elem_type):
 __all__ = [
     "muli", "addi", "subi",
     "index_cast",
+    "cast",
     "select",
     "max", "min", "exp", "log", "sqrt", "abs",
     "load", "store",
