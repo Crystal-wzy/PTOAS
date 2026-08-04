@@ -53,9 +53,13 @@ def rewrite_jit_function(fn, *, static_bindings=None, rewrite_control_flow=True)
     _inject_closure_defaults(function_def, closure_vars.nonlocals)
     _sanitize_signature_for_exec(function_def)
     function_def = _ConditionalExpressionNormalizer().visit(function_def)
-    function_def = _SectionLexicalRewriter().visit(function_def)
+    section_rewriter = _SectionLexicalRewriter()
+    function_def = section_rewriter.visit(function_def)
     if rewrite_control_flow:
-        rewriter = _ControlFlowRewriter(static_env)
+        rewriter = _ControlFlowRewriter(
+            static_env,
+            section_entry_bindings=section_rewriter.section_entry_bindings,
+        )
         function_def.body = rewriter.rewrite_block(function_def.body, live_after=set())
     tree = ast.Module(body=[function_def], type_ignores=[])
     ast.fix_missing_locations(tree)
@@ -94,6 +98,9 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
         self._counter = 0
         self._env = {}
         self._local_names = set()
+        self._known_bindings = set()
+        self._section_outer_bindings = None
+        self.section_entry_bindings = {}
 
     @staticmethod
     def _is_section_with(node):
@@ -111,7 +118,9 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
 
     def _activate_targets(self, targets):
         for name in targets & self._local_names:
-            self._env.setdefault(name, self._fresh_alias(name))
+            alias = self._env.setdefault(name, self._fresh_alias(name))
+            if self._section_outer_bindings is not None and name in self._section_outer_bindings:
+                self.section_entry_bindings.setdefault(alias, name)
 
     def _visit_block(self, stmts, env=None):
         old_env = self._env
@@ -126,13 +135,16 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
     def _visit_section_body(self, stmts):
         old_env = self._env
         old_names = self._local_names
+        old_outer_bindings = self._section_outer_bindings
         self._env = {}
         self._local_names = _name_info(stmts).stores
+        self._section_outer_bindings = set(self._known_bindings)
         try:
             return [self.visit(stmt) for stmt in stmts]
         finally:
             self._env = old_env
             self._local_names = old_names
+            self._section_outer_bindings = old_outer_bindings
 
     def visit_With(self, node):
         if not self._is_section_with(node):
@@ -148,6 +160,8 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
             targets |= self._target_names(target)
         self._activate_targets(targets)
         node.targets = [self.visit(target) for target in node.targets]
+        if self._section_outer_bindings is None:
+            self._known_bindings.update(targets)
         return node
 
     def visit_AnnAssign(self, node):
@@ -155,6 +169,8 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
             node.value = self.visit(node.value)
         self._activate_targets(self._target_names(node.target))
         node.target = self.visit(node.target)
+        if self._section_outer_bindings is None:
+            self._known_bindings.update(self._target_names(node.target))
         return node
 
     def visit_AugAssign(self, node):
@@ -165,6 +181,8 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
             node.value = self.visit(node.value)
             self._activate_targets({name})
             node.target.id = self._env[name]
+            if self._section_outer_bindings is None:
+                self._known_bindings.add(name)
             return node
         return self.generic_visit(node)
 
@@ -172,6 +190,8 @@ class _SectionLexicalRewriter(ast.NodeTransformer):
         node.iter = self.visit(node.iter)
         self._activate_targets(self._target_names(node.target))
         node.target = self.visit(node.target)
+        if self._section_outer_bindings is None:
+            self._known_bindings.update(self._target_names(node.target))
         node.body, body_env = self._visit_block(node.body, self._env)
         self._env.update(body_env)
         node.orelse, else_env = self._visit_block(node.orelse, self._env)
@@ -906,8 +926,9 @@ class _SlotCarryRewriter(ast.NodeTransformer):
 
 
 class _ControlFlowRewriter:
-    def __init__(self, static_env=None):
+    def __init__(self, static_env=None, *, section_entry_bindings=None):
         self._static_env = dict(static_env or {})
+        self._section_entry_bindings = dict(section_entry_bindings or {})
         self._counter = 0
 
     def _fresh(self, prefix: str) -> str:
@@ -1307,7 +1328,10 @@ class _ControlFlowRewriter:
                     ),
                     args=[],
                     keywords=[
-                        ast.keyword(arg=name, value=_name(name))
+                        ast.keyword(
+                            arg=name,
+                            value=_name(self._section_entry_bindings.get(name, name)),
+                        )
                         for name in loop_carried
                     ] + [
                         ast.keyword(arg=slot_carry_names[slot], value=_name(slot_carry_names[slot]))
