@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 """Create, inspect, and safely retire isolated PTOAS workspaces."""
 
 from __future__ import annotations
@@ -114,6 +122,9 @@ def create(args: argparse.Namespace) -> int:
     if build_dir.exists():
         raise ManagerError(f"build path already exists: {build_dir}")
     llvm = existing_dir(args.llvm_build_dir, "LLVM_BUILD_DIR")
+    for forbidden, label in ((repo, "repository"), (workspace, "workspace"), (llvm, "LLVM_BUILD_DIR")):
+        if build_dir == forbidden:
+            raise ManagerError(f"build directory must not equal the {label}: {build_dir}")
     base_python = Path(args.base_python or sys.executable).expanduser().resolve()
     if not base_python.is_file() or not os.access(base_python, os.X_OK):
         raise ManagerError(f"base Python is not executable: {base_python}")
@@ -169,9 +180,9 @@ def create(args: argparse.Namespace) -> int:
             })
             if ccache_dir:
                 install_env["CCACHE_DIR"] = str(ccache_dir)
-            installed = run([str(quick_install)], cwd=workspace, env=install_env)
+            installed = subprocess.run([str(quick_install), "-v"], cwd=workspace, env=install_env, check=False)
             if installed.returncode != 0:
-                raise ManagerError(installed.stderr.strip() or installed.stdout.strip() or "quick_install.sh failed")
+                raise ManagerError("quick_install.sh failed (see output above)")
         print(json.dumps(metadata, indent=2, sort_keys=True))
         print(f"Created workspace: {workspace}")
         print(f"Activate with: source {workspace}/env.sh")
@@ -188,7 +199,8 @@ def merged_pr(repo: Path, branch: str) -> dict[str, Any]:
     if shutil.which("gh") is None:
         raise ManagerError("gh is required to verify that the pull request is merged")
     result = run(
-        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--limit", "100", "--json", "number,url,mergedAt"],
+        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--limit", "100",
+         "--json", "number,url,mergedAt,headRefOid"],
         cwd=repo,
     )
     if result.returncode != 0:
@@ -200,6 +212,28 @@ def merged_pr(repo: Path, branch: str) -> dict[str, Any]:
     if not prs:
         raise ManagerError(f"no merged pull request found for branch {branch}")
     return max(prs, key=lambda item: item.get("mergedAt") or "")
+
+
+def head_contained_in_pr(repo: Path, workspace: Path, pr: dict[str, Any]) -> str | None:
+    """Return None when the worktree HEAD is contained in the merged PR head,
+    otherwise a human-readable reason why the workspace is not safe to destroy.
+
+    A clean worktree is not enough: local commits that were never pushed (or
+    were pushed after the PR merged) would be silently deleted. Requiring HEAD
+    to be an ancestor of the PR's head commit proves every local commit was
+    part of the merged pull request. It also rejects --head matches from an
+    unrelated fork branch that happens to share the name.
+    """
+    head_oid = pr.get("headRefOid")
+    if not head_oid:
+        return "merged pull request has no head commit information"
+    if git(repo, "cat-file", "-e", f"{head_oid}^{{commit}}").returncode != 0:
+        fetched = git(repo, "fetch", "origin", head_oid)
+        if fetched.returncode != 0 or git(repo, "cat-file", "-e", f"{head_oid}^{{commit}}").returncode != 0:
+            return f"cannot fetch merged pull request head commit {head_oid}"
+    if git(workspace, "merge-base", "--is-ancestor", "HEAD", head_oid).returncode != 0:
+        return f"local commits on {workspace} are not contained in merged PR head {head_oid}"
+    return None
 
 
 def inspect_workspace(workspace: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -226,8 +260,10 @@ def inspect_workspace(workspace: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     clean_reason = "worktree is clean" if clean else "worktree has staged, unstaged, or untracked changes"
     pr = None
     pr_error = None
+    containment_error = None
     try:
         pr = merged_pr(repo, branch)
+        containment_error = head_contained_in_pr(repo, workspace, pr)
     except ManagerError as exc:
         pr_error = str(exc)
     report = {
@@ -237,7 +273,8 @@ def inspect_workspace(workspace: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         "clean_reason": clean_reason,
         "merged_pr": pr,
         "pr_error": pr_error,
-        "eligible": clean and pr is not None,
+        "containment_error": containment_error,
+        "eligible": clean and pr is not None and containment_error is None,
     }
     return metadata, report
 
@@ -246,6 +283,30 @@ def status(args: argparse.Namespace) -> int:
     _, report = inspect_workspace(existing_dir(args.workspace, "workspace"))
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["eligible"] else 1
+
+
+def validated_build_dir(metadata: dict[str, Any], repo: Path, workspace: Path) -> Path:
+    """Resolve the recorded build directory, refusing anything dangerous.
+
+    The metadata file is just a JSON document; never feed an unchecked path
+    from it into rmtree.
+    """
+    raw = metadata.get("build_dir")
+    if not raw:
+        raise ManagerError("workspace metadata has no build_dir")
+    build_dir = Path(str(raw)).expanduser().resolve()
+    protected = [repo, workspace, Path.home(), Path(build_dir.anchor)]
+    llvm = metadata.get("llvm_build_dir")
+    if llvm:
+        protected.append(Path(str(llvm)).expanduser().resolve())
+    for path in protected:
+        root = path.resolve()
+        if build_dir == root:
+            raise ManagerError(f"refusing to remove unsafe build directory: {build_dir}")
+    for path in (repo, workspace):
+        if build_dir in path.resolve().parents:
+            raise ManagerError(f"build directory is an ancestor of a protected path: {build_dir}")
+    return build_dir
 
 
 def destroy(args: argparse.Namespace) -> int:
@@ -272,7 +333,7 @@ def destroy(args: argparse.Namespace) -> int:
     removed = git(repo, "worktree", "remove", str(workspace))
     if removed.returncode != 0:
         raise ManagerError(removed.stderr.strip() or "git worktree remove failed")
-    build_dir = Path(metadata["build_dir"]).resolve()
+    build_dir = validated_build_dir(metadata, repo, workspace)
     if build_dir.exists():
         shutil.rmtree(build_dir)
     if args.delete_branch:
@@ -293,7 +354,7 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--workspace-root", default=os.environ.get("PTOAS_WORKSPACE_ROOT"))
     create_parser.add_argument("--build-root", default=os.environ.get("PTOAS_BUILD_ROOT"))
     create_parser.add_argument("--llvm-build-dir", default=os.environ.get("LLVM_BUILD_DIR"))
-    create_parser.add_argument("--base-python", default=os.environ.get("PTOAS_BASE_PYTHON") or os.environ.get("PYTHON_BIN"))
+    create_parser.add_argument("--base-python", default=os.environ.get("PTOAS_BASE_PYTHON"))
     create_parser.add_argument("--base-ref", default=os.environ.get("PTOAS_BASE_REF", "HEAD"))
     create_parser.add_argument("--branch", default=os.environ.get("PTOAS_BRANCH"))
     create_parser.add_argument("--cann-env", default=os.environ.get("CANN_ENV_SCRIPT"))

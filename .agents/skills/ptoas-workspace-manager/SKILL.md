@@ -31,7 +31,7 @@ build. The base Python can be conda, a system Python, or another compatible
 interpreter:
 
 ```bash
-python3 .codex/skills/ptoas-workspace-manager/scripts/ptoas_workspace.py create \
+python3 .agents/skills/ptoas-workspace-manager/scripts/ptoas_workspace.py create \
   --repo /path/to/PTOAS \
   --name feature-a \
   --workspace-root /data/ptoas-dev/workspaces \
@@ -68,32 +68,35 @@ provide machine-specific defaults. Command-line options take precedence.
 Always inspect before removing it:
 
 ```bash
-python3 .codex/skills/ptoas-workspace-manager/scripts/ptoas_workspace.py status \
+python3 .agents/skills/ptoas-workspace-manager/scripts/ptoas_workspace.py status \
   --workspace /data/ptoas-dev/workspaces/feature-a
 ```
 
-Retirement is eligible only when both conditions hold (the manager's own
-generated `.venv/`, metadata, and `env.sh` are excluded from this source-change
-check and removed as part of destruction):
+Retirement is eligible only when all of these conditions hold (the manager's
+own generated `.venv/`, metadata, and `env.sh` are excluded from this
+source-change check and removed as part of destruction):
 
 1. Git reports no staged, unstaged, or untracked changes in the worktree.
 2. A GitHub pull request for the workspace branch exists and is merged.
+3. The worktree's HEAD is an ancestor of the merged PR's head commit, so no
+   local commit — pushed or not — is missing from the merged PR.
 
 The script uses `gh` for the PR check. It fails closed when `gh` is absent,
-authentication is unavailable, the repository cannot be identified, or no
-merged PR is found. A closed-but-unmerged PR is not sufficient.
+authentication is unavailable, the repository cannot be identified, no
+merged PR is found, the PR head commit cannot be fetched, or any local
+commit is not contained in it. A closed-but-unmerged PR is not sufficient.
 
 Check eligibility without deleting anything:
 
 ```bash
-python3 .codex/skills/ptoas-workspace-manager/scripts/ptoas_workspace.py destroy \
+python3 .agents/skills/ptoas-workspace-manager/scripts/ptoas_workspace.py destroy \
   --workspace /data/ptoas-dev/workspaces/feature-a
 ```
 
 Only after reviewing the report, perform the destructive operation explicitly:
 
 ```bash
-python3 .codex/skills/ptoas-workspace-manager/scripts/ptoas_workspace.py destroy \
+python3 .agents/skills/ptoas-workspace-manager/scripts/ptoas_workspace.py destroy \
   --workspace /data/ptoas-dev/workspaces/feature-a --yes
 ```
 

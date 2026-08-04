@@ -24,8 +24,9 @@ Compatibility rules:
 - `PTO_BUILD_DIR` must not equal the repository path, the workspace path, or
   `LLVM_BUILD_DIR`.
 - `destroy` treats a missing PR, a non-merged PR, an unavailable `gh`, a dirty
-  worktree, an unexpected untracked file, and an invalid worktree registration
-  as unsafe. Only the manager-owned `.venv/`, metadata, and `env.sh` are
-  ignored by the source-change check.
+  worktree, an unexpected untracked file, a local commit not contained in the
+  merged PR head, and an invalid worktree registration as unsafe. Only the
+  manager-owned `.venv/`, metadata, and `env.sh` are ignored by the
+  source-change check.
 - `destroy --yes` is still gated by the same checks; `--yes` only confirms the
   already-validated deletion.
