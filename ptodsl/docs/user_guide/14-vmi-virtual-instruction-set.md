@@ -412,6 +412,53 @@ pto.vmi.vstore(
 
 ---
 
+### `vsstb`
+
+### `pto.vmi.vsstb(value, destination, offset, block_stride, mask, *, pmode=None) -> None`
+
+**Description**: Performs the dedicated zero-repeat-stride block store. It
+writes a logical VMI vector to UB in 32-byte blocks using the supplied dynamic
+16-bit `block_stride`. The physical `repeat_stride` is fixed to zero and is not
+an argument on this API. Unlike the general block-stride `vstore` form,
+`vsstb` requires an explicit mask.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `value` | `VRegType` | Logical VMI vector to store |
+| `destination` | `PtrType` (ub) | UB destination pointer; its element type must match `value` |
+| `offset` | `IndexLike` | Element offset into the destination buffer |
+| `block_stride` | `int` or scalar value convertible to `i16` | Dynamic 32-byte-block stride |
+| `mask` | VMI mask | Required predicate mask; its lane count must match `value` |
+| `pmode` | `str` or `None` | Optional inactive-lane mode: `"zero"` or `"merge"` |
+
+**Returns**: None (side-effect operation).
+
+**Example**:
+
+```python
+pto.vmi.vsstb(
+    vec,
+    dst_ptr,
+    offset,
+    pto.i16(8),
+    mask,
+)
+```
+
+This lowers to the physical block-stride store with an `i16` zero supplied as
+its `repeat_stride`.
+
+**Constraints**:
+
+- `destination` must refer to UB memory.
+- `block_stride` must be representable as an `i16` scalar operand.
+- `mask` is required and must match the vector's logical lane count.
+- `vsstb` does not accept `repeat_stride`, `dist_mode`, `group`, or `stride`.
+
+---
+
 ## 14.3 Index generation and broadcast
 
 These instructions produce a new logical vector from a scalar seed — either as
@@ -830,7 +877,7 @@ For int→int widening, the source element type must carry signedness
 | `source` | `VRegType` | Input vector (source element type) |
 | `to_dtype` | `DType` | Target element type. PTODSL derives the result vector type from the source lane count/layout and this dtype |
 | `rounding` | rounding mode or `None` | Optional rounding mode token |
-| `saturate` | saturate mode or `None` | Optional saturation mode token |
+| `saturate` | `"SAT"`, `"NOSAT"`, or `None` | Saturation mode. For fp-narrow, int-narrow, and fp-to-int, `None` defaults to `"SAT"` |
 | `pmode` | `str` or `None` | Optional predicate mode: `"merge"` keeps predicate-inactive lanes at their prior value; `"zero"` writes 0 |
 
 **Returns**:
@@ -847,7 +894,11 @@ narrow = pto.vmi.vcvt(src_f32, pto.f16)
 ```
 
 **Constraints**:
-- The masked form of `vcvt` is not currently supported on this surface.
+- The masked form of `vcvt` is not yet supported by the current PTODSL/IR
+  implementation. It remains part of the VMI ISA contract for future support.
+- Authored VMI IR requires explicit `"SAT"` or `"NOSAT"` for fp-narrow,
+  int-narrow, and fp-to-int. PTODSL uses `"SAT"` when `saturate` is omitted
+  for these directions.
 - The source and target dtype pair must be legal for the target backend.
 - For `f32 -> f8e4m3/f8e5m2`, PTODSL accepts `rounding="R"`, `"A"`, `"H"`,
   and `"Z"`; other low-level rounding tokens remain rejected on the VMI
@@ -878,6 +929,7 @@ annotation changes. This is a reinterpretation, not a numeric conversion.
 
 ```python
 as_i32 = pto.vmi.vinterpret_cast(src, pto.i32)
+as_f16 = pto.vmi.vinterpret_cast(src, pto.f16)  # 64xf32 -> 128xf16
 ```
 
 **Constraints**:
@@ -1384,7 +1436,7 @@ def vmi_elementwise(
 | Category | Instructions |
 |----------|-------------|
 | Types | `vreg`, `mask` |
-| Load / Store | `vload`, `vstore` |
+| Load / Store | `vload`, `vstore`, `vsstb` |
 | Index / Broadcast | `vci`, `vbrc` |
 | Binary vector-vector | `vadd`, `vsub`, `vmul`, `vdiv`, `vmax`, `vmin`, `vand`, `vor`, `vxor`, `vshl`, `vshr` |
 | Unary vector | `vabs`, `vneg`, `vrelu`, `vexp`, `vln`, `vsqrt`, `vnot` |

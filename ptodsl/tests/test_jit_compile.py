@@ -2629,11 +2629,36 @@ def vmi_wrapper_dispatch_probe():
     expanded = pto.vmi.vbrc(compact, size=64, group=8)
     hist_acc = pto.vmi.vload(hist_acc_ptr, offset, size=256)
     hist_src = pto.vmi.vload(hist_src_ptr, offset, size=256)
+    int_lhs = pto.vmi.vload(int_src_ptr, offset, size=64)
+    int_rhs = pto.vmi.vload(int_other_ptr, offset, size=64)
     hist_mask = pto.vmi.create_mask(pto.const(256, dtype=pto.index), size=256)
     added = pto.vmi.vadd(lhs, rhs, mask)
+    subtracted = pto.vmi.vsub(lhs, rhs, mask)
+    multiplied = pto.vmi.vmul(lhs, rhs, mask)
+    divided = pto.vmi.vdiv(lhs, rhs, mask)
+    maximum = pto.vmi.vmax(lhs, rhs, mask)
+    minimum = pto.vmi.vmin(lhs, rhs, mask)
+    absolute = pto.vmi.vabs(lhs, mask)
+    negated = pto.vmi.vneg(lhs, mask)
     relu = pto.vmi.vrelu(added, mask)
-    scaled = pto.vmi.vadd(pto.vmi.vmuls(relu, 2.0, mask), bias, mask)
+    exponent = pto.vmi.vexp(lhs, mask)
+    logarithm = pto.vmi.vln(lhs, mask)
+    square_root = pto.vmi.vsqrt(lhs, mask)
+    int_and = pto.vmi.vand(int_lhs, int_rhs, mask)
+    int_or = pto.vmi.vor(int_lhs, int_rhs, mask)
+    int_xor = pto.vmi.vxor(int_lhs, int_rhs, mask)
+    int_not = pto.vmi.vnot(int_lhs, mask)
+    int_shl = pto.vmi.vshl(int_lhs, int_rhs, mask)
+    int_shr = pto.vmi.vshr(int_lhs, int_rhs, mask)
+    scalar_added = pto.vmi.vadds(relu, 1.0, mask)
+    scalar_multiplied = pto.vmi.vmuls(relu, 2.0, mask)
+    scalar_maximum = pto.vmi.vmaxs(relu, 1.0, mask)
+    scalar_minimum = pto.vmi.vmins(relu, 1.0, mask)
+    scalar_shl = pto.vmi.vshls(int_lhs, pto.i32(1), mask)
+    scalar_shr = pto.vmi.vshrs(int_lhs, pto.i32(1), mask)
+    scaled = pto.vmi.vadd(scalar_multiplied, bias, mask)
     pred = pto.vmi.vcmp(scaled, lhs, mask, "ogt")
+    scalar_pred = pto.vmi.vcmps(scaled, 0.0, mask, "ogt")
     selected = pto.vmi.vsel(pred, scaled, expanded)
     shuffled = pto.vmi.vselr(selected, idx)
     total = pto.vmi.vcadd(shuffled, mask, reassoc=False)
@@ -2647,17 +2672,28 @@ def vmi_wrapper_dispatch_probe():
     gatherb = pto.vmi.vgatherb(src_ptr, idx, mask)
     hist = pto.vmi.vdhist(hist_acc, hist_src, hist_mask)
     cumul = pto.vmi.vchist(hist_acc, hist_src, hist_mask)
-    int_lhs = pto.vmi.vload(int_src_ptr, offset, size=64)
-    int_rhs = pto.vmi.vload(int_other_ptr, offset, size=64)
+    exp_difference = pto.vmi.vexpdif(lhs, rhs, mask)
+    axpy = pto.vmi.vaxpy(lhs, rhs, 2.0, mask)
+    leaky_relu = pto.vmi.vlrelu(lhs, 0.125, mask)
+    parametric_relu = pto.vmi.vprelu(lhs, rhs, mask)
     low, high = pto.vmi.vmull(int_lhs, int_rhs, mask)
+    multiply_accumulate = pto.vmi.vmula(lhs, lhs, rhs, mask)
     widened = pto.vmi.vadd(low, high, mask)
     casted = pto.vmi.vcvt(shuffled, pto.f16)
+    casted_r = pto.vmi.vcvt(shuffled, pto.f16, rounding="R", saturate="SAT")
+    casted_a = pto.vmi.vcvt(shuffled, pto.f16, rounding="A", saturate="SAT")
+    casted_h = pto.vmi.vcvt(shuffled, pto.f16, rounding="H", saturate="SAT")
+    casted_z = pto.vmi.vcvt(shuffled, pto.f16, rounding="Z", saturate="SAT")
     recast = pto.vmi.vinterpret_cast(
         lhs,
         pto.i32,
     )
+    recast_narrow = pto.vmi.vinterpret_cast(lhs, pto.f16)
     lo, hi = pto.vmi.vintlv(selected, shuffled, mask)
+    even, odd = pto.vmi.vdintlv(lo, hi, mask)
+    pto.vmi.vscatter(selected, dst_ptr, idx, mask)
     pto.vmi.vstore(lo, dst_ptr, offset, mask)
+    pto.vmi.vsstb(hi, dst_ptr, offset, pto.i16(8), mask)
 
     _ = group_mask
     _ = total
@@ -2673,8 +2709,15 @@ def vmi_wrapper_dispatch_probe():
     _ = cumul
     _ = widened
     _ = casted
+    _ = (casted_r, casted_a, casted_h, casted_z)
     _ = recast
+    _ = recast_narrow
     _ = hi
+    _ = (subtracted, multiplied, divided, maximum, minimum, absolute, negated)
+    _ = (exponent, logarithm, square_root, int_and, int_or, int_xor, int_not)
+    _ = (int_shl, int_shr, scalar_added, scalar_maximum, scalar_minimum)
+    _ = (scalar_shl, scalar_shr, scalar_pred, exp_difference, axpy)
+    _ = (leaky_relu, parametric_relu, multiply_accumulate, even, odd)
 
 
 @pto.jit(target="a5", backend="vpto", mode="explicit")
@@ -6421,27 +6464,59 @@ def main() -> None:
     )
 
     expected_vmi_ops = [
-        "pto.vmi.create_mask",
-        "pto.vmi.create_group_mask",
         "pto.vmi.vload",
+        "pto.vmi.vstore",
+        "pto.vmi.vsstb",
         "pto.vmi.vci",
         "pto.vmi.vadd",
+        "pto.vmi.vsub",
+        "pto.vmi.vmul",
+        "pto.vmi.vdiv",
+        "pto.vmi.vmax",
+        "pto.vmi.vmin",
+        "pto.vmi.vabs",
+        "pto.vmi.vneg",
         "pto.vmi.vrelu",
+        "pto.vmi.vexp",
+        "pto.vmi.vln",
+        "pto.vmi.vsqrt",
+        "pto.vmi.vand",
+        "pto.vmi.vor",
+        "pto.vmi.vxor",
+        "pto.vmi.vnot",
+        "pto.vmi.vshl",
+        "pto.vmi.vshr",
+        "pto.vmi.vadds",
         "pto.vmi.vmuls",
+        "pto.vmi.vmaxs",
+        "pto.vmi.vmins",
+        "pto.vmi.vshls",
+        "pto.vmi.vshrs",
         "pto.vmi.vcmp",
+        "pto.vmi.vcmps",
         "pto.vmi.vsel",
         "pto.vmi.vselr",
+        "pto.vmi.vbrc",
         "pto.vmi.vcadd",
         "pto.vmi.vcmax",
         "pto.vmi.vcmin",
-        "pto.vmi.vdhist",
-        "pto.vmi.vchist",
-        "pto.vmi.vmull",
-        "pto.vmi.vgather",
         "pto.vmi.vcvt",
         "pto.vmi.vinterpret_cast",
+        "pto.vmi.vexpdif",
+        "pto.vmi.vaxpy",
+        "pto.vmi.vlrelu",
+        "pto.vmi.vprelu",
+        "pto.vmi.vmull",
+        "pto.vmi.vmula",
+        "pto.vmi.vchist",
+        "pto.vmi.vdhist",
+        "pto.vmi.vgather",
+        "pto.vmi.vgatherb",
+        "pto.vmi.vscatter",
+        "pto.vmi.create_mask",
+        "pto.vmi.create_group_mask",
         "pto.vmi.vintlv",
-        "pto.vmi.vstore",
+        "pto.vmi.vdintlv",
     ]
     for op_name in expected_vmi_ops:
         expect(
@@ -6477,9 +6552,22 @@ def main() -> None:
         "!pto.vmi.vreg<64xf16>" in vmi_wrapper_dispatch_text,
         "PTODSL VMI conversion probes should materialize converted logical VMI vector result types in MLIR",
     )
+    for rounding in ("R", "A", "H", "Z"):
+        expect(
+            f'rounding = "{rounding}"' in vmi_wrapper_dispatch_text,
+            f"PTODSL vcvt should preserve canonical {rounding} rounding",
+        )
+    expect(
+        vmi_wrapper_dispatch_text.count('saturate = "SAT"') >= 5,
+        "PTODSL vcvt should preserve explicit SAT and default omitted narrowing saturation to SAT",
+    )
     expect(
         "!pto.vmi.vreg<64xi32>" in vmi_wrapper_dispatch_text,
         "PTODSL VMI index/reinterpret probes should materialize integer logical VMI vector result types in MLIR",
+    )
+    expect(
+        "!pto.vmi.vreg<128xf16>" in vmi_wrapper_dispatch_text,
+        "PTODSL vinterpret_cast should infer lane count by conserving total bits",
     )
     expect(
         "!pto.vmi.mask<64xpred>" in vmi_wrapper_dispatch_text,

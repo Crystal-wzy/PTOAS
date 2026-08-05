@@ -3118,6 +3118,10 @@ LogicalResult VMIVgatherOp::verify() {
   auto maskType = cast<VMIMaskType>(getMask().getType());
   auto resultType = cast<VMIVRegType>(getResult().getType());
 
+  if (failed(verifyUBBackedMemory(getOperation(), getSource().getType(),
+                                  "source")))
+    return failure();
+
   if (failed(verifyMemoryElementMatches(getOperation(), getSource().getType(),
                                         resultType, "source")))
     return failure();
@@ -3165,6 +3169,10 @@ LogicalResult VMIVgatherbOp::verify() {
   auto maskType = cast<VMIMaskType>(getMask().getType());
   auto resultType = cast<VMIVRegType>(getResult().getType());
 
+  if (failed(verifyUBBackedMemory(getOperation(), getSource().getType(),
+                                  "source")))
+    return failure();
+
   if (failed(verifyMemoryElementMatches(getOperation(), getSource().getType(),
                                         resultType, "source")))
     return failure();
@@ -3196,6 +3204,10 @@ LogicalResult VMIVscatterOp::verify() {
   auto valueType = cast<VMIVRegType>(getValue().getType());
   auto offsetsType = cast<VMIVRegType>(getOffsets().getType());
   auto maskType = cast<VMIMaskType>(getMask().getType());
+
+  if (failed(verifyUBBackedMemory(getOperation(),
+                                  getDestination().getType(), "destination")))
+    return failure();
 
   if (failed(verifyMemoryElementMatches(getOperation(),
                                         getDestination().getType(), valueType,
@@ -3734,7 +3746,9 @@ LogicalResult VMIvStoreOp::verify() {
       return emitOpError("group must be positive, got ") << numGroups;
     if (getValues().size() != 1)
       return emitOpError("group mode requires exactly 1 value");
-    return success();
+    auto valueType = cast<VMIVRegType>(getValues()[0].getType());
+    if (failed(verifyNumGroups(getOperation(), valueType, numGroups)))
+      return failure();
   }
 
   // block_stride / repeat_stride: paired, mutually exclusive with
@@ -3750,7 +3764,6 @@ LogicalResult VMIvStoreOp::verify() {
           "block_stride and dist_mode are mutually exclusive");
     if (getValues().size() != 1)
       return emitOpError("block-stride mode requires exactly 1 value");
-    return success();
   }
 
   auto distMode = getDistMode();
@@ -3777,9 +3790,18 @@ LogicalResult VMIvStoreOp::verify() {
   auto pmode = getPmode();
   if (pmode && !validPModes().count(*pmode))
     return emitOpError("invalid pmode: \"") << *pmode << "\"";
+  if (pmode && *pmode != "zero")
+    return emitOpError("pmode \"merge\" is not supported for stores: the "
+                       "legacy store lowering is mask-governed only and "
+                       "cannot retain prior destination contents on inactive "
+                       "lanes; omit pmode (defaults to \"zero\")");
 
   auto valueType = cast<VMIVRegType>(getValues()[0].getType());
-  if (failed(verifyMemoryElementMatches(getOperation(),
+  bool isPackedGroupStore =
+      getGroup() &&
+      isPackedByteGroupStore(getDestination().getType(), valueType);
+  if (!isPackedGroupStore &&
+      failed(verifyMemoryElementMatches(getOperation(),
                                         getDestination().getType(), valueType,
                                         "destination")))
     return failure();
@@ -3808,6 +3830,31 @@ LogicalResult VMIvStoreOp::verify() {
 }
 
 void VMIvStoreOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+LogicalResult VMIVsstbOp::verify() {
+  auto valueType = cast<VMIVRegType>(getValue().getType());
+  auto maskType = cast<VMIMaskType>(getMask().getType());
+  if (failed(verifyMemoryElementMatches(getOperation(),
+                                        getDestination().getType(), valueType,
+                                        "destination")) ||
+      failed(verifyUBBackedMemory(getOperation(), getDestination().getType(),
+                                  "destination")))
+    return failure();
+  if (auto pmode = getPmode(); pmode && !validPModes().count(*pmode))
+    return emitOpError("invalid pmode: \"") << *pmode << "\"";
+  if (auto pmode = getPmode(); pmode && *pmode != "zero")
+    return emitOpError("pmode \"merge\" is not supported for stores: the "
+                       "legacy store lowering is mask-governed only and "
+                       "cannot retain prior destination contents on inactive "
+                       "blocks; omit pmode (defaults to \"zero\")");
+  return verifyMaskMatchesData(getOperation(), maskType, valueType);
+}
+
+void VMIVsstbOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
@@ -4096,7 +4143,9 @@ LogicalResult VMIvLoadOp::verify() {
       return emitOpError("group must be positive, got ") << numGroups;
     if (getResults().size() != 1)
       return emitOpError("group mode requires exactly 1 result");
-    return success();
+    auto resultType = cast<VMIVRegType>(getResults()[0].getType());
+    if (failed(verifyNumGroups(getOperation(), resultType, numGroups)))
+      return failure();
   }
 
   // block_stride and repeat_stride must be paired, mutually exclusive
@@ -4112,7 +4161,6 @@ LogicalResult VMIvLoadOp::verify() {
           "block_stride and dist_mode are mutually exclusive");
     if (getResults().size() != 1)
       return emitOpError("block-stride mode requires exactly 1 result");
-    return success();
   }
 
   // result count vs dist-mode
