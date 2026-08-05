@@ -2336,10 +2336,54 @@ def vmrgsort4(destination, source0, source1, source2, source3, count, config):
     )
 
 
-def load_scalar(ptr_value, offset=0, result_type=None):
-    """``pto.load_scalar`` – load one scalar from a pointer-like value."""
-    if result_type is None:
-        result_type = _pointer_element_type(ptr_value, context="load_scalar(ptr)")
+def _resolve_l1_bypass_scalar_pointer(ptr_value, *, context: str):
+    """Validate the GM integer pointer contract used by ``ld_dev``."""
+    raw_ptr = unwrap_surface_value(ptr_value)
+    try:
+        ptr_type = _pto.PtrType(raw_ptr.type)
+    except Exception as exc:
+        raise TypeError(f"{context} requires a typed PTO pointer") from exc
+
+    gm_space = _pto.AddressSpaceAttr.get(_pto.AddressSpace.GM)
+    if ptr_type.memory_space != gm_space:
+        raise TypeError(f"{context} requires a GM pointer, got {raw_ptr.type}")
+
+    elem_type = ptr_type.element_type
+    if not IntegerType.isinstance(elem_type) or IntegerType(elem_type).width not in (8, 16, 32, 64):
+        raise TypeError(
+            f"{context} supports only i8, i16, i32 or i64 pointer elements, "
+            f"got {elem_type}"
+        )
+    return raw_ptr, elem_type
+
+
+def _validate_scalar_l1_bypass(value, *, context: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{context} expects bypass_l1 to be a bool")
+    return value
+
+
+def load_scalar(ptr_value, offset=0, *, bypass_l1=False):
+    """Load one scalar through the scalar pipeline.
+
+    ``bypass_l1=True`` selects the AICore GM device-memory form and emits
+    ``pto.ld_dev``.  The bypass form requires a GM pointer with an i8, i16,
+    i32, or i64 element type and is valid only in an ordinary AICore entry.
+    """
+    bypass_l1 = _validate_scalar_l1_bypass(bypass_l1, context="load_scalar(...)")
+    if bypass_l1:
+        raw_ptr, elem_type = _resolve_l1_bypass_scalar_pointer(
+            ptr_value, context="load_scalar(..., bypass_l1=True)"
+        )
+        return wrap_surface_value(
+            _pto.PTOLdDevOp(
+                elem_type,
+                raw_ptr,
+                _coerce_index(offset, context="load_scalar(offset)"),
+            ).value
+        )
+
+    result_type = _pointer_element_type(ptr_value, context="load_scalar(ptr)")
     return wrap_surface_value(
         _pto.LoadScalarOp(
             _resolve(result_type),
@@ -2349,8 +2393,30 @@ def load_scalar(ptr_value, offset=0, result_type=None):
     )
 
 
-def store_scalar(ptr_value, offset, value):
-    """``pto.store_scalar`` – store one scalar to a pointer-like value."""
+def store_scalar(ptr_value, offset, value, *, bypass_l1=False):
+    """Store one scalar through the scalar pipeline.
+
+    ``bypass_l1=True`` selects the AICore GM device-memory form and emits
+    ``pto.st_dev``.  The bypass form requires a GM pointer with an i8, i16,
+    i32, or i64 element type and is valid only in an ordinary AICore entry.
+    """
+    bypass_l1 = _validate_scalar_l1_bypass(bypass_l1, context="store_scalar(...)")
+    if bypass_l1:
+        raw_ptr, elem_type = _resolve_l1_bypass_scalar_pointer(
+            ptr_value, context="store_scalar(..., bypass_l1=True)"
+        )
+        raw_value = coerce_scalar_to_type(
+            value,
+            elem_type,
+            context="store_scalar(..., bypass_l1=True)",
+        )
+        _pto.PTOStDevOp(
+            raw_value,
+            raw_ptr,
+            _coerce_index(offset, context="store_scalar(offset)"),
+        )
+        return
+
     _pto.StoreScalarOp(
         unwrap_surface_value(ptr_value),
         _coerce_index(offset, context="store_scalar(offset)"),

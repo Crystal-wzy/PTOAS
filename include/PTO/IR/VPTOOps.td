@@ -261,6 +261,7 @@ def PTOStgOp : PTO_SimtOp<"stg", [
 }
 
 def PTOLdDevOp : PTO_MicroOp<"ld_dev", [
+    OpPipeInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let summary = "Load one scalar GM element while bypassing the local L1 data cache.";
@@ -283,9 +284,14 @@ def PTOLdDevOp : PTO_MicroOp<"ld_dev", [
   let assemblyFormat = [{
     $ptr `[` $offset `]` attr-dict `:` type($ptr) `->` type($value)
   }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
+  }];
 }
 
 def PTOStDevOp : PTO_MicroOp<"st_dev", [
+    OpPipeInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let summary = "Store one scalar GM element while bypassing the local L1 data cache.";
@@ -308,6 +314,10 @@ def PTOStDevOp : PTO_MicroOp<"st_dev", [
 
   let assemblyFormat = [{
     $value `,` $ptr `[` $offset `]` attr-dict `:` type($ptr) `,` type($value)
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
   }];
 }
 

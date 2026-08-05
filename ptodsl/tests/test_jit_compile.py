@@ -133,6 +133,30 @@ def host_vec_copy(
     pto.tile.store(o_tile, out)
 
 
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def scalar_pipeline_access_modes_probe(
+    src: pto.ptr(pto.i32, "gm"),
+    dst: pto.ptr(pto.i32, "gm"),
+):
+    normal = pto.load_scalar(src, 1)
+    pto.store_scalar(dst, 2, normal)
+    bypass = pto.load_scalar(src, 3, bypass_l1=True)
+    pto.store_scalar(dst, 4, bypass, bypass_l1=True)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def scalar_pipeline_bypass_ub_invalid_probe():
+    src = pto.castptr(pto.const(0, dtype=pto.i64), pto.ptr(pto.i32, "ub"))
+    pto.load_scalar(src, 0, bypass_l1=True)
+
+
+@pto.jit(target="a5", backend="vpto", mode="explicit")
+def scalar_pipeline_bypass_float_invalid_probe(
+    src: pto.ptr(pto.f32, "gm"),
+):
+    pto.load_scalar(src, 0, bypass_l1=True)
+
+
 @pto.jit(target="a5", mode="explicit")
 def host_vec_copy_explicit(
     A_ptr: pto.ptr(pto.f32, "gm"),
@@ -4104,6 +4128,32 @@ def main() -> None:
     default_compiled = host_vec_copy.compile()
     explicit_default = host_vec_copy.compile(BLOCK=128)
     block64 = host_vec_copy.compile(BLOCK=64)
+
+    scalar_pipeline_text = scalar_pipeline_access_modes_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        scalar_pipeline_text,
+        "scalar pipeline access mode specialization",
+    )
+    expect(
+        scalar_pipeline_text.count("pto.load_scalar") == 1
+        and scalar_pipeline_text.count("pto.store_scalar") == 1,
+        "default scalar pipeline accesses should remain load_scalar/store_scalar",
+    )
+    expect(
+        scalar_pipeline_text.count("pto.ld_dev") == 1
+        and scalar_pipeline_text.count("pto.st_dev") == 1,
+        "bypass_l1 scalar pipeline accesses should lower to ld_dev/st_dev",
+    )
+    expect_raises(
+        TypeError,
+        lambda: scalar_pipeline_bypass_ub_invalid_probe.compile().mlir_text(),
+        "requires a GM pointer",
+    )
+    expect_raises(
+        TypeError,
+        lambda: scalar_pipeline_bypass_float_invalid_probe.compile().mlir_text(),
+        "supports only i8, i16, i32 or i64",
+    )
 
     expect(default_compiled is explicit_default, "default constexpr compile should hit specialization cache")
     expect(default_compiled is not block64, "different constexpr values should materialize different specializations")

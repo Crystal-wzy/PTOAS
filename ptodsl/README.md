@@ -361,6 +361,7 @@ Start here for the full reference:
 - `ptodsl/docs/user_guide/09-predicate-and-mask-ops.md`
 - `ptodsl/docs/user_guide/10-sync-ops.md`
 - `ptodsl/docs/user_guide/13-simt-micro-ops.md`
+- `ptodsl/docs/user_guide/15-special-scalar.md`
 
 ## How the IR check works
 
