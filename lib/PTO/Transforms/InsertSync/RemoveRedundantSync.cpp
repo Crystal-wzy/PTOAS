@@ -236,7 +236,7 @@ bool RemoveRedundantSync::CanMatchedSync(SmallVector<bool> &syncFinder,
   // whole-pipe pair -- which is strictly stronger -- but it may never PROVIDE
   // coverage for another pair. Letting it do so drops the guard on every access
   // that resolves to a different slot (issue #1118).
-  if (isLaneKeyedBackEdgeSync(relatedSync)) return false;
+  if (isSlotKeyedSync(relatedSync)) return false;
 
   bool isWait = (relatedSync->GetType() == SyncOperation::TYPE::WAIT_EVENT);
   bool isSet = (relatedSync->GetType() == SyncOperation::TYPE::SET_EVENT);

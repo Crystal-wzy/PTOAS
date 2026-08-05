@@ -659,7 +659,7 @@ void InsertSyncAnalysis::UpdateAlreadySync(const SyncOps &syncVector,
   for (auto *sync : syncVector) {
     // A slot-keyed event orders only the selected physical slot. It must not
     // make later accesses through another slot look globally synchronized.
-    if (isLaneKeyedBackEdgeSync(sync)) continue;
+    if (isSlotKeyedSync(sync)) continue;
     for (size_t bufferIdx = 0; bufferIdx < syncRecordList.size(); bufferIdx++) {
       UpdateSyncRecord(sync, syncRecordList[bufferIdx], nowPipeValue);
     }
@@ -721,7 +721,7 @@ void InsertSyncAnalysis::UpdateSyncRecordInfo(
   auto *newSync = syncPair[0].get();
   // Dynamic event IDs cover one runtime-selected slot, not the complete pipe
   // dependency represented by this record.
-  if (isLaneKeyedBackEdgeSync(newSync)) return;
+  if (isSlotKeyedSync(newSync)) return;
   for (size_t bufferIdx = 0; bufferIdx < syncRecordList.size(); bufferIdx++) {
     if (!isValidPipeIndex(newSync->GetSrcPipe())) continue;
     syncRecordList[bufferIdx]
