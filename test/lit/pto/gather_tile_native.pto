@@ -16,7 +16,7 @@ module {
   func.func private @tgather_mask_arg(
       %src: !pto.tile_buf<vec, 16x16xf32>,
       %dst: !pto.tile_buf<vec, 16x16xf32>) {
-    pto.tgather ins(%src, {maskPattern = #pto.mask_pattern<P0010>} : !pto.tile_buf<vec, 16x16xf32>)
+    pto.tgather ins(%src, {maskPattern = #pto.mask_pattern<P1111>} : !pto.tile_buf<vec, 16x16xf32>, "row")
                  outs(%dst : !pto.tile_buf<vec, 16x16xf32>)
     return
   }
