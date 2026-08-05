@@ -247,6 +247,18 @@ SmallVector<const void *>
 canonicalizeSyncDepRoots(const SmallVector<Value> &roots);
 
 bool hasSameSyncDepRoots(const SyncOperation *lhs, const SyncOperation *rhs);
+
+/// True when `sync` lowers to `pto.set_flag_dyn` / `pto.wait_flag_dyn`, i.e. a
+/// back-edge pair whose rendezvous is keyed on the runtime slot index.
+///
+/// Such a pair orders ONLY the accesses that resolve to its own event lane
+/// (`slotSSAExpr % slotCount`); it does not serialize its (src, dst) pipe pair
+/// the way a static flag does. Every place that reasons about one sync
+/// "covering" another must therefore exclude it, or a second access through a
+/// different slot is left unguarded (issue #1118).
+inline bool isLaneKeyedBackEdgeSync(const SyncOperation *sync) {
+  return sync && sync->eventIdNum > 1 && sync->slotSSAExpr;
+}
  
 using SyncOps = std::deque<SyncOperation *>;
  
