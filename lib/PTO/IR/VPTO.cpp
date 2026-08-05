@@ -7735,19 +7735,73 @@ void MteL0cL1Op::print(OpAsmPrinter &printer) {
       getLoop3DstStride());
 }
 
-template <typename OpTy>
-static LogicalResult verifyCubeBridgeLoadStart(OpTy op) {
+static LogicalResult verifyCubeBridgeLoadStart(Operation *op, Value firstStart,
+                                               StringRef firstName,
+                                               Value secondStart,
+                                               StringRef secondName) {
   auto checkNonNegativeConst = [&](Value value, StringRef name) -> LogicalResult {
     APInt intValue;
     if (matchPattern(value, m_ConstantInt(&intValue)) && intValue.isNegative())
-      return op.emitOpError() << name << " must be non-negative";
+      return op->emitOpError() << name << " must be non-negative";
     return success();
   };
 
-  if (failed(checkNonNegativeConst(op.getStartRow(), "start_row")) ||
-      failed(checkNonNegativeConst(op.getStartCol(), "start_col")))
+  if (failed(checkNonNegativeConst(firstStart, firstName)) ||
+      failed(checkNonNegativeConst(secondStart, secondName)))
     return failure();
   return success();
+}
+
+template <typename OpTy>
+static LogicalResult verifyCubeBridgeLoadStart(OpTy op) {
+  return verifyCubeBridgeLoadStart(op.getOperation(), op.getStartRow(),
+                                   "start_row", op.getStartCol(), "start_col");
+}
+
+static LogicalResult verifyMxLoadControls(Operation *op,
+                                          OperandRange controls) {
+  auto checkNonNegativeConst = [&](Value value,
+                                   StringRef name) -> LogicalResult {
+    APInt intValue;
+    if (matchPattern(value, m_ConstantInt(&intValue)) && intValue.isNegative())
+      return op->emitOpError() << name << " must be non-negative";
+    return success();
+  };
+
+  if (controls.size() == 4)
+    return verifyCubeBridgeLoadStart(op, controls[2], "start_row",
+                                     controls[3], "start_col");
+  if (controls.size() == 6) {
+    if (failed(verifyCubeBridgeLoadStart(op, controls[0], "x_start",
+                                         controls[1], "y_start")))
+      return failure();
+    if (failed(checkNonNegativeConst(controls[2], "x_step")) ||
+        failed(checkNonNegativeConst(controls[3], "y_step")) ||
+        failed(checkNonNegativeConst(controls[4], "src_stride")) ||
+        failed(checkNonNegativeConst(controls[5], "dst_stride")))
+      return failure();
+    return success();
+  }
+  return op->emitOpError()
+         << "requires either four shape-derived controls or six explicit "
+            "MX controls";
+}
+
+static LogicalResult verifyMxDestinationAlignment(Operation *op,
+                                                  Value destination) {
+  constexpr int64_t kMxDestinationAddressUnitBytes = 16;
+  auto pointerCast = destination.getDefiningOp<CastPtrOp>();
+  if (!pointerCast || !isa<IntegerType>(pointerCast.getInput().getType()))
+    return success();
+
+  std::optional<int64_t> address =
+      mlir::getConstantIntValue(pointerCast.getInput());
+  if (!address || (*address % kMxDestinationAddressUnitBytes) == 0)
+    return success();
+
+  return op->emitOpError()
+         << "statically known LOAD.MX destination address must be aligned to "
+         << kMxDestinationAddressUnitBytes << " bytes, got " << *address;
 }
 
 LogicalResult MteL0cL1Op::verify() {
@@ -7784,13 +7838,33 @@ LogicalResult MteL1L0bOp::verify() {
 LogicalResult MteL1L0aMxOp::verify() {
   if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT")))
     return failure();
-  return verifyCubeBridgeLoadStart(*this);
+  if (failed(verifyMxLoadControls(getOperation(), getControls())))
+    return failure();
+  return verifyMxDestinationAlignment(getOperation(), getDestination());
 }
 
 LogicalResult MteL1L0bMxOp::verify() {
   if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT")))
     return failure();
-  return verifyCubeBridgeLoadStart(*this);
+  if (failed(verifyMxLoadControls(getOperation(), getControls())))
+    return failure();
+  return verifyMxDestinationAlignment(getOperation(), getDestination());
+}
+
+LogicalResult LoadCbufToCaMxOp::verify() {
+  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::LEFT, "LEFT")))
+    return failure();
+  return verifyCubeBridgeLoadStart(getOperation(), getXStartPosition(),
+                                   "x_start_position", getYStartPosition(),
+                                   "y_start_position");
+}
+
+LogicalResult LoadCbufToCbMxOp::verify() {
+  if (failed(verifyCubeBridgeLoadLikeOp(*this, AddressSpace::RIGHT, "RIGHT")))
+    return failure();
+  return verifyCubeBridgeLoadStart(getOperation(), getXStartPosition(),
+                                   "x_start_position", getYStartPosition(),
+                                   "y_start_position");
 }
 
 void MteL1L0aOp::getEffects(

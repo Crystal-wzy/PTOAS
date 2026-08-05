@@ -49,6 +49,7 @@ Low-precision `VRegType` values are valid intermediate payloads, but they are no
 | `pto.f4e2m1x2` | 4-bit float (E2M1, 2-wide packed) |
 | `pto.f8e4m3` | 8-bit float (E4M3) |
 | `pto.f8e5m2` | 8-bit float (E5M2) |
+| `pto.f8e8m0` | 8-bit exponent-only MX scale format |
 
 These types can be used when constructing on-chip tiles, view descriptors, UB pointers, and vector register types:
 
@@ -61,6 +62,8 @@ lp_vreg_ty = pto.vreg_type(256, pto.f8e4m3)
 ```
 
 Constructing scalar eager values or host tensor ABI contracts with a low-precision type is **not supported** — `pto.f8e4m3(1.0)` and `pto.tensor_spec(rank=2, dtype=pto.f8e4m3)` will raise an error.
+
+`pto.f8e8m0` is storage-only. Use it for MX scale storage, including an L1 source pointer passed to the explicit-control overload of `pto.mte_l1_l0a_mx` or `pto.mte_l1_l0b_mx`; it is not a scalar arithmetic type.
 
 ### Integer literal guidance
 

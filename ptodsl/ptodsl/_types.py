@@ -321,7 +321,7 @@ def _classify_storage_dtype(type_obj):
         return "compute"
     if Float8E4M3FNType.isinstance(type_obj) or Float8E5M2Type.isinstance(type_obj):
         return "storage_only"
-    if any(_isinstance_pto_type(type_obj, name) for name in ("HiF8Type", "HiF8x2Type", "F4E1M2x2Type", "F4E2M1x2Type")):
+    if any(_isinstance_pto_type(type_obj, name) for name in ("F8E8M0Type", "HiF8Type", "HiF8x2Type", "F4E1M2x2Type", "F4E2M1x2Type")):
         return "storage_only"
     if VectorType.isinstance(type_obj):
         vec_elem = VectorType(type_obj).element_type
@@ -504,12 +504,14 @@ float16 = _DType(F16Type.get)
 bf16    = _DType(BF16Type.get)
 f8e4m3  = _DType(Float8E4M3FNType.get)
 f8e5m2  = _DType(Float8E5M2Type.get)
+f8e8m0  = _DType(lambda: _pto.F8E8M0Type.get())
 hif8    = _DType(lambda: _pto.HiF8Type.get())
 f4e1m2x2 = _DType(lambda: _pto.F4E1M2x2Type.get())
 f4e2m1x2 = _DType(lambda: _pto.F4E2M1x2Type.get())
 _STORAGE_ONLY_DTYPE_DESCRIPTORS = (
     f8e4m3,
     f8e5m2,
+    f8e8m0,
     hif8,
     f4e1m2x2,
     f4e2m1x2,
@@ -660,7 +662,7 @@ __all__ = [
     "f8e4m3x2", "f8e4m3x4", "f8e4m3x8",
     "f8e5m2x2", "f8e5m2x4", "f8e5m2x8", "hif8x2",
     "i8x2", "i16x2", "i32x2",
-    "f8e4m3", "f8e5m2", "hif8", "f4e1m2x2", "f4e2m1x2",
+    "f8e4m3", "f8e5m2", "f8e8m0", "hif8", "f4e1m2x2", "f4e2m1x2",
     "int1", "int8", "int16", "int32", "int64",
     "si8", "si16", "si32", "si64",
     "ui8", "ui16", "ui32", "ui64",

@@ -25,7 +25,7 @@ from ._diagnostics import unsupported_public_surface_error
 # ── Types ─────────────────────────────────────────────────────────────────────
 from ._types import (           # noqa: F401
     float32, float16, bf16,
-    f8e4m3, f8e5m2, hif8, f4e1m2x2, f4e2m1x2,
+    f8e4m3, f8e5m2, f8e8m0, hif8, f4e1m2x2, f4e2m1x2,
     f16x2, bf16x2, f32x2,
     f8e4m3x2, f8e4m3x4, f8e4m3x8,
     f8e5m2x2, f8e5m2x4, f8e5m2x8, hif8x2,
