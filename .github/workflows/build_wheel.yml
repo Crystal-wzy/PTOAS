@@ -233,6 +233,10 @@ jobs:
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: "2"
         run: |
+          # checkout runs outside the manylinux container, so its safe.directory
+          # setting is not visible to Git invoked inside this step.
+          git config --global --add safe.directory "${PTO_SOURCE_DIR}"
+          git -C "${PTO_SOURCE_DIR}" rev-parse --verify 'HEAD^{commit}' >/dev/null
           if [ "${PTOAS_PYTHON_PACKAGE_NAME}" = "ptoas-vmi" ]; then
             PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/.work/ptoas-vmi-source"
             python packaging/ptoas-vmi/prepare_source.py \
