@@ -226,9 +226,17 @@ bool RemoveRedundantSync::CheckLoopBetween(LoopInstanceElement *loopElement,
 bool RemoveRedundantSync::CanMatchedSync(SmallVector<bool> &syncFinder,
                                          SyncOperation *relatedSync,
                                          SyncOperation *setFlag) {
-  // Set/wait flags serialize a pipe pair, not a particular root buffer.  A
-  // complete inner pair on the same pipe pair can cover an outer pair even when
-  // the memory dependency roots differ.
+  // STATIC set/wait flags serialize a pipe pair, not a particular root buffer.
+  // A complete inner pair on the same pipe pair can cover an outer pair even
+  // when the memory dependency roots differ.
+  //
+  // A slot-keyed pair (set_flag_dyn / wait_flag_dyn) is the exception: it
+  // rendezvouses on the event lane `slotSSAExpr % slotCount`, so it orders only
+  // the accesses that land on that lane. It may therefore BE covered by a
+  // whole-pipe pair -- which is strictly stronger -- but it may never PROVIDE
+  // coverage for another pair. Letting it do so drops the guard on every access
+  // that resolves to a different slot (issue #1118).
+  if (isSlotKeyedSync(relatedSync)) return false;
 
   bool isWait = (relatedSync->GetType() == SyncOperation::TYPE::WAIT_EVENT);
   bool isSet = (relatedSync->GetType() == SyncOperation::TYPE::SET_EVENT);

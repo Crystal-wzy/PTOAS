@@ -581,21 +581,38 @@ void InsertSyncAnalysis::InsertSyncOperation(
       if (eventIdNum > 1) {
         // Each dep pair has (now=consumer, front=producer). The producer's
         // slot SSA gates the `set_flag_dyn`; the consumer's gates the
-        // `wait_flag_dyn`. Walk the first viable dep pair to extract them.
+        // `wait_flag_dyn`. A single dynamic event pair can represent only one
+        // slot expression on each side. If the dependency group contains
+        // multiple expressions, fall back to a static event that guards the
+        // whole group instead of silently synchronizing just the first one.
         Value producerSlot;
         Value consumerSlot;
+        bool hasAmbiguousSlot = false;
         for (auto &pair : depBaseMemInfosVec) {
-          if (pair.second && pair.second->baseBuffer)
-            producerSlot = findMultiTileSlotExpr(pair.second->baseBuffer);
-          if (pair.first && pair.first->baseBuffer)
-            consumerSlot = findMultiTileSlotExpr(pair.first->baseBuffer);
-          if (producerSlot && consumerSlot)
+          Value pairProducerSlot;
+          Value pairConsumerSlot;
+          if (pair.second && pair.second->baseBuffer) {
+            pairProducerSlot = findMultiTileSlotExpr(pair.second->baseBuffer);
+          }
+          if (pair.first && pair.first->baseBuffer) {
+            pairConsumerSlot = findMultiTileSlotExpr(pair.first->baseBuffer);
+          }
+          if (!pairProducerSlot || !pairConsumerSlot) {
+            hasAmbiguousSlot = true;
             break;
+          }
+          if ((producerSlot && producerSlot != pairProducerSlot) ||
+              (consumerSlot && consumerSlot != pairConsumerSlot)) {
+            hasAmbiguousSlot = true;
+            break;
+          }
+          producerSlot = pairProducerSlot;
+          consumerSlot = pairConsumerSlot;
         }
-        if (!producerSlot || !consumerSlot) {
-          // No slot SSA threaded through -- fall back to single event id.
-          // This keeps non-multi-buffer codepaths untouched even if their
-          // baseAddresses happen to have multiple entries for another reason.
+        if (hasAmbiguousSlot || !producerSlot || !consumerSlot) {
+          // Missing or ambiguous slot SSA -- fall back to a single event id.
+          // This also keeps non-multi-buffer codepaths untouched if their
+          // baseAddresses have multiple entries for another reason.
           eventIdNum = 1;
         } else {
           setOp->slotSSAExpr = producerSlot;
@@ -640,11 +657,10 @@ void InsertSyncAnalysis::UpdateAlreadySync(const SyncOps &syncVector,
                                            SyncRecordList &syncRecordList,
                                            const PipelineType nowPipeValue) {
   for (auto *sync : syncVector) {
+    // A slot-keyed event orders only the selected physical slot. It must not
+    // make later accesses through another slot look globally synchronized.
+    if (isSlotKeyedSync(sync)) continue;
     for (size_t bufferIdx = 0; bufferIdx < syncRecordList.size(); bufferIdx++) {
-      if (bufferIdx == 0 && sync->eventIdNum > 1 &&
-          sync->GetForEndIndex().has_value()) {
-        continue;
-      }
       UpdateSyncRecord(sync, syncRecordList[bufferIdx], nowPipeValue);
     }
   }
@@ -703,10 +719,10 @@ void InsertSyncAnalysis::UpdateSyncRecordInfo(
   assert(!syncPair.empty());
 
   auto *newSync = syncPair[0].get();
+  // Dynamic event IDs cover one runtime-selected slot, not the complete pipe
+  // dependency represented by this record.
+  if (isSlotKeyedSync(newSync)) return;
   for (size_t bufferIdx = 0; bufferIdx < syncRecordList.size(); bufferIdx++) {
-    if (bufferIdx == 0 && newSync->eventIdNum > 1) {
-      continue;
-    }
     if (!isValidPipeIndex(newSync->GetSrcPipe())) continue;
     syncRecordList[bufferIdx]
         .alreadySync[static_cast<unsigned>(newSync->GetSrcPipe())] = true;

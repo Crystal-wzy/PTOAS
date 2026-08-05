@@ -247,6 +247,27 @@ SmallVector<const void *>
 canonicalizeSyncDepRoots(const SmallVector<Value> &roots);
 
 bool hasSameSyncDepRoots(const SyncOperation *lhs, const SyncOperation *rhs);
+
+/// True when `sync` lowers to `pto.set_flag_dyn` / `pto.wait_flag_dyn`, i.e.
+/// its rendezvous is keyed on the runtime slot index rather than on a fixed
+/// event id.
+///
+/// Such a sync orders ONLY the accesses that resolve to its own event lane
+/// (`slotSSAExpr % slotCount`); it does not serialize its (src, dst) pipe pair
+/// the way a static flag does. Every place that reasons about one sync
+/// "covering" another must therefore exclude it, or a second access through a
+/// different slot is left unguarded (issue #1118).
+///
+/// `slotSSAExpr` is the discriminator, NOT `GetForEndIndex()`. Slot keying is
+/// only ever established for a back-edge dependency (InsertSyncOperation), so
+/// it may be tempting to test for one -- but the synthetic prologue-prime and
+/// epilogue-drain pairs that SyncEventIdAllocation::UpdateBackwardMatchSync
+/// derives from such a pair inherit both `forEndIndex` and `eventIdNum` while
+/// deliberately carrying no slot, and they lower to STATIC flags. Keying off
+/// the back edge would misclassify exactly those.
+inline bool isSlotKeyedSync(const SyncOperation *sync) {
+  return sync && sync->eventIdNum > 1 && sync->slotSSAExpr;
+}
  
 using SyncOps = std::deque<SyncOperation *>;
  
