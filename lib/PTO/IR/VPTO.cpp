@@ -7695,12 +7695,28 @@ static LogicalResult verifyCubeBridgeLoadStart(OpTy op) {
 
 static LogicalResult verifyMxLoadControls(Operation *op,
                                           OperandRange controls) {
+  auto checkNonNegativeConst = [&](Value value,
+                                   StringRef name) -> LogicalResult {
+    APInt intValue;
+    if (matchPattern(value, m_ConstantInt(&intValue)) && intValue.isNegative())
+      return op->emitOpError() << name << " must be non-negative";
+    return success();
+  };
+
   if (controls.size() == 4)
     return verifyCubeBridgeLoadStart(op, controls[2], "start_row",
                                      controls[3], "start_col");
-  if (controls.size() == 6)
-    return verifyCubeBridgeLoadStart(op, controls[0], "x_start",
-                                     controls[1], "y_start");
+  if (controls.size() == 6) {
+    if (failed(verifyCubeBridgeLoadStart(op, controls[0], "x_start",
+                                         controls[1], "y_start")))
+      return failure();
+    if (failed(checkNonNegativeConst(controls[2], "x_step")) ||
+        failed(checkNonNegativeConst(controls[3], "y_step")) ||
+        failed(checkNonNegativeConst(controls[4], "src_stride")) ||
+        failed(checkNonNegativeConst(controls[5], "dst_stride")))
+      return failure();
+    return success();
+  }
   return op->emitOpError()
          << "requires either four shape-derived controls or six explicit "
             "MX controls";
@@ -7719,9 +7735,8 @@ static LogicalResult verifyMxDestinationAlignment(Operation *op,
     return success();
 
   return op->emitOpError()
-         << "requires a constant pto.castptr destination address aligned to "
-         << kMxDestinationAddressUnitBytes << " bytes for LOAD.MX, got "
-         << *address;
+         << "statically known LOAD.MX destination address must be aligned to "
+         << kMxDestinationAddressUnitBytes << " bytes, got " << *address;
 }
 
 LogicalResult MteL0cL1Op::verify() {

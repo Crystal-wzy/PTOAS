@@ -16,14 +16,13 @@ import numpy as np
 from ptodsl import pto
 
 
-M = 256
-N = 256
 K = 256
 TILE_K_SUB = 128
 SCALE_GROUP_K = 32
 SCALE_X_BLOCK = 16
 SCALE_SRC_STRIDE = 8
 SCALE_PAIR_COUNT = K // (2 * SCALE_GROUP_K)
+SHAPES = ((256, 256), (192, 256))
 
 L1_A_DATA_ADDR = 0
 L1_B_DATA_ADDR = 65536
@@ -49,6 +48,9 @@ def mad_mx_e8m0_stage_abi_kernel(
     a_scale_gm: pto.ptr(pto.ui16, "gm"),
     b_scale_gm: pto.ptr(pto.ui16, "gm"),
     c_gm: pto.ptr(pto.f32, "gm"),
+    *,
+    M: pto.const_expr = 256,
+    N: pto.const_expr = 256,
 ):
     # PTODSL passes real L0 byte addresses. The MX wrapper derives the internal
     # scale-stage destination required by the LOAD.MX ABI.
@@ -68,7 +70,7 @@ def mad_mx_e8m0_stage_abi_kernel(
     c_l0 = pto.castptr(pto.ui64(0), pto.ptr(pto.f32, "acc"))
 
     pto.mte_gm_l1(a_gm, a_l1, M * K, nburst=(1, 0, 0))
-    pto.mte_gm_l1(b_gm, b_l1, M * K, nburst=(1, 0, 0))
+    pto.mte_gm_l1(b_gm, b_l1, K * N, nburst=(1, 0, 0))
     pto.mte_gm_l1(a_scale_gm, a_scale_storage_l1, 4096, nburst=(1, 0, 0))
     pto.mte_gm_l1(b_scale_gm, b_scale_storage_l1, 4096, nburst=(1, 0, 0))
 
@@ -79,7 +81,7 @@ def mad_mx_e8m0_stage_abi_kernel(
     pto.mte_l1_l0b(b_l1, b_l0_stage0, TILE_K_SUB, N, transpose=True)
     pto.mte_l1_l0a_mx(
         a_scale_l1, a_l0_stage0,
-        x_start=0, y_start=0, x_step=N // 16, y_step=2,
+        x_start=0, y_start=0, x_step=M // 16, y_step=2,
         src_stride=SCALE_SRC_STRIDE, dst_stride=2,
     )
     pto.mte_l1_l0b_mx(
@@ -98,7 +100,7 @@ def mad_mx_e8m0_stage_abi_kernel(
     # L0 destination, this distinguishes raw addresses from pre-divided ones.
     pto.mte_l1_l0a_mx(
         a_scale_l1, a_l0_stage1,
-        x_start=0, y_start=2, x_step=N // 16, y_step=2,
+        x_start=0, y_start=2, x_step=M // 16, y_step=2,
         src_stride=SCALE_SRC_STRIDE, dst_stride=2,
     )
     pto.mte_l1_l0b_mx(
@@ -141,18 +143,18 @@ def _pack_scale_pairs(scale_bytes):
     return packed.reshape(-1)
 
 
-def _make_case():
+def _make_case(m, n):
     # E4M3 0x38 is exactly 1.0. Scale values vary by M/N lane and K/32 group,
     # exposing a wrong source stride, scale half, or stage-1 target address.
-    a = np.full((M, K), 0x38, dtype=np.uint8)
-    b = np.full((K, N), 0x38, dtype=np.uint8)
+    a = np.full((m, K), 0x38, dtype=np.uint8)
+    b = np.full((K, n), 0x38, dtype=np.uint8)
     group_ids = np.arange(K // SCALE_GROUP_K, dtype=np.uint8)
-    m_ids = np.arange(M, dtype=np.uint8)[:, None]
-    n_ids = np.arange(N, dtype=np.uint8)[None, :]
+    m_ids = np.arange(m, dtype=np.uint8)[:, None]
+    n_ids = np.arange(n, dtype=np.uint8)[None, :]
     a_scale = (126 + ((m_ids + group_ids) % 3)).astype(np.uint8)
     b_scale = (126 + ((group_ids[:, None] + 2 * n_ids) % 3)).astype(np.uint8)
 
-    reference = np.zeros((M, N), dtype=np.float32)
+    reference = np.zeros((m, n), dtype=np.float32)
     for group in range(K // SCALE_GROUP_K):
         reference += (
             SCALE_GROUP_K
@@ -185,33 +187,34 @@ def _npu_stream(torch):
 
 def main():
     torch = _init_runtime()
-    a, b, a_scale, b_scale, reference = _make_case()
-    a_dev = torch.from_numpy(a).to(_DEVICE)
-    b_dev = torch.from_numpy(b).to(_DEVICE)
-    a_scale_dev = torch.from_numpy(a_scale).to(_DEVICE)
-    b_scale_dev = torch.from_numpy(b_scale).to(_DEVICE)
-    c_dev = torch.from_numpy(np.zeros((M, N), dtype=np.float32)).to(_DEVICE)
+    for m, n in SHAPES:
+        a, b, a_scale, b_scale, reference = _make_case(m, n)
+        a_dev = torch.from_numpy(a).to(_DEVICE)
+        b_dev = torch.from_numpy(b).to(_DEVICE)
+        a_scale_dev = torch.from_numpy(a_scale).to(_DEVICE)
+        b_scale_dev = torch.from_numpy(b_scale).to(_DEVICE)
+        c_dev = torch.from_numpy(np.zeros((m, n), dtype=np.float32)).to(_DEVICE)
 
-    start = time.perf_counter()
-    compiled = mad_mx_e8m0_stage_abi_kernel.compile()
-    compile_seconds = time.perf_counter() - start
+        start = time.perf_counter()
+        compiled = mad_mx_e8m0_stage_abi_kernel.compile(M=m, N=n)
+        compile_seconds = time.perf_counter() - start
 
-    start = time.perf_counter()
-    compiled[1, _npu_stream(torch)](
-        a_dev.data_ptr(),
-        b_dev.data_ptr(),
-        a_scale_dev.data_ptr(),
-        b_scale_dev.data_ptr(),
-        c_dev.data_ptr(),
-    )
-    torch.npu.synchronize()
-    launch_seconds = time.perf_counter() - start
+        start = time.perf_counter()
+        compiled[1, _npu_stream(torch)](
+            a_dev.data_ptr(),
+            b_dev.data_ptr(),
+            a_scale_dev.data_ptr(),
+            b_scale_dev.data_ptr(),
+            c_dev.data_ptr(),
+        )
+        torch.npu.synchronize()
+        launch_seconds = time.perf_counter() - start
 
-    np.testing.assert_allclose(c_dev.cpu().numpy(), reference, rtol=1e-3, atol=1e-3)
-    print(
-        "PASS mad_mx_e8m0_stage_abi "
-        f"compile={compile_seconds:.3f}s launch={launch_seconds:.3f}s"
-    )
+        np.testing.assert_allclose(c_dev.cpu().numpy(), reference, rtol=1e-3, atol=1e-3)
+        print(
+            "PASS mad_mx_e8m0_stage_abi "
+            f"shape={m}x{n} compile={compile_seconds:.3f}s launch={launch_seconds:.3f}s"
+        )
     return 0
 
 
