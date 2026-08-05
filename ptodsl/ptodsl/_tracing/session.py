@@ -16,6 +16,7 @@ import hashlib
 from .._diagnostics import (
     inline_subkernel_value_escape_error,
     inline_tileop_capture_type_error,
+    physical_section_value_escape_error,
     subkernel_kernel_kind_mismatch_error,
 )
 from .._kernel_signature import RuntimeScalarParameterSpec
@@ -168,6 +169,8 @@ class TraceSession:
         self._authored_physical_sections: dict[object, set[str]] = {}
         self._inline_subkernel_counter = 0
         self._escaped_inline_values: dict[object, tuple[str, str]] = {}
+        self._physical_section_stack: list[tuple[str, object]] = []
+        self._physical_section_values: dict[object, tuple[str, str]] = {}
 
     @property
     def current_function(self):
@@ -284,7 +287,12 @@ class TraceSession:
         self._active_physical_sections.add(function_key)
         try:
             with InsertionPoint(section_block):
-                yield section_op
+                self._physical_section_stack.append((kind, section_op))
+                try:
+                    yield section_op
+                finally:
+                    self._physical_section_stack.pop()
+                self._record_physical_section_values(section_op, kind)
         except BaseException:
             if section_op.operation.parent is not None:
                 section_op.operation.erase()
@@ -295,8 +303,23 @@ class TraceSession:
         finally:
             self._active_physical_sections.remove(function_key)
 
+    def _record_physical_section_values(self, section_op, kind: str) -> None:
+        """Record values defined by *section_op* for source-level escape checks."""
+        for op_view in self._walk_op_tree([section_op]):
+            for result in op_view.operation.results:
+                self._physical_section_values[result] = (kind, str(result.type))
+            for region in op_view.operation.regions:
+                for block in region.blocks:
+                    for argument in block.arguments:
+                        self._physical_section_values[argument] = (kind, str(argument.type))
+
     def validate_surface_value_access(self, value) -> None:
         """Reject inline-subkernel SSA values that escaped their outlined helper body."""
+        raw_value = getattr(value, "_value", value)
+        section_record = self._physical_section_values.get(raw_value)
+        if section_record is not None and not self._is_value_inside_active_section(raw_value):
+            kind, type_text = section_record
+            raise physical_section_value_escape_error(kind, type_text)
         try:
             record = self._escaped_inline_values.get(value)
         except TypeError:
@@ -308,6 +331,20 @@ class TraceSession:
             return
         role, type_text = record
         raise inline_subkernel_value_escape_error(role, type_text)
+
+    def _is_value_inside_active_section(self, value) -> bool:
+        """Return whether *value* belongs to the currently traced section."""
+        owner = getattr(value, "owner", None)
+        if owner is None:
+            return False
+        for _, section_op in reversed(self._physical_section_stack):
+            section_operation = getattr(section_op, "operation", section_op)
+            current = getattr(owner, "operation", owner)
+            while current is not None:
+                if current is section_operation:
+                    return True
+                current = getattr(current, "parent", None)
+        return False
 
     @contextmanager
     def enter_function(self, ir_fn, *, owner_symbol_name: str | None = None):

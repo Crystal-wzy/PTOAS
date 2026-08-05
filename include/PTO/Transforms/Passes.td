@@ -356,6 +356,28 @@ def PTONormalizeUncoveredTileSections
   ];
 }
 
+def PTOValidatePhysicalSectionBoundaries
+    : Pass<"pto-validate-physical-section-boundaries", "ModuleOp"> {
+  let summary = "Verify SSA isolation at physical section boundaries";
+  let description = [{
+    Verifies that values defined inside a `pto.section.cube` or
+    `pto.section.vector` remain inside that lexical physical section. Values
+    defined outside a section may be captured by it, but values cannot be
+    passed implicitly between sibling sections or from a section to its
+    enclosing function. This validation is run after inferred sections are
+    materialized, so explicit and automatically inferred sections obey the
+    same boundary rules.
+  }];
+
+  let constructor =
+      "mlir::pto::createPTOValidatePhysicalSectionBoundariesPass()";
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
 def PTOMaterializeTileOpSections
     : Pass<"pto-materialize-tileop-sections", "ModuleOp"> {
   let summary = "Verify PTODSL tileop helpers and materialize their single compute section";

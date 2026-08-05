@@ -109,6 +109,64 @@ def section_inside_subkernel_probe():
             pass
 
 
+@pto.jit(target="a5", mode="explicit")
+def lexical_section_rebinding_probe():
+    event_id = pto.const(1, dtype=pto.i32)
+    one = pto.const(1, dtype=pto.i32)
+    with pto.section("cube"):
+        event_id = event_id + one
+        pto.wait_flag("S", "MTE2", event_id=event_id)
+    with pto.section("vector"):
+        pto.wait_flag("MTE2", "S", event_id=event_id)
+
+
+@pto.jit(target="a5", mode="explicit")
+def lexical_section_conditional_rebinding_probe():
+    one = pto.const(1, dtype=pto.i32)
+    with pto.section("cube"):
+        value = pto.const(0, dtype=pto.i32)
+        if pto.get_block_idx() < one:
+            value = one
+        else:
+            value = pto.const(2, dtype=pto.i32)
+        pto.wait_flag("S", "MTE2", event_id=value)
+
+
+@pto.jit(target="a5", mode="explicit")
+def lexical_section_loop_carry_probe():
+    one = pto.const(1, dtype=pto.i32)
+    m_tile = pto.const(0, dtype=pto.i64)
+    n_tile = pto.const(0, dtype=pto.i64)
+    with pto.section("cube"):
+        for w in range(0, 4):
+            if w < 2:
+                m_tile = pto.get_block_idx()
+            if 1 < (w & 3):
+                n_tile = pto.get_block_idx()
+            pto.wait_flag("S", "MTE2", event_id=m_tile)
+            pto.wait_flag("S", "MTE2", event_id=n_tile)
+
+
+@pto.jit(target="a5", mode="explicit", ast_rewrite=False)
+def lexical_section_rebinding_no_rewrite_probe():
+    event_id = pto.const(1, dtype=pto.i32)
+    one = pto.const(1, dtype=pto.i32)
+    with pto.section("cube"):
+        event_id = event_id + one
+        pto.wait_flag("S", "MTE2", event_id=event_id)
+    with pto.section("vector"):
+        pto.wait_flag("MTE2", "S", event_id=event_id)
+
+
+@pto.jit(target="a5", mode="explicit", ast_rewrite=False)
+def lexical_section_escape_probe():
+    escaped = []
+    with pto.section("cube"):
+        escaped.append(pto.const(2, dtype=pto.i32))
+    with pto.section("vector"):
+        pto.wait_flag("MTE2", "S", event_id=escaped[0])
+
+
 def _expect_raises(exc_type, callback, message):
     try:
         callback()
@@ -161,6 +219,30 @@ def main() -> None:
         RuntimeError,
         lambda: section_inside_subkernel_probe.compile(),
         "pto.section() is not allowed inside a cube or simd subkernel body",
+    )
+
+    lexical_text = lexical_section_rebinding_probe.compile().mlir_text()
+    assert lexical_text.count("pto.section.cube {") == 1
+    assert lexical_text.count("pto.section.vector {") == 1
+
+    conditional_lexical_text = lexical_section_conditional_rebinding_probe.compile().mlir_text()
+    assert conditional_lexical_text.count("pto.section.cube {") == 1
+    assert "scf.if" in conditional_lexical_text
+
+    loop_carry_text = lexical_section_loop_carry_probe.compile().mlir_text()
+    assert loop_carry_text.count("pto.section.cube {") == 1
+    assert "scf.for" in loop_carry_text
+
+    no_rewrite_text = lexical_section_rebinding_no_rewrite_probe.compile().mlir_text()
+    vector_start = no_rewrite_text.index("pto.section.vector {")
+    vector_text = no_rewrite_text[vector_start:]
+    assert "arith.addi" not in vector_text
+    assert "pto.wait_flag_dyn" in vector_text
+
+    _expect_raises(
+        RuntimeError,
+        lambda: lexical_section_escape_probe.compile(),
+        "cannot use a value defined in pto.section.cube outside that physical section",
     )
     _expect_raises(
         RuntimeError,

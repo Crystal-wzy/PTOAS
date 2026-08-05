@@ -3367,6 +3367,8 @@ int mlir::pto::compilePTOASModule(
     preBackendPM.enableVerifier();
     preBackendPM.addPass(pto::createPTOMaterializeTileOpSectionsPass());
     preBackendPM.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
+    preBackendPM.addPass(
+        pto::createPTOValidatePhysicalSectionBoundariesPass());
     if (failed(preBackendPM.run(module.get()))) {
       llvm::errs() << "Error: failed to normalize uncovered PTO tile sections.\n";
       return 1;

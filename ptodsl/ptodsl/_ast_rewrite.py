@@ -20,8 +20,15 @@ class PTODSLAstRewriteError(SyntaxError):
     """Raised when AST rewrite sees unsupported Python control flow."""
 
 
-def rewrite_jit_function(fn, *, static_bindings=None):
-    """Return a function whose Python if/for control flow lowers to PTODSL APIs."""
+def rewrite_jit_function(fn, *, static_bindings=None, rewrite_control_flow=True):
+    """Return a function with PTODSL lexical sections lowered safely.
+
+    ``pto.section`` is a physical SSA region, not a Python ``with`` hint.  The
+    section body therefore gets a small source-level lexical rewrite even when
+    the optional control-flow rewrite is disabled.  This keeps Python's
+    function-local assignment rules from leaking a section-local SSA value into
+    a sibling physical section.
+    """
     try:
         source = inspect.getsource(fn)
     except (OSError, TypeError) as exc:
@@ -46,8 +53,14 @@ def rewrite_jit_function(fn, *, static_bindings=None):
     _inject_closure_defaults(function_def, closure_vars.nonlocals)
     _sanitize_signature_for_exec(function_def)
     function_def = _ConditionalExpressionNormalizer().visit(function_def)
-    rewriter = _ControlFlowRewriter(static_env)
-    function_def.body = rewriter.rewrite_block(function_def.body, live_after=set())
+    section_rewriter = _SectionLexicalRewriter()
+    function_def = section_rewriter.visit(function_def)
+    if rewrite_control_flow:
+        rewriter = _ControlFlowRewriter(
+            static_env,
+            section_entry_bindings=section_rewriter.section_entry_bindings,
+        )
+        function_def.body = rewriter.rewrite_block(function_def.body, live_after=set())
     tree = ast.Module(body=[function_def], type_ignores=[])
     ast.fix_missing_locations(tree)
 
@@ -75,6 +88,130 @@ def rewrite_jit_function(fn, *, static_bindings=None):
     rewritten.__module__ = fn.__module__
     rewritten.__qualname__ = fn.__qualname__
     return rewritten
+
+
+class _SectionLexicalRewriter(ast.NodeTransformer):
+    """Give ``with pto.section(...)`` a lexical, closure-like name scope."""
+
+    def __init__(self):
+        super().__init__()
+        self._counter = 0
+        self._env = {}
+        self._local_names = set()
+        self._known_bindings = set()
+        self._section_outer_bindings = None
+        self.section_entry_bindings = {}
+
+    @staticmethod
+    def _is_section_with(node):
+        return isinstance(node, ast.With) and any(
+            _is_pto_attr_call(item.context_expr, "section") for item in node.items
+        )
+
+    def _fresh_alias(self, name):
+        alias = f"__pto_section_{self._counter}_{name}"
+        self._counter += 1
+        return alias
+
+    def _target_names(self, target):
+        return _target_stores(target)
+
+    def _activate_targets(self, targets):
+        for name in targets & self._local_names:
+            alias = self._env.setdefault(name, self._fresh_alias(name))
+            if self._section_outer_bindings is not None and name in self._section_outer_bindings:
+                self.section_entry_bindings.setdefault(alias, name)
+
+    def _visit_block(self, stmts, env=None):
+        old_env = self._env
+        if env is not None:
+            self._env = dict(env)
+        try:
+            result = [self.visit(stmt) for stmt in stmts]
+            return result, dict(self._env)
+        finally:
+            self._env = old_env
+
+    def _visit_section_body(self, stmts):
+        old_env = self._env
+        old_names = self._local_names
+        old_outer_bindings = self._section_outer_bindings
+        self._env = {}
+        self._local_names = _name_info(stmts).stores
+        self._section_outer_bindings = set(self._known_bindings)
+        try:
+            return [self.visit(stmt) for stmt in stmts]
+        finally:
+            self._env = old_env
+            self._local_names = old_names
+            self._section_outer_bindings = old_outer_bindings
+
+    def visit_With(self, node):
+        if not self._is_section_with(node):
+            return self.generic_visit(node)
+        node.items = [self.visit(item) for item in node.items]
+        node.body = self._visit_section_body(node.body)
+        return node
+
+    def visit_Assign(self, node):
+        node.value = self.visit(node.value)
+        targets = set()
+        for target in node.targets:
+            targets |= self._target_names(target)
+        self._activate_targets(targets)
+        node.targets = [self.visit(target) for target in node.targets]
+        if self._section_outer_bindings is None:
+            self._known_bindings.update(targets)
+        return node
+
+    def visit_AnnAssign(self, node):
+        if node.value is not None:
+            node.value = self.visit(node.value)
+        self._activate_targets(self._target_names(node.target))
+        node.target = self.visit(node.target)
+        if self._section_outer_bindings is None:
+            self._known_bindings.update(self._target_names(node.target))
+        return node
+
+    def visit_AugAssign(self, node):
+        if isinstance(node.target, ast.Name) and node.target.id in self._local_names:
+            name = node.target.id
+            if name in self._env:
+                node.target.id = self._env[name]
+            node.value = self.visit(node.value)
+            self._activate_targets({name})
+            node.target.id = self._env[name]
+            if self._section_outer_bindings is None:
+                self._known_bindings.add(name)
+            return node
+        return self.generic_visit(node)
+
+    def visit_For(self, node):
+        node.iter = self.visit(node.iter)
+        self._activate_targets(self._target_names(node.target))
+        node.target = self.visit(node.target)
+        if self._section_outer_bindings is None:
+            self._known_bindings.update(self._target_names(node.target))
+        node.body, body_env = self._visit_block(node.body, self._env)
+        self._env.update(body_env)
+        node.orelse, else_env = self._visit_block(node.orelse, self._env)
+        self._env.update(else_env)
+        return node
+
+    def visit_If(self, node):
+        node.test = self.visit(node.test)
+        entry_env = dict(self._env)
+        node.body, body_env = self._visit_block(node.body, entry_env)
+        node.orelse, else_env = self._visit_block(node.orelse, entry_env)
+        self._env.update(body_env)
+        self._env.update(else_env)
+        return node
+
+    def visit_Name(self, node):
+        alias = self._env.get(node.id)
+        if alias is not None:
+            node.id = alias
+        return node
 
 
 def _find_function_def(tree, name: str):
@@ -805,8 +942,9 @@ class _SlotCarryRewriter(ast.NodeTransformer):
 
 
 class _ControlFlowRewriter:
-    def __init__(self, static_env=None):
+    def __init__(self, static_env=None, *, section_entry_bindings=None):
         self._static_env = dict(static_env or {})
+        self._section_entry_bindings = dict(section_entry_bindings or {})
         self._counter = 0
 
     def _fresh(self, prefix: str) -> str:
@@ -1046,7 +1184,15 @@ class _ControlFlowRewriter:
         dynamic_body.extend(
             ast.Assign(
                 targets=[_name(name, ast.Store())],
-                value=ast.Attribute(value=_name(branch_name), attr=name, ctx=ast.Load()),
+                value=ast.Call(
+                    func=ast.Attribute(
+                        value=_name(branch_name),
+                        attr="get",
+                        ctx=ast.Load(),
+                    ),
+                    args=[ast.Constant(value=name)],
+                    keywords=[],
+                ),
             )
             for name in merge_names
         )
@@ -1198,7 +1344,10 @@ class _ControlFlowRewriter:
                     ),
                     args=[],
                     keywords=[
-                        ast.keyword(arg=name, value=_name(name))
+                        ast.keyword(
+                            arg=name,
+                            value=_name(self._section_entry_bindings.get(name, name)),
+                        )
                         for name in loop_carried
                     ] + [
                         ast.keyword(arg=slot_carry_names[slot], value=_name(slot_carry_names[slot]))

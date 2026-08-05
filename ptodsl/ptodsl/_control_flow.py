@@ -390,6 +390,17 @@ class BranchHandle:
     def assign(self, **kwargs):
         self._owner._assign_branch_values(kwargs)
 
+    def get(self, name: str):
+        """Return a merged value by name, including generated names.
+
+        The AST rewriter uses generated names such as ``__pto_section_0_x``
+        for lexical section bindings.  Keep those names out of the attribute
+        namespace, but provide an explicit lookup path for the rewriter.
+        """
+        if not isinstance(name, str):
+            raise TypeError("br.get(...) expects a string name")
+        return self._owner._get_merged_value(name)
+
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError(name)
