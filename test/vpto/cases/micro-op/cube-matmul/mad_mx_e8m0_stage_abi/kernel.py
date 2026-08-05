@@ -9,6 +9,7 @@
 
 """E8M0 MX scale staging address-ABI regression for the PTODSL VPTO path."""
 
+import re
 import time
 
 import numpy as np
@@ -21,15 +22,15 @@ TILE_K_SUB = 128
 SCALE_GROUP_K = 32
 SCALE_X_BLOCK = 16
 SCALE_SRC_STRIDE = 8
+SCALE_STORAGE_ELEMENT_BYTES = 2
 SCALE_PAIR_COUNT = K // (2 * SCALE_GROUP_K)
-SHAPES = ((256, 256), (192, 256))
+RUNTIME_SHAPES = ((256, 256),)
+NON_SQUARE_COMPILE_SHAPE = (256, 192)
 
 L1_A_DATA_ADDR = 0
 L1_B_DATA_ADDR = 65536
 L1_A_SCALE_ADDR = 131072
 L1_B_SCALE_ADDR = 135168
-L1_A_STAGE1_ADDR = 32768
-L1_B_STAGE1_ADDR = 98304
 L0_STAGE1_ADDR = 32768
 
 _DEVICE = "npu:0"
@@ -60,8 +61,13 @@ def mad_mx_e8m0_stage_abi_kernel(
     b_scale_storage_l1 = pto.castptr(pto.ui64(L1_B_SCALE_ADDR), pto.ptr(pto.ui16, "mat"))
     a_scale_l1 = pto.castptr(pto.ui64(L1_A_SCALE_ADDR), pto.ptr(pto.f8e8m0, "mat"))
     b_scale_l1 = pto.castptr(pto.ui64(L1_B_SCALE_ADDR), pto.ptr(pto.f8e8m0, "mat"))
-    a_l1_stage1 = pto.castptr(pto.ui64(L1_A_STAGE1_ADDR), pto.ptr(pto.f8e4m3, "mat"))
-    b_l1_stage1 = pto.castptr(pto.ui64(L1_B_STAGE1_ADDR), pto.ptr(pto.f8e4m3, "mat"))
+    # The second K half follows the first Mx128 / 128xN tile in L1.
+    a_l1_stage1 = pto.castptr(
+        pto.ui64(L1_A_DATA_ADDR + M * TILE_K_SUB), pto.ptr(pto.f8e4m3, "mat")
+    )
+    b_l1_stage1 = pto.castptr(
+        pto.ui64(L1_B_DATA_ADDR + TILE_K_SUB * N), pto.ptr(pto.f8e4m3, "mat")
+    )
 
     a_l0_stage0 = pto.castptr(pto.ui64(0), pto.ptr(pto.f8e4m3, "left"))
     b_l0_stage0 = pto.castptr(pto.ui64(0), pto.ptr(pto.f8e4m3, "right"))
@@ -71,8 +77,18 @@ def mad_mx_e8m0_stage_abi_kernel(
 
     pto.mte_gm_l1(a_gm, a_l1, M * K, nburst=(1, 0, 0))
     pto.mte_gm_l1(b_gm, b_l1, K * N, nburst=(1, 0, 0))
-    pto.mte_gm_l1(a_scale_gm, a_scale_storage_l1, 4096, nburst=(1, 0, 0))
-    pto.mte_gm_l1(b_scale_gm, b_scale_storage_l1, 4096, nburst=(1, 0, 0))
+    pto.mte_gm_l1(
+        a_scale_gm,
+        a_scale_storage_l1,
+        M * SCALE_SRC_STRIDE * SCALE_STORAGE_ELEMENT_BYTES,
+        nburst=(1, 0, 0),
+    )
+    pto.mte_gm_l1(
+        b_scale_gm,
+        b_scale_storage_l1,
+        N * SCALE_SRC_STRIDE * SCALE_STORAGE_ELEMENT_BYTES,
+        nburst=(1, 0, 0),
+    )
 
     pto.set_flag(pto.Pipe.MTE2, pto.Pipe.MTE1, event_id=0)
     pto.wait_flag(pto.Pipe.MTE2, pto.Pipe.MTE1, event_id=0)
@@ -185,9 +201,37 @@ def _npu_stream(torch):
     return torch.npu.current_stream()._as_parameter_  # noqa: SLF001
 
 
+def _mx_x_steps(mlir_text, op_name):
+    constants = {
+        match.group("ssa"): int(match.group("value"))
+        for match in re.finditer(
+            r"(?P<ssa>%[A-Za-z0-9_.$]+) = arith.constant "
+            r"(?P<value>\d+) : i64",
+            mlir_text,
+        )
+    }
+    x_steps = []
+    for line in mlir_text.splitlines():
+        if op_name not in line:
+            continue
+        operands = line.split(op_name, 1)[1].split(" :", 1)[0].split(", ")
+        x_steps.append(constants[operands[4]])
+    return x_steps
+
+
+def _verify_non_square_mx_controls():
+    m, n = NON_SQUARE_COMPILE_SHAPE
+    compiled = mad_mx_e8m0_stage_abi_kernel.compile(M=m, N=n)
+    mlir_text = compiled.mlir_text()
+    assert _mx_x_steps(mlir_text, "pto.mte_l1_l0a_mx") == [m // 16, m // 16]
+    assert _mx_x_steps(mlir_text, "pto.mte_l1_l0b_mx") == [n // 16, n // 16]
+    print(f"PASS mad_mx_e8m0_stage_abi controls={m}x{n}")
+
+
 def main():
     torch = _init_runtime()
-    for m, n in SHAPES:
+    _verify_non_square_mx_controls()
+    for m, n in RUNTIME_SHAPES:
         a, b, a_scale, b_scale, reference = _make_case(m, n)
         a_dev = torch.from_numpy(a).to(_DEVICE)
         b_dev = torch.from_numpy(b).to(_DEVICE)
