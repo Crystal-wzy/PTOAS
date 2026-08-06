@@ -237,11 +237,9 @@ Example:
 
 ## Scalar-Pipeline Memory Operations
 
-`pto.load_scalar` and `pto.store_scalar` access one element through the scalar
-pipeline. The pointer element type and memory space determine the accessed
-value type and storage domain. In PTODSL, pass `bypass_l1=True` to select the
-AICore GM device-memory form (`pto.ld_dev` / `pto.st_dev`) while keeping the
-same scalar-pipeline API.
+`pto.load_scalar` and `pto.store_scalar` access one element through the general
+scalar-memory interface. The pointer element type and memory space determine
+the accessed value type and storage domain.
 
 ### `pto.load_scalar`
 
@@ -257,9 +255,6 @@ same scalar-pipeline API.
   offset of type `index`.
 - **Result:** One scalar value of type `T`.
 - **Attributes:** None.
-- **PTODSL:** `pto.load_scalar(ptr, offset=0, bypass_l1=False)`. With
-  `bypass_l1=True`, the operation requires a GM pointer with an i8, i16, i32,
-  or i64 element type and emits `pto.ld_dev`.
 - **Semantics:** Read the element at `ptr + offset` through the scalar pipeline.
 
 ```text
@@ -284,9 +279,6 @@ value = memory[ptr.address + offset * sizeof(T)] as T
   `%offset` is an element offset of type `index`.
 - **Results:** None.
 - **Attributes:** None.
-- **PTODSL:** `pto.store_scalar(ptr, offset, value, bypass_l1=False)`. With
-  `bypass_l1=True`, the operation requires a GM pointer with an i8, i16, i32,
-  or i64 element type and emits `pto.st_dev`.
 - **Semantics:** Write `%value` to the element at `ptr + offset` through the
   scalar pipeline.
 
@@ -396,6 +388,6 @@ not establish ordering with other memory operations.
 
 | Requirement | Operation family |
 |-------------|------------------|
-| General typed scalar access through the scalar pipeline | `pto.load_scalar`, `pto.store_scalar` with `bypass_l1=False` |
-| Ordinary AICore integer GM access that bypasses local L1 | `pto.load_scalar`, `pto.store_scalar` with `bypass_l1=True` (emits `pto.ld_dev`, `pto.st_dev`) |
+| General typed scalar access through the scalar-memory interface | `pto.load_scalar`, `pto.store_scalar` |
+| Ordinary AICore integer GM access that bypasses local L1 | `pto.ld_dev`, `pto.st_dev` |
 | SIMT workitem scalar memory access | See [SIMT Ops](17-simt.md) |
