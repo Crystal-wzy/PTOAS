@@ -60,6 +60,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Select runner metadata
         id: runner-meta
@@ -229,6 +231,10 @@ jobs:
 
       - name: Build PTOAS
         run: |
+          # Keep Git usable in the build environment even when checkout ran
+          # with a different HOME or outside the job container.
+          git config --global --add safe.directory "${PTO_SOURCE_DIR}"
+          git -C "${PTO_SOURCE_DIR}" rev-parse --verify 'HEAD^{commit}' >/dev/null
           if [ "${PTOAS_PYTHON_PACKAGE_NAME}" = "ptoas-vmi" ]; then
             PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/.work/ptoas-vmi-source"
             python packaging/ptoas-vmi/prepare_source.py \

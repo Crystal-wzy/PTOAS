@@ -90,19 +90,36 @@ def prepare_source(output_dir: Path, revision: str) -> dict[str, str]:
     )
     archive_path: Path | None = None
     try:
-        resolved_revision = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(REPOSITORY_ROOT),
-                "rev-parse",
-                "--verify",
-                f"{revision}^{{commit}}",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        try:
+            resolved_revision = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(REPOSITORY_ROOT),
+                    "rev-parse",
+                    "--verify",
+                    f"{revision}^{{commit}}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        except subprocess.CalledProcessError:
+            # Shallow clone fallback: HEAD^{commit} may fail when the
+            # commit object is not fully resolved (e.g. fetch-depth: 1).
+            resolved_revision = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(REPOSITORY_ROOT),
+                    "rev-parse",
+                    "--verify",
+                    revision,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
         with tempfile.NamedTemporaryFile(
             prefix="ptoas-vmi-source-",
             suffix=".tar",
