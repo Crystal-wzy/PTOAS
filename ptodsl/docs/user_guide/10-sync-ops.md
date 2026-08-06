@@ -489,3 +489,24 @@ In auto mode, users can still write sync operations directly — `set_flag`/`wai
 | Double-buffer handoff (compute → DMA) | `rls_buf(V, id)` + `get_buf(MTE2, id)` |
 | Double-buffer handoff (DMA → compute) | `rls_buf(MTE2, id)` + `get_buf(V, id)` |
 | Core A notifies core B | `set_cross_flag(B, id)` + `wait_cross_flag(A, id)` |
+
+## 10.7 Device-side trap
+
+### `pto.trap()`
+
+**Description**: Unconditionally terminates execution of the current device-side
+execution instance. This is useful for fail-fast paths in lowered assertions or
+debug-only guards.
+
+`pto.trap()` is a device operation emitted while the kernel is being traced. It
+is not a Python exception and must not be replaced with Python `raise` or
+`assert`, which execute during host-side tracing instead of on the device.
+
+**Returns**: None. Execution does not continue after the trap at runtime.
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"sync_ops.trap","symbol":"sync_ops_trap_probe","compile":{}} -->
+```python
+# The condition and any diagnostic reporting are normally emitted by a
+# higher-level assertion helper; trap itself is unconditional.
+pto.trap()
+```

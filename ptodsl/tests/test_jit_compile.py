@@ -3135,6 +3135,11 @@ def public_sync_surface_probe():
 
 
 @pto.jit(target="a5")
+def public_trap_surface_probe():
+    pto.trap()
+
+
+@pto.jit(target="a5")
 def public_dynamic_buf_sync_surface_probe():
     const_buf_id = pto.const(3)
     pto.get_buf(pto.Pipe.V, const_buf_id)
@@ -3946,6 +3951,7 @@ def main() -> None:
     public_mask_bitcast_probe.verify()
     public_mask_surface_probe.verify()
     public_sync_surface_probe.verify()
+    public_trap_surface_probe.verify()
     explicit_runtime_index_bitwise_event_probe.verify()
     explicit_runtime_index_integer_bitwise_event_probe.verify()
     ast_runtime_index_bitwise_event_probe.verify()
@@ -6404,6 +6410,8 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(mask_surface_text, "public mask surface specialization")
     sync_surface_text = public_sync_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(sync_surface_text, "public sync surface specialization")
+    trap_surface_text = public_trap_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(trap_surface_text, "public trap surface specialization")
     dynamic_buf_sync_text = public_dynamic_buf_sync_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(dynamic_buf_sync_text, "dynamic buf sync surface specialization")
     explicit_runtime_index_bitwise_event_text = explicit_runtime_index_bitwise_event_probe.compile().mlir_text()
@@ -6680,6 +6688,7 @@ def main() -> None:
     )
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")
     expect("pto.barrier <PIPE_ALL>" in public_surface_text, "pipe_barrier(Pipe.ALL) should lower to pto.barrier")
+    expect("pto.trap" in trap_surface_text, "pto.trap() should lower to the public pto.trap operation")
     expect("pto.vexp" in public_surface_text, "vexp(...) should lower to pto.vexp")
     expect("pto.vcgmax" in public_surface_text, "vcgmax(...) should lower to pto.vcgmax")
     expect("pto.vcgadd" in public_surface_text, "vcgadd(...) should lower to pto.vcgadd")

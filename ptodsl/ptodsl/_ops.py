@@ -6378,6 +6378,11 @@ def threadfence_block():
     _pto.ThreadfenceBlockOp()
 
 
+def trap():
+    """``pto.trap`` – unconditionally terminate device-side execution."""
+    _pto.TrapOp()
+
+
 def _slot_attr_value(slot, *, context: str):
     if not isinstance(slot, int) or isinstance(slot, bool):
         raise TypeError(f"{context} expects a non-negative Python int slot")
@@ -6660,7 +6665,7 @@ __all__ = [
     "prmt", "mulhi", "mul_i32toi64",
     "absf", "sqrt", "exp", "log", "pow", "ceil", "floor", "rint", "round",
     "fmin", "fmax", "fma", "convert",
-    "syncthreads", "threadfence", "threadfence_block", "keep", "resume",
+    "syncthreads", "threadfence", "threadfence_block", "trap", "keep", "resume",
     "pipe_barrier", "get_buf", "rls_buf",
     "set_cross_flag", "wait_cross_flag", "set_intra_flag", "wait_intra_flag",
     "set_flag", "wait_flag",

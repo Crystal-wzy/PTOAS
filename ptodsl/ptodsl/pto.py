@@ -148,7 +148,7 @@ from ._ops import (             # noqa: F401
     prmt, mulhi, mul_i32toi64,
     absf, sqrt, exp, log, pow, ceil, floor, rint, round,
     fmin, fmax, fma, convert,
-    syncthreads, threadfence, threadfence_block, keep, resume,
+    syncthreads, threadfence, threadfence_block, trap, keep, resume,
     pipe_barrier,
     get_buf, rls_buf,
     set_cross_flag, wait_cross_flag, set_intra_flag, wait_intra_flag,
