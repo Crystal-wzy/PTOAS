@@ -241,6 +241,16 @@ discoverCppIncludeDirs(llvm::StringRef ascendHome,
 
   addPTOISAIncludeDirs(includeDirs, ptoIsaPath);
   addExistingIncludeDir(includeDirs, joinPath(ascendHome, "include"));
+  addExistingIncludeDir(includeDirs, joinPath(ascendHome, "aarch64-linux/asc"));
+  addExistingIncludeDir(includeDirs,
+                        joinPath(ascendHome, "aarch64-linux/asc/include"));
+  addExistingIncludeDir(includeDirs, joinPath(ascendHome, "x86_64-linux/asc"));
+  addExistingIncludeDir(includeDirs,
+                        joinPath(ascendHome, "x86_64-linux/asc/include"));
+  addExistingIncludeDir(includeDirs, joinPath(ascendHome, "pkg_inc"));
+  addExistingIncludeDir(includeDirs, joinPath(ascendHome, "pkg_inc/profiling"));
+  addExistingIncludeDir(includeDirs,
+                        joinPath(ascendHome, "pkg_inc/runtime/runtime"));
   std::string driverPath =
       getEnvPath("ASCEND_DRIVER_PATH").value_or("/usr/local/Ascend/driver");
   addExistingIncludeDir(includeDirs, joinPath(driverPath, "kernel/inc"));
@@ -571,7 +581,7 @@ static bool compileCppDeviceSourceToObject(
 
 static bool compileCppDeviceSourceToFatobj(
     llvm::StringRef cppPath, llvm::StringRef outObjPath,
-    const mlir::pto::CANNToolchain &toolchain,
+    llvm::StringRef targetCPU, const mlir::pto::CANNToolchain &toolchain,
     llvm::StringRef stderrPath, llvm::raw_ostream &diagOS) {
   llvm::SmallVector<std::string, 32> args = {
       toolchain.bishengPath,
@@ -591,7 +601,7 @@ static bool compileCppDeviceSourceToFatobj(
       "-cce-aicore-addr-transform",
       "-mllvm",
       "-cce-aicore-dcci-insert-for-scalar=false",
-      "--cce-aicore-arch=dav-c310",
+      std::string("--cce-aicore-arch=") + targetCPU.str(),
       "-DREGISTER_BASE",
       "-std=c++17",
       "-O2",
@@ -752,6 +762,7 @@ static bool mergeDeviceObjects(llvm::ArrayRef<std::string> deviceObjPaths,
 
 static bool linkFatobjFiles(llvm::ArrayRef<std::string> fatobjPaths,
                             llvm::StringRef outObjPath,
+                            llvm::StringRef targetCPU,
                             const mlir::pto::CANNToolchain &toolchain,
                             llvm::StringRef stderrPath,
                             llvm::raw_ostream &diagOS) {
@@ -761,7 +772,7 @@ static bool linkFatobjFiles(llvm::ArrayRef<std::string> fatobjPaths,
   llvm::SmallVector<std::string, 32> args = {
       toolchain.bishengPath,
       "--cce-fatobj-link",
-      "--cce-aicore-arch=dav-c310",
+      std::string("--cce-aicore-arch=") + targetCPU.str(),
       "-r",
       "-o",
       outObjPath.str(),
@@ -935,28 +946,29 @@ mlir::LogicalResult mlir::pto::emitCppCubeDeviceObject(
 
 mlir::LogicalResult mlir::pto::emitCppFatobj(
     llvm::StringRef cppSource, llvm::StringRef cppPath,
-    llvm::StringRef outObjPath, const CANNToolchain &toolchain,
-    llvm::StringRef stderrPath, llvm::raw_ostream &diagOS) {
+    llvm::StringRef outObjPath, llvm::StringRef targetCPU,
+    const CANNToolchain &toolchain, llvm::StringRef stderrPath,
+    llvm::raw_ostream &diagOS) {
   if (failed(writeCppSource(cppSource, cppPath, diagOS)))
     return failure();
-  return compileCppDeviceSourceToFatobj(cppPath, outObjPath, toolchain,
-                                        stderrPath, diagOS)
+  return compileCppDeviceSourceToFatobj(cppPath, outObjPath, targetCPU,
+                                        toolchain, stderrPath, diagOS)
              ? success()
              : failure();
 }
 
 mlir::LogicalResult mlir::pto::emitFatobjCCE(
     llvm::StringRef cppSource, llvm::StringRef outputPath,
-    const CANNToolchain &toolchain, TempFileRegistry &tempFiles,
-    llvm::raw_ostream &diagOS) {
+    llvm::StringRef targetCPU, const CANNToolchain &toolchain,
+    TempFileRegistry &tempFiles, llvm::raw_ostream &diagOS) {
   std::string cppPath;
   std::string stderrPath;
   if (failed(tempFiles.create("ptoas-emitc", ".cpp", cppPath, diagOS)) ||
       failed(tempFiles.create("ptoas-emitc-fatobj", ".log", stderrPath,
                               diagOS)))
     return failure();
-  return emitCppFatobj(cppSource, cppPath, outputPath, toolchain, stderrPath,
-                       diagOS);
+  return emitCppFatobj(cppSource, cppPath, outputPath, targetCPU, toolchain,
+                       stderrPath, diagOS);
 }
 
 static bool isVPTOKernelABISymbol(llvm::StringRef name) {
@@ -1043,8 +1055,9 @@ mlir::LogicalResult mlir::pto::emitVPTOCubeDeviceObject(
 mlir::LogicalResult mlir::pto::emitFatobjLLVM(
     llvm::Module *cubeModule, llvm::Module *vectorModule,
     llvm::StringRef stubSource, llvm::StringRef outputPath,
-    llvm::StringRef moduleId, const CANNToolchain &toolchain,
-    TempFileRegistry &tempFiles, VFSIMTSizeFixMode vfsimtSizeFixMode,
+    llvm::StringRef moduleId, llvm::StringRef targetCPU,
+    const CANNToolchain &toolchain, TempFileRegistry &tempFiles,
+    VFSIMTSizeFixMode vfsimtSizeFixMode,
     llvm::raw_ostream &diagOS) {
   if (!cubeModule && !vectorModule) {
     diagOS << "Error: VPTO fatobj emission requires at least one LLVM module.\n";
@@ -1064,7 +1077,6 @@ mlir::LogicalResult mlir::pto::emitFatobjLLVM(
   if (!artifacts.mergeDeviceObjects(toolchain, diagOS))
     return failure();
 
-  constexpr llvm::StringLiteral targetCPU = "dav-c310";
   if (!artifacts.compileHostStubToFatobj(toolchain, moduleId, targetCPU,
                                          outputPath, diagOS))
     return failure();
@@ -1084,9 +1096,8 @@ mlir::LogicalResult mlir::pto::mergeDeviceObjects(
 mlir::LogicalResult mlir::pto::compileStubToFatobj(
     llvm::StringRef stubPath, llvm::StringRef deviceObjPath,
     llvm::StringRef outputPath, llvm::StringRef moduleId,
-    const CANNToolchain &toolchain, llvm::StringRef stderrPath,
-    llvm::raw_ostream &diagOS) {
-  constexpr llvm::StringLiteral targetCPU = "dav-c310";
+    llvm::StringRef targetCPU, const CANNToolchain &toolchain,
+    llvm::StringRef stderrPath, llvm::raw_ostream &diagOS) {
   return compileHostStubToObject(stubPath, outputPath, moduleId, targetCPU,
                                  toolchain, deviceObjPath, stderrPath,
                                  diagOS)
@@ -1096,9 +1107,10 @@ mlir::LogicalResult mlir::pto::compileStubToFatobj(
 
 mlir::LogicalResult mlir::pto::linkFatobjs(
     llvm::ArrayRef<std::string> fatobjPaths, llvm::StringRef outputPath,
-    const CANNToolchain &toolchain, llvm::StringRef stderrPath,
-    llvm::raw_ostream &diagOS) {
-  return linkFatobjFiles(fatobjPaths, outputPath, toolchain, stderrPath, diagOS)
+    llvm::StringRef targetCPU, const CANNToolchain &toolchain,
+    llvm::StringRef stderrPath, llvm::raw_ostream &diagOS) {
+  return linkFatobjFiles(fatobjPaths, outputPath, targetCPU, toolchain,
+                         stderrPath, diagOS)
              ? success()
              : failure();
 }

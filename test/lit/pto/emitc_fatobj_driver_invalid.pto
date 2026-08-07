@@ -1,0 +1,8 @@
+// RUN: not ptoas --pto-arch=a5 --fatobj %s -o - 2>&1 | FileCheck %s --check-prefix=NOOUT
+// RUN: not ptoas --pto-arch=a5 --fatobj --emit-pto-ir %s -o %t.o 2>&1 | FileCheck %s --check-prefix=DEBUG
+
+module {
+}
+
+// NOOUT: Error: --fatobj requires an explicit file path passed with -o
+// DEBUG: Error: --fatobj does not support debug IR output flags

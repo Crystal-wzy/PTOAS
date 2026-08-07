@@ -35,6 +35,7 @@ extern llvm::cl::opt<std::string> ptoTargetArch;
 extern llvm::cl::opt<std::string> ptoBackend;
 extern llvm::cl::opt<bool> emitVPTO;
 extern llvm::cl::opt<bool> emitVPTOLLVMDialect;
+extern llvm::cl::opt<bool> emitFatobj;
 extern llvm::cl::opt<bool> ptoPrintSeamIR;
 extern llvm::cl::opt<std::string> ptoSeamIRFile;
 extern llvm::cl::opt<std::string> cannOutputVersion;
@@ -85,6 +86,7 @@ public:
   llvm::StringRef getOutputPath() const;
   std::string allocModuleId();
 
+  const CANNToolchain *peekToolchain() const;
   const CANNToolchain *getToolchain(llvm::raw_ostream &diagOS) const;
   CANNVersion getCANNVersionOrDefault() const;
 

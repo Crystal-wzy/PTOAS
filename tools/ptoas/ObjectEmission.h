@@ -106,12 +106,14 @@ LogicalResult emitCppCubeDeviceObject(
 
 LogicalResult emitCppFatobj(llvm::StringRef cppSource, llvm::StringRef cppPath,
                             llvm::StringRef outObjPath,
+                            llvm::StringRef targetCPU,
                             const CANNToolchain &toolchain,
                             llvm::StringRef stderrPath,
                             llvm::raw_ostream &diagOS);
 
 LogicalResult emitFatobjCCE(llvm::StringRef cppSource,
                             llvm::StringRef outputPath,
+                            llvm::StringRef targetCPU,
                             const CANNToolchain &toolchain,
                             TempFileRegistry &tempFiles,
                             llvm::raw_ostream &diagOS);
@@ -129,8 +131,9 @@ LogicalResult emitVPTOCubeDeviceObject(
 LogicalResult emitFatobjLLVM(
     llvm::Module *cubeModule, llvm::Module *vectorModule,
     llvm::StringRef stubSource, llvm::StringRef outputPath,
-    llvm::StringRef moduleId, const CANNToolchain &toolchain,
-    TempFileRegistry &tempFiles, VFSIMTSizeFixMode vfsimtSizeFixMode,
+    llvm::StringRef moduleId, llvm::StringRef targetCPU,
+    const CANNToolchain &toolchain, TempFileRegistry &tempFiles,
+    VFSIMTSizeFixMode vfsimtSizeFixMode,
     llvm::raw_ostream &diagOS);
 
 LogicalResult mergeDeviceObjects(llvm::ArrayRef<std::string> deviceObjPaths,
@@ -142,11 +145,12 @@ LogicalResult mergeDeviceObjects(llvm::ArrayRef<std::string> deviceObjPaths,
 LogicalResult compileStubToFatobj(
     llvm::StringRef stubPath, llvm::StringRef deviceObjPath,
     llvm::StringRef outputPath, llvm::StringRef moduleId,
-    const CANNToolchain &toolchain, llvm::StringRef stderrPath,
-    llvm::raw_ostream &diagOS);
+    llvm::StringRef targetCPU, const CANNToolchain &toolchain,
+    llvm::StringRef stderrPath, llvm::raw_ostream &diagOS);
 
 LogicalResult linkFatobjs(llvm::ArrayRef<std::string> fatobjPaths,
                           llvm::StringRef outputPath,
+                          llvm::StringRef targetCPU,
                           const CANNToolchain &toolchain,
                           llvm::StringRef stderrPath,
                           llvm::raw_ostream &diagOS);

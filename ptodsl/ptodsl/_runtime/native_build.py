@@ -47,6 +47,7 @@ def _run_ptoas(
     insert_sync: bool | None = None,
     backend: str | None = None,
     pto_level: str | None = None,
+    fatobj: bool = False,
 ) -> None:
     ptoas = resolve_ptoas_binary()
     cmd = [
@@ -59,6 +60,8 @@ def _run_ptoas(
         cmd.append(f"--pto-level={pto_level}")
     if insert_sync is True:
         cmd.append("--enable-insert-sync")
+    if fatobj:
+        cmd.append("--fatobj")
     cmd.extend([
         "--enable-tile-op-expand",
         str(mlir_path),
@@ -86,12 +89,17 @@ def _source_ptoas_overrides(module_spec) -> dict:
     return {"backend": module_spec.backend}
 
 
+def _requires_fatobj(mlir_text: str) -> bool:
+    return "pto.tprint" in mlir_text
+
+
 def _compile_config_text(
     *,
     module_spec,
     effective_insert_sync: bool,
     effective_pto_level: str | None,
     ptoas_overrides: dict,
+    fatobj: bool,
 ) -> str:
     return "\n".join(
         [
@@ -101,6 +109,7 @@ def _compile_config_text(
             f"insert_sync={effective_insert_sync}",
             f"pto_level={effective_pto_level}",
             f"backend={ptoas_overrides.get('backend')}",
+            f"fatobj={fatobj}",
             "enable_tile_op_expand=True",
         ]
     )
@@ -219,11 +228,13 @@ def build_native_library(
     )
     effective_pto_level = _effective_pto_level(mode=module_spec.mode)
     ptoas_overrides = _source_ptoas_overrides(module_spec)
+    fatobj = _requires_fatobj(mlir_text)
     compile_config_text = _compile_config_text(
         module_spec=module_spec,
         effective_insert_sync=effective_insert_sync,
         effective_pto_level=effective_pto_level,
         ptoas_overrides=ptoas_overrides,
+        fatobj=fatobj,
     )
     sim_mode = bool(os.environ.get("MSPROF_SIMULATOR_MODE"))
     link_config_text = "\n".join(runtime_library_flags(sim_mode=sim_mode))
@@ -247,6 +258,7 @@ def build_native_library(
         target_arch=module_spec.target_arch,
         insert_sync=effective_insert_sync,
         pto_level=effective_pto_level,
+        fatobj=fatobj,
         **ptoas_overrides,
     )
 
